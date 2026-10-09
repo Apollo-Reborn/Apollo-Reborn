@@ -34,9 +34,11 @@
 #import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloMediaMetadata.h"
 #import "ApolloState.h"
 #import "Tweak.h"
+#import "ApolloClasses.h"
 
 // Tweak.h's RDKLink declares selfPost/selfText/mediaMetadata/previewMedia. The
 // native-media gate also needs these media accessors — declare them here so the
@@ -97,7 +99,8 @@ typedef NS_ENUM(unsigned char, ApolloFeedStackAlign) {
 @property (nonatomic) CGFloat cornerRadius;
 @property (nonatomic) BOOL clipsToBounds;
 @property (nullable, nonatomic, copy) UIColor *placeholderColor;
-@property (nonatomic) BOOL placeholderEnabled;@property (nonatomic) NSTimeInterval placeholderFadeDuration;
+@property (nonatomic) BOOL placeholderEnabled;
+@property (nonatomic) NSTimeInterval placeholderFadeDuration;
 @property (nonatomic, weak) id delegate;
 // ASImageNode is an ASControlNode subclass, so target-action is available.
 - (void)addTarget:(id)target action:(SEL)action forControlEvents:(NSUInteger)controlEvents;
@@ -347,8 +350,7 @@ static NSURL *ApolloFeedThumbURLFromMediaMetadata(NSDictionary *mediaMetadata,
         if (area >= largestArea) { largestArea = area; largestKey = assetID; largestEntry = entry; }
 
         // Order by first appearance of the asset key in the body markdown.
-        NSRange r = [body rangeOfString:assetID];
-        NSUInteger idx = (r.location != NSNotFound) ? r.location : NSNotFound;
+        NSUInteger idx = [body rangeOfString:assetID].location;
         if (idx != NSNotFound && (firstIndex == NSNotFound || idx < firstIndex)) {
             firstIndex = idx; firstKey = assetID; firstEntry = entry;
         }
@@ -530,7 +532,6 @@ static BOOL ApolloFeedRouteURLToNativeHandler(id startNode, NSURL *url) {
 // Shared tap handler: opens the tapped text post's embedded image the same
 // way a normal image post opens its media, instead of confusingly opening
 // the thread.
-static id ApolloFeedIvar(id obj, const char *name);
 
 @interface ApolloFeedHeroTapHandler : NSObject
 @end
@@ -584,7 +585,7 @@ static id ApolloFeedIvar(id obj, const char *name);
             ApolloLog(@"[FeedThumb] compact thumb tap: no cell handler in chain");
             return;
         }
-        RDKLink *link = ApolloFeedIvar(target, "link");
+        RDKLink *link = ApolloObjectIvar(target, "link");
         if (!(link.selfPost && ApolloFeedThumbnailURLForLink(link))) return;
         ((void (*)(id, SEL, id))objc_msgSend)(target, @selector(thumbnailTappedWithSender:), sender);
     } @catch (__unused NSException *e) {}
@@ -689,12 +690,14 @@ static NSHashTable *ApolloFeedInjectedNodes(void) {
     return table;
 }
 
-// Read an ivar by name via the ObjC runtime (works outside %hook blocks).
-static id ApolloFeedIvar(id obj, const char *name) {
-    if (!obj || !name) return nil;
-    Ivar iv = class_getInstanceVariable(object_getClass(obj), name);
-    if (!iv) return nil;
-    return object_getIvar(obj, iv);
+static void ApolloFeedRememberInjectedNode(id node) {
+    NSHashTable *table = ApolloFeedInjectedNodes();
+    @synchronized (table) { [table addObject:node]; }
+}
+
+static NSArray *ApolloFeedInjectedNodesSnapshot(void) {
+    NSHashTable *table = ApolloFeedInjectedNodes();
+    @synchronized (table) { return table.allObjects; }
 }
 
 // Hide the redundant link card and strip the naked image URL on a RichMediaNode.
@@ -707,7 +710,7 @@ static id ApolloFeedIvar(id obj, const char *name) {
 static void ApolloFeedReapplyCleanup(id node, BOOL triggerLayout) {
     if (!node) return;
     @try {
-        id linkButton = ApolloFeedIvar(node, "linkButtonNode");
+        id linkButton = ApolloObjectIvar(node, "linkButtonNode");
         if (linkButton) {
             ASDisplayNode *lb = (ASDisplayNode *)linkButton;
             if ([lb respondsToSelector:@selector(setHidden:)]) lb.hidden = YES;
@@ -720,7 +723,7 @@ static void ApolloFeedReapplyCleanup(id node, BOOL triggerLayout) {
                 ((ApolloFeedLayoutStyle *)st).preferredSize = CGSizeZero;
             }
         }
-        id previewText = ApolloFeedIvar(node, "selfPostPreviewNode");
+        id previewText = ApolloObjectIvar(node, "selfPostPreviewNode");
         ApolloFeedStripImageURLsFromTextNode(previewText);
         if (triggerLayout && [node respondsToSelector:@selector(setNeedsLayout)]) {
             [(ASDisplayNode *)node setNeedsLayout];
@@ -762,7 +765,7 @@ static void ApolloFeedReapplyCleanup(id node, BOOL triggerLayout) {
                     @try {
                         ASDisplayNode *wrapper = weakWrapper;
                         if (!wrapper) return;
-                        id thumbNode = ApolloFeedIvar(wrapper, "thumbnailNode");
+                        id thumbNode = ApolloObjectIvar(wrapper, "thumbnailNode");
                         if (![thumbNode respondsToSelector:@selector(addTarget:action:forControlEvents:)] ||
                             ![thumbNode respondsToSelector:@selector(setUserInteractionEnabled:)]) {
                             ApolloLog(@"[FeedThumb] compact wiring skipped: thumb=%@ lacks control surface",
@@ -776,9 +779,9 @@ static void ApolloFeedReapplyCleanup(id node, BOOL triggerLayout) {
                         [(ASNetworkImageNode *)thumbNode addTarget:[ApolloFeedHeroTapHandler shared]
                                                             action:@selector(compactThumbTapped:)
                                                   forControlEvents:ApolloFeedControlEventTouchUpInside];
-                        ApolloLog(@"[FeedThumb] compact tap target wired (thumb=%@)", NSStringFromClass([thumbNode class]));
+                        os_log_debug(ApolloFixLog(), "[ApolloFix] [FeedThumb] compact tap target wired (thumb=%{public}s)", object_getClassName(thumbNode));
                     } @catch (NSException *e) {
-                        ApolloLog(@"[FeedThumb] compact wiring failed: %@", e.reason);
+                        ApolloLogError(@"[FeedThumb] compact wiring failed: %@", e.reason);
                     }
                 });
             }
@@ -849,8 +852,8 @@ static void ApolloFeedReapplyCleanup(id node, BOOL triggerLayout) {
         @try {
             RDKLink *link = MSHookIvar<RDKLink *>(self, "link");
             if (link && link.selfPost && ApolloFeedThumbnailURLForLink(link)) {
-                ApolloFeedStripImageURLsFromTextNode(ApolloFeedIvar(self, "selfPostPreviewNode"));
-                [ApolloFeedInjectedNodes() addObject:self];
+                ApolloFeedStripImageURLsFromTextNode(ApolloObjectIvar(self, "selfPostPreviewNode"));
+                ApolloFeedRememberInjectedNode(self);
             }
         } @catch (__unused NSException *e) {}
         return origSpec;
@@ -888,13 +891,13 @@ static void ApolloFeedReapplyCleanup(id node, BOOL triggerLayout) {
         ApolloFeedReapplyCleanup(self, NO);
         // Remember this node so we can re-apply the cleanup on foreground (Apollo
         // rebuilds the preview text without re-running this layout pass).
-        [ApolloFeedInjectedNodes() addObject:self];
+        ApolloFeedRememberInjectedNode(self);
 
         // Reuse a single hero node per RichMediaNode across layout passes.
         ASNetworkImageNode *hero =
             (ASNetworkImageNode *)objc_getAssociatedObject(self, &kApolloFeedHeroNodeKey);
         if (!hero) {
-            Class imgCls = objc_getClass("ASNetworkImageNode");
+            Class imgCls = ApolloClassASNetworkImageNode;
             if (!imgCls) return origSpec;
             hero = [[imgCls alloc] init];
             @try {
@@ -949,8 +952,8 @@ static void ApolloFeedReapplyCleanup(id node, BOOL triggerLayout) {
         NSNumber *r = objc_getAssociatedObject(link, &kApolloFeedThumbRatioKey);
         if ([r isKindOfClass:[NSNumber class]]) ratio = r.doubleValue;
 
-        Class ratioCls = objc_getClass("ASRatioLayoutSpec");
-        Class stackCls = objc_getClass("ASStackLayoutSpec");
+        Class ratioCls = ApolloClassASRatioLayoutSpec;
+        Class stackCls = ApolloClassASStackLayoutSpec;
         if (!ratioCls || !stackCls || !origSpec) {
             return origSpec;
         }
@@ -962,7 +965,7 @@ static void ApolloFeedReapplyCleanup(id node, BOOL triggerLayout) {
         // clipped flush against the screen edge. Inset it to Apollo's standard
         // content margin so it lines up with the title/body text (review
         // feedback on #426).
-        Class insetCls = objc_getClass("ASInsetLayoutSpec");
+        Class insetCls = ApolloClassASInsetLayoutSpec;
         if (insetCls) {
             id padded = [insetCls insetLayoutSpecWithInsets:UIEdgeInsetsMake(0, kApolloFeedHeroSideInset, 0, kApolloFeedHeroSideInset)
                                                       child:heroSpec];
@@ -1000,13 +1003,13 @@ static void ApolloFeedReapplyCleanup(id node, BOOL triggerLayout) {
                                          (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
                 @try {
-                    for (id node in ApolloFeedInjectedNodes().allObjects) {
+                    for (id node in ApolloFeedInjectedNodesSnapshot()) {
                         if (sFeedTextPostThumbnails) {
                             // Full cleanup: hidden link card + stripped URL.
                             ApolloFeedReapplyCleanup(node, YES);
                         } else {
                             // Toggle off: only keep the preview text clean.
-                            ApolloFeedStripImageURLsFromTextNode(ApolloFeedIvar(node, "selfPostPreviewNode"));
+                            ApolloFeedStripImageURLsFromTextNode(ApolloObjectIvar(node, "selfPostPreviewNode"));
                         }
                     }
                 } @catch (__unused NSException *e) {}

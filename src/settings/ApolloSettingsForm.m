@@ -118,66 +118,72 @@ typedef NS_ENUM(NSInteger, ApolloSFRowKind) {
 
 #pragma mark - Icon tiles
 
-// Settings-app-style icon tile: a white SF symbol centered on a colored 29pt
-// rounded square. Cached per symbol + resolved color; the color is resolved
-// against the presenting view's traits because system colors differ slightly
-// between light and dark. Unknown symbol names fail soft to a plain tile.
 UIColor *ApolloThemeManagerIconColor(void) {
     return UIColor.systemIndigoColor;
 }
 
 UIImage *ApolloSettingsIconTileImage(NSString *symbolName, UIColor *tileColor, UITraitCollection *traits) {
-    static NSCache<NSString *, UIImage *> *cache;
+    static NSCache<NSArray *, UIImageAsset *> *cache;
     static dispatch_once_t once;
     dispatch_once(&once, ^{ cache = [NSCache new]; });
 
-    UIColor *resolved = [(tileColor ?: UIColor.systemGrayColor) resolvedColorWithTraitCollection:traits];
-    CGFloat r = 0, g = 0, b = 0, a = 1;
-    if (![resolved getRed:&r green:&g blue:&b alpha:&a]) {
-        CGFloat w = 0.5;
-        [resolved getWhite:&w alpha:&a];
-        r = g = b = w;
-    }
-    NSString *key = [NSString stringWithFormat:@"%@|%.3f|%.3f|%.3f|%.3f", symbolName, r, g, b, a];
-    UIImage *cached = [cache objectForKey:key];
-    if (cached) return cached;
+    UITraitCollection *baseTraits = traits ?: UITraitCollection.currentTraitCollection;
+    CGFloat displayScale = baseTraits.displayScale > 0 ? baseTraits.displayScale : UIScreen.mainScreen.scale;
+    UITraitCollection *renderTraits = [UITraitCollection traitCollectionWithTraitsFromCollections:@[
+        baseTraits,
+        [UITraitCollection traitCollectionWithDisplayScale:displayScale],
+    ]];
+    UIColor *color = tileColor ?: UIColor.systemGrayColor;
+    UITraitCollection *lightTraits = [UITraitCollection traitCollectionWithTraitsFromCollections:@[
+        renderTraits, [UITraitCollection traitCollectionWithUserInterfaceStyle:UIUserInterfaceStyleLight],
+    ]];
+    UITraitCollection *darkTraits = [UITraitCollection traitCollectionWithTraitsFromCollections:@[
+        renderTraits, [UITraitCollection traitCollectionWithUserInterfaceStyle:UIUserInterfaceStyleDark],
+    ]];
+    // Cache both color variants: matching light colors can have different dark colors.
+    NSArray *key = @[
+        symbolName ?: @"",
+        [color resolvedColorWithTraitCollection:lightTraits],
+        [color resolvedColorWithTraitCollection:darkTraits],
+        @(displayScale),
+    ];
+    UIImageAsset *cached = [cache objectForKey:key];
+    if (cached) return [cached imageWithTraitCollection:renderTraits];
 
     static const CGFloat side = 29.0;
-    UIImage *glyph = [[UIImage systemImageNamed:symbolName
-                              withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:15
-                                                                                                weight:UIImageSymbolWeightMedium]]
-                      imageWithTintColor:UIColor.whiteColor renderingMode:UIImageRenderingModeAlwaysOriginal];
-    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(side, side)];
-    UIImage *tile = [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *ctx) {
-        [resolved setFill];
-        [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, side, side) cornerRadius:6.5] fill];
+    UIImage *symbol = [UIImage systemImageNamed:symbolName
+                             withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:15
+                                                                                               weight:UIImageSymbolWeightMedium]];
+    UIImage *tile = ApolloSettingsTileImage(color, side, renderTraits, ^(BOOL dark, UIColor *resolvedColor) {
+        UIColor *glyphColor = dark ? resolvedColor : UIColor.whiteColor;
         if ([symbolName isEqualToString:@"apollo.saved-categories"]) {
-            CGContextSaveGState(ctx.CGContext);
-            CGContextScaleCTM(ctx.CGContext, side / 36.0, side / 36.0);
-        // Two outlined bookmarks, matching the Saved Categories shortcut.
-        [UIColor.whiteColor setStroke];
-        UIBezierPath *rear = [UIBezierPath bezierPath];
-        [rear moveToPoint:CGPointMake(16, 9)];
-        [rear addLineToPoint:CGPointMake(16, 7)];
-        [rear addLineToPoint:CGPointMake(27, 7)];
-        [rear addLineToPoint:CGPointMake(27, 25)];
-        rear.lineWidth = 1.8;
-        rear.lineJoinStyle = kCGLineJoinRound;
-        rear.lineCapStyle = kCGLineCapRound;
-        [rear stroke];
-        UIBezierPath *front = [UIBezierPath bezierPath];
-        [front moveToPoint:CGPointMake(10, 11)];
-        [front addLineToPoint:CGPointMake(21, 11)];
-        [front addLineToPoint:CGPointMake(21, 29)];
-        [front addLineToPoint:CGPointMake(15.5, 24)];
-        [front addLineToPoint:CGPointMake(10, 29)];
-        [front closePath];
-        front.lineWidth = 1.8;
-        front.lineJoinStyle = kCGLineJoinRound;
-        [front stroke];
-            CGContextRestoreGState(ctx.CGContext);
+            CGContextRef context = UIGraphicsGetCurrentContext();
+            CGContextSaveGState(context);
+            CGContextScaleCTM(context, side / 36.0, side / 36.0);
+            [glyphColor setStroke];
+            UIBezierPath *rear = [UIBezierPath bezierPath];
+            [rear moveToPoint:CGPointMake(16, 9)];
+            [rear addLineToPoint:CGPointMake(16, 7)];
+            [rear addLineToPoint:CGPointMake(27, 7)];
+            [rear addLineToPoint:CGPointMake(27, 25)];
+            rear.lineWidth = 1.8;
+            rear.lineJoinStyle = kCGLineJoinRound;
+            rear.lineCapStyle = kCGLineCapRound;
+            [rear stroke];
+            UIBezierPath *front = [UIBezierPath bezierPath];
+            [front moveToPoint:CGPointMake(10, 11)];
+            [front addLineToPoint:CGPointMake(21, 11)];
+            [front addLineToPoint:CGPointMake(21, 29)];
+            [front addLineToPoint:CGPointMake(15.5, 24)];
+            [front addLineToPoint:CGPointMake(10, 29)];
+            [front closePath];
+            front.lineWidth = 1.8;
+            front.lineJoinStyle = kCGLineJoinRound;
+            [front stroke];
+            CGContextRestoreGState(context);
             return;
         }
+        UIImage *glyph = [symbol imageWithTintColor:glyphColor renderingMode:UIImageRenderingModeAlwaysOriginal];
         CGSize gs = glyph.size;
         if (gs.width > 0 && gs.height > 0) {
             // Symbols vary in aspect ratio; cap the longer side so wide glyphs
@@ -186,9 +192,8 @@ UIImage *ApolloSettingsIconTileImage(NSString *symbolName, UIColor *tileColor, U
             gs = CGSizeMake(gs.width * scale, gs.height * scale);
             [glyph drawInRect:CGRectMake((side - gs.width) / 2.0, (side - gs.height) / 2.0, gs.width, gs.height)];
         }
-    }];
-    tile = [tile imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
-    [cache setObject:tile forKey:key];
+    });
+    if (tile.imageAsset) [cache setObject:tile.imageAsset forKey:key];
     return tile;
 }
 
@@ -197,6 +202,9 @@ UIImage *ApolloSettingsIconTileImage(NSString *symbolName, UIColor *tileColor, U
 // Associates the model row with its live UISwitch so one shared valueChanged
 // target can dispatch to the row's block across cell reuse.
 static const void *kApolloSFSwitchRowKey = &kApolloSFSwitchRowKey;
+// Marks a header/footer view a section's display block has styled, so the
+// accessibility it set can be cleared when the view is reused elsewhere.
+static const void *kApolloSFDisplayStyledKey = &kApolloSFDisplayStyledKey;
 
 @implementation ApolloSettingsFormViewController {
     NSArray<ApolloSettingsSection *> *_sections;
@@ -249,13 +257,81 @@ static const void *kApolloSFSwitchRowKey = &kApolloSFSwitchRowKey;
     [self.tableView reloadData];
 }
 
+// A reload or batch update runs UIKit's post-update scroll restore, which saves
+// the position against one row and puts it back against another when the top
+// edge of the screen sits inside a section footer (see "section footer
+// heights"): on Apollo AI, saving a custom header with the list scrolled down
+// to it moved the list ~210pt. So note where every row on screen sits, run the
+// update, let UIKit's restore happen, then put the first of those rows that is
+// still in the form back in its place. Rows only, by identity: the edit may
+// have removed the row that was first on screen, and the next one then holds
+// the list. Anything that comes on screen while the list is put back is
+// measured as it is laid out and can push that row down again (after a
+// reloadData every height is an estimate until then), so correct until the row
+// holds.
+- (void)performUpdateKeepingVisibleRowsInPlace:(void (NS_NOESCAPE ^)(void))update {
+    UITableView *tableView = self.tableView;
+    if (!tableView.window) {
+        update();
+        return;
+    }
+    CGFloat offsetY = tableView.contentOffset.y;
+    CGFloat visibleTop = offsetY + tableView.adjustedContentInset.top;
+    NSMutableArray<NSString *> *anchorIDs = [NSMutableArray array];
+    NSMutableArray<NSNumber *> *anchorOffsets = [NSMutableArray array];
+    NSArray<NSIndexPath *> *visible = [tableView.indexPathsForVisibleRows sortedArrayUsingSelector:@selector(compare:)];
+    for (NSIndexPath *indexPath in visible) {
+        NSString *rowID = [self apollo_sf_rowAtIndexPath:indexPath].rowID;
+        CGRect rect = [tableView rectForRowAtIndexPath:indexPath];
+        if (rowID.length == 0 || CGRectGetMaxY(rect) <= visibleTop) continue;   // under the bars
+        [anchorIDs addObject:rowID];
+        [anchorOffsets addObject:@(CGRectGetMinY(rect) - offsetY)];
+    }
+
+    [UIView performWithoutAnimation:^{
+        update();
+        [tableView layoutIfNeeded];   // the update, and UIKit's restore, happen here
+        CGFloat restored = tableView.contentOffset.y;
+        for (NSUInteger i = 0; i < anchorIDs.count; i++) {
+            if (![self indexPathForRowID:anchorIDs[i]]) continue;
+            NSInteger passes = 0;
+            for (; passes < 4; passes++) {
+                NSIndexPath *indexPath = [self indexPathForRowID:anchorIDs[i]];
+                UIEdgeInsets insets = tableView.adjustedContentInset;
+                CGFloat minY = -insets.top;
+                CGFloat maxY = MAX(minY, tableView.contentSize.height + insets.bottom - CGRectGetHeight(tableView.bounds));
+                CGFloat target = CGRectGetMinY([tableView rectForRowAtIndexPath:indexPath]) - anchorOffsets[i].doubleValue;
+                target = MIN(MAX(target, minY), maxY);
+                if (fabs(target - tableView.contentOffset.y) < 0.5) break;
+                tableView.contentOffset = CGPointMake(tableView.contentOffset.x, target);
+                [tableView layoutIfNeeded];
+            }
+            ApolloLog(@"[SettingsForm] update kept visible rows in place: offset was %.1f, UIKit restored %.1f, put back to %.1f in %ld pass(es)",
+                      offsetY, restored, tableView.contentOffset.y, (long)passes);
+            break;
+        }
+    }];
+}
+
+// Section titles restyled for a new theme font (see the settings base's
+// -viewWillAppear:) take their new heights in one pass that keeps the rows on
+// screen in place. The footer heights the form measured were for the old font,
+// the ones off screen too, so measure them again in that pass, as after a text
+// size change (see "section footer heights"). Left to the footer check the
+// restyled footers queued, they'd get a second pass right after this one,
+// without that protection, and the list moved (9pt on the hub).
+- (void)apollo_takeSectionTitleHeights {
+    [_footerMeasuredHeights removeAllObjects];
+    [_footerMeasureChanges removeAllObjects];
+    [self apollo_sf_adoptMeasuredFooterHeights];
+    [super apollo_takeSectionTitleHeights];
+}
+
 - (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
     [super traitCollectionDidChange:previousTraitCollection];
-    // Icon tiles bake a trait-resolved fill color at render time (see
-    // ApolloSettingsIconTileImage). apollo_applyTheme restyles visible cells in
-    // place but does not re-run cellForRow, so on a light<->dark flip the tiles
-    // would keep the previous appearance's resolved color until reuse. Reload
-    // to re-render them for the new appearance.
+    // Reconfigure row content for the new appearance. Tile images also carry
+    // both light/dark variants, so UIKit can update their image views without
+    // waiting for the row configuration to run again.
     if (previousTraitCollection.userInterfaceStyle != self.traitCollection.userInterfaceStyle) {
         [self.tableView reloadData];
     }
@@ -554,13 +630,22 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
             static NSString *const reuseID = @"ApolloSFButton";
             cell = [tableView dequeueReusableCellWithIdentifier:reuseID];
             if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:reuseID];
+            BOOL enabled = row.enabled ? row.enabled() : YES;
             cell.textLabel.text = row.title;
             cell.textLabel.numberOfLines = 0;
             // Shared pool: reset what a sibling's configure block may have added
             // (e.g. Translation's "Add Language…" disclosure chevron).
             cell.accessoryType = UITableViewCellAccessoryNone;
-            cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-            [self apollo_applyAccentActionTextColorToCell:cell];
+            // Match switch/disclosure rows: unavailable actions must look
+            // disabled too. Reset both values for this shared reuse pool.
+            cell.selectionStyle = enabled ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
+            cell.textLabel.enabled = enabled;
+            if (enabled) {
+                [self apollo_applyAccentActionTextColorToCell:cell];
+            } else {
+                [self apollo_removeAccentActionTextColorFromCell:cell];
+                cell.textLabel.textColor = [UIColor tertiaryLabelColor];
+            }
             break;
         }
         case ApolloSFRowKindCustom: {
@@ -633,16 +718,26 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
 //    back on the title estimate. So a pass alone can never settle a table
 //    taller than the screen: healing the footers at the bottom un-heals the
 //    ones at the top, which then come back short when the user scrolls up.
+//  - UIKit only takes a new footer height from an updates pass, not when the
+//    footer scrolls in, and a pass run while the list is scrolled can move it.
+//    After a batch update UIKit puts the first visible row back where it was,
+//    but when the top edge of the screen is inside a section footer it saves
+//    that position against one row (the footer's own section's last row, from
+//    -_indexPathsForVisibleRowsUsingPresentationValues:) and restores it
+//    against another (the next row, _visibleRows): the list jumps by the
+//    distance between the two, 187pt and 275pt mid-fling on Apollo AI, whose
+//    footers run to 250pt.
 //
 // So: once a footer's view has been displayed, take the height that view asks
 // for (on the next runloop turn — by then the label has its final font),
 // remember it by table width and text, and answer heightForFooterInSection:
 // with it from then on. Whatever the table rebuilds later, that footer keeps
 // the measured height whether it is on screen or not, and one updates pass is
-// enough for the table to adopt a new measurement. A footer that has not been
-// displayed yet still gets UIKit's estimate (UITableViewAutomaticDimension);
-// it is measured as it scrolls in, which for a first visit is from the bottom
-// edge, below the rows it could otherwise cover.
+// enough for the table to adopt a new measurement. The footers that are not on
+// screen yet are measured at the same time, on a footer view the table has
+// already styled, so the first check after the screen appears (still at the
+// top of the list, where UIKit skips that restore) adopts every footer on the
+// screen in one pass, and none needs a pass of its own as it scrolls in.
 //
 // Subclasses that override heightForFooterInSection: call super for their
 // plain-string footers.
@@ -660,6 +755,63 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
     return [NSString stringWithFormat:@"%.0f|%@", width, text];
 }
 
+// Measures the plain footers that are not on screen, so the pass that adopts
+// them runs now rather than one by one as each scrolls in (see "section footer
+// heights"). The measuring view is a footer the table built and
+// willDisplayFooterView: styled: same font, width and insets as every other
+// plain footer here, so only the text differs. Its label gets each text in
+// turn and is put back within this runloop turn, so none of it is drawn.
+// Returns YES when a footer the table sizes from the form got a new height.
+- (BOOL)apollo_sf_measureFootersAheadInTableView:(UITableView *)tableView sections:(NSInteger)sections {
+    NSMutableIndexSet *pending = nil;
+    UITableViewHeaderFooterView *template = nil;
+    for (NSInteger section = 0; section < sections; section++) {
+        NSString *text = [self tableView:tableView titleForFooterInSection:section];
+        NSString *key = [self apollo_sf_footerHeightKeyForText:text inTableView:tableView];
+        if (text.length == 0 || !key) continue;
+        UITableViewHeaderFooterView *footer = [tableView footerViewForSection:section];
+        if (footer) {
+            // UIKit's own footer for the section's title, not a screen's own view.
+            if (!template && [footer.textLabel.text isEqualToString:text]) template = footer;
+            continue;   // on screen: the caller measures it from its own view
+        }
+        if (_footerMeasuredHeights[key]) continue;
+        if (!pending) pending = [NSMutableIndexSet indexSet];
+        [pending addIndex:(NSUInteger)section];
+    }
+    if (!pending || !template) return NO;
+
+    UILabel *label = template.textLabel;
+    // Preserve attributed content: assigning label.text for measurement strips
+    // attachments and other attributes from the borrowed footer.
+    NSAttributedString *ownAttributedText = label.attributedText;
+    BOOL adopted = NO;
+    for (NSInteger section = 0; section < sections; section++) {
+        if (![pending containsIndex:(NSUInteger)section]) continue;
+        NSString *text = [self tableView:tableView titleForFooterInSection:section];
+        label.text = text;
+        // sizeThatFits: subtracts the label's baseline offsets, and UILabel
+        // reads those against its current frame: a text shorter than the frame
+        // the previous text left sits centered in it and measures short (52pt
+        // for a 96pt footer). sizeThatFits: lays the view out first, so ask.
+        [template setNeedsLayout];
+        CGFloat fitted = [self apollo_sf_fittedHeightForFooterView:template inTableView:tableView];
+        if (fitted <= 0.0) continue;
+        if (!_footerMeasuredHeights) _footerMeasuredHeights = [NSMutableDictionary dictionary];
+        _footerMeasuredHeights[[self apollo_sf_footerHeightKeyForText:text inTableView:tableView]] = @(fitted);
+        // A section whose footer a subclass sizes itself (its own view) keeps
+        // its own height; the measurement is simply unused there.
+        if (fabs([self tableView:tableView heightForFooterInSection:section] - fitted) >= 0.5) continue;
+        adopted = YES;
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [SettingsForm] footer %ld is not on screen yet — measured it ahead at %.1fpt",
+                     (long)section, fitted);
+    }
+    label.attributedText = ownAttributedText;
+    [template setNeedsLayout];
+    [template layoutIfNeeded];
+    return adopted;
+}
+
 - (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section {
     NSString *text = [self tableView:tableView titleForFooterInSection:section];
     // No footer text: answer what the table would have used had this method
@@ -670,9 +822,36 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
     return measured ? (CGFloat)measured.doubleValue : UITableViewAutomaticDimension;
 }
 
+// Runs the section's headerDisplay/footerDisplay block on a view that is about
+// to show (see ApolloSettingsSection). A reused view that a block styled for
+// another section loses that styling's accessibility first; its text is the
+// table's own again by now (UIKit sets each section's title before display).
+- (void)apollo_sf_runDisplayBlockForView:(UIView *)view section:(NSInteger)section footer:(BOOL)footer {
+    if (![view isKindOfClass:[UITableViewHeaderFooterView class]]) return;
+    UITableViewHeaderFooterView *titleView = (UITableViewHeaderFooterView *)view;
+    ApolloSettingsSection *model = (section >= 0 && (NSUInteger)section < _visibleSections.count)
+        ? _visibleSections[(NSUInteger)section] : nil;
+    void (^display)(UITableViewHeaderFooterView *) = footer ? model.footerDisplay : model.headerDisplay;
+    if (objc_getAssociatedObject(titleView, kApolloSFDisplayStyledKey)) {
+        titleView.isAccessibilityElement = NO;
+        titleView.accessibilityLabel = nil;
+        titleView.textLabel.accessibilityLabel = nil;
+        objc_setAssociatedObject(titleView, kApolloSFDisplayStyledKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (!display) return;
+    display(titleView);
+    objc_setAssociatedObject(titleView, kApolloSFDisplayStyledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+- (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
+    [super tableView:tableView willDisplayHeaderView:view forSection:section];
+    [self apollo_sf_runDisplayBlockForView:view section:section footer:NO];
+}
+
 - (void)tableView:(UITableView *)tableView willDisplayFooterView:(UIView *)view forSection:(NSInteger)section {
     [super tableView:tableView willDisplayFooterView:view forSection:section];
     if (![view isKindOfClass:[UITableViewHeaderFooterView class]]) return;
+    [self apollo_sf_runDisplayBlockForView:view section:section footer:YES];
     [self apollo_sf_scheduleFooterHeightCheck];
 }
 
@@ -726,7 +905,7 @@ static const NSUInteger kApolloSFMaxFooterMeasureChanges = 4;
     }
 
     NSInteger sections = MIN(tableView.numberOfSections, (NSInteger)_visibleSections.count);
-    BOOL needsPass = NO;
+    BOOL needsPass = [self apollo_sf_measureFootersAheadInTableView:tableView sections:sections];
     for (NSInteger section = 0; section < sections; section++) {
         UITableViewHeaderFooterView *footer = [tableView footerViewForSection:section];
         CGFloat fitted = [self apollo_sf_fittedHeightForFooterView:footer inTableView:tableView];

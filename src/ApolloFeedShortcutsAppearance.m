@@ -57,8 +57,19 @@ NSArray<UIView *> *ApolloFeedShortcutInstallLayout(UIView *hostView,
         separator.userInteractionEnabled = NO;
         separator.backgroundColor = separatorColor;
         [hostView addSubview:separator];
+        NSLayoutConstraint *separatorWidth =
+            [separator.widthAnchor constraintEqualToConstant:2.0 / hostView.traitCollection.displayScale];
+        // Keep the separator two pixels wide when the display scale changes. Each separator
+        // is created once here, so this registers once per separator.
+        if (@available(iOS 17.0, *)) {
+            __weak NSLayoutConstraint *weakSeparatorWidth = separatorWidth;
+            [separator registerForTraitChanges:@[UITraitDisplayScale.class]
+                                   withHandler:^(__kindof UIView *v, __unused UITraitCollection *previous) {
+                weakSeparatorWidth.constant = 2.0 / v.traitCollection.displayScale;
+            }];
+        }
         NSMutableArray<NSLayoutConstraint *> *constraints = [NSMutableArray arrayWithArray:@[
-            [separator.widthAnchor constraintEqualToConstant:2.0 / UIScreen.mainScreen.scale],
+            separatorWidth,
             [separator.topAnchor constraintEqualToAnchor:hostView.topAnchor constant:sideBySide ? 14.0 : 22.0],
             [separator.bottomAnchor constraintEqualToAnchor:hostView.bottomAnchor constant:sideBySide ? -14.0 : -22.0]
         ]];

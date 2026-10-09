@@ -42,7 +42,7 @@ static NSDictionary *ApolloRichPreviewSettingsChangeUserInfo(void) {
     return @{@"reason": @"settings-change"};
 }
 
-static NSArray<NSDictionary<NSString *, NSString *> *> *ApolloTranslationLanguageOptions(void) {
+NSArray<NSDictionary<NSString *, NSString *> *> *ApolloTranslationLanguageOptions(void) {
     static NSArray<NSDictionary<NSString *, NSString *> *> *options;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{

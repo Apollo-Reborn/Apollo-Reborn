@@ -5,8 +5,10 @@
 #import <SafariServices/SafariServices.h>
 
 #import "ApolloCommon.h"
+#import "ApolloNitterInstances.h"
 #import "Tweak.h"
 #import "UIWindow+Apollo.h"
+#import "UserDefaultConstants.h"
 
 // Apollo's own in-app browser — an SFSafariViewController subclass presented for
 // the "In-App Safari" browser option. Declared here only so we can message
@@ -413,22 +415,25 @@ static BOOL ApolloIsTwitterHost(NSString *host) {
 // Is the user's global "Open Links in" browser preference set to the *system*
 // browser? Mirrors Apollo's native setting (key "OpenLinksIn", tokens
 // "in-app-safari" / "external-safari"); a missing value means the in-app default.
-static BOOL ApolloOpensLinksInSystemBrowser(void) {
-    NSString *token = [[NSUserDefaults standardUserDefaults] stringForKey:@"OpenLinksIn"];
-    return [token isEqualToString:@"external-safari"];
+static NSString *ApolloOpenLinksInToken(void) {
+    NSString *token = [[NSUserDefaults standardUserDefaults] stringForKey:UDKeyNativeOpenLinksIn];
+    return token.length > 0 ? token : @"in-app-safari";
 }
 
-// UIWindowScene.keyWindow is iOS 15-only, while the tweak still supports iOS
-// 14. Walk the scene windows through the shared compatibility helper and use
-// UIWindow.isKeyWindow, which is available at our deployment floor.
+static BOOL ApolloOpensLinksInSystemBrowser(void) {
+    return [ApolloOpenLinksInToken() isEqualToString:@"external-safari"];
+}
+
+// The shared key-window lookup (foreground-active scene first; iOS 14-safe),
+// provided it is visible; else the first visible window in any scene.
 static UIWindow *ApolloSharePresentationWindow(void) {
-    UIWindow *fallback = nil;
+    UIWindow *keyWindow = ApolloKeyWindow();
+    if (keyWindow && !keyWindow.hidden && keyWindow.alpha > 0.01) return keyWindow;
     for (UIWindow *window in ApolloAllWindows()) {
         if (window.hidden || window.alpha <= 0.01) continue;
-        if (window.isKeyWindow) return window;
-        fallback = fallback ?: window;
+        return window;
     }
-    return fallback;
+    return nil;
 }
 
 // Present `url` in Apollo's in-app browser (the same SFSafariViewController
@@ -449,18 +454,20 @@ static void ApolloPresentInAppSafari(NSURL *url) {
     }
 
     if (safariVC && presenter) {
-        ApolloLog(@"[ShareLinks] Presenting X/Twitter link in in-app Safari: %@", url);
+        ApolloLog(@"[ShareLinks] Presenting link in in-app Safari: %@", url);
         [presenter presentViewController:safariVC animated:YES completion:nil];
     } else {
-        ApolloLog(@"[ShareLinks] In-app Safari unavailable, opening X/Twitter link externally: %@", url);
+        ApolloLog(@"[ShareLinks] In-app Safari unavailable, opening link externally: %@", url);
         [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
     }
 }
 
 // X/Twitter links. Apollo routes these through its own "Open Tweets in" picker
-// (key OpenTwitterLinksIn) instead of the global browser setting, and Reborn hides
-// that picker — leaving tweets stuck opening in the *system* browser even when the
-// user picked In-App Safari. Bring tweets in line with every other link: open the
+// (key OpenTwitterLinksIn) instead of the global browser setting. Reborn doesn't
+// hide that row, but it isn't in the sim crawl of Settings > General either
+// (ApolloSettingsSearchNativeIndex.h), so most users never see it and tweets got
+// stuck opening in the *system* browser even when the user picked In-App Safari.
+// Bring tweets in line with every other link: open the
 // X app when it's installed (Universal Links, matching Apollo's usual behavior),
 // and otherwise honor the global browser choice — In-App Safari here (the system
 // browser case is handled by letting the original handler run). Returns YES if we
@@ -490,11 +497,61 @@ static BOOL ApolloTryOpenTwitterInApp(NSURL *url) {
     return YES;
 }
 
+// "Open via Nitter" (Settings > Open in App): open X/Twitter page links on the
+// Nitter instance the user picked, so posts can be read without an X account.
+// Off unless the toggle is on AND an instance is saved; links Nitter can't serve
+// (X home, DMs, settings, most /i/ routes, non-web subdomains) return NO and keep
+// the normal X routing. Nitter has no app, so the rewritten link goes straight to
+// the user's browser choice: In-App Safari when that's selected (SFSafariViewController
+// gets through the instances' bot checks), otherwise the system default browser.
+// Must run before ApolloTryOpenTwitterInApp: an explicit Nitter choice beats the
+// X app. Returns YES when it opened the link. That also covers the link-button
+// hooks, whose %orig re-reads the original URL from the node, so the rewrite has
+// to be opened here rather than passed back to Apollo.
+static BOOL ApolloTryOpenTwitterViaNitter(NSURL *url) {
+    if (![url isKindOfClass:[NSURL class]]) return NO;
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if (![defaults boolForKey:UDKeyOpenTwitterLinksViaNitter]) return NO;
+
+    NSString *instanceHost = ApolloNitterNormalizeHost([defaults stringForKey:UDKeyNitterInstanceHost]);
+    if (!instanceHost) {
+        ApolloLog(@"[ShareLinks] Nitter is on but no valid instance is saved; using normal X routing");
+        return NO;
+    }
+
+    NSURL *nitterURL = ApolloNitterURLForTwitterURL(url, instanceHost);
+    if (!nitterURL) {
+        ApolloLog(@"[ShareLinks] X link has no Nitter equivalent, using normal X routing: %@", url);
+        return NO;
+    }
+
+    ApolloLog(@"[ShareLinks] Rewrote X link for Nitter: %@ -> %@", url, nitterURL);
+    if ([ApolloOpenLinksInToken() isEqualToString:@"in-app-safari"]) {
+        ApolloPresentInAppSafari(nitterURL);
+    } else {
+        [[UIApplication sharedApplication] openURL:nitterURL options:@{} completionHandler:nil];
+    }
+    return YES;
+}
+
+// Link-post thumbnails (the compact list's leading square and the large card's
+// thumbnail) open the post URL through Apollo's own thumbnail handler, which
+// never reaches the text-node / link-button hooks below. Only the Nitter
+// rewrite is applied there: it's an explicit user choice that must hold on
+// every tap path, while the other dedicated-app routes keep Apollo's behavior.
+static BOOL ApolloTryOpenLinkPostThumbnailViaNitter(RDKLink *link) {
+    Class linkClass = objc_getClass("RDKLink");
+    if (!linkClass || ![(id)link isKindOfClass:linkClass] || link.selfPost) return NO;
+    NSURL *url = link.URL;
+    if (![url isKindOfClass:[NSURL class]] || !ApolloIsTwitterHost(url.host)) return NO;
+    return ApolloTryOpenTwitterViaNitter(url);
+}
+
 // Unified entry point used by every tappable-link handler: route the link to its
 // dedicated app / preferred browser. Steam keeps its own helper (it normalizes the
 // host first); GitHub / Bluesky use the generic Universal Links opener; X/Twitter
-// has its own helper (see ApolloTryOpenTwitterInApp above). Keys here must match
-// UserDefaultConstants.h.
+// goes to Nitter when the user chose that, else to its own helper (see
+// ApolloTryOpenTwitterInApp above). Keys here must match UserDefaultConstants.h.
 static BOOL ApolloTryOpenInDedicatedApp(NSURL *url, void (^fallbackHandler)(void)) {
     if (![url isKindOfClass:[NSURL class]]) return NO;
     if (ApolloTryOpenInSteamApp(url, fallbackHandler)) return YES;
@@ -503,7 +560,8 @@ static BOOL ApolloTryOpenInDedicatedApp(NSURL *url, void (^fallbackHandler)(void
         ApolloTryOpenViaUniversalLink(url, @"GitHub", @"OpenLinksInGitHubApp", fallbackHandler)) return YES;
     if (ApolloIsBlueskyHost(host) &&
         ApolloTryOpenViaUniversalLink(url, @"Bluesky", @"OpenLinksInBlueskyApp", fallbackHandler)) return YES;
-    if (ApolloIsTwitterHost(host) && ApolloTryOpenTwitterInApp(url)) return YES;
+    if (ApolloIsTwitterHost(host) &&
+        (ApolloTryOpenTwitterViaNitter(url) || ApolloTryOpenTwitterInApp(url))) return YES;
     return NO;
 }
 
@@ -564,7 +622,7 @@ static NSString *ApolloNormalizeLinkURLString(NSString *urlString) {
 }
 
 // Present loading alert on top of current view controller
-static UIViewController *PresentResolvingShareLinkAlert() {
+static UIViewController *PresentResolvingShareLinkAlert(void) {
     UIViewController *visibleViewController = [ApolloSharePresentationWindow() visibleViewController];
     UIAlertController *alertController = [UIAlertController alertControllerWithTitle:nil message:@"Resolving share link..." preferredStyle:UIAlertControllerStyleAlert];
 
@@ -843,6 +901,46 @@ static void TryResolveShareUrl(NSString *urlString, void (^successHandler)(NSStr
     }
 }
 
+// `owner` is the hooked node: the blocks below may run after share-link
+// resolution, and %orig inside them only holds an __unsafe_unretained self.
+static void ApolloHandleTappedLinkURL(id owner, NSURL *tappedURL, void (^handler)(NSURL *)) {
+    void (^openURL)(NSURL *) = ^(NSURL *url) { (void)owner; handler(url); };
+    NSURL *url = ApolloNormalizeLinkURL(tappedURL) ?: tappedURL;
+    void (^openNormalized)(void) = ^{ openURL(url); };
+    // Steam store links: deep link to Steam app if enabled, fall back to normal handling
+    if (ApolloTryOpenInDedicatedApp(url, openNormalized)) return;
+    TryResolveShareUrl([url absoluteString], ^(NSString *resolvedURL) {
+        openURL([NSURL URLWithString:resolvedURL]);
+    }, openNormalized);
+}
+
+static void ApolloHandleLinkButtonTap(id owner, NSString *urlString, void (^handler)(void)) {
+    void (^orig)(void) = ^{ (void)owner; handler(); };
+    if (ApolloTryOpenInDedicatedApp([NSURL URLWithString:urlString], orig)) return;
+
+    NSString *normalizedURL = ApolloNormalizeLinkURLString(urlString);
+    if (normalizedURL) {
+        NSURL *fixedURL = [NSURL URLWithString:normalizedURL];
+        if ([fixedURL isKindOfClass:[NSURL class]]) {
+            if (ApolloRouteResolvedURLViaApolloScheme(fixedURL)) return;
+            // YouTube Shorts with "Open in YouTube App" ON: deep link directly.
+            // Setting OFF or not YouTube: fall through to %orig (web view fallback).
+            if (ApolloOpenInYouTubeAppIfEnabled(fixedURL)) return;
+        }
+    }
+
+    if (urlString.length == 0) {
+        orig();
+        return;
+    }
+
+    TryResolveShareUrl(urlString, ^(NSString *resolvedURL) {
+        NSURL *newURL = [NSURL URLWithString:resolvedURL];
+        if ([newURL isKindOfClass:[NSURL class]] && ApolloRouteResolvedURLViaApolloScheme(newURL)) return;
+        orig();
+    }, orig);
+}
+
 // Tappable text link in an inbox item (*not* the links in the PM chat bubbles)
 %hook _TtC6Apollo13InboxCellNode
 
@@ -851,24 +949,9 @@ static void TryResolveShareUrl(NSString *urlString, void (^successHandler)(NSStr
         %orig;
         return;
     }
-    NSURL *normalizedURL = ApolloNormalizeLinkURL((NSURL *)val);
-    if (normalizedURL) {
-        val = normalizedURL;
-    }
-    // Steam store links: deep link to Steam app if enabled, fall back to normal handling
-    void (^dedicatedAppFallback)(void) = ^{
-        %orig(textNode, attr, val, point, range);
-    };
-    if (ApolloTryOpenInDedicatedApp((NSURL *)val, dedicatedAppFallback)) {
-        return;
-    }
-    void (^ignoreHandler)(void) = ^{
-        %orig(textNode, attr, val, point, range);
-    };
-    void (^successHandler)(NSString *) = ^(NSString *resolvedURL) {
-        %orig(textNode, attr, [NSURL URLWithString:resolvedURL], point, range);
-    };
-    TryResolveShareUrl([val absoluteString], successHandler, ignoreHandler);
+    ApolloHandleTappedLinkURL(self, (NSURL *)val, ^(NSURL *url) {
+        %orig(textNode, attr, url, point, range);
+    });
 }
 %end
 
@@ -880,24 +963,9 @@ static void TryResolveShareUrl(NSString *urlString, void (^successHandler)(NSStr
         %orig;
         return;
     }
-    NSURL *normalizedURL = ApolloNormalizeLinkURL((NSURL *)val);
-    if (normalizedURL) {
-        val = normalizedURL;
-    }
-    // Steam store links: deep link to Steam app if enabled, fall back to normal handling
-    void (^dedicatedAppFallback)(void) = ^{
-        %orig(textNode, attr, val, point, range);
-    };
-    if (ApolloTryOpenInDedicatedApp((NSURL *)val, dedicatedAppFallback)) {
-        return;
-    }
-    void (^ignoreHandler)(void) = ^{
-        %orig(textNode, attr, val, point, range);
-    };
-    void (^successHandler)(NSString *) = ^(NSString *resolvedURL) {
-        %orig(textNode, attr, [NSURL URLWithString:resolvedURL], point, range);
-    };
-    TryResolveShareUrl([val absoluteString], successHandler, ignoreHandler);
+    ApolloHandleTappedLinkURL(self, (NSURL *)val, ^(NSURL *url) {
+        %orig(textNode, attr, url, point, range);
+    });
 }
 
 %end
@@ -921,48 +989,9 @@ static void TryResolveShareUrl(NSString *urlString, void (^successHandler)(NSStr
         urlString = [rdkLinkURL absoluteString];
     }
 
-    void (^dedicatedAppFallback)(void) = ^{
+    ApolloHandleLinkButtonTap(self, urlString, ^{
         %orig;
-    };
-    if (ApolloTryOpenInDedicatedApp([NSURL URLWithString:urlString], dedicatedAppFallback)) {
-        return;
-    }
-
-    NSString *normalizedURL = ApolloNormalizeLinkURLString(urlString);
-    if (normalizedURL) {
-        NSURL *fixedURL = [NSURL URLWithString:normalizedURL];
-        if ([fixedURL isKindOfClass:[NSURL class]]) {
-            if (ApolloRouteResolvedURLViaApolloScheme(fixedURL)) {
-                return;
-            }
-            // YouTube Shorts with "Open in YouTube App" ON: deep link directly.
-            // Setting OFF or not YouTube: fall through to %orig (web view fallback).
-            if (ApolloOpenInYouTubeAppIfEnabled(fixedURL)) {
-                return;
-            }
-        }
-    }
-
-    if (![urlString isKindOfClass:[NSString class]] || urlString.length == 0) {
-        %orig;
-        return;
-    }
-
-    void (^ignoreHandler)(void) = ^{
-        %orig;
-    };
-    void (^successHandler)(NSString *) = ^(NSString *resolvedURL) {
-        NSURL *newURL = [NSURL URLWithString:resolvedURL];
-        if (![newURL isKindOfClass:[NSURL class]]) {
-            %orig;
-            return;
-        }
-        if (ApolloRouteResolvedURLViaApolloScheme(newURL)) {
-            return;
-        }
-        %orig;
-    };
-    TryResolveShareUrl(urlString, successHandler, ignoreHandler);
+    });
 }
 
 -(void)textNode:(id)textNode tappedLinkAttribute:(id)attr value:(id)val atPoint:(struct CGPoint)point textRange:(struct _NSRange)range {
@@ -970,24 +999,27 @@ static void TryResolveShareUrl(NSString *urlString, void (^successHandler)(NSStr
         %orig;
         return;
     }
-    NSURL *normalizedURL = ApolloNormalizeLinkURL((NSURL *)val);
-    if (normalizedURL) {
-        val = normalizedURL;
-    }
-    // Steam store links: deep link to Steam app if enabled, fall back to normal handling
-    void (^dedicatedAppFallback)(void) = ^{
-        %orig(textNode, attr, val, point, range);
-    };
-    if (ApolloTryOpenInDedicatedApp((NSURL *)val, dedicatedAppFallback)) {
-        return;
-    }
-    void (^ignoreHandler)(void) = ^{
-        %orig(textNode, attr, val, point, range);
-    };
-    void (^successHandler)(NSString *) = ^(NSString *resolvedURL) {
-        %orig(textNode, attr, [NSURL URLWithString:resolvedURL], point, range);
-    };
-    TryResolveShareUrl([val absoluteString], successHandler, ignoreHandler);
+    ApolloHandleTappedLinkURL(self, (NSURL *)val, ^(NSURL *url) {
+        %orig(textNode, attr, url, point, range);
+    });
+}
+
+// Large-card link-post thumbnail; see ApolloTryOpenLinkPostThumbnailViaNitter.
+- (void)thumbnailTappedWithSender:(id)sender {
+    if (ApolloTryOpenLinkPostThumbnailViaNitter(MSHookIvar<RDKLink *>(self, "link"))) return;
+    %orig;
+}
+
+%end
+
+// Compact-list link-post thumbnail; see ApolloTryOpenLinkPostThumbnailViaNitter.
+// ApolloFeedTextPostThumbnails.xm hooks the same method for SELF posts only, so
+// the two never act on the same tap.
+%hook _TtC6Apollo19CompactPostCellNode
+
+- (void)thumbnailTappedWithSender:(id)sender {
+    if (ApolloTryOpenLinkPostThumbnailViaNitter(MSHookIvar<RDKLink *>(self, "link"))) return;
+    %orig;
 }
 
 %end
@@ -1019,48 +1051,9 @@ static void TryResolveShareUrl(NSString *urlString, void (^successHandler)(NSStr
         }
     }
 
-    void (^dedicatedAppFallback)(void) = ^{
+    ApolloHandleLinkButtonTap(self, urlString, ^{
         %orig;
-    };
-    if (ApolloTryOpenInDedicatedApp([NSURL URLWithString:urlString], dedicatedAppFallback)) {
-        return;
-    }
-
-    NSString *normalizedURL = ApolloNormalizeLinkURLString(urlString);
-    if (normalizedURL) {
-        NSURL *fixedURL = [NSURL URLWithString:normalizedURL];
-        if ([fixedURL isKindOfClass:[NSURL class]]) {
-            if (ApolloRouteResolvedURLViaApolloScheme(fixedURL)) {
-                return;
-            }
-            // YouTube Shorts with "Open in YouTube App" ON: deep link directly.
-            // Setting OFF or not YouTube: fall through to %orig (web view fallback).
-            if (ApolloOpenInYouTubeAppIfEnabled(fixedURL)) {
-                return;
-            }
-        }
-    }
-
-    if (![urlString isKindOfClass:[NSString class]] || urlString.length == 0) {
-        %orig;
-        return;
-    }
-
-    void (^ignoreHandler)(void) = ^{
-        %orig;
-    };
-    void (^successHandler)(NSString *) = ^(NSString *resolvedURL) {
-        NSURL *newURL = [NSURL URLWithString:resolvedURL];
-        if (![newURL isKindOfClass:[NSURL class]]) {
-            %orig;
-            return;
-        }
-        if (ApolloRouteResolvedURLViaApolloScheme(newURL)) {
-            return;
-        }
-        %orig;
-    };
-    TryResolveShareUrl(urlString, successHandler, ignoreHandler);
+    });
 }
 
 %end
@@ -1085,48 +1078,9 @@ static void TryResolveShareUrl(NSString *urlString, void (^successHandler)(NSStr
         urlString = [rdkLinkURL absoluteString];
     }
 
-    void (^dedicatedAppFallback)(void) = ^{
+    ApolloHandleLinkButtonTap(self, urlString, ^{
         %orig;
-    };
-    if (ApolloTryOpenInDedicatedApp([NSURL URLWithString:urlString], dedicatedAppFallback)) {
-        return;
-    }
-
-    NSString *normalizedURL = ApolloNormalizeLinkURLString(urlString);
-    if (normalizedURL) {
-        NSURL *fixedURL = [NSURL URLWithString:normalizedURL];
-        if ([fixedURL isKindOfClass:[NSURL class]]) {
-            if (ApolloRouteResolvedURLViaApolloScheme(fixedURL)) {
-                return;
-            }
-            // YouTube Shorts with "Open in YouTube App" ON: deep link directly.
-            // Setting OFF or not YouTube: fall through to %orig (web view fallback).
-            if (ApolloOpenInYouTubeAppIfEnabled(fixedURL)) {
-                return;
-            }
-        }
-    }
-
-    if (![urlString isKindOfClass:[NSString class]] || urlString.length == 0) {
-        %orig;
-        return;
-    }
-
-    void (^ignoreHandler)(void) = ^{
-        %orig;
-    };
-    void (^successHandler)(NSString *) = ^(NSString *resolvedURL) {
-        NSURL *newURL = [NSURL URLWithString:resolvedURL];
-        if (![newURL isKindOfClass:[NSURL class]]) {
-            %orig;
-            return;
-        }
-        if (ApolloRouteResolvedURLViaApolloScheme(newURL)) {
-            return;
-        }
-        %orig;
-    };
-    TryResolveShareUrl(urlString, successHandler, ignoreHandler);
+    });
 }
 
 %end

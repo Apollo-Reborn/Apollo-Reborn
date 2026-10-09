@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="1024" height="1024">
+  <g id="witch-hat">
+    <g transform="rotate(-8 120 70)">
+      <ellipse cx="120" cy="70" rx="84" ry="14" fill="#231A33"/>
+      <path d="M 78 68 C 90 54 100 36 106 18 C 110 8 120 2 136 8 C 125.792 9.973 123.419 14.031 133.844 29.217 C 143.844 45.217 150 58 162 68 L 78 68 Z" fill="#2E2244"/>
+      <polygon points="87.32 56.31 150.974 56.292 158.81 65.41 79.347 66.127" fill="#6E3BA8"/>
+      <rect x="113" y="55" width="14" height="12" rx="1" fill="none" stroke="#E8C85A" stroke-width="2.5"/>
+      <path d="M 39.979 72.999 C 93.372 86.332 146.762 86.332 200.154 72.999" fill="none" stroke="#3A2D52" stroke-width="2" style=""/>
+    </g>
+  </g>
+</svg>

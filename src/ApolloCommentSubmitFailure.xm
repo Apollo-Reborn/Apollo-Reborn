@@ -213,7 +213,7 @@ static void ApolloCommentFailureGET(id client, NSString *path, NSDictionary *par
     @try {
         ((id (*)(id, SEL, id, id, id))objc_msgSend)(client, selector, path, parameters, taskCompletion);
     } @catch (NSException *e) {
-        ApolloLog(@"[CommentFailure] GET %@ threw: %@", path, e.reason);
+        ApolloLogError(@"[CommentFailure] GET %@ threw: %@", path, e.reason);
         completion(0, nil);
     }
 }
@@ -533,7 +533,7 @@ static void ApolloCommentFailureDeliver(ApolloCommentFailureSubmitCompletion com
                           thingID, (long)reply.status, reply.code ?: @"-");
             }
         } @catch (NSException *e) {
-            ApolloLog(@"[CommentFailure] noting the api/comment answer threw: %@", e.reason);
+            ApolloLogError(@"[CommentFailure] noting the api/comment answer threw: %@", e.reason);
         }
         completion(response, responseObject, error);
     };
@@ -560,7 +560,7 @@ static void ApolloCommentFailureDeliver(ApolloCommentFailureSubmitCompletion com
         ctx.username = ApolloCommentFailureClientUsername(client);
         ctx.reply = reply;
         ctx.error = error;
-        ApolloLog(@"[CommentFailure] comment on %@ failed (error %@/%ld, reddit %@/%ld) — looking the thread up",
+        ApolloLogError(@"[CommentFailure] comment on %@ failed (error %@/%ld, reddit %@/%ld) — looking the thread up",
                   thingID, error.domain ?: @"-", (long)error.code, reply.code ?: @"-", (long)reply.status);
         ApolloCommentFailureLookUp(client, ctx, ^(ApolloCommentFailureExplanation *explanation) {
             ApolloCommentFailureDeliver(completion, object, error, explanation);

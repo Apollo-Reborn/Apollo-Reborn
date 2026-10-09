@@ -1,6 +1,8 @@
 #import "ApolloActionMenuLayout.h"
 
 #import "ApolloCommon.h"
+#import "ApolloNativeActionMenus.h"
+#import "ApolloNativeActionMetadata.h"
 #import "UserDefaultConstants.h"
 
 ApolloActionMenuContext const ApolloActionMenuContextFeed = @"feed";
@@ -29,22 +31,25 @@ BOOL ApolloActionMenuContextIsValid(NSString *context) {
 NSString *ApolloActionMenuContextTitle(ApolloActionMenuContext context) {
     if ([context isEqualToString:ApolloActionMenuContextFeed]) return @"Feed";
     if ([context isEqualToString:ApolloActionMenuContextPost]) return @"Post";
-    if ([context isEqualToString:ApolloActionMenuContextPostDetail]) return @"Post (Comments)";
+    if ([context isEqualToString:ApolloActionMenuContextPostDetail]) return @"Post with Comments";
     if ([context isEqualToString:ApolloActionMenuContextComment]) return @"Comment";
-    if ([context isEqualToString:ApolloActionMenuContextModeratorSubreddit]) return @"Moderator (Subreddit)";
-    if ([context isEqualToString:ApolloActionMenuContextModeratorPost]) return @"Moderator (Post)";
-    if ([context isEqualToString:ApolloActionMenuContextModeratorComment]) return @"Moderator (Comment)";
+    // Distinct from the ••• menus' "Post"/"Comment": settings search lists
+    // every menu by this title, and All Menus names menus with it. The hub's
+    // Moderator Menus section shows the short forms under its own heading.
+    if ([context isEqualToString:ApolloActionMenuContextModeratorSubreddit]) return @"Moderator Subreddit";
+    if ([context isEqualToString:ApolloActionMenuContextModeratorPost]) return @"Moderator Post";
+    if ([context isEqualToString:ApolloActionMenuContextModeratorComment]) return @"Moderator Comment";
     return context ?: @"";
 }
 
 NSString *ApolloActionMenuContextDescription(ApolloActionMenuContext context) {
-    if ([context isEqualToString:ApolloActionMenuContextFeed]) return @"The ••• button at the top of a subreddit or feed.";
-    if ([context isEqualToString:ApolloActionMenuContextPost]) return @"The ••• button on a post in a feed.";
-    if ([context isEqualToString:ApolloActionMenuContextPostDetail]) return @"The ••• button at the top of a post's comments.";
-    if ([context isEqualToString:ApolloActionMenuContextComment]) return @"The ••• button on a comment.";
-    if ([context isEqualToString:ApolloActionMenuContextModeratorSubreddit]) return @"The moderator shield at the top of a subreddit you moderate.";
-    if ([context isEqualToString:ApolloActionMenuContextModeratorPost]) return @"The moderator shield on a post, the Moderator row in a post’s ••• menus, and the shield at the top of its comments.";
-    if ([context isEqualToString:ApolloActionMenuContextModeratorComment]) return @"The moderator shield on a comment, and the Moderator row in its ••• menu.";
+    if ([context isEqualToString:ApolloActionMenuContextFeed]) return @"The ••• menu at the top of a subreddit or feed.";
+    if ([context isEqualToString:ApolloActionMenuContextPost]) return @"The ••• menu on a post in a feed. Touching and holding the post opens the same menu.";
+    if ([context isEqualToString:ApolloActionMenuContextPostDetail]) return @"The ••• menu at the top of a post’s comments. Touching and holding the post above them opens the same menu.";
+    if ([context isEqualToString:ApolloActionMenuContextComment]) return @"The ••• menu on a comment. Touching and holding the comment opens the same menu.";
+    if ([context isEqualToString:ApolloActionMenuContextModeratorSubreddit]) return @"The shield menu at the top of a subreddit you moderate.";
+    if ([context isEqualToString:ApolloActionMenuContextModeratorPost]) return @"The shield menu on a post in a subreddit you moderate.";
+    if ([context isEqualToString:ApolloActionMenuContextModeratorComment]) return @"The shield menu on a comment in a subreddit you moderate.";
     return @"";
 }
 
@@ -175,11 +180,10 @@ static ApolloActionMenuItem *ApolloAMItemViewReplies(void) { return ApolloAMNati
 static ApolloActionMenuItem *ApolloAMItemParent(void)      { return ApolloAMNative(@"parent-comment", @"Parent Comment", @"option-view-parent", K(@45)); }
 static ApolloActionMenuItem *ApolloAMItemFind(void)        { return ApolloAMNative(@"find", @"Find in Comments", @"option-search", K(@57)); }
 static ApolloActionMenuItem *ApolloAMItemLive(void)        { return ApolloAMNative(@"live-activity", @"Live Activity", @"option-live-activity", K(@70, @71)); }
-// Kind 2 ("Remind Me", option-remind-me-in) is deliberately NOT an item: Apollo
-// keeps it in every post/comment sheet's buffer with an EMPTY title and the
-// glass renderer drops empty-titled rows, so it never appears in a menu —
-// listing it offered a row the user can't see. Uncatalogued, it passes through
-// untouched like any unknown kind.
+// Kind 2 is Remind Me In…, last in every post and comment sheet. Its Action
+// carries no title, so the glass renderer used to drop it; it now takes the
+// title from ApolloNativeActionMetadata.h like any other untitled row.
+static ApolloActionMenuItem *ApolloAMItemRemindMe(void)    { return ApolloAMNative(@"remind-me", @"Remind Me In…", @"option-remind-me-in", K(@2)); }
 static ApolloActionMenuItem *ApolloAMItemCollapseKids(void){ return ApolloAMNative(@"collapse-children", @"Collapse Child Comments", @"option-collapse-child-comments", K(@120, @121)); }
 static ApolloActionMenuItem *ApolloAMItemSubmit(void)      { return ApolloAMNative(@"submit", @"Submit Post", @"option-submit", K(@51)); }
 static ApolloActionMenuItem *ApolloAMItemSubscribe(void)   { return ApolloAMNative(@"subscribe", @"Subscribe", @"option-subscribe", K(@38, @39)); }
@@ -273,7 +277,7 @@ static NSArray<ApolloActionMenuItem *> *ApolloActionMenuBuildCatalog(ApolloActio
             @[ ApolloAMItemModerator(), ApolloAMItemUpvote(), ApolloAMItemDownvote(), ApolloAMItemSave(),
                ApolloAMItemReply(), ApolloAMItemAuthor(), ApolloAMItemSubreddit(), ApolloAMItemHide(),
                ApolloAMItemHideAbove(), ApolloAMItemShare(), ApolloAMItemShareImage(), ApolloAMItemCrosspost(),
-               ApolloAMItemAward(), ApolloAMItemReport(), ApolloAMItemFloatingTabs() ],
+               ApolloAMItemAward(), ApolloAMItemReport(), ApolloAMItemRemindMe(), ApolloAMItemFloatingTabs() ],
             @[ ApolloAMItemTranslate(), ApolloAMItemFilterSub(), ApolloAMItemEdit(), ApolloAMItemDelete(),
                ApolloAMItemNSFW(), ApolloAMItemSpoiler(), ApolloAMItemPostFlair(), ApolloAMItemMuteNotifs() ]);
     }
@@ -284,7 +288,7 @@ static NSArray<ApolloActionMenuItem *> *ApolloActionMenuBuildCatalog(ApolloActio
             @[ ApolloAMItemUpvote(), ApolloAMItemDownvote(), ApolloAMItemSave(), ApolloAMItemReply(),
                ApolloAMItemAuthor(), ApolloAMItemSubreddit(), ApolloAMItemCollapseKids(), ApolloAMItemSelectText(),
                ApolloAMItemShare(), ApolloAMItemShareImage(), ApolloAMItemCrosspost(), ApolloAMItemFind(),
-               ApolloAMItemAward(), ApolloAMItemReport(), ApolloAMItemLive(),
+               ApolloAMItemAward(), ApolloAMItemReport(), ApolloAMItemLive(), ApolloAMItemRemindMe(),
                ApolloAMItemDeletedComments(), ApolloAMItemFloatingTabs() ],
             @[ ApolloAMItemTranslate(), ApolloAMItemEdit(), ApolloAMItemDelete(),
                ApolloAMItemNSFW(), ApolloAMItemSpoiler(), ApolloAMItemPostFlair(), ApolloAMItemMuteNotifs() ]);
@@ -294,7 +298,8 @@ static NSArray<ApolloActionMenuItem *> *ApolloActionMenuBuildCatalog(ApolloActio
         return ApolloAMCatalogWithUsual(
             @[ ApolloAMItemModerator(), ApolloAMItemUpvote(), ApolloAMItemDownvote(), ApolloAMItemSave(),
                ApolloAMItemReply(), ApolloAMItemAuthor(), ApolloAMItemSelectText(), ApolloAMItemShare(),
-               ApolloAMItemShareImage(), ApolloAMItemCollapseTop(), ApolloAMItemAward(), ApolloAMItemReport() ],
+               ApolloAMItemShareImage(), ApolloAMItemCollapseTop(), ApolloAMItemAward(), ApolloAMItemReport(),
+               ApolloAMItemRemindMe() ],
             @[ ApolloAMItemViewReplies(), ApolloAMItemParent(), ApolloAMItemTranslate(),
                ApolloAMItemEdit(), ApolloAMItemDelete(), ApolloAMItemMuteNotifs() ]);
     }
@@ -373,6 +378,124 @@ NSString *ApolloActionMenuItemIDForKind(ApolloActionMenuContext context, NSUInte
     return nil;
 }
 
+#pragma mark - Long-press menu rows
+
+// How the long-press builders word their rows, captured in the glass sim
+// (Apollo 1.15.11, signed in as a moderator, 2026-09-29):
+//   post (feed cell): [Moderator] Upvote|Undo Upvote, Downvote, Save, [own:
+//     Mark NSFW, Mark Spoiler, Set Flair, Delete], Reply, <author>,
+//     <subreddit>, Hide, Hide Posts Above, [own: Mute Notifications], Share,
+//     Share as Image…, Crosspost, Give Award, Report, Remind Me In…
+//   post (comments header): … Set Post Flair …, Collapse Comments, …, Share
+//     as Image (no ellipsis), Crosspost, Select Text, Give Award, Report, …
+//   comment: [Moderator] Undo Upvote, Downvote, Save, Reply, <author>, Select
+//     Text, Share, Share as Image…, Collapse to Top, Give Award, Report, Remind
+//     Me In…
+// Every fixed title is one of Apollo's Action titles except the header's
+// "Collapse Comments" (its Collapse Child Comments row) and the ellipsis-less
+// "Share as Image". Titles are compared without a trailing ellipsis and
+// case-insensitively.
+static NSString *ApolloActionMenuNormalizedRowTitle(NSString *title) {
+    NSCharacterSet *space = [NSCharacterSet whitespaceAndNewlineCharacterSet];
+    NSString *normalized = [title stringByTrimmingCharactersInSet:space];
+    if ([normalized hasSuffix:@"…"]) normalized = [normalized substringToIndex:normalized.length - 1];
+    else if ([normalized hasSuffix:@"..."]) normalized = [normalized substringToIndex:normalized.length - 3];
+    return [normalized stringByTrimmingCharactersInSet:space].lowercaseString;
+}
+
+// Normalised Action title -> every kind carrying it (index = kind), plus the
+// long-press builders' own wordings.
+static NSDictionary<NSString *, NSArray<NSNumber *> *> *ApolloActionMenuKindsByRowTitle(void) {
+    static NSDictionary<NSString *, NSArray<NSNumber *> *> *map;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSMutableDictionary<NSString *, NSMutableArray<NSNumber *> *> *built = [NSMutableDictionary dictionary];
+        NSUInteger count = sizeof(kApolloNativeActionDefaultTitles) / sizeof(kApolloNativeActionDefaultTitles[0]);
+        for (NSUInteger kind = 0; kind < count; kind++) {
+            NSString *key = ApolloActionMenuNormalizedRowTitle(kApolloNativeActionDefaultTitles[kind]);
+            if (key.length == 0) continue;
+            if (!built[key]) built[key] = [NSMutableArray array];
+            [built[key] addObject:@(kind)];
+        }
+        NSDictionary<NSString *, NSNumber *> *longPressWordings = @{
+            @"collapse comments": @120, // comments header: Collapse Child Comments
+            @"expand comments": @121,   // …and its Expand Child Comments twin
+        };
+        [longPressWordings enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSNumber *kind, __unused BOOL *stop) {
+            if (!built[key]) built[key] = [NSMutableArray array];
+            [built[key] addObject:kind];
+        }];
+        map = [built copy];
+    });
+    return map;
+}
+
+// Rows titled with a NAME, recognisable only by their icon.
+static NSDictionary<NSString *, NSString *> *ApolloActionMenuNameRowIcons(void) {
+    return @{ @"symbol-profile": @"author", @"symbol-subreddit": @"subreddit" };
+}
+
+// Icons the long-press menus were seen to use, for a row whose title isn't
+// one of the wordings above (a state variant not captured yet). Each icon is
+// used by exactly one of those rows.
+static NSDictionary<NSString *, NSString *> *ApolloActionMenuRowIcons(void) {
+    static NSDictionary<NSString *, NSString *> *icons;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        icons = @{
+            @"shield.lefthalf.fill": @"moderator",
+            @"arrow.up": @"upvote", @"symbol-undo-upvote": @"upvote",
+            @"arrow.down": @"downvote",
+            @"bookmark": @"save",
+            @"exclamationmark.triangle": @"nsfw",
+            @"symbol-spoiler": @"spoiler",
+            @"symbol-flair": @"post-flair",
+            @"trash": @"delete",
+            @"arrowshape.turn.up.left": @"reply",
+            @"symbol-hide": @"hide",
+            @"symbol-hide-above": @"hide-above",
+            @"symbol-chevron-double-up": @"collapse-children",
+            @"bell.slash": @"mute-notifications",
+            @"square.and.arrow.up": @"share",
+            @"symbol-share-as-image": @"share-image",
+            @"symbol-crosspost": @"crosspost",
+            @"selection.pin.in.out": @"select-text",
+            @"symbol-collapse-to-top": @"collapse-top",
+            @"gift": @"award",
+            @"flag": @"report",
+        };
+    });
+    return icons;
+}
+
+// An item id only when this context catalogues it.
+static NSString *ApolloActionMenuCataloguedItemID(ApolloActionMenuContext context, NSString *itemID) {
+    return ApolloActionMenuCatalogItem(context, itemID) ? itemID : nil;
+}
+
+NSString *ApolloActionMenuItemIDForContextMenuRow(ApolloActionMenuContext context, NSString *title, NSString *imageName) {
+    if (!ApolloActionMenuContextIsValid(context)) return nil;
+    // A name row's title is user content: never read it as an action title
+    // (a user called "Report" is still the author row).
+    NSString *nameRow = imageName.length ? ApolloActionMenuNameRowIcons()[imageName] : nil;
+    if (nameRow) return ApolloActionMenuCataloguedItemID(context, nameRow);
+
+    NSString *key = title.length ? ApolloActionMenuNormalizedRowTitle(title) : nil;
+    for (NSNumber *kind in key.length ? ApolloActionMenuKindsByRowTitle()[key] : nil) {
+        NSString *itemID = ApolloActionMenuItemIDForKind(context, kind.unsignedIntegerValue);
+        if (itemID) return itemID;
+    }
+    NSString *iconRow = imageName.length ? ApolloActionMenuRowIcons()[imageName] : nil;
+    return iconRow ? ApolloActionMenuCataloguedItemID(context, iconRow) : nil;
+}
+
+BOOL ApolloActionMenuContextMenuRowIsModerator(NSString *title, NSString *imageName) {
+    if (imageName.length && ApolloActionMenuNameRowIcons()[imageName]) return NO; // u/Moderator is an author row
+    if ([ApolloActionMenuRowIcons()[imageName ?: @""] isEqualToString:@"moderator"]) return YES;
+    NSString *key = title.length ? ApolloActionMenuNormalizedRowTitle(title) : nil;
+    return key.length > 0 && [ApolloActionMenuKindsByRowTitle()[key] containsObject:@124];
+}
+
 #pragma mark - Saved layout
 
 static NSDictionary<NSString *, NSDictionary *> *ApolloActionMenuStoredLayouts(void) {
@@ -413,18 +536,38 @@ static NSArray<NSString *> *ApolloActionMenuLockedFirst(ApolloActionMenuContext 
     return result;
 }
 
+// The order an untouched menu has: what the menu offered last time, then the
+// catalogue rows it didn't offer. Apollo's classic sheet always appends Apollo
+// Reborn's rows after its own (ApolloActionMenu.h), and the editor lists them
+// that way there, so on Classic they go last here too. Otherwise a menu dragged
+// back into exactly the order the editor showed would still not count as the
+// default, because the stored order put an Apollo Reborn row somewhere else.
+static NSArray<NSString *> *ApolloActionMenuNativeDefaultOrder(ApolloActionMenuContext context) {
+    NSArray<NSString *> *catalogOrder = ApolloActionMenuDefaultOrder(context);
+    NSMutableArray<NSString *> *nativeOrder = [NSMutableArray array];
+    for (NSString *itemID in ApolloActionMenuLastPresentedItemIDs(context)) {
+        if ([catalogOrder containsObject:itemID]) [nativeOrder addObject:itemID];
+    }
+    for (NSString *itemID in catalogOrder) {
+        if (![nativeOrder containsObject:itemID]) [nativeOrder addObject:itemID];
+    }
+    if (!ApolloNativeActionMenusActive()) {
+        NSMutableArray<NSString *> *tweakRows = [NSMutableArray array];
+        for (NSString *itemID in [nativeOrder copy]) {
+            if (!ApolloActionMenuCatalogItem(context, itemID).isTweakRow) continue;
+            [nativeOrder removeObject:itemID];
+            [tweakRows addObject:itemID];
+        }
+        [nativeOrder addObjectsFromArray:tweakRows];
+    }
+    return ApolloActionMenuLockedFirst(context, nativeOrder);
+}
+
 NSArray<NSString *> *ApolloActionMenuResolvedOrder(ApolloActionMenuContext context) {
     NSArray<NSString *> *catalogOrder = ApolloActionMenuDefaultOrder(context);
     NSArray<NSString *> *stored = ApolloActionMenuStringArray(ApolloActionMenuStoredLayout(context)[kApolloActionMenuLayoutOrderKey]);
     if (stored.count == 0) {
-        NSMutableArray<NSString *> *nativeOrder = [NSMutableArray array];
-        for (NSString *itemID in ApolloActionMenuLastPresentedItemIDs(context)) {
-            if ([catalogOrder containsObject:itemID]) [nativeOrder addObject:itemID];
-        }
-        for (NSString *itemID in catalogOrder) {
-            if (![nativeOrder containsObject:itemID]) [nativeOrder addObject:itemID];
-        }
-        return ApolloActionMenuLockedFirst(context, nativeOrder);
+        return ApolloActionMenuNativeDefaultOrder(context);
     }
 
     NSMutableArray<NSString *> *order = [NSMutableArray arrayWithCapacity:catalogOrder.count];
@@ -495,10 +638,21 @@ void ApolloActionMenuSetOrder(ApolloActionMenuContext context, NSArray<NSString 
         if (![clean containsObject:itemID]) [clean addObject:itemID];
     }
     NSArray<NSString *> *normalized = ApolloActionMenuLockedFirst(context, clean);
+    NSArray<NSString *> *defaultOrder = ApolloActionMenuNativeDefaultOrder(context);
     NSArray<NSString *> *hidden = ApolloActionMenuHiddenItemIDs(context).allObjects;
-    ApolloLog(@"[ActionMenuLayout] %@ order -> %@", context, [normalized componentsJoinedByString:@", "]);
-    ApolloActionMenuWriteLayout(context, @{ kApolloActionMenuLayoutOrderKey: normalized,
-                                            kApolloActionMenuLayoutHiddenKey: hidden });
+
+    if ([normalized isEqualToArray:defaultOrder]) {
+        ApolloLog(@"[ActionMenuLayout] %@ order returned to default", context);
+        ApolloActionMenuWriteLayout(context, @{
+            kApolloActionMenuLayoutHiddenKey: hidden
+        });
+    } else {
+        ApolloLog(@"[ActionMenuLayout] %@ order -> %@", context, [normalized componentsJoinedByString:@", "]);
+        ApolloActionMenuWriteLayout(context, @{
+            kApolloActionMenuLayoutOrderKey: normalized,
+            kApolloActionMenuLayoutHiddenKey: hidden
+        });
+    }
 }
 
 void ApolloActionMenuSetItemHidden(ApolloActionMenuContext context, NSString *itemID, BOOL hidden) {
@@ -515,6 +669,15 @@ void ApolloActionMenuSetItemHidden(ApolloActionMenuContext context, NSString *it
     ApolloLog(@"[ActionMenuLayout] %@ %@ -> %@", context, itemID, hidden ? @"hidden" : @"shown");
     ApolloActionMenuWriteLayout(context, @{ kApolloActionMenuLayoutOrderKey: ApolloActionMenuStringArray(ApolloActionMenuStoredLayout(context)[kApolloActionMenuLayoutOrderKey]),
                                             kApolloActionMenuLayoutHiddenKey: hiddenList });
+}
+
+void ApolloActionMenuResetOrder(ApolloActionMenuContext context) {
+    // Absence of an order restores Apollo's contextual order. Saving the
+    // catalogue order instead would keep runtime sorting enabled.
+    NSMutableDictionary *layout = [ApolloActionMenuStoredLayout(context) mutableCopy];
+    [layout removeObjectForKey:kApolloActionMenuLayoutOrderKey];
+    ApolloLog(@"[ActionMenuLayout] %@ order reset to default", context);
+    ApolloActionMenuWriteLayout(context, layout.count > 0 ? layout : nil);
 }
 
 void ApolloActionMenuResetContext(ApolloActionMenuContext context) {
@@ -539,9 +702,7 @@ void ApolloActionMenuRecordPresentedItemIDs(ApolloActionMenuContext context, NSA
 NSArray<NSString *> *ApolloActionMenuLastPresentedItemIDs(ApolloActionMenuContext context) {
     id stored = [[NSUserDefaults standardUserDefaults] objectForKey:UDKeyActionMenuLastPresented];
     if (![stored isKindOfClass:[NSDictionary class]]) return nil;
-    id list = ((NSDictionary *)stored)[context ?: @""];
-    if (![list isKindOfClass:[NSArray class]]) return nil;
-    NSArray<NSString *> *clean = ApolloActionMenuStringArray(list);
+    NSArray<NSString *> *clean = ApolloActionMenuStringArray(((NSDictionary *)stored)[context ?: @""]);
     return clean.count > 0 ? clean : nil;
 }
 

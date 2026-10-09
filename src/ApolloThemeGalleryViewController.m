@@ -101,7 +101,7 @@ typedef void (^ApolloThemeGalleryAction)(NSString *slug);
         _slug = [slug copy];
         _theme = [theme copy];
         _compiled = GalleryCompiledTheme(theme);
-        _mode = UIScreen.mainScreen.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark
+        _mode = self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark
             ? ApolloThemeModeDark : ApolloThemeModeLight;
         self.modalPresentationStyle = UIModalPresentationPageSheet;
     }

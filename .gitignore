@@ -36,6 +36,11 @@ widgets/build-*/
 widgets/*.xcodeproj/
 widgets/Info.plist
 
+# Optional iOS 27 Siri framework (built by scripts/inject-siri-proof.sh).
+siri/build/
+siri/build-*/
+siri/*.xcodeproj/
+
 # Local iOS Simulator working dirs (scripts/run-in-sim.sh; sessions use
 # .sim-<name> variants so parallel runs don't clobber each other)
 .sim/
@@ -43,3 +48,6 @@ widgets/Info.plist
 .sim[0-9]*/
 widgets/build/
 /.agents
+
+# Local Cloudflare worker dependencies
+workers/**/node_modules/

@@ -13,6 +13,7 @@
 #import "ApolloSubredditHeaderPreview.h"
 #import "ApolloSubredditInfoCache.h"
 #import "ApolloSubredditLayout.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloNativeActionMenus.h"
 #import "ApolloUserProfileCache.h"
 #import "ApolloSubredditHighlights.h"
@@ -21,6 +22,7 @@
 #import "ApolloThemeRuntime.h"
 #import "ipad/ApolloPaneLayout.h"
 #import "ipad/ApolloPaneChrome.h"
+#import "ApolloClasses.h"
 
 // Mirrors the profile-banner pattern in ApolloUserAvatars.xm exactly:
 // - Only hooks `_TtC6Apollo19PostsViewController`.
@@ -33,7 +35,6 @@
 // - Subreddit-name detection requires either a real ivar/property on the
 //   controller or a slug-shaped navigation title; we never match by
 //   class-name substring so global search-results VCs don't get a header.
-
 
 static const void *kApolloSubredditHeaderViewKey = &kApolloSubredditHeaderViewKey;
 static const void *kApolloSubredditWrappedHeaderKey = &kApolloSubredditWrappedHeaderKey;
@@ -52,6 +53,10 @@ static const void *kApolloSubredditRewrapInProgressKey = &kApolloSubredditRewrap
 // table hook can keep controller/bookkeeping aligned when Apollo swaps the
 // native header during search transitions.
 static const void *kApolloSubredditManagedViewControllerKey = &kApolloSubredditManagedViewControllerKey;
+// Zeroing-weak box on every PostsViewController's feed table, managed or not, so
+// the reloadData hook can also notice a feed that has no header yet being
+// switched to a subreddit in place (the nav-title jump bar, e.g. from Home).
+static const void *kApolloSubredditFeedControllerKey = &kApolloSubredditFeedControllerKey;
 static const void *kApolloSubredditTeardownMarkerKey = &kApolloSubredditTeardownMarkerKey;
 static const void *kApolloSubredditBannerPickerCoordinatorKey = &kApolloSubredditBannerPickerCoordinatorKey;
 static const void *kApolloSubredditIconPickerCoordinatorKey = &kApolloSubredditIconPickerCoordinatorKey;
@@ -956,7 +961,7 @@ static UIImage *ApolloSubredditSizedActionIcon(UIImage *image) {
     // state is known and for the whole subscribe/unsubscribe round trip.
     self.subscribeButton.alpha = enabled ? 1.0 : ApolloSubredditDisabledControlAlpha;
 
-    UIColor *accent = ApolloThemeAccentColor() ?: self.tintColor ?: UIColor.systemBlueColor;
+    UIColor *accent = ApolloThemeAccentColor() ?: self.tintColor;
     // Resolve against the real trait context before reading components —
     // ApolloThemeAccentColor() can be a dynamic-provider color, and ambient
     // resolution can pick the wrong light/dark variant (project convention).
@@ -1041,9 +1046,9 @@ static UIImage *ApolloSubredditSizedActionIcon(UIImage *image) {
     // client that Apollo owns instead.
     id client = ApolloActiveAccountClient();
     SEL selector = desiredState ? @selector(subscribeToSubredditWithName:completion:)
-                                : NSSelectorFromString(@"unsubscribeFromSubredditWithName:completion:");
+                                : @selector(unsubscribeFromSubredditWithName:completion:);
     if (!client || ![client respondsToSelector:selector]) {
-        selector = desiredState ? selector : NSSelectorFromString(@"unsubscribeToSubredditWithName:completion:");
+        selector = desiredState ? selector : @selector(unsubscribeToSubredditWithName:completion:);
     }
     if (!client || ![client respondsToSelector:selector]) {
         self.subscriptionRequestInFlight = NO;
@@ -1082,7 +1087,7 @@ static UIImage *ApolloSubredditSizedActionIcon(UIImage *image) {
             strongSelf.subscriptionRequestInFlight = NO;
             BOOL finalState = succeeded ? desiredState : oldState;
             if (!succeeded) {
-                ApolloLog(@"[SubredditHeaders] subscription %@ u/%@ failed, rolling back error=%@",
+                ApolloLogError(@"[SubredditHeaders] subscription %@ u/%@ failed, rolling back error=%@",
                           desiredState ? @"subscribe" : @"unsubscribe", subredditName, error);
             }
             // Grace window: our own confirmed outcome (success or rollback)
@@ -1372,9 +1377,12 @@ static NSString *ApolloNormalizedSubredditName(NSString *subredditName) {
     if ([clean hasPrefix:@"/r/"] || [clean hasPrefix:@"/R/"]) clean = [clean substringFromIndex:3];
     if ([clean hasPrefix:@"r/"] || [clean hasPrefix:@"R/"]) clean = [clean substringFromIndex:2];
     if (clean.length == 0) return nil;
-    // Reject special feeds that aren't really single subreddits.
+    // Reject special feeds that aren't really single subreddits. "random"/"randnsfw"
+    // are the titles Apollo gives a random feed until its listing names the
+    // subreddit it landed on.
     NSArray<NSString *> *blocked = @[@"home", @"popular", @"all", @"search", @"profile",
-                                     @"settings", @"inbox", @"friends", @"mod"];
+                                     @"settings", @"inbox", @"friends", @"mod",
+                                     @"random", @"randnsfw"];
     if ([blocked containsObject:clean.lowercaseString]) return nil;
     // Must look like a subreddit slug: letters/digits/underscores.
     NSCharacterSet *invalid = [[NSCharacterSet characterSetWithCharactersInString:
@@ -1413,23 +1421,15 @@ static BOOL ApolloSubredditIsLikelyObjectPointer(id value) {
 // on object_getIvar + type encoding, which is unreliable for Swift-emitted
 // ivars) and guards every read with isKindOfClass:, so a stale/garbage slot
 // can't be mistaken for a real object.
-static id ApolloSubredditTypedIvar(id object, NSString *name, Class expectedClass) {
-    if (!object || name.length == 0 || !expectedClass) return nil;
-    for (Class cls = [object class]; cls && cls != [NSObject class]; cls = class_getSuperclass(cls)) {
-        Ivar ivar = class_getInstanceVariable(cls, name.UTF8String);
-        if (!ivar) continue;
-        ptrdiff_t offset = ivar_getOffset(ivar);
-        void *raw = NULL;
-        memcpy(&raw, (uint8_t *)(__bridge void *)object + offset, sizeof(raw));
-        id value = (__bridge id)raw;
-        if (!ApolloSubredditIsLikelyObjectPointer(value)) return nil;
-        @try {
-            return [value isKindOfClass:expectedClass] ? value : nil;
-        } @catch (__unused NSException *exception) {
-            return nil;
-        }
+static id ApolloSubredditTypedIvar(id object, const char *name, Class expectedClass) {
+    if (!expectedClass) return nil;
+    id value = ApolloReadObjectIvar(object, name);
+    if (!ApolloSubredditIsLikelyObjectPointer(value)) return nil;
+    @try {
+        return [value isKindOfClass:expectedClass] ? value : nil;
+    } @catch (__unused NSException *exception) {
+        return nil;
     }
-    return nil;
 }
 
 // MARK: - Subscription state resolution
@@ -1450,7 +1450,7 @@ static id ApolloSubredditTypedIvar(id object, NSString *name, Class expectedClas
 static BOOL ApolloSubredditSubscribedFromCurrentSubreddit(UIViewController *viewController,
                                                           NSString *subredditName,
                                                           BOOL *outSubscribed) {
-    id currentSubreddit = ApolloSubredditTypedIvar(viewController, @"currentSubreddit", objc_getClass("RDKSubreddit"));
+    id currentSubreddit = ApolloSubredditTypedIvar(viewController, "currentSubreddit", ApolloClassRDKSubreddit);
     if (![currentSubreddit respondsToSelector:@selector(isSubscriber)]) return NO;
     if ([currentSubreddit respondsToSelector:@selector(name)]) {
         NSString *ivarName = ((NSString * (*)(id, SEL))objc_msgSend)(currentSubreddit, @selector(name));
@@ -1572,7 +1572,7 @@ static void ApolloSubredditRefreshSubscriptionState(ApolloSubredditHeaderView *h
 
 // The controller's own RDKSubreddit, when it is the subreddit being drawn.
 static id ApolloSubredditCurrentSubredditObject(UIViewController *viewController, NSString *subredditName) {
-    id currentSubreddit = ApolloSubredditTypedIvar(viewController, @"currentSubreddit", objc_getClass("RDKSubreddit"));
+    id currentSubreddit = ApolloSubredditTypedIvar(viewController, "currentSubreddit", ApolloClassRDKSubreddit);
     if (!currentSubreddit || ![currentSubreddit respondsToSelector:@selector(name)]) return nil;
     NSString *name = ((NSString * (*)(id, SEL))objc_msgSend)(currentSubreddit, @selector(name));
     return ApolloSubredditNamesEqual(name, subredditName) ? currentSubreddit : nil;
@@ -1604,8 +1604,8 @@ static BOOL ApolloSubredditWriteCurrentSubredditSubscribed(UIViewController *vie
 static void ApolloSubredditRefreshUserFlairAvailability(ApolloSubredditHeaderView *header,
                                                         UIViewController *viewController) {
     if (!header || !viewController) return;
-    id subreddit = ApolloSubredditTypedIvar(viewController, @"currentSubreddit",
-                                            objc_getClass("RDKSubreddit"));
+    id subreddit = ApolloSubredditTypedIvar(viewController, "currentSubreddit",
+                                            ApolloClassRDKSubreddit);
     if ([subreddit respondsToSelector:@selector(name)]) {
         NSString *name = ((NSString *(*)(id, SEL))objc_msgSend)(subreddit, @selector(name));
         if (!ApolloSubredditNamesEqual(name, header.subredditName)) return;
@@ -1653,9 +1653,13 @@ static BOOL ApolloSubredditPostsTypeTag(id viewController, uint8_t *tag) {
 // for #327: we gate on the synchronous PostsType tag so multireddit feeds (even
 // when named like a real subreddit) and profile/special feeds (Upvoted, Hidden,
 // All, Popular, ...) never install a header. For a genuine single-subreddit
-// feed we use `currentSubreddit.name` once Apollo has fetched it, and otherwise
-// fall back to the nav title so the header still appears instantly on
-// navigation instead of waiting for that async object.
+// feed the nav title decides: Apollo writes it synchronously on every path that
+// changes what the controller shows, including the nav-title jump bar's in-place
+// switch, which reuses the controller. `currentSubreddit` is only replaced when
+// the new subreddit's about.json lands, so right after a switch (and for good if
+// that fetch fails) it still names the previous subreddit. Its spelling is kept
+// while it names the same subreddit as the title, and it is the answer for a
+// feed that has no title yet.
 // Apollo's search-results VC is a different class and never reaches this hook.
 // Non-static: ApolloGalleryMenu.xm needs the same "is this really a single
 // subreddit, and which one" answer to decide whether the subreddit "..." menu
@@ -1675,27 +1679,26 @@ NSString *ApolloSubredditNameFromViewController(UIViewController *viewController
     BOOL haveTag = ApolloSubredditPostsTypeTag(viewController, &tag);
     if (haveTag && tag != kApolloPostsTypeSubreddit && tag != kApolloPostsTypeRandom) return nil;
 
-    // Authoritative slug once Apollo has loaded the backing subreddit object.
-    id subreddit = ApolloSubredditTypedIvar(viewController, @"currentSubreddit", objc_getClass("RDKSubreddit"));
+    NSString *loadedName = nil;
+    id subreddit = ApolloSubredditTypedIvar(viewController, "currentSubreddit", ApolloClassRDKSubreddit);
     if (subreddit && [subreddit respondsToSelector:@selector(name)]) {
         id nameValue = ((id (*)(id, SEL))objc_msgSend)(subreddit, @selector(name));
-        if ([nameValue isKindOfClass:[NSString class]]) {
-            NSString *normalized = ApolloNormalizedSubredditName(nameValue);
-            if (normalized.length) return normalized;
-        }
+        if ([nameValue isKindOfClass:[NSString class]]) loadedName = ApolloNormalizedSubredditName(nameValue);
     }
 
-    // currentSubreddit is populated asynchronously; for a confirmed
-    // single-subreddit feed (named or random) fall back to the nav title so the
-    // header loads instantly. The tag is already known to be subreddit/random
-    // here, so the title can't belong to a multireddit or profile feed.
+    // The tag is already known to be subreddit/random here, so the title can't
+    // belong to a multireddit or profile feed.
     if (haveTag) {
         NSString *title = viewController.navigationItem.title;
         if (title.length == 0) title = viewController.title;
-        return ApolloNormalizedSubredditName(title);
+        if (title.length > 0) {
+            NSString *titleName = ApolloNormalizedSubredditName(title);
+            if (loadedName.length && ApolloSubredditNamesEqual(loadedName, titleName)) return loadedName;
+            return titleName;
+        }
     }
 
-    return nil;
+    return loadedName.length ? loadedName : nil;
 }
 
 // The slug for one of Apollo's three pseudo-subreddit feeds — Popular Posts,
@@ -1747,8 +1750,8 @@ NSString *ApolloMultiredditPathFromViewController(UIViewController *viewControll
     uint8_t tag = 0;
     if (!ApolloSubredditPostsTypeTag(viewController, &tag) || tag != kApolloPostsTypeMultireddit) return nil;
 
-    id multireddit = ApolloSubredditTypedIvar(viewController, @"currentMultireddit",
-                                              objc_getClass("RDKMultireddit"));
+    id multireddit = ApolloSubredditTypedIvar(viewController, "currentMultireddit",
+                                              ApolloClassRDKMultireddit);
     if (![multireddit respondsToSelector:@selector(path)]) return nil;
     id pathValue = ((id (*)(id, SEL))objc_msgSend)(multireddit, @selector(path));
     if (![pathValue isKindOfClass:[NSString class]]) return nil;
@@ -1789,7 +1792,7 @@ void ApolloSubredditRequestTitleRelayout(UINavigationItem *navigationItem) {
     if (!viewController || !ApolloSubredditTitleShouldTruncate(viewController)) return;
 
     UINavigationBar *navigationBar = viewController.navigationController.navigationBar;
-    Class titleControlClass = NSClassFromString(@"_UINavigationBarTitleControl");
+    Class titleControlClass = ApolloClassUINavigationBarTitleControl;
     UIView *titleControl = ApolloSubredditFindSubviewOfClass(navigationBar, titleControlClass);
     if (!titleControl) return;
 
@@ -1808,13 +1811,16 @@ static UITableView *ApolloSubredditFindTableView(UIViewController *viewControlle
     return (UITableView *)ApolloSubredditFindSubviewOfClass(viewController.view, [UITableView class]);
 }
 
-static UIImage *ApolloSubredditPlaceholderIconForUserInterfaceStyle(UIUserInterfaceStyle style) {
+// TODO: Modernization - the icons are cached once per process, so they keep the
+// display scale of the first header that asked; a per-scale cache is needed for
+// correct rendering when headers later appear on a display with another scale.
+static UIImage *ApolloSubredditPlaceholderIcon(UITraitCollection *traitCollection) {
     static UIImage *darkIcon = nil;
     static UIImage *lightIcon = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         CGFloat diameter = ApolloIdentityHeaderAvatarDiameter();
-        CGFloat scale = UIScreen.mainScreen.scale > 0.0 ? UIScreen.mainScreen.scale : 2.0;
+        CGFloat scale = traitCollection.displayScale;
         CGSize size = CGSizeMake(diameter, diameter);
         UIColor *darkFill = [UIColor colorWithRed:39.0 / 255.0 green:39.0 / 255.0 blue:41.0 / 255.0 alpha:1.0];
         UIColor *lightFill = [UIColor colorWithRed:218.0 / 255.0 green:219.0 / 255.0 blue:220.0 / 255.0 alpha:1.0];
@@ -1844,56 +1850,29 @@ static UIImage *ApolloSubredditPlaceholderIconForUserInterfaceStyle(UIUserInterf
         lightIcon = drawIcon(lightFill, UIColor.blackColor);
     });
 
-    UIUserInterfaceStyle resolved = style;
-    if (resolved == UIUserInterfaceStyleUnspecified) {
-        resolved = UITraitCollection.currentTraitCollection.userInterfaceStyle;
-    }
-    if (@available(iOS 13.0, *)) {
-        return resolved == UIUserInterfaceStyleDark ? darkIcon : lightIcon;
-    }
-    return darkIcon ?: lightIcon;
+    return traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark ? darkIcon : lightIcon;
 }
 
-static UIImage *ApolloSubredditPlaceholderIcon(UIView *view) {
-    UIUserInterfaceStyle style = UIUserInterfaceStyleUnspecified;
-    if (@available(iOS 13.0, *)) {
-        style = view.traitCollection.userInterfaceStyle;
-    }
-    return ApolloSubredditPlaceholderIconForUserInterfaceStyle(style);
-}
-
-static UIImage *ApolloSubredditDefaultBanner(void) {
+// TODO: Modernization - cached once per process, so the image keeps the display
+// scale of the first header that asked; key the cache by scale if headers can
+// appear on displays with different scales.
+static UIImage *ApolloSubredditDefaultBanner(UITraitCollection *traitCollection) {
     static UIImage *cached = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         NSData *data = [NSData dataWithBytesNoCopy:(void *)ApolloSubredditDefaultBannerJPG
                                             length:ApolloSubredditDefaultBannerJPG_len
                                       freeWhenDone:NO];
-        cached = [UIImage imageWithData:data scale:UIScreen.mainScreen.scale];
+        cached = [UIImage imageWithData:data scale:traitCollection.displayScale];
     });
     return cached;
 }
 
-static UIColor *ApolloSubredditBannerBackgroundColorForUserInterfaceStyle(UIUserInterfaceStyle style) {
-    UIUserInterfaceStyle resolved = style;
-    if (resolved == UIUserInterfaceStyleUnspecified) {
-        resolved = UITraitCollection.currentTraitCollection.userInterfaceStyle;
+static UIColor *ApolloSubredditBannerBackgroundColor(UITraitCollection *traitCollection) {
+    if (traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark) {
+        return [UIColor colorWithRed:39.0 / 255.0 green:39.0 / 255.0 blue:41.0 / 255.0 alpha:1.0];
     }
-    if (@available(iOS 13.0, *)) {
-        if (resolved == UIUserInterfaceStyleDark) {
-            return [UIColor colorWithRed:39.0 / 255.0 green:39.0 / 255.0 blue:41.0 / 255.0 alpha:1.0];
-        }
-        return [UIColor colorWithRed:218.0 / 255.0 green:219.0 / 255.0 blue:220.0 / 255.0 alpha:1.0];
-    }
-    return [UIColor colorWithRed:39.0 / 255.0 green:39.0 / 255.0 blue:41.0 / 255.0 alpha:1.0];
-}
-
-static UIColor *ApolloSubredditBannerBackgroundColor(UIView *view) {
-    UIUserInterfaceStyle style = UIUserInterfaceStyleUnspecified;
-    if (@available(iOS 13.0, *)) {
-        style = view.traitCollection.userInterfaceStyle;
-    }
-    return ApolloSubredditBannerBackgroundColorForUserInterfaceStyle(style);
+    return [UIColor colorWithRed:218.0 / 255.0 green:219.0 / 255.0 blue:220.0 / 255.0 alpha:1.0];
 }
 
 static void ApolloSubredditApplyLoadingBanner(ApolloSubredditHeaderView *header) {
@@ -1901,13 +1880,13 @@ static void ApolloSubredditApplyLoadingBanner(ApolloSubredditHeaderView *header)
     header.bannerImageView.image = nil;
     header.bannerProvenanceKey = nil;
     header.pendingBannerURL = nil;
-    header.bannerImageView.backgroundColor = ApolloSubredditBannerBackgroundColor(header);
+    header.bannerImageView.backgroundColor = ApolloSubredditBannerBackgroundColor(header.traitCollection);
     ApolloSubredditSyncAmbient(header);
 }
 
 static void ApolloSubredditApplyDefaultBanner(ApolloSubredditHeaderView *header) {
     if (!header) return;
-    UIImage *defaultBanner = ApolloSubredditDefaultBanner();
+    UIImage *defaultBanner = ApolloSubredditDefaultBanner(header.traitCollection);
     header.bannerImageView.image = defaultBanner;
     // The default banner is a shared singleton: a constant provenance key means
     // every header showing it shares one blur cache entry, and no header can
@@ -1920,7 +1899,7 @@ static void ApolloSubredditApplyDefaultBanner(ApolloSubredditHeaderView *header)
 
 static void ApolloSubredditApplyPlaceholderIcon(ApolloSubredditHeaderView *header) {
     if (!header) return;
-    header.iconImageView.image = ApolloSubredditPlaceholderIcon(header);
+    header.iconImageView.image = ApolloSubredditPlaceholderIcon(header.traitCollection);
     header.iconImageView.backgroundColor = [UIColor clearColor];
 }
 
@@ -2074,7 +2053,7 @@ static void ApolloSubredditApplyIconForHeader(ApolloSubredditHeaderView *header,
 
 static ApolloSubredditHeaderView *ApolloSubredditCreateHeader(CGFloat width) {
     ApolloSubredditHeaderView *header = [[ApolloSubredditHeaderView alloc] initWithFrame:CGRectMake(0.0, 0.0, width, 210.0)];
-    header.iconImageView.image = ApolloSubredditPlaceholderIcon(header);
+    header.iconImageView.image = ApolloSubredditPlaceholderIcon(header.traitCollection);
     ApolloSubredditApplyLoadingBanner(header);
     return header;
 }
@@ -2105,8 +2084,8 @@ void ApolloSubredditHeaderPreviewContentConfigure(UIView *contentView,
     header.userFlairAvailabilityKnown = YES;
     header.userCanSetFlair = YES;
     [header applyInfo:info fallbackSubredditName:fallbackSubredditName];
-    header.iconImageView.image = iconImage ?: ApolloSubredditPlaceholderIcon(header);
-    header.bannerImageView.image = bannerImage ?: ApolloSubredditDefaultBanner();
+    header.iconImageView.image = iconImage ?: ApolloSubredditPlaceholderIcon(header.traitCollection);
+    header.bannerImageView.image = bannerImage ?: ApolloSubredditDefaultBanner(header.traitCollection);
     [header apollo_applySubscriptionState:YES known:YES];
 }
 
@@ -2246,8 +2225,8 @@ static void ApolloSubredditSyncAssociations(UITableView *tableView,
 
 static BOOL ApolloSubredditColorProvidesSurface(UIColor *color, UITraitCollection *traits) {
     if (!color) return NO;
-    UIColor *resolved = [color resolvedColorWithTraitCollection:
-        traits ?: UIScreen.mainScreen.traitCollection];
+    // Callers must supply the host view controller's traits.
+    UIColor *resolved = [color resolvedColorWithTraitCollection:traits];
     return resolved && CGColorGetAlpha(resolved.CGColor) > 0.01;
 }
 
@@ -2420,7 +2399,7 @@ static void ApolloSubredditUpdateAmbientForManagedTable(UITableView *tableView) 
 }
 
 static UIView *ApolloSubredditFindSearchFieldForViewController(UIViewController *viewController) {
-    Class fieldClass = NSClassFromString(@"Apollo.ApolloSearchBarTextField");
+    Class fieldClass = ApolloClassApolloSearchBarTextField;
     if (!viewController || !fieldClass || !viewController.isViewLoaded) return nil;
     UIView *cachedField = objc_getAssociatedObject(viewController, kApolloSubredditSearchFieldKey);
     if ([cachedField isKindOfClass:fieldClass] &&
@@ -2750,12 +2729,7 @@ static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewControlle
     // walker previously trampled across RedditListVC / InboxListVC /
     // ApolloNavigationController because their nav titles happened to be
     // slug-shaped ("Subreddits" / "Boxes" / "Comments").
-    static Class postsVCClass = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        postsVCClass = NSClassFromString(@"_TtC6Apollo19PostsViewController");
-    });
-    if (postsVCClass && ![viewController isMemberOfClass:postsVCClass]) return;
+    if (sPostsViewControllerClass && ![viewController isMemberOfClass:sPostsViewControllerClass]) return;
 
     UITableView *tableView = ApolloSubredditFindTableView(viewController);
     if (!tableView) return;
@@ -2955,7 +2929,7 @@ static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewControlle
         // feed back into an active navigation-bar layout pass.
         ApolloSubredditRequestTitleRelayout(viewController.navigationItem);
         objc_setAssociatedObject(viewController, kApolloSubredditNameKey, subredditName, OBJC_ASSOCIATION_COPY_NONATOMIC);
-        header.iconImageView.image = ApolloSubredditPlaceholderIcon(header);
+        header.iconImageView.image = ApolloSubredditPlaceholderIcon(header.traitCollection);
         header.usesCustomIcon = NO;
         header.usesCustomBanner = NO;
         header.subscriptionStateKnown = NO;
@@ -3155,6 +3129,19 @@ static void ApolloSubredditRefreshVisibleControllersForSubreddit(NSString *subre
     ApolloSubredditScheduleVisibleControllerRefresh();
 }
 
+// Point the feed table back at its controller so the reloadData hook can
+// catch an in-place switch on a feed that has no header yet.
+static void ApolloSubredditWatchFeedTable(UIViewController *viewController) {
+    if (!sShowSubredditHeaders || !viewController) return;
+    UITableView *tableView = ApolloSubredditFindTableView(viewController);
+    if (!tableView) return;
+    ApolloSubredditWeakControllerBox *feed = objc_getAssociatedObject(tableView, kApolloSubredditFeedControllerKey);
+    if (feed.viewController == viewController) return;
+    feed = [[ApolloSubredditWeakControllerBox alloc] init];
+    feed.viewController = viewController;
+    objc_setAssociatedObject(tableView, kApolloSubredditFeedControllerKey, feed, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 #pragma mark - Hooks
 
 // Apollo enters/exits search mode by mutating its tableHeaderView (sometimes
@@ -3205,7 +3192,23 @@ static void ApolloSubredditRefreshVisibleControllersForSubreddit(NSString *subre
 
 - (void)reloadData {
     %orig;
-    if (![objc_getAssociatedObject(self, kApolloSubredditManagedTableKey) boolValue]) return;
+    if (![objc_getAssociatedObject(self, kApolloSubredditManagedTableKey) boolValue]) {
+        // A feed with no header of ours: the nav-title jump bar switches the
+        // controller to another subreddit IN PLACE (title + PostsType rewritten,
+        // then the new listing's reload) with no lifecycle callback, so check
+        // whether it now needs one. Next turn, not here: a random feed's listing
+        // reloads first and renames the feed after the subreddit it landed on
+        // right after, in the same turn.
+        if (!sShowSubredditHeaders) return;
+        ApolloSubredditWeakControllerBox *feed =
+            objc_getAssociatedObject(self, kApolloSubredditFeedControllerKey);
+        __weak UIViewController *weakFeedController = feed.viewController;
+        if (!weakFeedController) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ApolloSubredditScheduleInstallIfNeeded(weakFeedController);
+        });
+        return;
+    }
     ApolloSubredditWeakControllerBox *owner =
         objc_getAssociatedObject(self, kApolloSubredditManagedViewControllerKey);
     UIViewController *viewController = owner.viewController;
@@ -3259,7 +3262,7 @@ static void ApolloSubredditSettleBlockedTableToTop(UITableView *tableView) {
         return;
     }
     %orig;
-    if ([self isKindOfClass:[UITableView class]]) {
+    if (sShowSubredditHeaders && [self isKindOfClass:[UITableView class]]) {
         ApolloSubredditUpdateAmbientForManagedTable((UITableView *)self);
     }
 }
@@ -3271,7 +3274,7 @@ static void ApolloSubredditSettleBlockedTableToTop(UITableView *tableView) {
         return;
     }
     %orig;
-    if ([self isKindOfClass:[UITableView class]]) {
+    if (sShowSubredditHeaders && [self isKindOfClass:[UITableView class]]) {
         ApolloSubredditUpdateAmbientForManagedTable((UITableView *)self);
     }
 }
@@ -3294,6 +3297,7 @@ static void ApolloSubredditSettleBlockedTableToTop(UITableView *tableView) {
 
 - (void)viewDidLoad {
     %orig;
+    ApolloSubredditWatchFeedTable((UIViewController *)self);
     ApolloSubredditScheduleInstallIfNeeded((UIViewController *)self);
 }
 
@@ -3313,6 +3317,7 @@ static void ApolloSubredditSettleBlockedTableToTop(UITableView *tableView) {
     }
     %orig(animated);
     ApolloSubredditUpdateCompactChrome((UIViewController *)self, nil);
+    ApolloSubredditWatchFeedTable((UIViewController *)self);
     ApolloSubredditScheduleInstallIfNeeded((UIViewController *)self);
 }
 

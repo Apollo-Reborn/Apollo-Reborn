@@ -7,6 +7,7 @@
 #import <QuartzCore/QuartzCore.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 
 // Exported from ApolloVideoUnmute.xm — fixes disconnected playerLayer
 // after the reclaim puts it in an orphaned playerLayerSuperlayer.
@@ -14,6 +15,10 @@ extern void ApolloVideoUnmute_FixDisconnectedPlayerLayer(id postsViewController)
 // Exported from ApolloVideoUnmute.xm — puts the header's mute icon back in step
 // with the player it just got back.
 extern void ApolloVideoUnmute_SyncMuteButtonIcon(id richMediaNode, BOOL isMuted);
+// Exported from ApolloSwipeUpComments.xm. When the pane's collapsed media
+// header takes the fullscreen viewer's shared layer, schedule a page-scoped
+// hand-back after Apollo finishes its take sequence.
+extern void ApolloSwipeCommentsSharedPlayerLayerMoved(AVPlayerLayer *playerLayer);
 
 // =============================================================================
 // MARK: - Overview
@@ -53,6 +58,8 @@ extern void ApolloVideoUnmute_SyncMuteButtonIcon(id richMediaNode, BOOL isMuted)
 // viewWillAppear: from the commit callback.
 static BOOL sCommittedPopRunningReclaim = NO;
 
+static Class sCommentsViewControllerClass = nil;
+
 // =============================================================================
 // MARK: - Shared Deferral Logic
 // =============================================================================
@@ -67,21 +74,15 @@ static BOOL sCommittedPopRunningReclaim = NO;
 //   4. On cancel: does nothing (video stays in comments header)
 static BOOL DeferReclaimIfInteractivePop(id self_, BOOL animated) {
     UINavigationController *nav = [(UIViewController *)self_ navigationController];
-    id<UIViewControllerTransitionCoordinator> coordinator = nav ? [nav transitionCoordinator] : nil;
+    id<UIViewControllerTransitionCoordinator> coordinator = [nav transitionCoordinator];
 
     // Only defer when a CommentsViewController is being popped.
     // viewWillAppear: also fires during other interactive transitions
     // (e.g. pushing from subreddit list) — we must not interfere.
-    static Class sCommentsVCClass = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        sCommentsVCClass = objc_getClass("_TtC6Apollo22CommentsViewController");
-    });
-
     BOOL poppingComments = NO;
-    if (coordinator && [coordinator isInteractive]) {
+    if ([coordinator isInteractive]) {
         id fromVC = [coordinator viewControllerForKey:UITransitionContextFromViewControllerKey];
-        poppingComments = sCommentsVCClass && [fromVC isMemberOfClass:sCommentsVCClass];
+        poppingComments = [fromVC isMemberOfClass:sCommentsViewControllerClass];
     }
 
     if (!poppingComments || sCommittedPopRunningReclaim) return NO;
@@ -210,21 +211,6 @@ static const void *kApolloHeaderLayerRecordKey = &kApolloHeaderLayerRecordKey;
 static NSHashTable *sHeaderLayerNodes = nil;
 
 static Class sRichMediaNodeClass = nil;
-static Class sCommentsViewControllerClass = nil;
-
-static id HeaderRetakeIvar(id obj, const char *name) {
-    if (!obj) return nil;
-    Ivar ivar = class_getInstanceVariable(object_getClass(obj), name);
-    return ivar ? object_getIvar(obj, ivar) : nil;
-}
-
-// Swift Bool ivar (1 byte); NO when missing.
-static BOOL HeaderRetakeBoolIvar(id obj, const char *name) {
-    if (!obj) return NO;
-    Ivar ivar = class_getInstanceVariable(object_getClass(obj), name);
-    if (!ivar) return NO;
-    return *(BOOL *)((uint8_t *)(__bridge void *)obj + ivar_getOffset(ivar));
-}
 
 static BOOL HeaderRetakeNodeIsLoaded(id node) {
     if (!node) return NO;
@@ -239,9 +225,9 @@ static CALayer *HeaderRetakeLayerOfNode(id node) {
 }
 
 static BOOL HeaderRetakeVideoNodeIsShareable(id videoNode) {
-    SEL sel = NSSelectorFromString(@"allowPlayerLayerToBeShareable");
-    if (!videoNode || ![videoNode respondsToSelector:sel]) return NO;
-    return ((BOOL (*)(id, SEL))objc_msgSend)(videoNode, sel);
+    SEL shareableSelector = @selector(allowPlayerLayerToBeShareable);
+    return [videoNode respondsToSelector:shareableSelector]
+        && ((BOOL (*)(id, SEL))objc_msgSend)(videoNode, shareableSelector);
 }
 
 // The shared layer a shareable video node is showing, if any. Mirrors
@@ -250,7 +236,7 @@ static BOOL HeaderRetakeVideoNodeIsShareable(id videoNode) {
 static AVPlayerLayer *HeaderRetakeSharedSublayer(id videoNode) {
     CALayer *host = HeaderRetakeLayerOfNode(videoNode);
     if (!host) return nil;
-    CALayer *own = HeaderRetakeLayerOfNode(HeaderRetakeIvar(videoNode, "_playerNode"));
+    CALayer *own = HeaderRetakeLayerOfNode(ApolloObjectIvar(videoNode, "_playerNode"));
     for (CALayer *sublayer in host.sublayers) {
         if (sublayer != own && [sublayer isKindOfClass:[AVPlayerLayer class]]) {
             return (AVPlayerLayer *)sublayer;
@@ -321,7 +307,7 @@ static void HeaderRetakeRememberLayer(id richMediaNode, AVPlayerLayer *shared, N
 // Backup for the setPlayerLayer: hook below, called from the header cells' own
 // visibility events: note the layer a visible header is already showing.
 static void HeaderRetakeNoteSharedLayer(id richMediaNode) {
-    id videoNode = HeaderRetakeIvar(richMediaNode, "videoNode");
+    id videoNode = ApolloObjectIvar(richMediaNode, "videoNode");
     if (!HeaderRetakeVideoNodeIsShareable(videoNode)) return;
     HeaderRetakeRememberLayer(richMediaNode, HeaderRetakeSharedSublayer(videoNode), @"visible");
 }
@@ -344,7 +330,7 @@ static BOOL HeaderRetakeRestore(id richMediaNode, NSString *reason) {
     AVPlayerLayer *layer = record.sharedLayer;
     if (!layer) return NO;
 
-    id videoNode = HeaderRetakeIvar(richMediaNode, "videoNode");
+    id videoNode = ApolloObjectIvar(richMediaNode, "videoNode");
     CALayer *host = HeaderRetakeLayerOfNode(videoNode);
     if (!host || layer.superlayer == host) return NO;   // still ours (the common case)
 
@@ -372,7 +358,7 @@ static BOOL HeaderRetakeRestore(id richMediaNode, NSString *reason) {
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
     [layer removeFromSuperlayer];
-    SEL setPlayerLayerSel = NSSelectorFromString(@"setPlayerLayer:");
+    SEL setPlayerLayerSel = @selector(setPlayerLayer:);
     if ([videoNode respondsToSelector:setPlayerLayerSel]) {
         ((void (*)(id, SEL, id))objc_msgSend)(videoNode, setPlayerLayerSel, layer);
     }
@@ -426,7 +412,7 @@ static void HeaderRetakeHandBack(UIViewController *screen, NSString *reason) {
 
         AVPlayerLayer *layer = record.sharedLayer;
         CALayer *from = record.borrowedFrom;
-        CALayer *host = HeaderRetakeLayerOfNode(HeaderRetakeIvar(node, "videoNode"));
+        CALayer *host = HeaderRetakeLayerOfNode(ApolloObjectIvar(node, "videoNode"));
         if (layer && from && host && layer.superlayer == host) {
             [CATransaction begin];
             [CATransaction setDisableActions:YES];
@@ -490,11 +476,12 @@ static void HeaderRetakeHandBackAfterReclaim(UIViewController *appearing) {
 - (void)setPlayerLayer:(id)playerLayer {
     %orig;
     if (![NSThread isMainThread] || ![playerLayer isKindOfClass:[AVPlayerLayer class]]) return;
+    ApolloSwipeCommentsSharedPlayerLayerMoved((AVPlayerLayer *)playerLayer);
     if (![self respondsToSelector:@selector(supernode)]) return;
     id supernode = ((id (*)(id, SEL))objc_msgSend)(self, @selector(supernode));
     if (!sRichMediaNodeClass || ![supernode isKindOfClass:sRichMediaNodeClass]) return;
-    if (HeaderRetakeIvar(supernode, "videoNode") != self) return;
-    if (!HeaderRetakeBoolIvar(supernode, "isShownInCommentsHeader")) return;
+    if (ApolloObjectIvar(supernode, "videoNode") != self) return;
+    if (!ApolloReadBoolIvar(supernode, "isShownInCommentsHeader", NO)) return;
     HeaderRetakeRememberLayer(supernode, (AVPlayerLayer *)playerLayer, @"take");
 }
 %end
@@ -508,7 +495,7 @@ static void HeaderRetakeHandBackAfterReclaim(UIViewController *appearing) {
 - (void)cellNodeVisibilityEvent:(unsigned long long)event
                    inScrollView:(id)scrollView
                   withCellFrame:(CGRect)frame {
-    HeaderRetakeHeaderVisibility(HeaderRetakeIvar(self, "richMediaNode"), event);
+    HeaderRetakeHeaderVisibility(ApolloObjectIvar(self, "richMediaNode"), event);
     %orig;
 }
 %end
@@ -520,7 +507,7 @@ static void HeaderRetakeHandBackAfterReclaim(UIViewController *appearing) {
                    inScrollView:(id)scrollView
                   withCellFrame:(CGRect)frame {
     // A crosspost's media sits one level down.
-    HeaderRetakeHeaderVisibility(HeaderRetakeIvar(HeaderRetakeIvar(self, "crosspostNode"), "richMediaNode"), event);
+    HeaderRetakeHeaderVisibility(ApolloObjectIvar(ApolloObjectIvar(self, "crosspostNode"), "richMediaNode"), event);
     %orig;
 }
 %end
@@ -557,7 +544,7 @@ static void HeaderRetakeHandBackAfterReclaim(UIViewController *appearing) {
     Class profileVCClass = objc_getClass("_TtC6Apollo21ProfileViewController");
 
     ApolloLog(@"[VideoSwipeFix] ctor: PostsViewController=%p, SavedPostsCommentsVC=%p, ProfileVC=%p",
-              (void *)postsVCClass, (void *)savedPostsVCClass, (void *)profileVCClass);
+              (__bridge void *)postsVCClass, (__bridge void *)savedPostsVCClass, (__bridge void *)profileVCClass);
 
     if (!postsVCClass) {
         ApolloLog(@"[VideoSwipeFix] ctor: FATAL — PostsViewController class not found!");
@@ -578,7 +565,7 @@ static void HeaderRetakeHandBackAfterReclaim(UIViewController *appearing) {
     Class commentsHeaderClass = objc_getClass("_TtC6Apollo22CommentsHeaderCellNode");
     sCommentsViewControllerClass = objc_getClass("_TtC6Apollo22CommentsViewController");
     if (sRichMediaNodeClass && videoNodeClass
-        && class_getInstanceMethod(videoNodeClass, NSSelectorFromString(@"setPlayerLayer:"))) {
+        && class_getInstanceMethod(videoNodeClass, @selector(setPlayerLayer:))) {
         %init(HeaderRetakeTake, ASVideoNode = videoNodeClass);
     }
     if (richMediaHeaderClass) %init(HeaderRetakeRichMediaHeader, RichMediaHeaderCellNode = richMediaHeaderClass);

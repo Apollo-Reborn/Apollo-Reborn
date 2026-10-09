@@ -18,8 +18,17 @@ extern "C" {
 // Coverage (see docs/web-json-spike-findings.md → "Deferred work"):
 //   • Reads  — listings, comments, user pages, search, multis, subscriptions,
 //              inbox/messages, "about", and every /api/* GET endpoint.
-//   • Writes — vote/comment/save/submit/subscribe/… POST/PUT/DELETE to /api/*,
+//   • Writes — vote/comment/save/submit/subscribe/… POST/PUT/DELETE to /api/*
+//              (post flair, flair visibility and wiki saves, which Apollo sends
+//              to /r/<sub>/api/<action>, go to /api/<action> with an `r` field),
 //              authenticated with the session cookie + X-Modhash.
+//   • OAuth-only moderator endpoints (removal reasons, /api/v1/modactions/*,
+//              the approved/banned/muted/moderator lists, ban, mod invites) —
+//              the cookie can't authenticate these at all, so they go to
+//              oauth.reddit.com with the account's web-session bearer
+//              (ApolloWebJSONPathNeedsWebBearer).
+//   • New modmail (/api/mod/conversations and everything under it) — OAuth-only
+//              as well, so it takes the same web-bearer route.
 //   • Session lifecycle — a 403 HTML "block page" on a previously-good request
 //              is detected (ApolloWebJSONNoteResponse) and surfaced as a
 //              "session expired" prompt so the user can re-harvest.
@@ -66,13 +75,15 @@ id ApolloWebJSONGuardListingTaskResponse(NSString *method, NSString *path,
                                         NSHTTPURLResponse *response, id responseObject,
                                         NSError **error);
 
-// YES if `response` is GET /api/v1/<sub>/moderators_invited and a cookie
-// session is active — this endpoint is OAuth2-only with no cookie-compatible
-// equivalent at all (unlike /moderators), so the caller should override the
-// parsed result to an empty array (and clear any parse/status error) rather
-// than let the underlying 403 surface as a visible error. NO for any other
-// endpoint, or when the active account isn't a web-session account (the real
-// OAuth path is untouched). Called from the RDKResponseSerializer hook.
+// YES if `response` is GET /api/v1/<sub>/moderators_invited, a cookie session
+// is active, and no web bearer got a real answer for it — this endpoint is
+// OAuth2-only with no cookie-compatible equivalent at all (unlike
+// /moderators), so the caller should override the parsed result to an empty
+// array (and clear any parse/status error) rather than let the refusal surface
+// as a visible error. NO for a successful oauth.reddit.com answer (the
+// web-bearer route), any other endpoint, or when the active account isn't a
+// web-session account (the real OAuth path is untouched). Called from the
+// RDKResponseSerializer hook.
 BOOL ApolloWebJSONShouldStubInvitedModerators(NSURLResponse *response);
 
 // YES if `response` is a cookie-routed GET /r/<sub>/api/link_flair(_v2) or
@@ -97,10 +108,12 @@ BOOL ApolloWebJSONShouldStubFlairList(NSURLResponse *response);
 NSArray *ApolloWebJSONRescueFlairList(NSHTTPURLResponse *response);
 
 // YES for requests the WebJSON layer authors itself (session probes, token_v2
-// mints, flair rescue fetches), marked by an internal URL fragment that never
-// reaches the wire. Transport-level observers — in particular the bearer
-// capture feeding sLatestRedditBearerToken — must skip these: their bearer is
-// the web-session account's token_v2, not Apollo's own OAuth credential.
+// mints, flair rescue fetches) or authenticates for a web-session account
+// (cookie rewrites, moderator requests sent with the account's web bearer),
+// marked by an internal URL fragment that never reaches the wire.
+// Transport-level observers — in particular the bearer capture feeding
+// sLatestRedditBearerToken — must skip these: any bearer they carry is the
+// web-session account's, not Apollo's own OAuth credential.
 BOOL ApolloWebJSONRequestIsInternal(NSURL *url);
 
 // A token_v2-derived OAuth bearer for `username` (or the active web-session
@@ -118,6 +131,29 @@ NSString *ApolloWebJSONKeylessOAuthBearer(NSString *username);
 // token every attempt. No-op for a token_v2 bearer. Pass the SAME username you
 // gave ApolloWebJSONKeylessOAuthBearer (the mint cache keys on it).
 void ApolloWebJSONInvalidateOAuthBearerForAccount(NSString *username, NSString *bearer);
+
+// YES for the moderator endpoints Reddit serves to OAuth bearers only (a
+// subreddit's removal reasons, /api/v1/modactions/*, its approved-submitter,
+// banned, muted, moderator and invited-moderator lists, declining a mod invite,
+// and the /r/<sub>/api/friend and accept_moderator_invite writes).
+// ApolloWebJSONRewriteRequest sends a web-session account's requests to them to
+// oauth.reddit.com with the account's web bearer instead of the cookie. Takes a
+// URL path or RedditKit's relative "api/v1/..." / "r/<sub>/api/..." path.
+BOOL ApolloWebJSONPathNeedsWebBearer(NSString *path);
+
+// The web-session account a Reddit request carrying `bearer` belongs to (nil
+// for an OAuth account's request) — the transport's per-request attribution.
+NSString *ApolloWebJSONWebSessionUsernameForBearer(NSString *bearer);
+
+// The account's web bearer if one is on hand without a network round trip
+// (fresh token_v2, or a minted one still cached), else nil — also nil for a
+// minute after oauth.reddit.com refused it with a 401.
+NSString *ApolloWebJSONReadyWebBearer(NSString *username);
+
+// YES when a web-session account has no web bearer on hand and a mint is worth
+// trying now (none held off, no recent mint failure). The RedditKit request
+// hook mints before sending an ApolloWebJSONPathNeedsWebBearer request then.
+BOOL ApolloWebJSONWebBearerNeedsMint(NSString *username);
 
 // Hydrates the legacy single-session globals from the keychain, migrating any
 // legacy NSUserDefaults cookie value, then any legacy single-global session,

@@ -43,9 +43,11 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloShareAsImageLinkMode.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloState.h"
+#import "ApolloClasses.h"
 
 // Display text for the new options row.
 static NSString *const kApolloShareLinkTitle = @"Link";
@@ -63,13 +65,6 @@ static __weak id sActiveShareVC = nil;
 static ApolloShareLinkMode sActiveShareLinkMode = ApolloShareLinkModeNone;
 
 #pragma mark - Runtime ivar helpers
-
-static id ApolloShareLinkIvarObject(id obj, const char *name) {
-    if (!obj || !name) return nil;
-    Ivar ivar = class_getInstanceVariable(object_getClass(obj), name);
-    if (!ivar) return nil;
-    @try { return object_getIvar(obj, ivar); } @catch (__unused NSException *e) { return nil; }
-}
 
 // Reads a Swift CGFloat (== double on arm64) stored ivar by raw offset.
 static double ApolloShareLinkIvarDouble(id obj, const char *name) {
@@ -91,7 +86,7 @@ static double ApolloShareLinkIvarDouble(id obj, const char *name) {
 static NSURL *ApolloShareLinkPostURLForVC(id vc) {
     if (!vc) return nil;
 
-    id link = ApolloShareLinkIvarObject(vc, "link");
+    id link = ApolloObjectIvar(vc, "link");
     if (link) {
         @try {
             if ([link respondsToSelector:@selector(permalink)]) {
@@ -111,7 +106,7 @@ static NSURL *ApolloShareLinkPostURLForVC(id vc) {
 }
 
 static BOOL ApolloShareLinkHasComment(id vc) {
-    return ApolloShareLinkIvarObject(vc, "comment") != nil;
+    return ApolloObjectIvar(vc, "comment") != nil;
 }
 
 // A comment's urlWithContext: is Apollo's own permalink builder and keeps its
@@ -119,7 +114,7 @@ static BOOL ApolloShareLinkHasComment(id vc) {
 // throwing runtime methods and falls back to the parent post URL.
 static NSURL *ApolloShareLinkURLForVC(id vc, ApolloShareLinkMode mode) {
     NSURL *postURL = ApolloShareLinkPostURLForVC(vc);
-    return ApolloShareLinkURLForMode(mode, ApolloShareLinkIvarObject(vc, "comment"), postURL);
+    return ApolloShareLinkURLForMode(mode, ApolloObjectIvar(vc, "comment"), postURL);
 }
 
 #pragma mark - Share host rewriting
@@ -345,8 +340,8 @@ static void ApolloShareLinkInstallRow(id vc) {
     if (!vc) return;
     if (objc_getAssociatedObject(vc, &kApolloShareLinkButtonKey)) return; // already built
 
-    UILabel *watermarkLabel = (UILabel *)ApolloShareLinkIvarObject(vc, "watermarkRowTitleLabel");
-    UISwitch *watermarkSwitch = (UISwitch *)ApolloShareLinkIvarObject(vc, "watermarkRowSwitch");
+    UILabel *watermarkLabel = (UILabel *)ApolloObjectIvar(vc, "watermarkRowTitleLabel");
+    UISwitch *watermarkSwitch = (UISwitch *)ApolloObjectIvar(vc, "watermarkRowSwitch");
     if (![watermarkLabel isKindOfClass:[UILabel class]] ||
         ![watermarkSwitch isKindOfClass:[UISwitch class]]) {
         ApolloLog(@"[ShareLink] install: watermark row not found — skipping row");
@@ -379,7 +374,7 @@ static void ApolloShareLinkInstallRow(id vc) {
 
     // Hairline separator matching the existing ones.
     UIView *separator = [[UIView alloc] init];
-    NSArray *separators = (NSArray *)ApolloShareLinkIvarObject(vc, "separators");
+    NSArray *separators = (NSArray *)ApolloObjectIvar(vc, "separators");
     UIView *templateSep = [separators isKindOfClass:[NSArray class]] ? [separators lastObject] : nil;
     separator.backgroundColor = [templateSep isKindOfClass:[UIView class]]
         ? templateSep.backgroundColor
@@ -412,8 +407,8 @@ static void ApolloShareLinkLayoutRow(id vc) {
     UIView *separator = (UIView *)objc_getAssociatedObject(vc, &kApolloShareLinkSeparatorKey);
     if (!label || !button) return;
 
-    UILabel *watermarkLabel = (UILabel *)ApolloShareLinkIvarObject(vc, "watermarkRowTitleLabel");
-    UISwitch *watermarkSwitch = (UISwitch *)ApolloShareLinkIvarObject(vc, "watermarkRowSwitch");
+    UILabel *watermarkLabel = (UILabel *)ApolloObjectIvar(vc, "watermarkRowTitleLabel");
+    UISwitch *watermarkSwitch = (UISwitch *)ApolloObjectIvar(vc, "watermarkRowSwitch");
     if (![watermarkLabel isKindOfClass:[UILabel class]] ||
         ![watermarkSwitch isKindOfClass:[UISwitch class]]) return;
 
@@ -432,20 +427,20 @@ static void ApolloShareLinkLayoutRow(id vc) {
     label.frame = CGRectMake(wl.origin.x, wl.origin.y + pitch, labelW, wl.size.height);
 
     // Separator: clone the bottom-most native separator's geometry, shifted down.
-    NSArray *separators = (NSArray *)ApolloShareLinkIvarObject(vc, "separators");
+    NSArray *separators = (NSArray *)ApolloObjectIvar(vc, "separators");
     UIView *templateSep = [separators isKindOfClass:[NSArray class]] ? [separators lastObject] : nil;
     if (separator && [templateSep isKindOfClass:[UIView class]]) {
         separator.frame = CGRectOffset(templateSep.frame, 0, pitch);
         separator.hidden = templateSep.hidden;
     } else if (separator) {
         separator.frame = CGRectMake(wl.origin.x, CGRectGetMaxY(label.frame) + 0.5,
-                                     wl.size.width, 1.0 / [UIScreen mainScreen].scale);
+                                     wl.size.width, 1.0 / separator.traitCollection.displayScale);
     }
 
     // Place the Share button just below our row (the sheet was grown by one row to
     // make room — see the presentation-controller hook). Deterministic + idempotent:
     // Apollo re-lays the button each %orig pass, we always re-anchor it under our row.
-    UIView *shareButton = (UIView *)ApolloShareLinkIvarObject(vc, "shareButton");
+    UIView *shareButton = (UIView *)ApolloObjectIvar(vc, "shareButton");
     if ([shareButton isKindOfClass:[UIView class]]) {
         CGRect bf = shareButton.frame;
         bf.origin.y = CGRectGetMaxY(label.frame) + kApolloShareLinkButtonGap;
@@ -582,12 +577,8 @@ extern "C" bool ApolloSwiftURLSupportsSafari(const void *storage);
 %hook _TtC6Apollo15CopyURLActivity
 
 - (void)performActivity {
-    if (sShareLinkHost == ShareLinkHostDefault) {
-        %orig;
-        return;
-    }
-
     %orig; // Apollo copies its own URL (and shows its "Copied!" toast).
+    if (sShareLinkHost == ShareLinkHostDefault) return;
 
     UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
     NSURL *copied = pasteboard.URL;
@@ -631,7 +622,7 @@ extern "C" bool ApolloSwiftURLSupportsSafari(const void *storage);
             return frame;
         }
         id presented = [(UIPresentationController *)self presentedViewController];
-        Class shareVCClass = objc_getClass("_TtC6Apollo26ShareAsImageViewController");
+        Class shareVCClass = ApolloClassShareAsImageViewController;
         if (shareVCClass && [presented isMemberOfClass:shareVCClass]) {
             double pitch = ApolloShareLinkIvarDouble(presented, "rowHeight");
             if (pitch <= 1.0 || !isfinite(pitch)) pitch = 50.0;

@@ -19,6 +19,8 @@
 #import "UserDefaultConstants.h"
 
 static NSString * const kAppColorThemeKey = @"AppColorTheme";
+static const void *kInjectedAppearanceCellKey = &kInjectedAppearanceCellKey;
+static const void *kSettingsIconThemeCellKey = &kSettingsIconThemeCellKey;
 
 // ---------------------------------------------------------------------------
 // Saved original IMPs for the Appearance VC.
@@ -44,6 +46,47 @@ static UISwipeActionsConfiguration *(*sTrailingSwipeOrig)(id, SEL, UITableView *
 static CGFloat (*sHeightForHeaderOrig)(id, SEL, UITableView *, NSInteger);
 static void (*sWillDisplayHeaderOrig)(id, SEL, UITableView *, UIView *, NSInteger);
 
+// The moved list-icons toggle is the sole row in this native section. Keep
+// native section identities intact so Eureka's other index paths do not shift.
+static NSString *(*sAppearanceHeaderTitleOrig)(id, SEL, UITableView *, NSInteger);
+static NSString *(*sAppearanceFooterTitleOrig)(id, SEL, UITableView *, NSInteger);
+static CGFloat (*sAppearanceHeaderHeightOrig)(id, SEL, UITableView *, NSInteger);
+static CGFloat (*sAppearanceFooterHeightOrig)(id, SEL, UITableView *, NSInteger);
+static CGFloat (*sAppearanceHeaderEstimateOrig)(id, SEL, UITableView *, NSInteger);
+static CGFloat (*sAppearanceFooterEstimateOrig)(id, SEL, UITableView *, NSInteger);
+
+static BOOL IsMovedListIconsSection(id vc, UITableView *table, NSInteger section) {
+    NSString *title = sAppearanceHeaderTitleOrig
+        ? sAppearanceHeaderTitleOrig(vc, @selector(tableView:titleForHeaderInSection:), table, section) : nil;
+    return [title isKindOfClass:NSString.class] &&
+        [title caseInsensitiveCompare:@"Subreddits List"] == NSOrderedSame &&
+        sRowsOrig && sRowsOrig(vc, @selector(tableView:numberOfRowsInSection:), table, section) == 1;
+}
+
+static NSString *AppearanceHeaderTitle(id vc, SEL cmd, UITableView *table, NSInteger section) {
+    if (IsMovedListIconsSection(vc, table, section)) return nil;
+    return sAppearanceHeaderTitleOrig ? sAppearanceHeaderTitleOrig(vc, cmd, table, section) : nil;
+}
+static NSString *AppearanceFooterTitle(id vc, SEL cmd, UITableView *table, NSInteger section) {
+    if (IsMovedListIconsSection(vc, table, section)) return nil;
+    return sAppearanceFooterTitleOrig ? sAppearanceFooterTitleOrig(vc, cmd, table, section) : nil;
+}
+static CGFloat AppearanceHeaderHeight(id vc, SEL cmd, UITableView *table, NSInteger section) {
+    if (IsMovedListIconsSection(vc, table, section)) return CGFLOAT_MIN;
+    return sAppearanceHeaderHeightOrig ? sAppearanceHeaderHeightOrig(vc, cmd, table, section) : UITableViewAutomaticDimension;
+}
+static CGFloat AppearanceFooterHeight(id vc, SEL cmd, UITableView *table, NSInteger section) {
+    if (IsMovedListIconsSection(vc, table, section)) return CGFLOAT_MIN;
+    return sAppearanceFooterHeightOrig ? sAppearanceFooterHeightOrig(vc, cmd, table, section) : UITableViewAutomaticDimension;
+}
+static CGFloat AppearanceHeaderEstimate(id vc, SEL cmd, UITableView *table, NSInteger section) {
+    if (IsMovedListIconsSection(vc, table, section)) return CGFLOAT_MIN;
+    return sAppearanceHeaderEstimateOrig ? sAppearanceHeaderEstimateOrig(vc, cmd, table, section) : UITableViewAutomaticDimension;
+}
+static CGFloat AppearanceFooterEstimate(id vc, SEL cmd, UITableView *table, NSInteger section) {
+    if (IsMovedListIconsSection(vc, table, section)) return CGFLOAT_MIN;
+    return sAppearanceFooterEstimateOrig ? sAppearanceFooterEstimateOrig(vc, cmd, table, section) : UITableViewAutomaticDimension;
+}
 static inline BOOL IsThemesRow(NSIndexPath *ip) { return ip.section == 0 && ip.row == 0; }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +178,113 @@ static ApolloAppearanceAppendedSwitchRow *AppendedRowAt(id vc, UITableView *tv, 
     return ip.row == native ? row : nil;
 }
 
+static BOOL IsSettingsIconThemeSection(id vc, UITableView *table, NSInteger section) {
+    NSString *title = NativeSectionTitle(vc, table, section);
+    return title.length > 0 && [title caseInsensitiveCompare:@"Other"] == NSOrderedSame;
+}
+
+static BOOL IsSettingsIconThemeRow(id vc, UITableView *table, NSIndexPath *ip) {
+    return sRowsOrig && IsSettingsIconThemeSection(vc, table, ip.section) &&
+        ip.row == sRowsOrig(vc, @selector(tableView:numberOfRowsInSection:), table, ip.section);
+}
+
+static BOOL IsInjectedAppearanceRow(id vc, UITableView *table, NSIndexPath *ip) {
+    return IsSettingsIconThemeRow(vc, table, ip) || AppendedRowAt(vc, table, ip) != nil;
+}
+
+static NSString *SettingsIconAppearanceTitle(void) {
+    switch (sSettingsIconAppearance) {
+        case ApolloSettingsIconAppearanceLight: return @"Light";
+        case ApolloSettingsIconAppearanceDark: return @"Dark";
+        default: return @"System";
+    }
+}
+
+@interface ApolloSettingsIconThemeCell : UITableViewCell
+@property (nonatomic, strong) UIButton *themeMenuButton;
+@property (nonatomic, strong) NSLayoutConstraint *minimumHeightConstraint;
+- (void)refreshThemeMenu;
+@end
+
+@implementation ApolloSettingsIconThemeCell
+- (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
+    self = [super initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:reuseIdentifier];
+    if (self) {
+        self.textLabel.text = @"Settings Icon Theme";
+        self.selectionStyle = UITableViewCellSelectionStyleNone;
+        self.themeMenuButton = [UIButton buttonWithType:UIButtonTypeCustom];
+        self.themeMenuButton.translatesAutoresizingMaskIntoConstraints = NO;
+        self.themeMenuButton.showsMenuAsPrimaryAction = YES;
+        self.themeMenuButton.accessibilityLabel = self.textLabel.text;
+        [self.contentView addSubview:self.themeMenuButton];
+        self.minimumHeightConstraint = [self.contentView.heightAnchor constraintGreaterThanOrEqualToConstant:0];
+        self.minimumHeightConstraint.priority = UILayoutPriorityRequired - 1;
+        [NSLayoutConstraint activateConstraints:@[
+            self.minimumHeightConstraint,
+            [self.themeMenuButton.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
+            [self.themeMenuButton.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor],
+            [self.themeMenuButton.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
+            [self.themeMenuButton.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor]
+        ]];
+        self.isAccessibilityElement = NO;
+        self.accessibilityElements = @[self.themeMenuButton];
+    }
+    return self;
+}
+
+- (void)refreshThemeMenu {
+    NSString *title = SettingsIconAppearanceTitle();
+    self.detailTextLabel.text = title;
+    self.accessibilityValue = title;
+    self.themeMenuButton.accessibilityValue = title;
+    NSArray<NSString *> *titles = @[@"Light", @"Dark", @"System"];
+    NSArray<NSNumber *> *appearances = @[@(ApolloSettingsIconAppearanceLight),
+                                        @(ApolloSettingsIconAppearanceDark),
+                                        @(ApolloSettingsIconAppearanceSystem)];
+    NSMutableArray<UIAction *> *actions = [NSMutableArray arrayWithCapacity:titles.count];
+    __weak ApolloSettingsIconThemeCell *weakSelf = self;
+    for (NSUInteger index = 0; index < titles.count; index++) {
+        NSInteger appearance = appearances[index].integerValue;
+        UIAction *action = [UIAction actionWithTitle:titles[index] image:nil identifier:nil handler:^(__kindof UIAction *action) {
+            ApolloSetSettingsIconAppearance(appearance);
+            [weakSelf refreshThemeMenu];
+        }];
+        action.state = sSettingsIconAppearance == appearance ? UIMenuElementStateOn : UIMenuElementStateOff;
+        [actions addObject:action];
+    }
+    self.themeMenuButton.menu = [UIMenu menuWithTitle:@"" children:actions];
+}
+@end
+
+static UITableViewCell *BuildSettingsIconThemeCell(id vc, UITableView *table, NSIndexPath *ip) {
+    ApolloSettingsIconThemeCell *cell = objc_getAssociatedObject(vc, kSettingsIconThemeCellKey);
+    if (!cell) {
+        cell = [[ApolloSettingsIconThemeCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:nil];
+        objc_setAssociatedObject(vc, kSettingsIconThemeCellKey, cell, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(cell, kInjectedAppearanceCellKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    // Borrow a native value row's typography and colors without modifying its cell.
+    UITableViewCell *donor = nil;
+    for (NSInteger row = 0; sCellOrig && row < ip.row; row++) {
+        UITableViewCell *candidate = sCellOrig(vc, @selector(tableView:cellForRowAtIndexPath:), table,
+                                               [NSIndexPath indexPathForRow:row inSection:ip.section]);
+        if (!donor) donor = candidate;
+        if (candidate.detailTextLabel.text.length > 0) { donor = candidate; break; }
+    }
+    if (donor) {
+        cell.backgroundColor = donor.backgroundColor;
+        cell.textLabel.font = donor.textLabel.font;
+        cell.textLabel.textColor = donor.textLabel.textColor;
+        cell.detailTextLabel.font = donor.detailTextLabel.font ?: donor.textLabel.font;
+        cell.detailTextLabel.textColor = donor.detailTextLabel.textColor ?: UIColor.secondaryLabelColor;
+        // AutomaticDimension alone does not carry over Eureka's row minimum.
+        CGSize fitting = [donor sizeThatFits:CGSizeMake(CGRectGetWidth(table.bounds), CGFLOAT_MAX)];
+        cell.minimumHeightConstraint.constant = fitting.height;
+    }
+    [cell refreshThemeMenu];
+    return cell;
+}
+
 // The first UISwitch in a cell's tree: Apollo's switch rows keep the control
 // as the accessory view or as a content subview depending on the cell class.
 static UISwitch *FirstSwitchInView(UIView *view) {
@@ -166,6 +316,7 @@ static UITableViewCell *BuildAppendedSwitchCell(id vc, UITableView *tv, NSIndexP
         sw = [[UISwitch alloc] init];
         [sw addTarget:row action:@selector(switchToggled:) forControlEvents:UIControlEventValueChanged];
         cell.accessoryView = sw;
+        objc_setAssociatedObject(cell, kInjectedAppearanceCellKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(vc, cellKey, cell, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     UITableViewCell *donor = nil;
@@ -340,8 +491,9 @@ extern "C" BOOL ApolloThemeOpenNativeCommentsThemeFromHub(UIViewController *hub)
 }
 
 static NSInteger Rows(id self, SEL _cmd, UITableView *tv, NSInteger section) {
+    if (IsMovedListIconsSection(self, tv, section)) return 0;
     NSInteger n = sRowsOrig ? sRowsOrig(self, _cmd, tv, section) : 0;
-    if (AppendedRowForSection(self, tv, section)) n += 1; // the appended switch slot
+    if (AppendedRowForSection(self, tv, section) || IsSettingsIconThemeSection(self, tv, section)) n += 1; // the appended row slot
     return n;
 }
 
@@ -414,6 +566,7 @@ static void RewriteThemesRowLabel(UITableViewCell *cell) {
 }
 
 static UITableViewCell *Cell(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
+    if (IsSettingsIconThemeRow(self, tv, ip)) return BuildSettingsIconThemeCell(self, tv, ip);
     ApolloAppearanceAppendedSwitchRow *appended = AppendedRowAt(self, tv, ip);
     if (appended) return BuildAppendedSwitchCell(self, tv, ip, appended);
     UITableViewCell *cell = sCellOrig ? sCellOrig(self, _cmd, tv, ip)
@@ -427,14 +580,14 @@ static UITableViewCell *Cell(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip
 // intercepts the appended slot before calling the original — the original
 // would index Eureka's form model with an out-of-bounds row.
 static CGFloat Height(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (AppendedRowAt(self, tv, ip)) {
+    if (IsInjectedAppearanceRow(self, tv, ip)) {
         if (ip.row == 0 || !sHeightOrig) return UITableViewAutomaticDimension;
         return sHeightOrig(self, _cmd, tv, [NSIndexPath indexPathForRow:0 inSection:ip.section]);
     }
     return sHeightOrig ? sHeightOrig(self, _cmd, tv, ip) : UITableViewAutomaticDimension;
 }
 static CGFloat EstHeight(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (AppendedRowAt(self, tv, ip)) {
+    if (IsInjectedAppearanceRow(self, tv, ip)) {
         if (ip.row == 0 || !sEstHeightOrig) return 52.0;
         return sEstHeightOrig(self, _cmd, tv, [NSIndexPath indexPathForRow:0 inSection:ip.section]);
     }
@@ -442,7 +595,7 @@ static CGFloat EstHeight(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
 }
 
 static void Select(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (AppendedRowAt(self, tv, ip)) { [tv deselectRowAtIndexPath:ip animated:YES]; return; }
+    if (IsInjectedAppearanceRow(self, tv, ip)) { [tv deselectRowAtIndexPath:ip animated:YES]; return; }
     if (IsThemesRow(ip)) {
         [tv deselectRowAtIndexPath:ip animated:YES];
         ApolloThemeManagerViewController *vc = [[ApolloThemeManagerViewController alloc] init];
@@ -453,61 +606,61 @@ static void Select(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
 }
 
 static void WillDisplay(id self, SEL _cmd, UITableView *tv, UITableViewCell *cell, NSIndexPath *ip) {
-    if (AppendedRowAt(self, tv, ip)) return;
+    if (IsInjectedAppearanceRow(self, tv, ip)) return;
     if (sWillDisplayOrig) sWillDisplayOrig(self, _cmd, tv, cell, ip);
     if (IsThemesRow(ip)) RewriteThemesRowLabel(cell);
 }
 
 static void DidEndDisplaying(id self, SEL _cmd, UITableView *tv, UITableViewCell *cell, NSIndexPath *ip) {
-    if (AppendedRowAt(self, tv, ip)) return;
+    if (objc_getAssociatedObject(cell, kInjectedAppearanceCellKey) || IsInjectedAppearanceRow(self, tv, ip)) return;
     if (sDidEndDisplayingOrig) sDidEndDisplayingOrig(self, _cmd, tv, cell, ip);
 }
 static BOOL ShouldHighlight(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (AppendedRowAt(self, tv, ip)) return NO;   // the switch is the control
+    if (IsInjectedAppearanceRow(self, tv, ip)) return NO;   // each injected row owns its control
     if (IsThemesRow(ip)) return YES;
     return sShouldHighlightOrig ? sShouldHighlightOrig(self, _cmd, tv, ip) : YES;
 }
 static NSIndexPath *WillSelect(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (AppendedRowAt(self, tv, ip)) return nil;
+    if (IsInjectedAppearanceRow(self, tv, ip)) return nil;
     if (IsThemesRow(ip)) return ip;
     if (!sWillSelectOrig) return ip;
     NSIndexPath *r = sWillSelectOrig(self, _cmd, tv, ip);
     return r ? ip : nil;
 }
 static void DidHighlight(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (AppendedRowAt(self, tv, ip)) return;
+    if (IsInjectedAppearanceRow(self, tv, ip)) return;
     if (sDidHighlightOrig) sDidHighlightOrig(self, _cmd, tv, ip);
 }
 static void DidUnhighlight(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (AppendedRowAt(self, tv, ip)) return;
+    if (IsInjectedAppearanceRow(self, tv, ip)) return;
     if (sDidUnhighlightOrig) sDidUnhighlightOrig(self, _cmd, tv, ip);
 }
 static BOOL CanEdit(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (AppendedRowAt(self, tv, ip)) return NO;
+    if (IsInjectedAppearanceRow(self, tv, ip)) return NO;
     if (IsThemesRow(ip)) return NO;
     return sCanEditOrig ? sCanEditOrig(self, _cmd, tv, ip) : NO;
 }
 static BOOL CanMove(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (AppendedRowAt(self, tv, ip)) return NO;
+    if (IsInjectedAppearanceRow(self, tv, ip)) return NO;
     if (IsThemesRow(ip)) return NO;
     return sCanMoveOrig ? sCanMoveOrig(self, _cmd, tv, ip) : NO;
 }
 static NSInteger EditingStyle(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (AppendedRowAt(self, tv, ip)) return UITableViewCellEditingStyleNone;
+    if (IsInjectedAppearanceRow(self, tv, ip)) return UITableViewCellEditingStyleNone;
     if (IsThemesRow(ip)) return UITableViewCellEditingStyleNone;
     return sEditingStyleOrig ? sEditingStyleOrig(self, _cmd, tv, ip) : UITableViewCellEditingStyleNone;
 }
 static NSInteger Indent(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (AppendedRowAt(self, tv, ip)) return 0;
+    if (IsInjectedAppearanceRow(self, tv, ip)) return 0;
     return sIndentOrig ? sIndentOrig(self, _cmd, tv, ip) : 0;
 }
 static UISwipeActionsConfiguration *LeadingSwipe(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (AppendedRowAt(self, tv, ip)) return nil;
+    if (IsInjectedAppearanceRow(self, tv, ip)) return nil;
     if (IsThemesRow(ip)) return nil;
     return sLeadingSwipeOrig ? sLeadingSwipeOrig(self, _cmd, tv, ip) : nil;
 }
 static UISwipeActionsConfiguration *TrailingSwipe(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (AppendedRowAt(self, tv, ip)) return nil;
+    if (IsInjectedAppearanceRow(self, tv, ip)) return nil;
     if (IsThemesRow(ip)) return nil;
     return sTrailingSwipeOrig ? sTrailingSwipeOrig(self, _cmd, tv, ip) : nil;
 }
@@ -576,6 +729,12 @@ static void InstallAppearanceHooks(void) {
     SAVE_AND_REPLACE(@selector(tableView:heightForHeaderInSection:), sHeightForHeaderOrig, HeightForHeader, "d@:@q");
     SAVE_AND_REPLACE(@selector(tableView:willDisplayHeaderView:forSection:), sWillDisplayHeaderOrig, WillDisplayHeader, "v@:@@q");
     SAVE_AND_REPLACE(@selector(tableView:numberOfRowsInSection:), sRowsOrig, Rows, "q@:@q");
+    SAVE_AND_REPLACE(@selector(tableView:titleForHeaderInSection:), sAppearanceHeaderTitleOrig, AppearanceHeaderTitle, "@@:@q");
+    SAVE_AND_REPLACE(@selector(tableView:titleForFooterInSection:), sAppearanceFooterTitleOrig, AppearanceFooterTitle, "@@:@q");
+    SAVE_AND_REPLACE(@selector(tableView:heightForHeaderInSection:), sAppearanceHeaderHeightOrig, AppearanceHeaderHeight, "d@:@q");
+    SAVE_AND_REPLACE(@selector(tableView:heightForFooterInSection:), sAppearanceFooterHeightOrig, AppearanceFooterHeight, "d@:@q");
+    SAVE_AND_REPLACE(@selector(tableView:estimatedHeightForHeaderInSection:), sAppearanceHeaderEstimateOrig, AppearanceHeaderEstimate, "d@:@q");
+    SAVE_AND_REPLACE(@selector(tableView:estimatedHeightForFooterInSection:), sAppearanceFooterEstimateOrig, AppearanceFooterEstimate, "d@:@q");
     SAVE_AND_REPLACE(@selector(tableView:cellForRowAtIndexPath:), sCellOrig, Cell, "@@:@@");
     SAVE_AND_REPLACE(@selector(tableView:heightForRowAtIndexPath:), sHeightOrig, Height, "d@:@@");
     SAVE_AND_REPLACE(@selector(tableView:estimatedHeightForRowAtIndexPath:), sEstHeightOrig, EstHeight, "d@:@@");
@@ -779,7 +938,7 @@ static UIImage *CustomPickerSwatch(void) {
         UITableViewCell *cell = %orig(tv, [NSIndexPath indexPathForRow:0 inSection:0]);
         cell.accessoryView = nil;
         cell.textLabel.text = @"Custom";
-        if ([cell.detailTextLabel respondsToSelector:@selector(setText:)]) {
+        if (cell.detailTextLabel) {
             ApolloThemeStore *store = [ApolloThemeStore shared];
             NSDictionary *active = [store activeTheme];
             NSString *name = [active[@"name"] isKindOfClass:NSString.class] ? active[@"name"] : nil;
@@ -859,7 +1018,7 @@ static void InstallNativeThemeHeaderTypography(void) {
     for (NSString *name in @[@"Apollo.SettingsThemeViewController",
                              @"Apollo.SettingsAppIconViewController",
                              @"Apollo.SettingsCommunityIconPackViewController"]) {
-        Class cls = NSClassFromString(name);
+        Class cls = objc_getClass(name.UTF8String);
         if (!cls) continue;
         SEL selector = @selector(tableView:willDisplayHeaderView:forSection:);
         Method method = class_getInstanceMethod(cls, selector);

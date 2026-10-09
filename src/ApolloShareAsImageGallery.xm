@@ -22,7 +22,9 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloHostedVideo.h"
+#import "ApolloClasses.h"
 
 // ASSizeRange is { CGSize min; CGSize max; }. The rest of the repo matches the
 // -layoutSpecThatFits: selector ABI with `struct CDStruct_90e057aa` from the
@@ -51,15 +53,6 @@ static const CGFloat kApolloShareGalleryCornerRadius = 12.0;
 static const NSInteger kApolloShareGalleryMaxVisible = 4; // beyond this -> "+N"
 
 #pragma mark - Runtime ivar helpers
-
-static id ApolloShareIvarObject(id obj, const char *name) {
-    if (!obj || !name) return nil;
-    Ivar ivar = class_getInstanceVariable(object_getClass(obj), name);
-    if (!ivar) return nil;
-    id value = nil;
-    @try { value = object_getIvar(obj, ivar); } @catch (__unused NSException *e) {}
-    return value;
-}
 
 // Writes an object into one of SaveAsImagePreviewNode's Swift stored properties
 // (`imageNode`, `imageForImagePost`, `linkButtonNode` — all `let`s with no ObjC
@@ -115,65 +108,7 @@ static void ApolloShareSetIvarBool(id obj, const char *name, BOOL value) {
     base[offset] = value ? 1 : 0;
 }
 
-// Reads a Swift Bool ivar (a single byte at the ivar offset). Returns NO when the
-// ivar is missing. Mirror of ApolloShareSetIvarBool's offset math.
-static BOOL ApolloShareIvarBool(id obj, const char *name) {
-    if (!obj || !name) return NO;
-    Ivar ivar = class_getInstanceVariable(object_getClass(obj), name);
-    if (!ivar) return NO;
-    ptrdiff_t offset = ivar_getOffset(ivar);
-    const unsigned char *base = (const unsigned char *)(__bridge const void *)obj;
-    return base[offset] != 0;
-}
-
 #pragma mark - Gallery model extraction
-
-// Pulls the ordered list of still-image URLs out of an RDKLink's gallery.
-// Uses internalGallery.items[].image.url. Video items still expose a static
-// poster via .url, so we use that for every tile. Returns nil if not a
-// multi-image gallery.
-static NSArray<NSURL *> *ApolloShareGalleryImageURLs(id link) {
-    if (!link) return nil;
-
-    id gallery = nil;
-    @try {
-        if ([link respondsToSelector:@selector(internalGallery)]) {
-            gallery = [link performSelector:@selector(internalGallery)];
-        }
-    } @catch (__unused NSException *e) {}
-    if (!gallery) return nil;
-
-    id items = nil;
-    @try {
-        if ([gallery respondsToSelector:@selector(items)]) {
-            items = [gallery performSelector:@selector(items)];
-        }
-    } @catch (__unused NSException *e) {}
-    if (![items isKindOfClass:[NSArray class]]) return nil;
-
-    NSMutableArray<NSURL *> *urls = [NSMutableArray array];
-    for (id item in (NSArray *)items) {
-        id image = nil;
-        @try {
-            if ([item respondsToSelector:@selector(image)]) {
-                image = [item performSelector:@selector(image)];
-            }
-        } @catch (__unused NSException *e) {}
-        id url = nil;
-        @try {
-            if (image && [image respondsToSelector:@selector(url)]) {
-                url = [image performSelector:@selector(url)];
-            }
-        } @catch (__unused NSException *e) {}
-        if ([url isKindOfClass:[NSURL class]]) {
-            [urls addObject:(NSURL *)url];
-        }
-    }
-
-    return urls.count >= 2 ? urls : nil;
-}
-
-#pragma mark - Single-poster (video / spoiler / NSFW) model extraction
 
 // Calls a 0-arg selector returning an object, guarded. Returns nil on miss.
 static id ApolloShareCall(id obj, SEL sel) {
@@ -184,6 +119,28 @@ static id ApolloShareCall(id obj, SEL sel) {
     } @catch (__unused NSException *e) {}
     return result;
 }
+
+// Pulls the ordered list of still-image URLs out of an RDKLink's gallery.
+// Uses internalGallery.items[].image.url. Video items still expose a static
+// poster via .url, so we use that for every tile. Returns nil if not a
+// multi-image gallery.
+static NSArray<NSURL *> *ApolloShareGalleryImageURLs(id link) {
+    id gallery = ApolloShareCall(link, @selector(internalGallery));
+    id items = ApolloShareCall(gallery, @selector(items));
+    if (![items isKindOfClass:[NSArray class]]) return nil;
+
+    NSMutableArray<NSURL *> *urls = [NSMutableArray array];
+    for (id item in (NSArray *)items) {
+        id url = ApolloShareCall(ApolloShareCall(item, @selector(image)), @selector(url));
+        if ([url isKindOfClass:[NSURL class]]) {
+            [urls addObject:(NSURL *)url];
+        }
+    }
+
+    return urls.count >= 2 ? urls : nil;
+}
+
+#pragma mark - Single-poster (video / spoiler / NSFW) model extraction
 
 // Calls a 0-arg selector returning a BOOL, guarded.
 static BOOL ApolloShareCallBool(id obj, SEL sel) {
@@ -342,8 +299,6 @@ static void ApolloShareGalleryDrawAspectFill(UIImage *image, CGRect rect) {
 // the full width. When totalCount exceeds the visible cap, a "+N" overlay is
 // drawn on the last visible tile. Returns nil if nothing renderable.
 static UIImage *ApolloShareGalleryRenderCollage(NSArray *images, NSInteger totalCount) {
-    if (images.count == 0) return nil;
-
     NSInteger visible = MIN((NSInteger)images.count, kApolloShareGalleryMaxVisible);
     if (visible < 1) return nil;
 
@@ -371,7 +326,11 @@ static UIImage *ApolloShareGalleryRenderCollage(NSArray *images, NSInteger total
 
     UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
     format.opaque = NO;
-    format.scale = UIScreen.mainScreen.scale > 0.0 ? UIScreen.mainScreen.scale : 2.0;
+    // TODO: Modernization - this bitmap is baked into the exported share image,
+    // which has no display of its own; the preview node is usually measured
+    // offscreen (asyncTraitCollection scale 0), so UIScreen.mainScreen stays the
+    // resolution source until export resolution is decided independently.
+    format.scale = UIScreen.mainScreen.scale;
 
     CGSize canvas = CGSizeMake(width, totalHeight);
     UIGraphicsImageRenderer *renderer =
@@ -440,7 +399,11 @@ static UIImage *ApolloShareGalleryRenderSingle(UIImage *image, CGSize aspect) {
 
     UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
     format.opaque = NO;
-    format.scale = UIScreen.mainScreen.scale > 0.0 ? UIScreen.mainScreen.scale : 2.0;
+    // TODO: Modernization - this bitmap is baked into the exported share image,
+    // which has no display of its own; the preview node is usually measured
+    // offscreen (asyncTraitCollection scale 0), so UIScreen.mainScreen stays the
+    // resolution source until export resolution is decided independently.
+    format.scale = UIScreen.mainScreen.scale;
 
     CGSize canvas = CGSizeMake(width, height);
     UIGraphicsImageRenderer *renderer =
@@ -466,6 +429,7 @@ static UIImage *ApolloShareGalleryRenderSingle(UIImage *image, CGSize aspect) {
 // We keep strong associated refs to both the image and the ASImageNode so that,
 // even with the balanced ivar retain in ApolloShareSetIvarObject, nothing we
 // created is reclaimed out from under Apollo's layout between passes.
+
 static void ApolloShareGalleryInstallImage(id previewNode, UIImage *image, BOOL isFinal) {
     if (!previewNode || ![image isKindOfClass:[UIImage class]]) return;
 
@@ -477,7 +441,7 @@ static void ApolloShareGalleryInstallImage(id previewNode, UIImage *image, BOOL 
     // ivar (the node the layout spec lays out). Setting both maximises the
     // chance the native layout spec includes the image regardless of which it
     // keys off.
-    Class imageNodeClass = objc_getClass("ASImageNode");
+    Class imageNodeClass = ApolloClassASImageNode;
     id imageNode = nil;
     if (imageNodeClass) {
         @try {
@@ -583,7 +547,7 @@ static CGSize ApolloShareResolvePosterAspect(id link) {
 // rounded image. Leaves genuine text/self/external-link posts untouched.
 static void ApolloShareGalleryPrepareSingle(id previewNode, id link) {
     // Only act on cards Apollo didn't fill itself — never override a real image.
-    if (ApolloShareIvarObject(previewNode, "imageForImagePost") != nil) {
+    if (ApolloObjectIvar(previewNode, "imageForImagePost") != nil) {
         objc_setAssociatedObject(previewNode, &kApolloShareGalleryStateKey,
                                  @(ApolloShareGalleryStateApplied),
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -677,13 +641,7 @@ static void ApolloShareGalleryPrepareSingle(id previewNode, id link) {
 
     // Install a placeholder immediately so the link card never flashes.
     UIImage *placeholder = ApolloShareGalleryRenderSingle(nil, aspect);
-    if (placeholder) {
-        ApolloShareGalleryInstallImageOnMain(previewNode, placeholder, NO);
-    } else {
-        objc_setAssociatedObject(previewNode, &kApolloShareGalleryStateKey,
-                                 @(ApolloShareGalleryStatePlaceholder),
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
+    if (placeholder) ApolloShareGalleryInstallImageOnMain(previewNode, placeholder, NO);
 
     __weak id weakNode = previewNode;
     ApolloShareGalleryFetchImages(@[posterURL], ^(NSArray *images) {
@@ -731,13 +689,13 @@ static void ApolloShareGalleryPrepare(id previewNode) {
         // Image") back OFF on a comment share, the preview is meant to be the bare
         // comment, so re-injecting would leak the post collage back in. Re-using the
         // same condition as the bail check below keeps the two in lock-step.
-        BOOL postMediaShown = (ApolloShareIvarObject(previewNode, "comment") == nil) ||
-                              ApolloShareIvarBool(previewNode, "includePostDetails") ||
-                              ApolloShareIvarBool(previewNode, "includePostTextPollOrImage");
+        BOOL postMediaShown = (ApolloObjectIvar(previewNode, "comment") == nil) ||
+                              ApolloReadBoolIvar(previewNode, "includePostDetails", NO) ||
+                              ApolloReadBoolIvar(previewNode, "includePostTextPollOrImage", NO);
         UIImage *cached = objc_getAssociatedObject(previewNode, &kApolloShareGalleryCollageKey);
         if (postMediaShown &&
             [cached isKindOfClass:[UIImage class]] &&
-            ApolloShareIvarObject(previewNode, "imageForImagePost") == nil) {
+            ApolloObjectIvar(previewNode, "imageForImagePost") == nil) {
             ApolloLog(@"[ShareGallery] collage reset by a toggle, re-injecting cached image");
             ApolloShareGalleryInstallImageOnMain(previewNode, cached, YES);
         }
@@ -774,13 +732,13 @@ static void ApolloShareGalleryPrepare(id previewNode) {
     // Leaving the state untouched (None) makes each layout pass re-check, so the
     // collage is injected the moment post media is turned on. The check is cheap
     // (ivar reads) and no network fetch starts until a gallery is actually detected.
-    if (ApolloShareIvarObject(previewNode, "comment") != nil &&
-        !ApolloShareIvarBool(previewNode, "includePostTextPollOrImage") &&
-        !ApolloShareIvarBool(previewNode, "includePostDetails")) {
+    if (ApolloObjectIvar(previewNode, "comment") != nil &&
+        !ApolloReadBoolIvar(previewNode, "includePostTextPollOrImage", NO) &&
+        !ApolloReadBoolIvar(previewNode, "includePostDetails", NO)) {
         return;
     }
 
-    id link = ApolloShareIvarObject(previewNode, "link");
+    id link = ApolloObjectIvar(previewNode, "link");
     NSArray<NSURL *> *urls = ApolloShareGalleryImageURLs(link);
     if (urls.count < 2) {
         // Not a multi-image gallery — try the single-still path (video /
@@ -809,13 +767,7 @@ static void ApolloShareGalleryPrepare(id previewNode) {
     // Install the placeholder grid right away so the compact link card is never
     // shown.
     UIImage *placeholder = ApolloShareGalleryRenderPlaceholder(totalCount);
-    if (placeholder) {
-        ApolloShareGalleryInstallImageOnMain(previewNode, placeholder, NO);
-    } else {
-        objc_setAssociatedObject(previewNode, &kApolloShareGalleryStateKey,
-                                 @(ApolloShareGalleryStatePlaceholder),
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
+    if (placeholder) ApolloShareGalleryInstallImageOnMain(previewNode, placeholder, NO);
 
     __weak id weakNode = previewNode;
     ApolloShareGalleryFetchImages(urls, ^(NSArray *images) {

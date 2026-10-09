@@ -45,12 +45,14 @@
 #import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloSearchNativeBar.h"
 #import "ipad/ApolloPaneChrome.h"
 #import "ipad/ApolloPaneLayout.h"
 #import "ApolloFindInCommentsGlass.h"
+#import "ApolloClasses.h"
 
 // ApolloSwipeUpComments.xm: YES for the CommentsViewController hosted in the
 // media viewer's swipe-up comments sheet.
@@ -65,19 +67,6 @@ extern "C" BOOL ApolloSwipeCommentsIsPaneCommentsController(UIViewController *co
 - (BOOL)textFieldShouldReturn:(id)textField;
 - (void)dismissSearchBarButtonTappedWithSender:(id)sender;
 @end
-
-// Runtime ivar reader; walks the superclass chain so inherited ivars resolve.
-// (Deliberately duplicated per-module, matching the repo's existing pattern.)
-static id ApolloNSBObjectIvar(id object, const char *name) {
-    if (!object || !name) return nil;
-    Class cls = object_getClass(object);
-    while (cls) {
-        Ivar ivar = class_getInstanceVariable(cls, name);
-        if (ivar) return object_getIvar(object, ivar);
-        cls = class_getSuperclass(cls);
-    }
-    return nil;
-}
 
 static BOOL ApolloNSBReadBoolIvar(id object, const char *name, BOOL *outValue) {
     if (!object || !name) return NO;
@@ -210,7 +199,7 @@ static UIViewController *NSBFeedVCForView(UIView *view);
 // at the view's bottom edge then (ApolloListBottomInsetGuard normalises a
 // no-overlap frame to that same sentinel).
 static BOOL NSBCommentsKeyboardHeight(UIViewController *vc, CGFloat *outHeight) {
-    if (![vc isKindOfClass:objc_getClass("_TtC6Apollo22CommentsViewController")]) return NO;
+    if (![vc isKindOfClass:ApolloClassCommentsViewController]) return NO;
     Ivar ivar = class_getInstanceVariable(object_getClass(vc), "keyboardFrame");
     if (!ivar) return NO;
     const char *base = (const char *)(__bridge void *)vc + ivar_getOffset(ivar);
@@ -293,7 +282,7 @@ static BOOL NSBRetargetApolloTopPark(UIScrollView *sv, CGFloat *y) {
 static NSString *NSBSessionQueryText(ApolloNativeFeedSession *session) {
     UIViewController *vc = session.controller;
     if (!vc) return nil;
-    UITextField *field = (UITextField *)ApolloNSBObjectIvar(vc, "searchTextField");
+    UITextField *field = (UITextField *)ApolloObjectIvar(vc, "searchTextField");
     return [field isKindOfClass:[UITextField class]] ? field.text : nil;
 }
 
@@ -307,11 +296,11 @@ BOOL ApolloNativeFeedSearchActiveQuery(UIScrollView *tableView) {
 // A feed controller we manage: an ASTableViewController with Apollo's search
 // toolbar, excluding the comments in-thread search (stick-to-keyboard layout).
 static BOOL NSBIsNativeSearchFeedVC(UIViewController *vc) {
-    if (![vc isKindOfClass:objc_getClass("_TtC6Apollo21ASTableViewController")]) return NO;
+    if (![vc isKindOfClass:ApolloClassASTableViewController]) return NO;
     BOOL stick = NO;
     if (ApolloNSBReadBoolIvar(vc, "searchBarShouldStickToKeyboard", &stick) && stick) return NO;
-    return ApolloNSBObjectIvar(vc, "upperToolbar") != nil &&
-           ApolloNSBObjectIvar(vc, "searchTextField") != nil;
+    return ApolloObjectIvar(vc, "upperToolbar") != nil &&
+           ApolloObjectIvar(vc, "searchTextField") != nil;
 }
 
 // A comments controller we manage the same way: Apollo's in-thread "Find in
@@ -322,11 +311,11 @@ static BOOL NSBIsNativeSearchFeedVC(UIViewController *vc) {
 // comments sheet (its chrome is the sheet's glass, not a navigation bar) and a
 // 3D-touch preview (no navigation bar to host a palette).
 static BOOL NSBIsNativeSearchCommentsVC(UIViewController *vc) {
-    if (![vc isKindOfClass:objc_getClass("_TtC6Apollo22CommentsViewController")]) return NO;
+    if (![vc isKindOfClass:ApolloClassCommentsViewController]) return NO;
     BOOL stick = NO;
     if (!ApolloNSBReadBoolIvar(vc, "searchBarShouldStickToKeyboard", &stick) || !stick) return NO;
-    if (ApolloNSBObjectIvar(vc, "upperToolbar") == nil ||
-        ApolloNSBObjectIvar(vc, "searchTextField") == nil) return NO;
+    if (ApolloObjectIvar(vc, "upperToolbar") == nil ||
+        ApolloObjectIvar(vc, "searchTextField") == nil) return NO;
     BOOL preview = NO;
     if (ApolloNSBReadBoolIvar(vc, "isShowingIn3DTouchPreview", &preview) && preview) return NO;
     return !ApolloSwipeCommentsIsPaneCommentsController(vc);
@@ -338,9 +327,9 @@ static BOOL NSBIsNativeSearchVC(UIViewController *vc) {
 }
 
 static UIScrollView *NSBTableForVC(UIViewController *vc) {
-    id tableNode = ApolloNSBObjectIvar(vc, "tableNode");
+    id tableNode = ApolloObjectIvar(vc, "tableNode");
     UIView *tv = [tableNode respondsToSelector:@selector(view)] ? [tableNode view] : nil;
-    if (![tv isKindOfClass:objc_getClass("ASTableView")]) return nil;
+    if (![tv isKindOfClass:ApolloClassASTableView]) return nil;
     ApolloNativeFeedSession *session = NSBSessionForVC(vc);
     session.table = (UIScrollView *)tv;
     NSBMarkSessionView(tv, session);
@@ -367,7 +356,7 @@ static void NSBScrollBackAfterClear(UIViewController *vc, BOOL animated,
 
 static void NSBDriveApolloQuery(UIViewController *vc, NSString *text) {
     ApolloNativeFeedSession *session = NSBSessionForVC(vc);
-    UITextField *field = (UITextField *)ApolloNSBObjectIvar(vc, "searchTextField");
+    UITextField *field = (UITextField *)ApolloObjectIvar(vc, "searchTextField");
     if (![field isKindOfClass:[UITextField class]]) return;
     // A new query supersedes an in-flight dismiss: drop the geometry correction
     // AND bump the generation so a pending scroll-back completion can't tear
@@ -394,7 +383,7 @@ static void NSBDriveApolloQuery(UIViewController *vc, NSString *text) {
     void (^reload)(void) = ^{
         UIViewController *v = weakVC;
         if (!v) return;
-        id f = ApolloNSBObjectIvar(v, "searchTextField");
+        id f = ApolloObjectIvar(v, "searchTextField");
         if ([v respondsToSelector:@selector(textFieldEditingChangedWithSender:)]) {
             ((void (*)(id, SEL, id))objc_msgSend)(v, @selector(textFieldEditingChangedWithSender:), f);
         }
@@ -636,7 +625,6 @@ static CGFloat NSBNavBottomForTable(UIScrollView *table, UIViewController *vc);
 static void NSBApolloDismissNow(UIViewController *vc);
 static void NSBReleaseDismissWindowForUserScroll(UIScrollView *sv, const char *why);
 
-
 static void NSBApolloDismiss(UIViewController *vc) {
     ApolloNativeFeedSession *session = NSBSessionForVC(vc);
     if (!vc) return;
@@ -715,7 +703,7 @@ static void NSBApolloDismissNow(UIViewController *vc) {
     ApolloNativeFeedSession *session = NSBSessionForVC(vc);
     if (!vc) return;
     UIScrollView *table = NSBTableForVC(vc);
-    id field = ApolloNSBObjectIvar(vc, "searchTextField");
+    id field = ApolloObjectIvar(vc, "searchTextField");
     // Apollo's dismiss ends by restoring a `priorRefreshControl` ivar it stashes
     // when IT presents its own search UI. The native bar never runs that
     // presentation, so the ivar is nil and the restore reads as "put nil back":
@@ -846,7 +834,7 @@ static void NSBReleaseDismissWindowForUserScroll(UIScrollView *sv, const char *w
 
 static BOOL NSBManagedHeader(UIScrollView *sv) {
     UIView *hdr = [sv respondsToSelector:@selector(tableHeaderView)] ? [(UITableView *)sv tableHeaderView] : nil;
-    return [hdr isMemberOfClass:objc_getClass("ApolloSubredditHeaderWrapperView")];
+    return [hdr isMemberOfClass:ApolloClassApolloSubredditHeaderWrapperView];
 }
 
 static CGFloat NSBDesiredOffsetY(UIScrollView *sv) {
@@ -965,7 +953,7 @@ static void NSBRestoreHeaderForTable(UIScrollView *sv) {
     // Mirror Apollo's return-key behavior (runs the full server search).
     UIViewController *vc = self.feedVC;
     if (!vc) return;
-    id field = ApolloNSBObjectIvar(vc, "searchTextField");
+    id field = ApolloObjectIvar(vc, "searchTextField");
     if ([vc respondsToSelector:@selector(textFieldShouldReturn:)]) {
         ((void (*)(id, SEL, id))objc_msgSend)(vc, @selector(textFieldShouldReturn:), field);
     }
@@ -1041,7 +1029,7 @@ static void NSBAttachNativeSearch(UIViewController *vc) {
     UIScrollView *table = NSBTableForVC(vc);
     if (table) {
         objc_setAssociatedObject(table, kNSBFeedTableKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [table.panGestureRecognizer addTarget:table action:NSSelectorFromString(@"apollo_nativeSearchPanBegan:")];
+        [table.panGestureRecognizer addTarget:table action:@selector(apollo_nativeSearchPanBegan:)];
         if (@available(iOS 15.0, *)) {
             [vc setContentScrollView:table forEdge:NSDirectionalRectEdgeTop];
         }
@@ -1055,6 +1043,10 @@ static void NSBAttachNativeSearch(UIViewController *vc) {
             table.contentInset = cur;
         }
     }
+    // Hard header style: while the bar is pinned like this (here and in the
+    // other holds), UIKit draws it inside the band; keep the look it has once
+    // the scroll-away policy takes over (ApolloScrollEdgeEffect.xm, #1361).
+    ApolloHeaderStyleRegisterScrollAwaySearchBar(sc.searchBar, navItem, table);
     ApolloLog(@"[NativeSearch] attached search controller to %s", object_getClassName(vc));
 }
 
@@ -1062,7 +1054,7 @@ static void NSBAttachNativeSearch(UIViewController *vc) {
 // every layout pass — Apollo can recreate or re-show it across reloads.
 static void NSBHideApolloToolbar(UIViewController *vc) {
     ApolloNativeFeedSession *session = NSBSessionForVC(vc);
-    UIView *toolbar = (UIView *)ApolloNSBObjectIvar(vc, "upperToolbar");
+    UIView *toolbar = (UIView *)ApolloObjectIvar(vc, "upperToolbar");
     if (![toolbar isKindOfClass:[UIView class]]) return;
     if (!toolbar.hidden) {
         // Measure the band ONLY from the live (pre-hide) toolbar — once hidden
@@ -1597,7 +1589,7 @@ static void NSBViewWillDisappear(UIViewController *vc) {
     // Returning to a live search (e.g. back from an opened result): keep the
     // native bar's text in step with Apollo's field so the query stays visible.
     UISearchBar *bar = navItem.searchController.searchBar;
-    UITextField *field = (UITextField *)ApolloNSBObjectIvar(self, "searchTextField");
+    UITextField *field = (UITextField *)ApolloObjectIvar(self, "searchTextField");
     if ([field isKindOfClass:[UITextField class]] && field.text.length > 0) {
         if (![bar.text isEqualToString:field.text]) bar.text = field.text;
         // Returning to a live query: Apollo's restore re-applies its
@@ -1612,7 +1604,6 @@ static void NSBViewWillDisappear(UIViewController *vc) {
         session.typed = YES;
     }
 }
-
 
 - (void)viewDidAppear:(BOOL)animated {
     ApolloNativeFeedSession *session = (ApolloNativeFeedSearchEnabled() && NSBIsNativeSearchFeedVC((id)self))
@@ -2317,7 +2308,7 @@ static __attribute__((constructor)) void NSBCancelStandInInstall(void) {
     state.pullFromCollapsedRest = NO;
     CGFloat y = scrollView.contentOffset.y;
     if (y >= state.pullRestOffset - 0.5) return;               // not pulled past the collapsed rest
-    SEL detentsSel = NSSelectorFromString(@"_scrollDetentOffsetsForScrollView:");
+    SEL detentsSel = @selector(_scrollDetentOffsetsForScrollView:);
     if (![self respondsToSelector:detentsSel]) return;
     NSArray<NSNumber *> *detents = ((id (*)(id, SEL, id))objc_msgSend)(self, detentsSel, scrollView);
     if (![detents isKindOfClass:NSArray.class] || detents.count < 2) return;

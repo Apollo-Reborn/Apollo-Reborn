@@ -18,7 +18,7 @@
 #import "UIWindow+Apollo.h"
 #import <objc/message.h>
 #import <objc/runtime.h>
-#include <dlfcn.h>
+#import "ApolloSwiftRuntime.h"
 
 static NSString *const kApolloPollSubmitEndpoint = @"https://www.reddit.com/api/submit_poll_post.json";
 static const NSUInteger kApolloPollMinOptions = 2;
@@ -26,31 +26,7 @@ static const NSUInteger kApolloPollMaxOptions = 6;
 static const NSInteger kApolloPollDefaultDurationDays = 3;
 
 static const void *kApolloPollSegmentIndexKey = &kApolloPollSegmentIndexKey;
-static const void *kApolloPollLastSegmentKey = &kApolloPollLastSegmentKey;
 static const void *kApolloPollComposerKey = &kApolloPollComposerKey;
-
-static id ApolloPollComposeIvar(id object, const char *name) {
-    if (!object) return nil;
-    Ivar ivar = class_getInstanceVariable(object_getClass(object), name);
-    return ivar ? object_getIvar(object, ivar) : nil;
-}
-
-// Swift Optional<Array<Dictionary<String, Any>>> and Optional<Dictionary<…>>
-// store their bridged heap object in the first word. ComposePostViewController
-// does not expose ObjC getters for either flairOptions or selectedFlairOption,
-// so read that word directly (the same runtime representation used by
-// ApolloUserFlair.xm). Never use object_getIvar here: these are Swift value
-// types, not ObjC object ivars.
-static id ApolloPollComposeRawSwiftObjectIvar(id object, const char *name) {
-    if (!object) return nil;
-    Ivar ivar = class_getInstanceVariable(object_getClass(object), name);
-    if (!ivar) return nil;
-    void *rawValue = NULL;
-    memcpy(&rawValue,
-           (const uint8_t *)(__bridge const void *)object + ivar_getOffset(ivar),
-           sizeof(rawValue));
-    return (__bridge id)rawValue;
-}
 
 static NSString *ApolloPollComposeFlairString(NSDictionary *option, NSArray<NSString *> *keys) {
     if (![option isKindOfClass:NSDictionary.class]) return nil;
@@ -77,53 +53,22 @@ static NSString *ApolloPollComposeFlairTitle(NSDictionary *option) {
     return @"Untitled Flair";
 }
 
-// Decode a Swift String stored inline as a two-word struct ivar (Swift stored
-// properties have no ObjC getter). Small strings (≤15 UTF-8 bytes) decode from
-// the packed words; everything else goes through Swift's own
-// String._bridgeToObjectiveC, the same technique ApolloNativeActionMenus.xm's
-// ApolloDecodeSwiftString uses.
-static NSString *ApolloPollComposeSwiftStringIvar(id object, const char *name) {
-    if (!object) return nil;
-    Ivar ivar = class_getInstanceVariable(object_getClass(object), name);
-    if (!ivar) return nil;
-    uint64_t words[2] = {0, 0};
-    memcpy(words, (const uint8_t *)(__bridge const void *)object + ivar_getOffset(ivar), sizeof(words));
-    if (words[1] == 0) return nil;
-    uint8_t discriminator = (uint8_t)(words[1] >> 56);
-    if (discriminator >= 0xE0 && discriminator <= 0xEF) {
-        NSUInteger count = discriminator - 0xE0;
-        if (count == 0) return @"";
-        char bytes[16] = {0};
-        memcpy(bytes, &words[0], 8);
-        uint64_t highClean = words[1] & 0x00FFFFFFFFFFFFFFULL;
-        memcpy(bytes + 8, &highClean, 7);
-        return [[NSString alloc] initWithBytes:bytes length:count encoding:NSUTF8StringEncoding];
-    }
-    typedef NSString *(*BridgeFn)(uint64_t, uint64_t);
-    static BridgeFn sBridge = NULL;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        sBridge = (BridgeFn)dlsym(RTLD_DEFAULT, "$sSS10FoundationE19_bridgeToObjectiveCSo8NSStringCyF");
-    });
-    return sBridge ? sBridge(words[0], words[1]) : nil;
-}
-
 // The subreddit the compose sheet is posting to. Prefer the RDKSubreddit
 // object; fall back to the Swift subredditName string (set even when Apollo
 // was handed just a name).
 static NSString *ApolloPollComposeSubredditName(id composeVC) {
-    id subreddit = ApolloPollComposeIvar(composeVC, "subreddit");
+    id subreddit = ApolloObjectIvar(composeVC, "subreddit");
     if ([subreddit respondsToSelector:@selector(name)]) {
         NSString *name = ((NSString *(*)(id, SEL))objc_msgSend)(subreddit, @selector(name));
         if ([name isKindOfClass:NSString.class] && name.length > 0) return name;
     }
-    return ApolloPollComposeSwiftStringIvar(composeVC, "subredditName");
+    return ApolloReadSwiftStringIvar(composeVC, "subredditName");
 }
 
 // The account the sheet will post as: the compose account switcher's temporary
 // pick when set, otherwise the app's active account.
 static NSString *ApolloPollComposeUsername(id composeVC) {
-    id account = ApolloPollComposeIvar(composeVC, "temporaryPostingAccount");
+    id account = ApolloObjectIvar(composeVC, "temporaryPostingAccount");
     for (NSString *key in @[ @"username", @"name" ]) {
         if (![account respondsToSelector:NSSelectorFromString(key)]) continue;
         NSString *name = [account valueForKey:key];
@@ -149,7 +94,7 @@ static void ApolloPollComposeApplyPendingPostType(id composeVC) {
     NSString *pending = sApolloPollPendingPostType;
     sApolloPollPendingPostType = nil;
     if (pending.length == 0 || CFAbsoluteTimeGetCurrent() - sApolloPollPendingPostTypeSetAt > 30.0) return;
-    UISegmentedControl *control = ApolloPollComposeIvar(composeVC, "postTypeSegmentedControl");
+    UISegmentedControl *control = ApolloObjectIvar(composeVC, "postTypeSegmentedControl");
     if (![control isKindOfClass:UISegmentedControl.class]) return;
 
     // Match the picked type against the compose sheet's segment titles
@@ -180,8 +125,7 @@ static void ApolloPollComposeApplyPendingPostType(id composeVC) {
 }
 
 static UIViewController *ApolloPollComposeVisibleViewController(void) {
-    for (UIWindow *window in ApolloAllWindows()) if (window.isKeyWindow) return window.visibleViewController;
-    return ApolloAllWindows().firstObject.visibleViewController;
+    return (ApolloKeyWindow() ?: ApolloAllWindows().firstObject).visibleViewController;
 }
 
 // Loads one of the tweak's bundled custom post-type symbols. These are SF
@@ -216,7 +160,7 @@ UIImage *ApolloPollComposeSymbol(NSString *symbolName) {
 // rides the Polls gate rather than silently replacing the default row.
 UIMenu *ApolloSubmitPostTypesMenu(__unused id actionController, void (^selectRow)(void)) {
     if (!ApolloPollsFeatureEnabled()) return nil;
-    id subreddit = ApolloPollComposeIvar(ApolloPollComposeVisibleViewController(), "currentSubreddit");
+    id subreddit = ApolloObjectIvar(ApolloPollComposeVisibleViewController(), "currentSubreddit");
     NSInteger submissionType = 1;
     BOOL allowImages = YES;
     if ([subreddit respondsToSelector:@selector(acceptedSubmissionsType)]) {
@@ -332,7 +276,10 @@ UIMenu *ApolloSubmitPostTypesMenu(__unused id actionController, void (^selectRow
 }
 
 - (void)refreshFlairOptions {
-    id rawOptions = ApolloPollComposeRawSwiftObjectIvar(self.composeHost, "flairOptions");
+    // Swift Optional<Array<Dictionary<String, Any>>> stores its bridged heap
+    // object in the first word and has no ObjC getter, so read that word
+    // directly (never object_getIvar: it's a Swift value type, not an ObjC ivar).
+    id rawOptions = ApolloReadObjectIvar(self.composeHost, "flairOptions");
     if ([rawOptions isKindOfClass:NSArray.class]) {
         NSMutableArray<NSDictionary *> *valid = [NSMutableArray array];
         for (id option in (NSArray *)rawOptions) {
@@ -343,7 +290,7 @@ UIMenu *ApolloSubmitPostTypesMenu(__unused id actionController, void (^selectRow
         self.flairOptions = @[];
     }
     if (!self.selectedFlairOption) {
-        id selected = ApolloPollComposeRawSwiftObjectIvar(self.composeHost, "selectedFlairOption");
+        id selected = ApolloReadObjectIvar(self.composeHost, "selectedFlairOption");
         if ([selected isKindOfClass:NSDictionary.class]) self.selectedFlairOption = selected;
     }
 }
@@ -528,7 +475,7 @@ UIMenu *ApolloSubmitPostTypesMenu(__unused id actionController, void (^selectRow
 
 - (void)setSubmitting:(BOOL)submitting {
     _submitting = submitting;
-    UISegmentedControl *segments = ApolloPollComposeIvar(self.composeHost, "postTypeSegmentedControl");
+    UISegmentedControl *segments = ApolloObjectIvar(self.composeHost, "postTypeSegmentedControl");
     segments.enabled = !submitting;
     if (submitting) {
         UIActivityIndicatorView *spinner = [[UIActivityIndicatorView alloc]
@@ -653,7 +600,7 @@ UIMenu *ApolloSubmitPostTypesMenu(__unused id actionController, void (^selectRow
                     message = serverMessage ?: @"Reddit did not authorize this poll. You may not be allowed to post polls in this subreddit.";
                 }
                 else if (status >= 500) message = @"Reddit is temporarily unavailable. Try again later.";
-                ApolloLog(@"[PollCompose] submit failed status=%ld code=%ld", (long)status, (long)error.code);
+                ApolloLogError(@"[PollCompose] submit failed status=%ld code=%ld", (long)status, (long)error.code);
                 [self showError:message ?: (status > 0 ? [NSString stringWithFormat:@"Reddit returned HTTP %ld.", (long)status] : @"Reddit could not be reached.")];
                 return;
             }
@@ -720,7 +667,7 @@ static void ApolloPollComposePresentComposer(UIViewController *composeVC) {
     composer.composeHost = composeVC;
     composer.originalComposeTitle = composeVC.navigationItem.title ?: composeVC.title;
     composeVC.navigationItem.title = @"Poll";
-    UITableView *nativeTable = ApolloPollComposeIvar(composeVC, "tableView");
+    UITableView *nativeTable = ApolloObjectIvar(composeVC, "tableView");
     UITableViewCell *nativeCell = [nativeTable.visibleCells firstObject];
     // Use the same semantic surface roles that the settings controllers use,
     // rather than sampling the presenting controller.  The latter is the
@@ -749,7 +696,7 @@ static void ApolloPollComposePresentComposer(UIViewController *composeVC) {
     [NSLayoutConstraint activateConstraints:@[
         [view.leadingAnchor constraintEqualToAnchor:composeVC.view.leadingAnchor],
         [view.trailingAnchor constraintEqualToAnchor:composeVC.view.trailingAnchor],
-        [view.topAnchor constraintEqualToAnchor:((UIView *)ApolloPollComposeIvar(composeVC, "postTypeSegmentedControl")).bottomAnchor constant:8.0],
+        [view.topAnchor constraintEqualToAnchor:((UIView *)ApolloObjectIvar(composeVC, "postTypeSegmentedControl")).bottomAnchor constant:8.0],
         [view.bottomAnchor constraintEqualToAnchor:composeVC.view.bottomAnchor],
     ]];
     [composer didMoveToParentViewController:composeVC];
@@ -771,7 +718,7 @@ static void ApolloPollComposeHideComposer(UIViewController *composeVC) {
 // check so re-appearances are no-ops.
 static void ApolloPollComposeInstallSegment(id composeVC) {
     if (!ApolloPollsFeatureEnabled()) return;
-    UISegmentedControl *control = ApolloPollComposeIvar(composeVC, "postTypeSegmentedControl");
+    UISegmentedControl *control = ApolloObjectIvar(composeVC, "postTypeSegmentedControl");
     if (![control isKindOfClass:UISegmentedControl.class] || control.numberOfSegments == 0) {
         return;
     }
@@ -784,8 +731,6 @@ static void ApolloPollComposeInstallSegment(id composeVC) {
     [control insertSegmentWithTitle:@"Poll" atIndex:control.numberOfSegments animated:NO];
     objc_setAssociatedObject(composeVC, kApolloPollSegmentIndexKey,
                              @(control.numberOfSegments - 1), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(composeVC, kApolloPollLastSegmentKey,
-                             @(control.selectedSegmentIndex), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 %hook _TtC6Apollo25ComposePostViewController
@@ -806,11 +751,7 @@ static void ApolloPollComposeInstallSegment(id composeVC) {
         return;
     }
     ApolloPollComposeHideComposer((UIViewController *)self);
-    objc_setAssociatedObject(self, kApolloPollLastSegmentKey,
-                             @(sender.selectedSegmentIndex), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     %orig;
 }
 
 %end
-
-%ctor {}

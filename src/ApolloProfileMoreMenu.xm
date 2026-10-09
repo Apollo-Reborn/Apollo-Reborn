@@ -12,7 +12,10 @@
 //
 //   • Gallery View                — the same grid the subreddit/profile
 //                                   menus open, pointed at your own posts
-//   • Edit Profile                — what the header's Edit pill used to do
+//   • Edit Profile                — Reddit's profile editor, opened inside
+//                                   Apollo and signed in as this account
+//                                   (ApolloProfileEditorWebViewController.m);
+//                                   what the header's Edit pill used to do
 //                                   (the pill itself is deleted from
 //                                   ApolloUserAvatars.xm)
 //   • Recently Read               — what the standalone clock button used to
@@ -52,11 +55,12 @@
 
 #import "ApolloAccountCredentials.h"
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloGalleryViewController.h"
+#import "ApolloProfileEditorWebViewController.h"
 
 // Defined in ApolloUserAvatars.xm.
 extern NSString *ApolloUsernameFromProfileViewController(UIViewController *viewController);
-extern void ApolloProfileOpenRedditProfileEditor(void);
 // Defined in ApolloRecentlyRead.xm.
 extern void ApolloRecentlyReadPresentFromViewController(UIViewController *fromViewController);
 
@@ -83,10 +87,7 @@ static BOOL ApolloProfileMoreMenuIsNormalizing(UINavigationItem *navigationItem)
 // Apollo's own "..." item. The ivar always exists (it's a stored `let` on the
 // Swift class); whether it's INSTALLED in the navigation item is what varies.
 static UIBarButtonItem *ApolloProfileMoreMenuApolloItem(UIViewController *viewController) {
-    if (!viewController) return nil;
-    Ivar ivar = class_getInstanceVariable(object_getClass(viewController), "moreOptionsBarButtonItem");
-    if (!ivar) return nil;
-    id value = object_getIvar(viewController, ivar);
+    id value = ApolloObjectIvar(viewController, "moreOptionsBarButtonItem");
     return [value isKindOfClass:[UIBarButtonItem class]] ? (UIBarButtonItem *)value : nil;
 }
 
@@ -161,7 +162,8 @@ static UIMenu *ApolloProfileMoreMenuBuild(UIViewController *viewController) {
                                          image:[UIImage systemImageNamed:@"pencil"]
                                     identifier:nil
                                        handler:^(__unused __kindof UIAction *action) {
-        ApolloProfileOpenRedditProfileEditor();
+        UIViewController *vc = weakVC;
+        if (vc) ApolloProfileEditorOpenFromViewController(vc);
     }];
 
     UIAction *recentlyRead = [UIAction actionWithTitle:@"Recently Read"
@@ -211,8 +213,9 @@ static void ApolloProfileMoreMenuNormalize(UIViewController *viewController) {
 
     NSString *active = ApolloActiveAccountUsername();
     NSString *resolved = ApolloUsernameFromProfileViewController(viewController);
-    BOOL clearlySomeoneElse = resolved.length > 0 && active.length > 0 &&
-        ![resolved.lowercaseString isEqualToString:active.lowercaseString];
+    BOOL bothKnown = resolved.length > 0 && active.length > 0;
+    BOOL resolvedAsOwn = bothKnown && [resolved caseInsensitiveCompare:active] == NSOrderedSame;
+    BOOL clearlySomeoneElse = bothKnown && !resolvedAsOwn;
     BOOL apolloMenuInstalled = apolloItem && [currentItems containsObject:apolloItem];
     // On a PUSHED profile the username hasn't necessarily resolved by the
     // first normalize pass, and before it does `clearlySomeoneElse` can't
@@ -223,8 +226,6 @@ static void ApolloProfileMoreMenuNormalize(UIViewController *viewController) {
     // user's own profile, so it keeps the immediate install.
     BOOL pushedProfile = viewController.navigationController != nil &&
         viewController.navigationController.viewControllers.firstObject != viewController;
-    BOOL resolvedAsOwn = resolved.length > 0 && active.length > 0 &&
-        [resolved.lowercaseString isEqualToString:active.lowercaseString];
     // The signed-in user's profile: an account is active, the screen isn't
     // (and, if pushed, provably can't be) showing someone else, and Apollo
     // hasn't put up its own "...".
@@ -288,11 +289,15 @@ static UIViewController *ApolloProfileMoreMenuOwnerForNavigationItem(UINavigatio
 
 static void ApolloProfileMoreMenuAdoptNavigationItem(UIViewController *viewController) {
     UINavigationItem *navigationItem = viewController.navigationItem;
-    if (!navigationItem) return;
     NSHashTable *holder = [NSHashTable weakObjectsHashTable];
     [holder addObject:viewController];
     objc_setAssociatedObject(navigationItem, &kApolloProfileMoreMenuNavOwnerKey, holder,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void ApolloProfileMoreMenuNavigationItemChanged(UINavigationItem *navigationItem) {
+    UIViewController *owner = ApolloProfileMoreMenuOwnerForNavigationItem(navigationItem);
+    if (owner) ApolloProfileMoreMenuNormalize(owner);
 }
 
 #pragma mark - Hooks
@@ -336,25 +341,19 @@ static void ApolloProfileMoreMenuAdoptNavigationItem(UIViewController *viewContr
 
 - (void)setRightBarButtonItems:(NSArray *)items {
     %orig;
-    if (ApolloProfileMoreMenuIsNormalizing(self)) return;
-    UIViewController *owner = ApolloProfileMoreMenuOwnerForNavigationItem(self);
-    if (owner) ApolloProfileMoreMenuNormalize(owner);
+    ApolloProfileMoreMenuNavigationItemChanged(self);
 }
 
 - (void)setRightBarButtonItems:(NSArray *)items animated:(BOOL)animated {
     %orig;
-    if (ApolloProfileMoreMenuIsNormalizing(self)) return;
-    UIViewController *owner = ApolloProfileMoreMenuOwnerForNavigationItem(self);
-    if (owner) ApolloProfileMoreMenuNormalize(owner);
+    ApolloProfileMoreMenuNavigationItemChanged(self);
 }
 
 // The singular form doesn't necessarily funnel through the plural public
 // setter, so it gets its own hook.
 - (void)setRightBarButtonItem:(UIBarButtonItem *)item {
     %orig;
-    if (ApolloProfileMoreMenuIsNormalizing(self)) return;
-    UIViewController *owner = ApolloProfileMoreMenuOwnerForNavigationItem(self);
-    if (owner) ApolloProfileMoreMenuNormalize(owner);
+    ApolloProfileMoreMenuNavigationItemChanged(self);
 }
 
 %end

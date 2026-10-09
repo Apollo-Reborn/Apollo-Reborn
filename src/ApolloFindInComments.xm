@@ -58,6 +58,8 @@
 
 #import "ApolloCommon.h"
 #import "ipad/ApolloPaneLayout.h"
+#import "ApolloSwiftRuntime.h"
+#import "ApolloClasses.h"
 
 // MARK: - minimal local Texture declarations
 //
@@ -144,24 +146,12 @@ static NSString *sFICMultiQuery = nil;            // full query the native code 
 
 // MARK: - helpers
 
-static ptrdiff_t FICIvarOffset(id obj, const char *name) {
-    if (!obj) return -1;
-    Ivar iv = class_getInstanceVariable(object_getClass(obj), name);
-    return iv ? ivar_getOffset(iv) : -1;
-}
-
-static id FICObjectIvar(id obj, const char *name) {
-    if (!obj) return nil;
-    Ivar iv = class_getInstanceVariable(object_getClass(obj), name);
-    return iv ? object_getIvar(obj, iv) : nil;
-}
-
 // The comments search state Swift struct stored inline in ASTableViewController:
 // { Int currentIndex; [CommentsSearchMatch] matches } — matches' storage pointer
 // is NULL when no search is active (verified against sub_1002bbe18, which
 // renders the "index+1/count" label from these exact two words).
 static BOOL FICSearchIsActive(id vc) {
-    ptrdiff_t off = FICIvarOffset(vc, "commentsSearch");
+    ptrdiff_t off = ApolloIvarOffset(object_getClass(vc), "commentsSearch");
     if (off < 0) return NO;
     uintptr_t matches = *(uintptr_t *)((char *)(__bridge void *)vc + off + sizeof(intptr_t));
     return matches != 0;
@@ -171,9 +161,7 @@ static BOOL FICSearchIsActive(id vc) {
 // bar; searchBarShouldStickToKeyboard is what the app itself uses to tell them
 // apart (YES == the comments find bar).
 static BOOL FICIsCommentsSearchVC(id vc) {
-    ptrdiff_t off = FICIvarOffset(vc, "searchBarShouldStickToKeyboard");
-    if (off < 0) return NO;
-    return *((char *)(__bridge void *)vc + off) != 0;
+    return ApolloReadBoolIvar(vc, "searchBarShouldStickToKeyboard", NO);
 }
 
 // Split "a, b, c" into trimmed non-empty terms. Only comma queries qualify;
@@ -206,7 +194,7 @@ static BOOL FICVerifyOnce(ApolloCommentsFindSession *session, NSUInteger gen) {
     if (session.matchRange.location == NSNotFound) return NO;
     if (!FICSearchIsActive(vc)) return NO;   // bar dismissed / query cleared
 
-    ASTableNode *tableNode = FICObjectIvar(vc, "tableNode");
+    ASTableNode *tableNode = ApolloObjectIvar(vc, "tableNode");
     UITableView *tableView = [tableNode isNodeLoaded] ? [tableNode view] : nil;
     if (!tableView || !tableView.window) return NO;
     if (@available(iOS 13.0, *)) {
@@ -232,7 +220,7 @@ static BOOL FICVerifyOnce(ApolloCommentsFindSession *session, NSUInteger gen) {
     // Locate the match's row from live geometry: text node -> owning cell node
     // -> index path -> row rect (all current, unlike the native one-shot math).
     ASDisplayNode *cellNode = node;
-    Class cellClass = objc_getClass("ASCellNode");
+    Class cellClass = ApolloClassASCellNode;
     while (cellNode && ![cellNode isKindOfClass:cellClass]) cellNode = cellNode.supernode;
     if (!cellNode) return NO;
     NSIndexPath *indexPath = [tableNode indexPathForNode:(ASCellNode *)cellNode];
@@ -262,7 +250,7 @@ static BOOL FICVerifyOnce(ApolloCommentsFindSession *session, NSUInteger gen) {
     // while active) floats over the table WITHOUT contributing to the insets,
     // so "visible" would otherwise extend behind its translucent glass. Trim
     // the bottom to the bar's top edge so corrections keep the match clear of it.
-    UIView *barAncestor = [FICObjectIvar(vc, "searchTextField") superview];
+    UIView *barAncestor = [ApolloObjectIvar(vc, "searchTextField") superview];
     while (barAncestor && !strstr(object_getClassName(barAncestor), "SearchToolbar")) {
         barAncestor = barAncestor.superview;
     }
@@ -437,9 +425,9 @@ static char kPaneFindToolbarBand;
 
 API_AVAILABLE(ios(16.0))
 @implementation ApolloPaneFindAdapter
-- (UITextField *)nativeField { return FICObjectIvar(self.controller, "searchTextField"); }
+- (UITextField *)nativeField { return ApolloObjectIvar(self.controller, "searchTextField"); }
 - (NSArray<NSNumber *> *)nativeCounts {
-    UILabel *label = FICObjectIvar(self.controller, "searchIndexInfoLabel");
+    UILabel *label = ApolloObjectIvar(self.controller, "searchIndexInfoLabel");
     NSArray *parts = [label.text componentsSeparatedByCharactersInSet:NSCharacterSet.decimalDigitCharacterSet.invertedSet];
     NSMutableArray *counts = [NSMutableArray array];
     for (NSString *part in parts) if (part.length) [counts addObject:@(part.integerValue)];
@@ -479,13 +467,10 @@ API_AVAILABLE(ios(16.0))
     return self.nativeField ? self : nil;
 }
 - (void)findInteraction:(UIFindInteraction *)interaction didBeginFindSession:(UIFindSession *)session {
-    ptrdiff_t offset = FICIvarOffset(self.controller, "isSearching");
-    if (offset >= 0) {
-        uint8_t *flag = (uint8_t *)(__bridge void *)self.controller + offset;
-        self.previousSearching = *flag != 0;
-        *flag = 1;
-    }
-    UIView *toolbar = FICObjectIvar(self.controller, "upperToolbar");
+    self.previousSearching = ApolloReadBoolIvar(self.controller, "isSearching", NO);
+    ptrdiff_t offset = ApolloIvarOffset(object_getClass(self.controller), "isSearching");
+    if (offset >= 0) *((uint8_t *)(__bridge void *)self.controller + offset) = 1;
+    UIView *toolbar = ApolloObjectIvar(self.controller, "upperToolbar");
     self.previousToolbarHidden = toolbar.hidden;
     toolbar.hidden = YES;
 }
@@ -495,9 +480,9 @@ API_AVAILABLE(ios(16.0))
     // Apollo clears its match list, but leaves rendering blocks on text nodes.
     // Restore the original Markdown rendering rather than clearing the blocks.
     ApolloFindInCommentsRestoreHighlights(self.controller);
-    ptrdiff_t offset = FICIvarOffset(self.controller, "isSearching");
+    ptrdiff_t offset = ApolloIvarOffset(object_getClass(self.controller), "isSearching");
     if (offset >= 0) *((uint8_t *)(__bridge void *)self.controller + offset) = self.previousSearching;
-    UIView *toolbar = FICObjectIvar(self.controller, "upperToolbar");
+    UIView *toolbar = ApolloObjectIvar(self.controller, "upperToolbar");
     toolbar.hidden = self.previousToolbarHidden;
 }
 @end
@@ -505,7 +490,7 @@ API_AVAILABLE(ios(16.0))
 extern "C" BOOL ApolloPanePrepareCommentsFind(UIViewController *controller) {
     if (!ApolloPaneSplitControllerFor(controller) || !FICIsCommentsSearchVC(controller)) return NO;
     if (@available(iOS 16.0, *)) {
-        if (!FICObjectIvar(controller, "searchTextField")) return NO;
+        if (!ApolloObjectIvar(controller, "searchTextField")) return NO;
         ApolloPaneFindAdapter *adapter = objc_getAssociatedObject(controller, &kPaneFindAdapter);
         if (!adapter) {
             adapter = [ApolloPaneFindAdapter new];
@@ -517,8 +502,8 @@ extern "C" BOOL ApolloPanePrepareCommentsFind(UIViewController *controller) {
             [controller.view addInteraction:adapter.interaction];
             objc_setAssociatedObject(controller, &kPaneFindAdapter, adapter, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
-        UIView *toolbar = FICObjectIvar(controller, "upperToolbar");
-        ASTableNode *node = FICObjectIvar(controller, "tableNode");
+        UIView *toolbar = ApolloObjectIvar(controller, "upperToolbar");
+        ASTableNode *node = ApolloObjectIvar(controller, "tableNode");
         UITableView *table = node.isNodeLoaded ? node.view : nil;
         if (!objc_getAssociatedObject(table, &kPaneFindToolbarBand)) {
             CGFloat band = CGRectGetHeight(toolbar.bounds);
@@ -642,7 +627,7 @@ extern "C" NSDictionary *ApolloPaneSimFind(UIViewController *controller, NSStrin
 
 %ctor {
     %init;
-    BOOL stringHookInstalled = FICInstallStringHook(objc_getClass("NSString"));
+    BOOL stringHookInstalled = FICInstallStringHook([NSString class]);
     ApolloLog(@"[FindInComments] scroll watchdog installed; comma multi-term search %@",
               stringHookInstalled ? @"installed" : @"unavailable (NSString method missing)");
 }

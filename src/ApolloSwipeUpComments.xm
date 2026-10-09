@@ -14,6 +14,7 @@
 // album paging, zooming, and the separate video scrub recognizer remain native.
 
 #import <Foundation/Foundation.h>
+#import <AVFoundation/AVFoundation.h>
 #import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
 #import <dlfcn.h>
@@ -21,8 +22,14 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwipeCommentsMediaPolicy.h"
 #import "ApolloState.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloThemeRuntime.h"
+
+// The PiP controller is the higher-priority owner. A pane session must never
+// pull a layer back from PiP or restart a player that PiP deliberately owns.
+extern BOOL ApolloPiP_IsOwnedPlayer(AVPlayer *player);
 
 static const CGFloat kApolloSwipeCommentsMinimumUpwardVelocity = 250.0;
 static const CGFloat kApolloSwipeCommentsMinimumUpwardDistance = 72.0;
@@ -46,6 +53,8 @@ static char kApolloSwipeCommentsTitleGlassPinnedKey;
 static char kApolloSwipeCommentsGlassConfiguredKey;
 static char kApolloSwipeCommentsPaneCleanupKey;
 static char kApolloSwipeCommentsPaneTableCacheKey;
+static char kApolloSwipeCommentsMediaSessionKey;
+static char kApolloSwipeCommentsPlayerSessionKey;
 
 // How many media panes are currently alive (from capture kickoff to the pane
 // controller's dealloc). Every pane-only hook that runs on shared/global
@@ -55,6 +64,7 @@ static char kApolloSwipeCommentsPaneTableCacheKey;
 // walks per cell/layout pass. Atomic because the balancing decrement runs in
 // dealloc, which is not guaranteed to be on the main thread.
 #include <atomic>
+#import "ApolloClasses.h"
 static std::atomic<intptr_t> sApolloSwipeCommentsLivePanes(0);
 static inline BOOL ApolloSwipeCommentsAnyLivePane(void) {
     return sApolloSwipeCommentsLivePanes.load(std::memory_order_relaxed) > 0;
@@ -104,40 +114,10 @@ struct ApolloSwipeCommentsSizeRange { CGSize min; CGSize max; };
 }
 @end
 
-static id ApolloSwipeCommentsObjectIvar(id object, const char *name) {
-    if (!object || !name) return nil;
-    Ivar ivar = class_getInstanceVariable([object class], name);
-    if (!ivar) return nil;
-    @try {
-        return object_getIvar(object, ivar);
-    } @catch (__unused NSException *exception) {
-        return nil;
-    }
-}
-
 // `navigationControllerToPushCommentsOnto` is a Swift weak reference, not an
 // Objective-C __weak ivar. Read/write it through the Swift runtime just as the
 // app's native comments action does; object_getIvar/objc_loadWeak are not valid
 // for this storage representation.
-static void *ApolloSwipeCommentsSwiftWeakSlot(id object, const char *name) {
-    if (!object || !name) return NULL;
-    Ivar ivar = class_getInstanceVariable([object class], name);
-    if (!ivar) return NULL;
-    return (uint8_t *)(__bridge void *)object + ivar_getOffset(ivar);
-}
-
-static id ApolloSwipeCommentsLoadSwiftWeak(id object, const char *name) {
-    typedef void *(*LoadStrongFunction)(void *slot);
-    static LoadStrongFunction loadStrong;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        loadStrong = (LoadStrongFunction)dlsym(RTLD_DEFAULT, "swift_unknownObjectWeakLoadStrong");
-    });
-    void *slot = ApolloSwipeCommentsSwiftWeakSlot(object, name);
-    void *value = slot && loadStrong ? loadStrong(slot) : NULL;
-    return value ? CFBridgingRelease(value) : nil;
-}
-
 static BOOL ApolloSwipeCommentsAssignSwiftWeak(id object, const char *name, id value) {
     typedef void (*AssignFunction)(void *slot, void *value);
     static AssignFunction assign;
@@ -145,10 +125,236 @@ static BOOL ApolloSwipeCommentsAssignSwiftWeak(id object, const char *name, id v
     dispatch_once(&once, ^{
         assign = (AssignFunction)dlsym(RTLD_DEFAULT, "swift_unknownObjectWeakAssign");
     });
-    void *slot = ApolloSwipeCommentsSwiftWeakSlot(object, name);
-    if (!slot || !assign) return NO;
-    assign(slot, (__bridge void *)value);
+    ptrdiff_t offset = ApolloIvarOffset(object_getClass(object), name);
+    if (offset < 0 || !assign) return NO;
+    assign((uint8_t *)(__bridge void *)object + offset, (__bridge void *)value);
     return YES;
+}
+
+#pragma mark - Fullscreen media ownership while the pane is open
+
+// The comments controller constructs its normal post header before the pane
+// collapses that row. For videos, that hidden header can take Apollo's one
+// shared AVPlayerLayer away from the still-visible fullscreen viewer. Its
+// preload/visibility churn can also broadcast Apollo's pause-all notification.
+// GIF views have the analogous problem: the second header can stop the
+// fullscreen FLAnimatedImageView's display link.
+//
+// Keep one page-scoped snapshot for the pane lifetime. It neither creates a
+// player nor claims audio. It only restores the exact player/layer/animated
+// view that was active before Apollo built the hidden header, and only while
+// that same MediaViewerController remains the pager's current page. Paging,
+// dismissal, and PiP therefore revoke the protection automatically.
+@interface ApolloSwipeCommentsMediaSession : NSObject
+@property (nonatomic, weak) UIViewController *mediaController;
+@property (nonatomic, weak) UIViewController *mediaViewer;
+@property (nonatomic, weak) AVPlayer *player;
+@property (nonatomic, weak) AVPlayerLayer *playerLayer;
+@property (nonatomic, weak) CALayer *playerLayerHost;
+@property (nonatomic) float intendedPlaybackRate;
+@property (nonatomic, weak) UIView *animatedImageView;
+@property (nonatomic) BOOL animatedImageWasPlaying;
+@property (nonatomic) BOOL active;
+- (BOOL)protectsCurrentPage;
+- (void)restoreWithReason:(NSString *)reason;
+- (void)invalidate;
+@end
+
+static UIViewController *ApolloSwipeCommentsCurrentMediaViewer(UIViewController *mediaController) {
+    if (![mediaController respondsToSelector:@selector(viewControllers)]) return nil;
+    NSArray *viewControllers = ((id (*)(id, SEL))objc_msgSend)(
+        mediaController, @selector(viewControllers));
+    id current = [viewControllers isKindOfClass:NSArray.class] ? viewControllers.firstObject : nil;
+    Class mediaViewerClass = ApolloClassMediaViewerController;
+    return mediaViewerClass && [current isKindOfClass:mediaViewerClass] ? current : nil;
+}
+
+static AVPlayerLayer *ApolloSwipeCommentsPlayerLayerForViewer(UIViewController *viewer,
+                                                               AVPlayer **playerOut) {
+    AVPlayer *player = ApolloObjectIvar(viewer, "player");
+    id container = ApolloObjectIvar(viewer, "playerLayerContainerView");
+    AVPlayerLayer *layer = ApolloObjectIvar(container, "playerLayer");
+    if (![layer isKindOfClass:AVPlayerLayer.class]) layer = nil;
+    if (!player) player = layer.player;
+    if (playerOut) *playerOut = player;
+    return layer;
+}
+
+static BOOL ApolloSwipeCommentsViewerPlaybackSpeed(UIViewController *viewer, float *speedOut) {
+    Ivar ivar = viewer ? class_getInstanceVariable([viewer class], "videoPlaybackSpeed") : nil;
+    if (!ivar) return NO;
+    const uint8_t *storage = (const uint8_t *)(__bridge const void *)viewer + ivar_getOffset(ivar);
+    // Swift Float?: value at +0, discriminator at +4; zero discriminator is .some.
+    if (storage[4] != 0) return NO;
+    float speed = 0.0f;
+    memcpy(&speed, storage, sizeof(speed));
+    if (!isfinite(speed) || speed <= 0.0f) return NO;
+    if (speedOut) *speedOut = speed;
+    return YES;
+}
+
+static float ApolloSwipeCommentsPlayerIntendedRate(UIViewController *viewer, AVPlayer *player) {
+    if (!player) return 0.0f;
+    float apolloRate = 0.0f;
+    BOOL hasApolloRate = ApolloSwipeCommentsViewerPlaybackSpeed(viewer, &apolloRate);
+    float defaultRate = 0.0f;
+    BOOL hasDefaultRate = NO;
+    if (@available(iOS 16.0, *)) {
+        defaultRate = player.defaultRate;
+        hasDefaultRate = isfinite(defaultRate) && defaultRate > 0.0f;
+    }
+    return ApolloSwipeCommentsMediaCapturedRate(
+        player.rate,
+        player.timeControlStatus == AVPlayerTimeControlStatusWaitingToPlayAtSpecifiedRate,
+        hasApolloRate, apolloRate, hasDefaultRate, defaultRate);
+}
+
+static UIView *ApolloSwipeCommentsAnimatedImageViewInTree(UIView *root) {
+    if (!root || root.hidden || root.alpha <= 0.01) return nil;
+    Class animatedClass = ApolloClassFLAnimatedImageView;
+    if (animatedClass && [root isKindOfClass:animatedClass] &&
+        ApolloObjectIvar(root, "_animatedImage")) {
+        return root;
+    }
+    for (UIView *child in root.subviews) {
+        UIView *match = ApolloSwipeCommentsAnimatedImageViewInTree(child);
+        if (match) return match;
+    }
+    return nil;
+}
+
+@implementation ApolloSwipeCommentsMediaSession
+
+- (BOOL)protectsCurrentPage {
+    BOOL current = self.mediaController && self.mediaViewer &&
+        ApolloSwipeCommentsCurrentMediaViewer(self.mediaController) == self.mediaViewer;
+    BOOL pipOwns = self.player && ApolloPiP_IsOwnedPlayer(self.player);
+    return ApolloSwipeCommentsMediaShouldProtect(self.active, current, pipOwns);
+}
+
+- (void)restoreWithReason:(NSString *)reason {
+    BOOL protects = [self protectsCurrentPage];
+    if (!protects) return;
+
+    BOOL layerMoved = ApolloSwipeCommentsMediaShouldRestoreLayer(
+        protects, self.playerLayer != nil, self.playerLayer.superlayer == self.playerLayerHost);
+    if (layerMoved && self.playerLayerHost) {
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        [self.playerLayer removeFromSuperlayer];
+        [self.playerLayerHost addSublayer:self.playerLayer];
+        self.playerLayer.frame = self.playerLayerHost.bounds;
+        [CATransaction commit];
+        ApolloLog(@"[SwipeCommentsMedia] restored fullscreen player layer (%@)", reason);
+    }
+
+    AVPlayer *player = self.player;
+    float currentRate = ApolloSwipeCommentsPlayerIntendedRate(self.mediaViewer, player);
+    float restoreRate = ApolloSwipeCommentsMediaRateToRestore(
+        protects, self.intendedPlaybackRate, currentRate);
+    if (restoreRate > 0.0f) {
+        // Match Apollo's own playback-speed path. setRate: preserves normal
+        // buffering policy, unlike playImmediatelyAtRate:, and retains custom
+        // 0.5x/1.5x (plus Reborn's 0.75x/1.25x) choices.
+        [player setRate:restoreRate];
+        ApolloLog(@"[SwipeCommentsMedia] restored fullscreen player rate %.2fx (%@)",
+                  restoreRate, reason);
+    }
+
+    UIView *animatedView = self.animatedImageView;
+    if (self.animatedImageWasPlaying && animatedView &&
+        [animatedView respondsToSelector:@selector(startAnimating)]) {
+        ((void (*)(id, SEL))objc_msgSend)(animatedView, @selector(startAnimating));
+        ApolloLog(@"[SwipeCommentsMedia] resumed fullscreen GIF (%@)", reason);
+    }
+}
+
+- (void)invalidate {
+    if (!self.active) return;
+    self.active = NO;
+    AVPlayer *player = self.player;
+    if (player && objc_getAssociatedObject(player, &kApolloSwipeCommentsPlayerSessionKey) == self) {
+        objc_setAssociatedObject(player, &kApolloSwipeCommentsPlayerSessionKey, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
+- (void)dealloc {
+    [self invalidate];
+}
+
+@end
+
+static ApolloSwipeCommentsMediaSession *ApolloSwipeCommentsCaptureMediaSession(
+    UIViewController *mediaController) {
+    ApolloSwipeCommentsMediaSession *old = objc_getAssociatedObject(
+        mediaController, &kApolloSwipeCommentsMediaSessionKey);
+    [old invalidate];
+
+    UIViewController *viewer = ApolloSwipeCommentsCurrentMediaViewer(mediaController);
+    if (!viewer) {
+        objc_setAssociatedObject(mediaController, &kApolloSwipeCommentsMediaSessionKey, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return nil;
+    }
+
+    AVPlayer *player = nil;
+    AVPlayerLayer *layer = ApolloSwipeCommentsPlayerLayerForViewer(viewer, &player);
+    UIView *animatedView = ApolloSwipeCommentsAnimatedImageViewInTree(viewer.view);
+    if (!player && !animatedView) return nil;
+
+    ApolloSwipeCommentsMediaSession *session = [ApolloSwipeCommentsMediaSession new];
+    session.mediaController = mediaController;
+    session.mediaViewer = viewer;
+    session.player = player;
+    session.playerLayer = layer;
+    session.playerLayerHost = layer.superlayer;
+    session.intendedPlaybackRate = ApolloSwipeCommentsPlayerIntendedRate(viewer, player);
+    session.animatedImageView = animatedView;
+    session.animatedImageWasPlaying = animatedView &&
+        ApolloReadBoolIvar(animatedView, "_shouldAnimate", NO);
+    session.active = YES;
+
+    objc_setAssociatedObject(mediaController, &kApolloSwipeCommentsMediaSessionKey, session,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (player) {
+        objc_setAssociatedObject(player, &kApolloSwipeCommentsPlayerSessionKey, session,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    ApolloLog(@"[SwipeCommentsMedia] captured current fullscreen media video=%d gif=%d intendedRate=%.2fx",
+              player != nil, animatedView != nil, session.intendedPlaybackRate);
+    return session;
+}
+
+static void ApolloSwipeCommentsInvalidateMediaSession(UIViewController *mediaController) {
+    ApolloSwipeCommentsMediaSession *session = objc_getAssociatedObject(
+        mediaController, &kApolloSwipeCommentsMediaSessionKey);
+    [session invalidate];
+    objc_setAssociatedObject(mediaController, &kApolloSwipeCommentsMediaSessionKey, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void ApolloSwipeCommentsFinishMediaSessionAfterDismissal(
+    UIViewController *mediaController, BOOL dismissalCompleted) {
+    if (!ApolloSwipeCommentsMediaShouldInvalidateAfterDismissal(dismissalCompleted)) return;
+    ApolloSwipeCommentsInvalidateMediaSession(mediaController);
+}
+
+BOOL ApolloSwipeCommentsProtectsFullscreenPlayer(AVPlayer *player) {
+    ApolloSwipeCommentsMediaSession *session = player ? objc_getAssociatedObject(
+        player, &kApolloSwipeCommentsPlayerSessionKey) : nil;
+    return session && session.player == player && [session protectsCurrentPage];
+}
+
+void ApolloSwipeCommentsSharedPlayerLayerMoved(AVPlayerLayer *layer) {
+    AVPlayer *player = [layer isKindOfClass:AVPlayerLayer.class] ? layer.player : nil;
+    ApolloSwipeCommentsMediaSession *session = player ? objc_getAssociatedObject(
+        player, &kApolloSwipeCommentsPlayerSessionKey) : nil;
+    if (!session || session.playerLayer != layer || ![session protectsCurrentPage]) return;
+    __weak ApolloSwipeCommentsMediaSession *weakSession = session;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSession restoreWithReason:@"shared layer moved"];
+    });
 }
 
 static UINavigationController *ApolloSwipeCommentsNavigationInTree(UIViewController *controller,
@@ -171,7 +377,7 @@ static UINavigationController *ApolloSwipeCommentsNavigationInTree(UIViewControl
 
 static UINavigationController *ApolloSwipeCommentsEnsureNavigationController(UIViewController *page,
                                                                               BOOL *recoveredOut) {
-    UINavigationController *navigation = ApolloSwipeCommentsLoadSwiftWeak(
+    UINavigationController *navigation = ApolloReadSwiftWeakObjectIvar(
         page, "navigationControllerToPushCommentsOnto");
     if (navigation) return navigation;
 
@@ -191,11 +397,10 @@ static UINavigationController *ApolloSwipeCommentsEnsureNavigationController(UIV
         }
     }
     if (!navigation) {
-        for (UIWindow *window in ApolloAllWindows()) {
-            if (!window.isKeyWindow) continue;
-            navigation = ApolloSwipeCommentsNavigationInTree(window.rootViewController, page);
-            if (navigation) break;
-        }
+        // Prefer the media page's own window (multi-window iPad), falling back
+        // to the app's key window when the page isn't in one yet.
+        UIWindow *window = page.viewIfLoaded.window ?: ApolloKeyWindow();
+        navigation = ApolloSwipeCommentsNavigationInTree(window.rootViewController, page);
     }
     if (!navigation) {
         for (UIWindow *window in ApolloAllWindows()) {
@@ -212,13 +417,13 @@ static UINavigationController *ApolloSwipeCommentsEnsureNavigationController(UIV
 }
 
 static BOOL ApolloSwipeCommentsEligible(id mediaViewer, id *parentOut, UIButton **commentsButtonOut) {
-    id parent = ApolloSwipeCommentsObjectIvar(mediaViewer, "parentMediaPageViewController");
+    id parent = ApolloObjectIvar(mediaViewer, "parentMediaPageViewController");
     if (!parent) return NO;
 
     // A real post-backed media pager carries both the RDKLink and comments
     // button. Standalone image viewers intentionally have neither route.
-    id link = ApolloSwipeCommentsObjectIvar(parent, "link");
-    UIButton *commentsButton = ApolloSwipeCommentsObjectIvar(parent, "commentsButton");
+    id link = ApolloObjectIvar(parent, "link");
+    UIButton *commentsButton = ApolloObjectIvar(parent, "commentsButton");
     if (!link || !commentsButton ||
         ![parent respondsToSelector:@selector(commentsButtonTapped:)]) return NO;
     if (parentOut) *parentOut = parent;
@@ -286,8 +491,8 @@ static void ApolloSwipeCommentsPinGlassLuminance(id glass, double luminance) {
 
 static UIVisualEffect *ApolloSwipeCommentsGlassEffect(void) {
     if (!IsLiquidGlass()) return nil;
-    Class glassClass = objc_getClass("UIGlassEffect");
-    SEL effectSelector = NSSelectorFromString(@"effectWithStyle:");
+    Class glassClass = ApolloClassUIGlassEffect;
+    SEL effectSelector = @selector(effectWithStyle:);
     if (!glassClass || ![glassClass respondsToSelector:effectSelector]) return nil;
 
     id effect = ((id (*)(id, SEL, NSInteger))objc_msgSend)(
@@ -363,9 +568,10 @@ static BOOL ApolloSwipeCommentsInPaneNavigationBar(UIView *view) {
 // its light, specular-rimmed variant over bright content and a flat dark blob
 // over the pane's dark material — pinning makes the bright variant permanent
 // and identical at both detents.
+
 static void ApolloSwipeCommentsStylePaneBarControl(UIView *view, BOOL isTitleControl) {
     if (!view) return;
-    Class nativeGlassViewClass = objc_getClass("_UINavigationBarPlatterGlassView");
+    Class nativeGlassViewClass = ApolloClassUINavigationBarPlatterGlassView;
 
     NSMutableArray<UIView *> *descendants = [NSMutableArray arrayWithArray:view.subviews];
     while (descendants.count > 0) {
@@ -408,8 +614,8 @@ static void ApolloSwipeCommentsStylePaneBarControl(UIView *view, BOOL isTitleCon
 static void ApolloSwipeCommentsNormalizeNavigationPlatters(UINavigationBar *navigationBar) {
     if (!IsLiquidGlass() || !navigationBar) return;
 
-    Class platterClass = objc_getClass("_UINavigationBarPlatterView");
-    Class titleControlClass = objc_getClass("_UINavigationBarTitleControl");
+    Class platterClass = ApolloClassUINavigationBarPlatterView;
+    Class titleControlClass = ApolloClassUINavigationBarTitleControl;
     if (!platterClass) return;
 
     NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithObject:navigationBar];
@@ -436,7 +642,7 @@ static void ApolloSwipeCommentsNormalizeNavigationPlatters(UINavigationBar *navi
 // fill from inside its own detent transition.
 static void ApolloSwipeCommentsClearSheetContainer(UINavigationController *navigation) {
     if (!IsLiquidGlass()) return;
-    Class dropShadowClass = objc_getClass("UIDropShadowView");
+    Class dropShadowClass = ApolloClassUIDropShadowView;
     if (!dropShadowClass) return;
     for (UIView *ancestor = navigation.viewIfLoaded; ancestor; ancestor = ancestor.superview) {
         if (![ancestor isKindOfClass:dropShadowClass]) continue;
@@ -462,7 +668,7 @@ static void ApolloSwipeCommentsInstallGlassBackground(UINavigationController *na
         navigation, &kApolloSwipeCommentsGlassBackgroundKey);
     if (glassView.superview != navigationView) glassView = nil;
     if (!glassView) {
-        Class glassClass = objc_getClass("UIGlassEffect");
+        Class glassClass = ApolloClassUIGlassEffect;
         for (UIView *subview in navigationView.subviews) {
             if (![subview isKindOfClass:[UIVisualEffectView class]]) continue;
             UIVisualEffectView *candidate = (UIVisualEffectView *)subview;
@@ -495,8 +701,8 @@ static void ApolloSwipeCommentsInstallGlassBackground(UINavigationController *na
     commentsView.backgroundColor = UIColor.clearColor;
     commentsView.opaque = NO;
 
-    id rootNode = ApolloSwipeCommentsObjectIvar(commentsController, "rootNode");
-    id tableNode = ApolloSwipeCommentsObjectIvar(commentsController, "tableNode");
+    id rootNode = ApolloObjectIvar(commentsController, "rootNode");
+    id tableNode = ApolloObjectIvar(commentsController, "tableNode");
     UIColor *clear = UIColor.clearColor;
     if ([rootNode respondsToSelector:@selector(setBackgroundColor:)]) {
         ((void (*)(id, SEL, id))objc_msgSend)(rootNode, @selector(setBackgroundColor:), clear);
@@ -523,7 +729,7 @@ static void ApolloSwipeCommentsInstallGlassBackground(UINavigationController *na
 
     // Do not stack another glass effect on top of the sheet. Apple's guidance
     // is to use a thin transparent fill/vibrancy for content placed on glass.
-    UIView *searchField = ApolloSwipeCommentsObjectIvar(commentsController, "searchTextField");
+    UIView *searchField = ApolloObjectIvar(commentsController, "searchTextField");
     if (searchField) {
         UIColor *searchFill = [UIColor colorWithWhite:0.0 alpha:0.16];
         searchField.backgroundColor = searchFill;
@@ -573,7 +779,7 @@ static void ApolloSwipeCommentsReassertIfApolloRepainted(UIViewController *comme
     // the cache; until then there is nothing to reassert anyway.
     UITableView *tableView = objc_getAssociatedObject(
         commentsController, &kApolloSwipeCommentsPaneTableCacheKey);
-    id rootNode = ApolloSwipeCommentsObjectIvar(commentsController, "rootNode");
+    id rootNode = ApolloObjectIvar(commentsController, "rootNode");
     UIColor *rootNodeColor = [rootNode respondsToSelector:@selector(backgroundColor)]
         ? ((id (*)(id, SEL))objc_msgSend)(rootNode, @selector(backgroundColor)) : nil;
     if (ApolloSwipeCommentsColorIsVisible(commentsController.view.backgroundColor) ||
@@ -586,7 +792,7 @@ static void ApolloSwipeCommentsReassertIfApolloRepainted(UIViewController *comme
 #pragma mark - Native comments capture and media-owned pane
 
 static id ApolloSwipeCommentsEmptyTextureSpec(void) {
-    Class stackClass = objc_getClass("ASStackLayoutSpec");
+    Class stackClass = ApolloClassASStackLayoutSpec;
     SEL selector = NSSelectorFromString(
         @"stackLayoutSpecWithDirection:spacing:justifyContent:alignItems:children:");
     if (!stackClass || ![stackClass respondsToSelector:selector]) return nil;
@@ -623,17 +829,17 @@ static BOOL ApolloSwipeCommentsShouldCollapseNode(id node) {
     if ([objc_getAssociatedObject(node, &kApolloSwipeCommentsCollapsedHeaderKey) boolValue]) {
         return YES;
     }
-    id link = ApolloSwipeCommentsObjectIvar(node, "link");
+    id link = ApolloObjectIvar(node, "link");
     if (!link) {
         // RichMediaHeaderCellNode stores no link of its own; Hopper shows only
         // `actionDelegate` and `richMediaNode`.
-        id richMediaNode = ApolloSwipeCommentsObjectIvar(node, "richMediaNode");
-        link = ApolloSwipeCommentsObjectIvar(richMediaNode, "link");
+        id richMediaNode = ApolloObjectIvar(node, "richMediaNode");
+        link = ApolloObjectIvar(richMediaNode, "link");
     }
     if (!link) {
         // HeaderImageCellNode similarly wraps its payload.
-        id headerImageNode = ApolloSwipeCommentsObjectIvar(node, "headerImageNode");
-        link = ApolloSwipeCommentsObjectIvar(headerImageNode, "link");
+        id headerImageNode = ApolloObjectIvar(node, "headerImageNode");
+        link = ApolloObjectIvar(headerImageNode, "link");
     }
     // Marker presence (not value) is the signal: the value is either the
     // pre-presentation @YES token or the pane's ApolloSwipeCommentsPaneCleanup.
@@ -643,7 +849,7 @@ static BOOL ApolloSwipeCommentsShouldCollapseNode(id node) {
     // The link is the background-safe fast path. Retain an owner fallback only
     // on main for unusual header variants that do not expose a link anywhere.
     if (!belongsToPane && NSThread.isMainThread) {
-        SEL viewControllerSelector = NSSelectorFromString(@"viewController");
+        SEL viewControllerSelector = @selector(viewController);
         UIViewController *owner = [node respondsToSelector:viewControllerSelector]
             ? ((id (*)(id, SEL))objc_msgSend)(node, viewControllerSelector) : nil;
         belongsToPane = [objc_getAssociatedObject(
@@ -673,7 +879,7 @@ static void ApolloSwipeCommentsMakePaneNodeTransparent(id node) {
             break;
         }
     }
-    SEL viewControllerSelector = NSSelectorFromString(@"viewController");
+    SEL viewControllerSelector = @selector(viewController);
     UIViewController *owner = [node respondsToSelector:viewControllerSelector]
         ? ((id (*)(id, SEL))objc_msgSend)(node, viewControllerSelector) : nil;
     BOOL belongsToPane = paneTable != nil ||
@@ -716,6 +922,7 @@ static UIColor *ApolloSwipeCommentsPaneSafeBackground(id node, UIColor *requeste
 @property (nonatomic, weak) UIViewController *commentsController;
 @property (nonatomic, weak) UINavigationController *sourceNavigation;
 @property (nonatomic, strong) id paneLink;
+@property (nonatomic, strong) ApolloSwipeCommentsMediaSession *mediaSession;
 @end
 
 @implementation ApolloSwipeCommentsPaneCoordinator
@@ -728,8 +935,12 @@ static UIColor *ApolloSwipeCommentsPaneSafeBackground(id node, UIColor *requeste
 - (void)closePane:(id)sender {
     UIViewController *mediaController = self.mediaController;
     [self clearPaneLinkMarker];
-    if (!mediaController) return;
+    if (!mediaController) {
+        [self.mediaSession invalidate];
+        return;
+    }
     [mediaController dismissViewControllerAnimated:YES completion:^{
+        ApolloSwipeCommentsFinishMediaSessionAfterDismissal(mediaController, YES);
         objc_setAssociatedObject(mediaController, &kApolloSwipeCommentsTransitioningKey, nil,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }];
@@ -737,10 +948,16 @@ static UIColor *ApolloSwipeCommentsPaneSafeBackground(id node, UIColor *requeste
 
 - (void)openFullPost:(id)sender {
     UIViewController *mediaController = self.mediaController;
-    UIButton *commentsButton = ApolloSwipeCommentsObjectIvar(mediaController, "commentsButton");
+    UIButton *commentsButton = ApolloObjectIvar(mediaController, "commentsButton");
     [self clearPaneLinkMarker];
     if (!mediaController || !commentsButton) {
-        [mediaController dismissViewControllerAnimated:YES completion:nil];
+        if (!mediaController) {
+            [self.mediaSession invalidate];
+            return;
+        }
+        [mediaController dismissViewControllerAnimated:YES completion:^{
+            ApolloSwipeCommentsFinishMediaSessionAfterDismissal(mediaController, YES);
+        }];
         return;
     }
 
@@ -748,6 +965,9 @@ static UIColor *ApolloSwipeCommentsPaneSafeBackground(id node, UIColor *requeste
     // once and let Apollo perform its stock push + media-viewer dismissal into
     // the complete post/comments screen.
     [mediaController dismissViewControllerAnimated:YES completion:^{
+        // The pane header has finished tearing down. Release protection now,
+        // immediately before Apollo's stock route dismisses the media pager.
+        ApolloSwipeCommentsFinishMediaSessionAfterDismissal(mediaController, YES);
         objc_setAssociatedObject(mediaController, &kApolloSwipeCommentsBypassPaneKey, @YES,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         ((void (*)(id, SEL, id))objc_msgSend)(mediaController,
@@ -760,6 +980,8 @@ static UIColor *ApolloSwipeCommentsPaneSafeBackground(id node, UIColor *requeste
 
 - (void)presentationControllerDidDismiss:(UIPresentationController *)presentationController {
     [self clearPaneLinkMarker];
+    [self.mediaSession invalidate];
+    ApolloSwipeCommentsInvalidateMediaSession(self.mediaController);
     objc_setAssociatedObject(self.mediaController, &kApolloSwipeCommentsTransitioningKey, nil,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
@@ -779,7 +1001,6 @@ static UIColor *ApolloSwipeCommentsPaneSafeBackground(id node, UIColor *requeste
 
 @end
 
-
 static void ApolloSwipeCommentsResetCloseMethod(id mediaPageController) {
     Ivar ivar = class_getInstanceVariable([mediaPageController class], "closeMethod");
     if (!ivar) return;
@@ -793,13 +1014,14 @@ static void ApolloSwipeCommentsPresentPane(UIViewController *mediaController,
                                            CFTimeInterval requestStart) {
     objc_setAssociatedObject(commentsController, &kApolloSwipeCommentsPaneControllerKey, @YES,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    id paneLink = ApolloSwipeCommentsObjectIvar(commentsController, "link");
+    id paneLink = ApolloObjectIvar(commentsController, "link");
     if (!paneLink || !mediaController.view.window || mediaController.presentedViewController) {
         objc_setAssociatedObject(paneLink, &kApolloSwipeCommentsPaneLinkKey, nil,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         sApolloSwipeCommentsLivePanes.fetch_sub(1, std::memory_order_relaxed);
         objc_setAssociatedObject(mediaController, &kApolloSwipeCommentsTransitioningKey, nil,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ApolloSwipeCommentsInvalidateMediaSession(mediaController);
         ApolloLog(@"[SwipeComments] pane presentation abandoned: media route changed");
         return;
     }
@@ -902,6 +1124,8 @@ static void ApolloSwipeCommentsPresentPane(UIViewController *mediaController,
     coordinator.commentsController = commentsController;
     coordinator.sourceNavigation = sourceNavigation;
     coordinator.paneLink = paneLink;
+    coordinator.mediaSession = objc_getAssociatedObject(
+        mediaController, &kApolloSwipeCommentsMediaSessionKey);
     objc_setAssociatedObject(paneNavigation, &kApolloSwipeCommentsPaneCoordinatorKey, coordinator,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     UIBarButtonItem *closeItem = [[UIBarButtonItem alloc]
@@ -946,8 +1170,10 @@ static void ApolloSwipeCommentsPresentPane(UIViewController *mediaController,
               (presentationStart - requestStart) * 1000.0);
     __weak UINavigationController *weakPaneNavigation = paneNavigation;
     __weak UIViewController *weakCommentsController = commentsController;
+    __weak ApolloSwipeCommentsMediaSession *weakMediaSession = coordinator.mediaSession;
     [mediaController presentViewController:paneNavigation animated:YES completion:^{
         ApolloSwipeCommentsInstallGlassBackground(weakPaneNavigation, weakCommentsController);
+        [weakMediaSession restoreWithReason:@"pane presented"];
         CFTimeInterval completed = CACurrentMediaTime();
         ApolloLog(@"[SwipeCommentsPerf] UIKitPresentation=%.1fms total=%.1fms",
                   (completed - presentationStart) * 1000.0,
@@ -958,6 +1184,13 @@ static void ApolloSwipeCommentsPresentPane(UIViewController *mediaController,
     // layout hook or per-frame hierarchy walk.
     dispatch_async(dispatch_get_main_queue(), ^{
         ApolloSwipeCommentsInstallGlassBackground(weakPaneNavigation, weakCommentsController);
+        [weakMediaSession restoreWithReason:@"pane next turn"];
+    });
+    // Apollo's mute dance finishes at T+100 ms. One bounded final pass repairs
+    // a pause or GIF stop queued by the pane header before it was collapsed.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [weakMediaSession restoreWithReason:@"pane settled"];
     });
     // UIKit creates the adaptive presentation controller synchronously as the
     // presentation begins. Assign again here in case the pre-presentation
@@ -974,6 +1207,11 @@ static void ApolloSwipeCommentsBuildAndPresentPane(UIViewController *mediaContro
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return;
     }
+    // Snapshot before Apollo constructs the normal comments header. The row is
+    // collapsed for the pane, but its media node can still take/pause the
+    // fullscreen player's resources during construction.
+    ApolloSwipeCommentsMediaSession *mediaSession =
+        ApolloSwipeCommentsCaptureMediaSession(mediaController);
     // Always route Apollo's native comments factory through an empty temporary
     // stack. When media was opened from an existing post, the real source
     // stack already has this CommentsViewController on top; Apollo's native
@@ -991,6 +1229,8 @@ static void ApolloSwipeCommentsBuildAndPresentPane(UIViewController *mediaContro
                                             captureNavigation)) {
         objc_setAssociatedObject(mediaController, &kApolloSwipeCommentsTransitioningKey, nil,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [mediaSession invalidate];
+        ApolloSwipeCommentsInvalidateMediaSession(mediaController);
         ApolloLog(@"[SwipeComments] capture failed: could not install temporary navigation route");
         return;
     }
@@ -1001,7 +1241,7 @@ static void ApolloSwipeCommentsBuildAndPresentPane(UIViewController *mediaContro
     // after the synchronous route returns creates a race with that first pass.
     // The live-pane count rises with the marker for the same reason: the
     // ShouldCollapseNode fast path consults it from the first measurement.
-    id anticipatedPaneLink = ApolloSwipeCommentsObjectIvar(mediaController, "link");
+    id anticipatedPaneLink = ApolloObjectIvar(mediaController, "link");
     objc_setAssociatedObject(anticipatedPaneLink, &kApolloSwipeCommentsPaneLinkKey, @YES,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     sApolloSwipeCommentsLivePanes.fetch_add(1, std::memory_order_relaxed);
@@ -1024,6 +1264,7 @@ static void ApolloSwipeCommentsBuildAndPresentPane(UIViewController *mediaContro
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         ApolloSwipeCommentsResetCloseMethod(mediaController);
     }
+    [mediaSession restoreWithReason:@"comments controller captured"];
 
     if (!commentsController) {
         objc_setAssociatedObject(anticipatedPaneLink, &kApolloSwipeCommentsPaneLinkKey, nil,
@@ -1031,6 +1272,8 @@ static void ApolloSwipeCommentsBuildAndPresentPane(UIViewController *mediaContro
         sApolloSwipeCommentsLivePanes.fetch_sub(1, std::memory_order_relaxed);
         objc_setAssociatedObject(mediaController, &kApolloSwipeCommentsTransitioningKey, nil,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [mediaSession invalidate];
+        ApolloSwipeCommentsInvalidateMediaSession(mediaController);
         ApolloLog(@"[SwipeComments] native comments controller capture failed; media viewer left unchanged");
         return;
     }
@@ -1043,7 +1286,7 @@ static void ApolloSwipeCommentsBuildAndPresentPane(UIViewController *mediaContro
     ApolloSwipeCommentsWeakControllerBox *captureBox = objc_getAssociatedObject(
         self, &kApolloSwipeCommentsCaptureOwnerKey);
     UIViewController *mediaController = captureBox.controller;
-    Class commentsClass = NSClassFromString(@"_TtC6Apollo22CommentsViewController");
+    Class commentsClass = ApolloClassCommentsViewController;
     if (mediaController && commentsClass && [viewController isKindOfClass:commentsClass]) {
         objc_setAssociatedObject(mediaController, &kApolloSwipeCommentsCapturedControllerKey,
                                  viewController, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -1059,8 +1302,8 @@ static void ApolloSwipeCommentsBuildAndPresentPane(UIViewController *mediaContro
 
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)recognizer {
     BOOL original = %orig;
-    UIPanGestureRecognizer *mediaPan = ApolloSwipeCommentsObjectIvar(self, "panGestureRecognizer");
-    id mediaPage = ApolloSwipeCommentsObjectIvar(self, "parentMediaPageViewController");
+    UIPanGestureRecognizer *mediaPan = ApolloObjectIvar(self, "panGestureRecognizer");
+    id mediaPage = ApolloObjectIvar(self, "parentMediaPageViewController");
     if (recognizer == mediaPan && ApolloSwipeCommentsHasPresentedPane(mediaPage)) {
         // The medium sheet intentionally leaves the media visible and permits
         // horizontal gallery/video interaction behind it. Do not allow the
@@ -1172,6 +1415,28 @@ static void ApolloSwipeCommentsBuildAndPresentPane(UIViewController *mediaContro
 
 %hook _TtC6Apollo23MediaPageViewController
 
+- (void)pageViewController:(UIPageViewController *)pageViewController
+        didFinishAnimating:(BOOL)finished
+   previousViewControllers:(NSArray<UIViewController *> *)previousViewControllers
+       transitionCompleted:(BOOL)completed {
+    %orig;
+    if (!completed || !ApolloSwipeCommentsHasPresentedPane((UIViewController *)self)) return;
+    __weak UIViewController *weakSelf = (UIViewController *)self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *mediaController = weakSelf;
+        UINavigationController *paneNavigation =
+            [mediaController.presentedViewController isKindOfClass:UINavigationController.class]
+                ? (UINavigationController *)mediaController.presentedViewController : nil;
+        ApolloSwipeCommentsPaneCoordinator *coordinator = objc_getAssociatedObject(
+            paneNavigation, &kApolloSwipeCommentsPaneCoordinatorKey);
+        if (!coordinator) return;
+        ApolloSwipeCommentsMediaSession *session =
+            ApolloSwipeCommentsCaptureMediaSession(mediaController);
+        coordinator.mediaSession = session;
+        [session restoreWithReason:@"gallery page changed"];
+    });
+}
+
 - (void)commentsButtonTapped:(UIButton *)sender {
     // Re-entry from ApolloSwipeCommentsBuildAndPresentPane must reach Apollo's
     // original factory method so we can capture the private CommentsVC it
@@ -1228,6 +1493,9 @@ static void ApolloSwipeCommentsBuildAndPresentPane(UIViewController *mediaContro
     %orig;
     objc_setAssociatedObject(self, &kApolloSwipeCommentsTransitioningKey, nil,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!ApolloSwipeCommentsHasPresentedPane((UIViewController *)self)) {
+        ApolloSwipeCommentsInvalidateMediaSession((UIViewController *)self);
+    }
 }
 
 %end

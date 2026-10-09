@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 
 // MARK: - Modmail conversation layout fixes for Liquid Glass (issue #525)
 //
@@ -39,7 +40,7 @@
 @interface _TtC6Apollo28PrivateMessageViewController : UIViewController
 @end
 
-// Cached ivar offset of `newModmailConversationID` (a Swift `String?`). We do
+// Ivar offset of `newModmailConversationID` (a Swift `String?`). We do
 // NOT try to materialize the Swift String — we only replicate Apollo's own
 // runtime nil-check, which tests the second 8-byte word of the inline String
 // struct (`*(self + offset + 8) != 0`; see -[PrivateMessageViewController
@@ -47,19 +48,10 @@
 // slot — zero only when the optional is `.none`. This mirrors the app's exact
 // gate and avoids the Swift-struct-ivar pitfalls (see AGENTS.md).
 static BOOL ApolloPMVCIsModmailConversation(UIViewController *vc) {
-    if (!vc) return NO;
-    static dispatch_once_t onceToken;
-    static ptrdiff_t sConvIDOffset = -1;
-    dispatch_once(&onceToken, ^{
-        Class cls = objc_getClass("_TtC6Apollo28PrivateMessageViewController");
-        if (cls) {
-            Ivar iv = class_getInstanceVariable(cls, "newModmailConversationID");
-            if (iv) sConvIDOffset = ivar_getOffset(iv);
-        }
-    });
-    if (sConvIDOffset < 0) return NO;
+    ptrdiff_t offset = ApolloIvarOffset(object_getClass(vc), "newModmailConversationID");
+    if (offset < 0) return NO;
 
-    uintptr_t discriminator = *(uintptr_t *)((char *)(__bridge void *)vc + sConvIDOffset + sizeof(void *));
+    uintptr_t discriminator = *(uintptr_t *)((char *)(__bridge void *)vc + offset + sizeof(void *));
     return discriminator != 0;
 }
 

@@ -8,6 +8,7 @@
 #import "ApolloThemeRuntime.h"
 #import "UserDefaultConstants.h"
 #import "settings/ApolloSettingsTableViewController.h"
+#import "settings/TranslationSettingsViewController.h"
 
 #import <math.h>
 #import <QuartzCore/QuartzCore.h>
@@ -907,6 +908,25 @@ static void ApolloAISaveProviderField(ApolloAIFieldTag tag, NSString *value) {
     }
 }
 
+// Header names are case-insensitive. Either side may be nil (a new header has
+// no original name), which -caseInsensitiveCompare: must never be handed.
+static BOOL ApolloAIHeaderNamesMatch(NSString *a, NSString *b) {
+    return a.length > 0 && b.length > 0 && [a caseInsensitiveCompare:b] == NSOrderedSame;
+}
+
+// Header names and values are tokens and keys: autocorrect, auto-caps and smart
+// punctuation would all silently corrupt them.
+static void ApolloAIConfigureHeaderTextField(UITextField *field) {
+    field.autocorrectionType = UITextAutocorrectionTypeNo;
+    field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    field.spellCheckingType = UITextSpellCheckingTypeNo;
+    field.smartQuotesType = UITextSmartQuotesTypeNo;
+    field.smartDashesType = UITextSmartDashesTypeNo;
+    field.smartInsertDeleteType = UITextSmartInsertDeleteTypeNo;
+    field.keyboardType = UIKeyboardTypeASCIICapable;
+    field.clearButtonMode = UITextFieldViewModeWhileEditing;
+}
+
 // ObjC surface exported by ApolloFoundationModels.swift. Resolve it dynamically
 // so this settings screen remains loadable when the build SDK does not contain
 // FoundationModels and the Swift bridge reports the feature unavailable.
@@ -919,6 +939,7 @@ static void ApolloAISaveProviderField(ApolloAIFieldTag tag, NSString *value) {
 @property (nonatomic, copy) NSString *pendingModelConfirmation;
 - (void)presentModelPicker;
 - (void)presentMessageWithTitle:(NSString *)title message:(NSString *)message;
+- (void)presentCustomHeaderEditorForName:(NSString *)originalName;
 @end
 
 @implementation ApolloAISettingsViewController
@@ -935,8 +956,28 @@ static void ApolloAISaveProviderField(ApolloAIFieldTag tag, NSString *value) {
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     // Availability can change while the screen is off-stack (e.g. the model
-    // finishes downloading) — re-read every row's state on each appearance.
-    [self.tableView reloadData];
+    // finishes downloading), so re-read it on each appearance. In place, not
+    // with a reload: a cancelled interactive swipe-back calls this again as the
+    // gesture ends, and after a reloadData UIKit puts the scroll position back
+    // against the wrong row whenever the top edge of the screen sits inside a
+    // section footer (it saves it against that section's last row and restores
+    // it against the next section's first row). With this screen's long
+    // footers the list jumped ~100pt. Nothing else here changes off-stack:
+    // only this screen writes these settings, and a model picked on the pushed
+    // picker reloads its own rows in onPick.
+    [self refreshAvailabilityInPlace];
+}
+
+// Re-reads the Availability row into its live cell (-cellForRowID: returns the
+// visible cell or one UIKit prefetched), so nothing is reloaded and nothing
+// moves. A row without a cell reads the current value when it is displayed.
+- (void)refreshAvailabilityInPlace {
+    UITableViewCell *cell = [self cellForRowID:@"availability"];
+    NSString *text = [self availabilityText];
+    if (!cell || [cell.detailTextLabel.text isEqualToString:text]) return;
+    ApolloLog(@"[ApolloAISettings] availability changed while off screen: %@ → %@", cell.detailTextLabel.text, text);
+    cell.detailTextLabel.text = text;
+    [cell setNeedsLayout];
 }
 
 - (void)viewDidAppear:(BOOL)animated {
@@ -1051,6 +1092,21 @@ static void ApolloAISaveProviderField(ApolloAIFieldTag tag, NSString *value) {
         cell.selectionStyle = sEnableAISummaries ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
     };
 
+    // The language every summary is written in, whatever language the post,
+    // article or comments are in. Device Default follows the device language.
+    // Greyed with the master switch, like When Opening a Thread. Titled just
+    // "Language" (it sits under Summaries) so "Device Default (English)" fits
+    // at large text sizes.
+    ApolloSettingsRow *summaryLanguage =
+        [ApolloSettingsRow valueRowWithID:@"summaryLanguage"
+                                    title:@"Language"
+                                   detail:^NSString * { return [weakSelf summaryLanguageDetailText]; }
+                                 onSelect:^{
+            if (!sEnableAISummaries) return;
+            [weakSelf presentSummaryLanguagePicker];
+        }];
+    summaryLanguage.configure = summaryMode.configure;
+
     // Which backend generates summaries. Apple runs on-device; the cloud
     // providers post the text to a third-party API under the user's own key.
     ApolloSettingsRow *provider =
@@ -1116,12 +1172,50 @@ static void ApolloAISaveProviderField(ApolloAIFieldTag tag, NSString *value) {
                                   onSelect:nil];
     providerBaseURL.visible = ^BOOL { return [sAISummaryProvider isEqualToString:@"custom"]; };
 
+    // Custom Headers: extra HTTP headers for the custom provider (e.g. OpenCode
+    // Go's required x-opencode-session). One row per header in the order added,
+    // then "Add Header…"; add/edit/delete rebuild the form (see
+    // -saveCustomHeaders:). The section is only visible while Custom is selected.
+    NSMutableArray<ApolloSettingsRow *> *headerRows = [NSMutableArray array];
+    for (NSDictionary<NSString *, NSString *> *header in sCustomAIHeaders) {
+        NSString *name = header[ApolloAICloudCustomHeaderNameKey];
+        ApolloSettingsRow *headerRow =
+            [ApolloSettingsRow customRowWithID:[@"customHeaders.header." stringByAppendingString:name.lowercaseString]
+                                          cell:^UITableViewCell *(__unused UITableView *tableView, __unused ApolloSettingsRow *row) {
+                // A fresh cell, not the form's shared Value1 pool, so the
+                // hidden-value accessibility label can't carry over to another row.
+                UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:nil];
+                cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+                cell.textLabel.text = name;
+                cell.textLabel.numberOfLines = 0;
+                // Masked like the API key field, since values are often
+                // credentials; the editor shows the value.
+                cell.detailTextLabel.text = @"••••••••";
+                cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+                cell.detailTextLabel.accessibilityLabel = @"Value hidden";
+                [weakSelf apollo_applyPrimaryTextColorToCell:cell];
+                return cell;
+            }
+                                      onSelect:^{ [weakSelf presentCustomHeaderEditorForName:name]; }];
+        [headerRows addObject:headerRow];
+    }
+    ApolloSettingsRow *addHeader =
+        [ApolloSettingsRow buttonRowWithID:@"customHeaders.add"
+                                     title:@"Add Header…"
+                                    action:^{ [weakSelf presentCustomHeaderEditorForName:nil]; }];
+    [headerRows addObject:addHeader];
+    ApolloSettingsSection *customHeaders =
+        [ApolloSettingsSection sectionWithTitle:@"Custom Headers"
+                                         footer:@"Extra headers sent with every request to your custom provider. For example, OpenCode Go requires x-opencode-session (any fixed value, such as a UUID). Values are stored in Apollo's settings on this device and are included in settings backups."
+                                           rows:headerRows];
+    customHeaders.visible = ^BOOL { return [sAISummaryProvider isEqualToString:@"custom"]; };
+
     ApolloSettingsRow *availability =
         [ApolloSettingsRow valueRowWithID:@"availability"
                                     title:(ApolloAIIsCloudProvider() ? ApolloAIProviderDisplayName(sAISummaryProvider)
                                                                      : @"On-Device Model")
                                    detail:^NSString * {
-            return ApolloAIIsCloudProvider() ? [weakSelf cloudAvailabilityText] : [weakSelf modelAvailabilityText];
+            return [weakSelf availabilityText];
         }
                                  onSelect:nil];
 
@@ -1173,9 +1267,10 @@ static void ApolloAISaveProviderField(ApolloAIFieldTag tag, NSString *value) {
         [ApolloSettingsSection sectionWithTitle:@"Provider"
                                          footer:providerFooter
                                            rows:@[ provider, providerKey, providerModel, providerModels, providerBaseURL ]],
+        customHeaders,
         [ApolloSettingsSection sectionWithTitle:@"Summaries"
-                                         footer:@"Minimum Post Length only applies to text posts, not linked articles. Brief, Balanced and In-depth set how much detail a summary goes into.\n\nWhen Opening a Thread: Generate on Open prepares summaries in the background and keeps them collapsed until you tap. Open Automatically expands them on their own. Tap to Summarize only starts when you tap a summary card."
-                                           rows:@[ postSummaries, postThreshold, postDetail, commentSummaries, commentDetail, summaryMode ]],
+                                         footer:@"Minimum Post Length only applies to text posts, not linked articles. Brief, Balanced and In-depth set how much detail a summary goes into.\n\nWhen Opening a Thread: Generate on Open prepares summaries in the background and keeps them collapsed until you tap. Open Automatically expands them on their own. Tap to Summarize only starts when you tap a summary card.\n\nLanguage: summaries are written in this language, whatever language the post, article or comments are in. Device Default uses your device's language."
+                                           rows:@[ postSummaries, postThreshold, postDetail, commentSummaries, commentDetail, summaryMode, summaryLanguage ]],
         [ApolloSettingsSection sectionWithTitle:@"Availability"
                                          footer:availabilityFooter
                                            rows:@[ availability ]],
@@ -1188,7 +1283,7 @@ static void ApolloAISaveProviderField(ApolloAIFieldTag tag, NSString *value) {
 #pragma mark - Helpers
 
 - (NSInteger)modelAvailabilityStatus {
-    Class bridgeClass = NSClassFromString(@"ApolloFoundationModels");
+    Class bridgeClass = objc_getClass("ApolloFoundationModels");
     if (!bridgeClass || ![bridgeClass respondsToSelector:@selector(shared)]) return 4;
 
     ApolloFoundationModels *bridge = [(id)bridgeClass shared];
@@ -1216,6 +1311,11 @@ static void ApolloAISaveProviderField(ApolloAIFieldTag tag, NSString *value) {
         if (ApolloAICloudEffectiveModel().length == 0) return @"Model Required";
     }
     return @"Ready";
+}
+
+// The Availability row's detail for the selected provider.
+- (NSString *)availabilityText {
+    return ApolloAIIsCloudProvider() ? [self cloudAvailabilityText] : [self modelAvailabilityText];
 }
 
 #pragma mark - Provider fields
@@ -1329,6 +1429,120 @@ static void ApolloAISaveProviderField(ApolloAIFieldTag tag, NSString *value) {
     [self rebuildForm];
 }
 
+#pragma mark - Custom headers
+
+- (void)presentCustomHeaderEditorForName:(NSString *)originalName {
+    NSString *value = nil;
+    for (NSDictionary<NSString *, NSString *> *header in sCustomAIHeaders) {
+        if (ApolloAIHeaderNamesMatch(header[ApolloAICloudCustomHeaderNameKey], originalName)) {
+            value = header[ApolloAICloudCustomHeaderValueKey];
+            break;
+        }
+    }
+    [self presentCustomHeaderEditorWithOriginalName:originalName name:originalName value:value message:nil];
+}
+
+// Add (originalName nil) or edit one header. message carries the reason a
+// previous Save was refused.
+- (void)presentCustomHeaderEditorWithOriginalName:(NSString *)originalName
+                                             name:(NSString *)name
+                                            value:(NSString *)value
+                                          message:(NSString *)message {
+    [self.view endEditing:YES]; // commit an in-progress provider field first
+    BOOL editing = originalName.length > 0;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:(editing ? @"Edit Header" : @"Add Header")
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        ApolloAIConfigureHeaderTextField(field);
+        field.placeholder = @"Name, e.g. x-opencode-session";
+        field.accessibilityLabel = @"Header name";
+        field.text = name;
+    }];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        ApolloAIConfigureHeaderTextField(field);
+        field.placeholder = @"Value";
+        field.accessibilityLabel = @"Header value";
+        field.text = value;
+    }];
+
+    __weak __typeof(self) weakSelf = self;
+    __weak UIAlertController *weakAlert = alert;
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    if (editing) {
+        [alert addAction:[UIAlertAction actionWithTitle:@"Delete"
+                                                  style:UIAlertActionStyleDestructive
+                                                handler:^(__unused UIAlertAction *action) {
+            [weakSelf removeCustomHeaderNamed:originalName];
+        }]];
+    }
+    UIAlertAction *save = [UIAlertAction actionWithTitle:@"Save"
+                                                   style:UIAlertActionStyleDefault
+                                                 handler:^(__unused UIAlertAction *action) {
+        NSArray<UITextField *> *fields = weakAlert.textFields;
+        NSCharacterSet *whitespace = [NSCharacterSet whitespaceAndNewlineCharacterSet];
+        [weakSelf commitCustomHeaderName:[fields.firstObject.text stringByTrimmingCharactersInSet:whitespace] ?: @""
+                                   value:[fields.lastObject.text stringByTrimmingCharactersInSet:whitespace] ?: @""
+                               replacing:originalName];
+    }];
+    [alert addAction:save];
+    alert.preferredAction = save;
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)commitCustomHeaderName:(NSString *)name value:(NSString *)value replacing:(NSString *)originalName {
+    NSString *problem = ApolloAICloudCustomHeaderProblem(name, value);
+    if (problem) {
+        // Reopen the editor with what was typed and the reason as its message,
+        // so one bad character doesn't cost the whole entry.
+        [self presentCustomHeaderEditorWithOriginalName:originalName name:name value:value message:problem];
+        return;
+    }
+    // An edit keeps the header's slot. A name already in the list replaces that
+    // entry rather than adding a second one the request would overwrite anyway.
+    NSDictionary<NSString *, NSString *> *entry = @{ApolloAICloudCustomHeaderNameKey: name,
+                                                    ApolloAICloudCustomHeaderValueKey: value};
+    NSMutableArray<NSDictionary<NSString *, NSString *> *> *headers = [NSMutableArray array];
+    BOOL placed = NO;
+    for (NSDictionary<NSString *, NSString *> *header in sCustomAIHeaders) {
+        NSString *existingName = header[ApolloAICloudCustomHeaderNameKey];
+        if (ApolloAIHeaderNamesMatch(existingName, originalName) || ApolloAIHeaderNamesMatch(existingName, name)) {
+            if (!placed) [headers addObject:entry];
+            placed = YES;
+            continue;
+        }
+        [headers addObject:header];
+    }
+    if (!placed) [headers addObject:entry];
+    [self saveCustomHeaders:headers];
+}
+
+- (void)removeCustomHeaderNamed:(NSString *)name {
+    NSMutableArray<NSDictionary<NSString *, NSString *> *> *headers = [NSMutableArray array];
+    for (NSDictionary<NSString *, NSString *> *header in sCustomAIHeaders) {
+        if (!ApolloAIHeaderNamesMatch(header[ApolloAICloudCustomHeaderNameKey], name)) [headers addObject:header];
+    }
+    [self saveCustomHeaders:headers];
+}
+
+- (void)saveCustomHeaders:(NSArray<NSDictionary<NSString *, NSString *> *> *)headers {
+    sCustomAIHeaders = ApolloAICloudSanitizedCustomHeaders(headers);
+    if (sCustomAIHeaders) {
+        [[NSUserDefaults standardUserDefaults] setObject:sCustomAIHeaders forKey:UDKeyCustomAIHeaders];
+    } else {
+        [[NSUserDefaults standardUserDefaults] removeObjectForKey:UDKeyCustomAIHeaders];
+    }
+    ApolloLog(@"[AICloud] Saved %lu custom header(s)", (unsigned long)sCustomAIHeaders.count);
+    // Only this section is rebuilt: its rows are generated per header, and the
+    // other sections keep their measured heights. Save and Delete come with the
+    // list scrolled down to it, where the reload alone moved the list ~210pt
+    // (the top edge of the screen sits in the General footer), so the rows on
+    // screen are kept where they were.
+    [self performUpdateKeepingVisibleRowsInPlace:^{
+        [self rebuildSectionContainingRowID:@"customHeaders.add" withRowAnimation:UITableViewRowAnimationNone];
+    }];
+}
+
 #pragma mark - UITextFieldDelegate
 
 - (BOOL)textFieldShouldReturn:(UITextField *)textField {
@@ -1376,6 +1590,7 @@ static void ApolloAISaveProviderField(ApolloAIFieldTag tag, NSString *value) {
     [self reloadRowWithID:@"commentSummaries"];
     [self reloadRowWithID:@"commentDetail"];
     [self reloadRowWithID:@"summaryMode"];
+    [self reloadRowWithID:@"summaryLanguage"];
 }
 
 #pragma mark - Detent sliders (post length + summary detail)
@@ -1534,6 +1749,67 @@ static void ApolloAISaveProviderField(ApolloAIFieldTag tag, NSString *value) {
                                 titles, [self currentSummaryMode], ^(NSInteger pickedIndex) {
         [weakSelf applySummaryMode:(ApolloAISummaryMode)pickedIndex];
     });
+}
+
+#pragma mark - Summary language
+
+// English name for a language identifier: Translation's name for its codes,
+// else the system's ("Chinese, Traditional" for a zh-Hant device).
+static NSString *ApolloAISettingsLanguageName(NSString *identifier) {
+    for (NSDictionary<NSString *, NSString *> *option in ApolloTranslationLanguageOptions()) {
+        if (option[@"code"].length > 0 && [option[@"code"] isEqualToString:identifier]) return option[@"name"];
+    }
+    return [[NSLocale localeWithLocaleIdentifier:@"en_US"] localizedStringForLocaleIdentifier:identifier] ?: identifier;
+}
+
+// "Device Default (English)", the picked language, or, when Apple's model
+// can't write the picked one (picked under a cloud provider), what summaries
+// actually use: "Greek (using English)".
+- (NSString *)summaryLanguageDetailText {
+    BOOL picked = NO;
+    NSString *inUse = ApolloAISummaryLanguage(&picked);
+    NSString *inUseName = inUse.length > 0 ? ApolloAISettingsLanguageName(inUse) : nil;
+    if (sAISummaryLanguage.length == 0) {
+        return inUseName ? [NSString stringWithFormat:@"Device Default (%@)", inUseName] : @"Device Default";
+    }
+    NSString *choiceName = ApolloAISettingsLanguageName(sAISummaryLanguage);
+    if (picked || !inUseName) return choiceName;
+    return [NSString stringWithFormat:@"%@ (using %@)", choiceName, inUseName];
+}
+
+// Translation's language list, narrowed to what Apple's on-device model writes
+// while Apple is the provider (cloud models write all of them). If the model
+// can't say (before iOS 26), the full list stays, like Translation's filter.
+- (void)presentSummaryLanguagePicker {
+    BOOL onDevice = !ApolloAIIsCloudProvider();
+    NSMutableArray<NSString *> *titles = [NSMutableArray array];
+    NSMutableArray<NSString *> *codes = [NSMutableArray array];
+    NSInteger currentIndex = -1;
+    for (NSDictionary<NSString *, NSString *> *option in ApolloTranslationLanguageOptions()) {
+        NSString *code = option[@"code"];
+        if (code.length > 0 && onDevice && !ApolloAIOnDeviceCanWrite(code)) continue;
+        if ([code isEqualToString:(sAISummaryLanguage ?: @"")]) currentIndex = (NSInteger)titles.count;
+        [titles addObject:option[@"name"]];
+        [codes addObject:code];
+    }
+    __weak __typeof(self) weakSelf = self;
+    ApolloSettingsPresentPicker(self, [self cellForRowID:@"summaryLanguage"], @"Summary Language",
+                                titles, currentIndex, ^(NSInteger pickedIndex) {
+        [weakSelf applySummaryLanguage:codes[(NSUInteger)pickedIndex]];
+    });
+}
+
+// Summaries already cached in another language regenerate the next time their
+// thread opens: the language is part of each summary's generation profile.
+// The row is updated in place, not with -reloadRowWithID:: a reload goes through
+// UIKit's post-update scroll restore, which moved this list ~160pt whenever the
+// top edge of the screen sat inside a section footer (see src/settings/README.md).
+- (void)applySummaryLanguage:(NSString *)code {
+    sAISummaryLanguage = code.length > 0 ? [code copy] : nil;
+    [[NSUserDefaults standardUserDefaults] setObject:(sAISummaryLanguage ?: @"") forKey:UDKeyAISummaryLanguage];
+    UITableViewCell *cell = [self cellForRowID:@"summaryLanguage"];
+    cell.detailTextLabel.text = [self summaryLanguageDetailText];
+    [cell setNeedsLayout];
 }
 
 #pragma mark - Actions

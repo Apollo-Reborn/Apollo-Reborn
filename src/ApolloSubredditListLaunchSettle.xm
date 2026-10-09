@@ -60,6 +60,7 @@
 #import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 
 // How long the recorder stays open after the list controller loads its view.
 // The measured settle finishes ~0.3s after the launch crossfade; 4s covers the
@@ -223,10 +224,7 @@ static void ApolloSLDSnapshot(UITableView *table, NSString *reason, BOOL force) 
     UITabBarController *tabs = vc.tabBarController;
     UIWindow *window = table.window;
 
-    CGRect statusBarFrame = CGRectZero;
-    if (@available(iOS 13.0, *)) {
-        statusBarFrame = window.windowScene.statusBarManager.statusBarFrame;
-    }
+    CGRect statusBarFrame = window.windowScene.statusBarManager.statusBarFrame;
 
     // contentTop is what the eye actually sees: the screen-space Y the first
     // row starts at, in the table's own coordinates.
@@ -354,17 +352,8 @@ static void ApolloSLDOpenWindow(UITableView *table, NSString *reason) {
 // The list controller's table lives in ApolloTableViewController's `tableView`
 // ivar (a Swift stored property with no ObjC getter).
 static UITableView *ApolloSLDTableForController(id controller) {
-    if (!controller) return nil;
-    Class cls = object_getClass(controller);
-    while (cls) {
-        Ivar ivar = class_getInstanceVariable(cls, "tableView");
-        if (ivar) {
-            id value = object_getIvar(controller, ivar);
-            return [value isKindOfClass:[UITableView class]] ? value : nil;
-        }
-        cls = class_getSuperclass(cls);
-    }
-    return nil;
+    id value = ApolloObjectIvar(controller, "tableView");
+    return [value isKindOfClass:[UITableView class]] ? value : nil;
 }
 
 // Section header views are DIRECT subviews of the table, and their own

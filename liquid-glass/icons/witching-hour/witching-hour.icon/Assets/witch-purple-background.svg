@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Helios witch purple gradient background</title>
+  <desc>Editable edge-to-edge violet glow fading into dark plum, recreated from the witch icon. No corner mask.</desc>
+  <defs>
+    <radialGradient id="witch-purple-glow" cx="502" cy="505" r="604" gradientUnits="userSpaceOnUse" gradientTransform="translate(502 505) scale(.97 1.03) translate(-502 -505)">
+      <stop offset="0" stop-color="#AA00F3"/>
+      <stop offset=".3" stop-color="#A000EE"/>
+      <stop offset=".48" stop-color="#8600D7"/>
+      <stop offset=".63" stop-color="#6100A0"/>
+      <stop offset=".81" stop-color="#340652"/>
+      <stop offset="1" stop-color="#200A33"/>
+    </radialGradient>
+    <linearGradient id="witch-bottom-shade" x1="0" y1="680" x2="0" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0E0019" stop-opacity="0"/>
+      <stop offset="1" stop-color="#0E0019" stop-opacity=".26"/>
+    </linearGradient>
+  </defs>
+  <rect id="purple-background" width="1024" height="1024" fill="url(#witch-purple-glow)"/>
+  <rect id="lower-vignette" width="1024" height="1024" fill="url(#witch-bottom-shade)"/>
+</svg>

@@ -1,6 +1,7 @@
 #import "settings/ApolloOpenInAppViewController.h"
 
 #import "ApolloCommon.h"
+#import "ApolloNitterInstances.h"
 #import "ApolloSettingsForm.h"
 #import "UserDefaultConstants.h"
 #import "settings/ApolloLinkCompanionViewController.h"
@@ -68,6 +69,15 @@ static NSString *ApolloOpenInAppBrowserLabelForToken(NSString *token) {
     return token; // future/unknown token: show it raw rather than mislabeling it
 }
 
+static NSString *ApolloOpenInAppSavedNitterHost(void) {
+    return ApolloNitterNormalizeHost([[NSUserDefaults standardUserDefaults] stringForKey:UDKeyNitterInstanceHost]);
+}
+
+@interface ApolloOpenInAppViewController ()
+// The instance list is loading (spinner on the row that asked); ignores re-taps.
+@property (nonatomic) BOOL nitterInstancesLoading;
+@end
+
 @implementation ApolloOpenInAppViewController
 
 - (void)viewDidLoad {
@@ -87,9 +97,9 @@ static NSString *ApolloOpenInAppBrowserLabelForToken(NSString *token) {
 
     // Plain app names (alphabetical) — the section footer carries the
     // "open links in their app" explanation, so the rows don't repeat it.
-    // (X/Twitter is intentionally not here — Apollo already ships a native
-    // "Open Tweets in" picker that even supports third-party clients, so a
-    // Reborn toggle would just duplicate it. See ApolloShareLinks.xm.)
+    // (X/Twitter has its own section below: X links already open in the X app
+    // when it's installed, so the only X choice offered here is reading them on
+    // a Nitter mirror instead. See ApolloShareLinks.xm.)
     ApolloSettingsRow *bluesky =
         [ApolloSettingsRow switchRowWithID:@"bluesky"
                                      title:@"Bluesky"
@@ -125,6 +135,31 @@ static NSString *ApolloOpenInAppBrowserLabelForToken(NSString *token) {
             [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyOpenVideosInYouTubeApp];
         }];
 
+    // "Open via Nitter": the key only turns on once an instance is saved, so
+    // switching on with none saved goes straight to the instance picker, and
+    // cancelling it leaves the switch off (reloading the row re-reads the key).
+    ApolloSettingsRow *nitter =
+        [ApolloSettingsRow switchRowWithID:@"nitter"
+                                     title:@"Open via Nitter"
+                                      isOn:^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyOpenTwitterLinksViaNitter]; }
+                                  onToggle:^(UISwitch *sender) {
+            if (sender.isOn && !ApolloOpenInAppSavedNitterHost()) {
+                [weakSelf presentNitterInstancePickerFromRowID:@"nitter" enabling:YES];
+                return;
+            }
+            [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyOpenTwitterLinksViaNitter];
+            [weakSelf visibilityDidChange];
+        }];
+
+    ApolloSettingsRow *nitterInstance =
+        [ApolloSettingsRow valueRowWithID:@"nitter-instance"
+                                    title:@"Instance"
+                                   detail:^NSString * { return ApolloOpenInAppSavedNitterHost() ?: @"None"; }
+                                 onSelect:^{ [weakSelf presentNitterInstancePickerFromRowID:@"nitter-instance" enabling:NO]; }];
+    nitterInstance.visible = ^BOOL {
+        return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyOpenTwitterLinksViaNitter];
+    };
+
     // Mirror of Apollo's native "Open Links in" browser picker: same key, same
     // options (installed browsers only), same tokens.
     ApolloSettingsRow *browser =
@@ -151,6 +186,9 @@ static NSString *ApolloOpenInAppBrowserLabelForToken(NSString *token) {
         [ApolloSettingsSection sectionWithTitle:@"Apps"
                                          footer:@"When enabled, links to these services open directly in their app (if installed) instead of a web view."
                                            rows:@[ bluesky, gitHub, steam, youTube ]],
+        [ApolloSettingsSection sectionWithTitle:@"X / Twitter"
+                                         footer:@"Open X posts and profiles on a Nitter instance, so you can read them without an X account. Instances are run by volunteers, may show a quick browser check first, and can go offline at any time. The instance list comes from status.d420.de."
+                                           rows:@[ nitter, nitterInstance ]],
         [ApolloSettingsSection sectionWithTitle:@"Browser"
                                          footer:@"Choose where every other web link opens. In-App Safari opens links inside Apollo; Safari and the other browsers appear as they're installed. This is Apollo's own setting, relocated here."
                                            rows:@[ browser ]],
@@ -179,6 +217,136 @@ static NSString *ApolloOpenInAppBrowserLabelForToken(NSString *token) {
                                                   forKey:UDKeyNativeOpenLinksIn];
         [weakSelf reloadRowWithID:@"browser"];
     });
+}
+
+#pragma mark - Nitter instance
+
+// Saves the instance and turns the feature on (picking an instance is what
+// enables it, whichever row started the flow).
+- (void)applyNitterInstanceHost:(NSString *)host {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setObject:host forKey:UDKeyNitterInstanceHost];
+    [defaults setBool:YES forKey:UDKeyOpenTwitterLinksViaNitter];
+    ApolloLog(@"[OpenInApp] Nitter instance set to %@", host);
+    [self visibilityDidChange];
+    [self reloadRowWithID:@"nitter"];
+    [self reloadRowWithID:@"nitter-instance"];
+}
+
+// The picker was dismissed without a choice. When it was opened by switching
+// the feature on, the key is still off, so reloading the row flips the switch back.
+- (void)nitterPickerCancelledEnabling:(BOOL)enabling {
+    if (enabling) [self reloadRowWithID:@"nitter"];
+}
+
+// Fetches the live instance list (spinner on the originating row while it
+// loads), then shows it as an action sheet with a Custom... entry. The tracker
+// is only contacted from here, on an explicit tap.
+- (void)presentNitterInstancePickerFromRowID:(NSString *)rowID enabling:(BOOL)enabling {
+    if (self.nitterInstancesLoading) return;
+    self.nitterInstancesLoading = YES;
+
+    UITableViewCell *cell = [self cellForRowID:rowID];
+    UIActivityIndicatorView *spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+    [spinner startAnimating];
+    UIView *previousAccessory = cell.accessoryView;
+    cell.accessoryView = spinner;
+
+    __weak typeof(self) weakSelf = self;
+    ApolloNitterFetchHealthyInstances(^(NSArray<ApolloNitterInstance *> *instances, NSError *error) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf.nitterInstancesLoading = NO;
+        if (cell.accessoryView == spinner) cell.accessoryView = previousAccessory;
+        if (error) ApolloLog(@"[OpenInApp] Nitter instance list unavailable: %@", error.localizedDescription);
+        [strongSelf showNitterInstanceSheetWithInstances:instances fromRowID:rowID enabling:enabling];
+    });
+}
+
+- (void)showNitterInstanceSheetWithInstances:(NSArray<ApolloNitterInstance *> *)instances
+                                   fromRowID:(NSString *)rowID
+                                    enabling:(BOOL)enabling {
+    NSString *message;
+    if (!instances) {
+        message = @"Couldn't load the instance list. You can still enter an instance yourself.";
+    } else if (instances.count == 0) {
+        message = @"No public instances are reported healthy right now. You can still enter an instance yourself.";
+    } else {
+        message = @"Public instances currently reported healthy, best first.";
+    }
+
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Nitter Instance"
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    NSString *current = ApolloOpenInAppSavedNitterHost();
+    __weak typeof(self) weakSelf = self;
+    for (ApolloNitterInstance *instance in instances) {
+        NSString *title = instance.host;
+        if (instance.averagePingMilliseconds > 0) {
+            title = [NSString stringWithFormat:@"%@ (%ld ms)", title, (long)instance.averagePingMilliseconds];
+        }
+        if ([instance.host isEqualToString:current]) title = [title stringByAppendingString:@" (Current)"];
+        NSString *host = instance.host;
+        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            [weakSelf applyNitterInstanceHost:host];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Custom..." style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        [weakSelf presentNitterCustomHostAlertWithText:current enabling:enabling];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+        [weakSelf nitterPickerCancelledEnabling:enabling];
+    }]];
+
+    // Same anchoring as ApolloSettingsPresentPicker: the screen, not a cell
+    // that a row reload could recycle while the popover is up.
+    UIView *anchor = self.view;
+    UITableViewCell *cell = [self cellForRowID:rowID];
+    sheet.popoverPresentationController.sourceView = anchor;
+    sheet.popoverPresentationController.sourceRect = cell ? [cell convertRect:cell.bounds toView:anchor]
+        : CGRectMake(CGRectGetMidX(anchor.bounds), CGRectGetMidY(anchor.bounds), 1, 1);
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)presentNitterCustomHostAlertWithText:(NSString *)text enabling:(BOOL)enabling {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Custom Instance"
+                                                                   message:@"Enter the address of a Nitter instance. Start it with http:// if it doesn't use HTTPS, like one you host at home."
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"nitter.example.org";
+        field.text = text;
+        field.keyboardType = UIKeyboardTypeURL;
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+        field.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+
+    __weak typeof(self) weakSelf = self;
+    __weak UIAlertController *weakAlert = alert;
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+        [weakSelf nitterPickerCancelledEnabling:enabling];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Save" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        NSString *typed = weakAlert.textFields.firstObject.text ?: @"";
+        NSString *host = ApolloNitterNormalizeHost(typed);
+        if (host) {
+            [weakSelf applyNitterInstanceHost:host];
+        } else {
+            [weakSelf presentNitterInvalidHostAlertForText:typed enabling:enabling];
+        }
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)presentNitterInvalidHostAlertForText:(NSString *)text enabling:(BOOL)enabling {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Invalid Instance"
+                                                                   message:@"Enter a host name like nitter.example.org. X and Twitter addresses can't be used."
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        [weakSelf presentNitterCustomHostAlertWithText:text enabling:enabling];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 @end

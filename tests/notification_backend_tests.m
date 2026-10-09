@@ -91,6 +91,29 @@ static void TestSettingsChangesAndRetainedValues(void) {
     }
 }
 
+static void TestLiveActivityAvatarOptIn(void) {
+    NSMutableDictionary *configuration = [Configuration(1) mutableCopy];
+    NSMutableURLRequest *request = RegistrationRequest();
+
+    // Show User Profile Pictures unset/off: the registration says so
+    // explicitly, so a re-registration after turning it off clears the flag.
+    SetConfiguration(configuration);
+    NSURLRequest *rewritten = ApolloRewriteRequestForNotificationBackend(request);
+    CheckRewrittenRequest(rewritten, request);
+    Require([[rewritten valueForHTTPHeaderField:@"X-Apollo-Live-Activity-Avatars"] isEqualToString:@"0"], "avatars must be opted out while Show User Profile Pictures is off");
+
+    configuration[UDKeyShowUserAvatars] = @YES;
+    SetConfiguration(configuration);
+    rewritten = ApolloRewriteRequestForNotificationBackend(request);
+    CheckRewrittenRequest(rewritten, request);
+    Require([[rewritten valueForHTTPHeaderField:@"X-Apollo-Live-Activity-Avatars"] isEqualToString:@"1"], "avatars must be opted in while Show User Profile Pictures is on");
+
+    // Only the Live Activity registration carries the flag.
+    NSMutableURLRequest *device = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"https://apollonotifications.com/v1/device"]];
+    device.HTTPMethod = @"POST";
+    Require([ApolloRewriteRequestForNotificationBackend(device) valueForHTTPHeaderField:@"X-Apollo-Live-Activity-Avatars"] == nil, "other endpoints must not carry the avatar flag");
+}
+
 static void TestConcurrentSettingsAndRewrites(void) {
     SetConfiguration(Configuration(1));
     dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
@@ -132,6 +155,7 @@ int main(void) {
         Method standardDefaults = class_getClassMethod(NSUserDefaults.class, @selector(standardUserDefaults));
         IMP originalDefaults = method_setImplementation(standardDefaults, (IMP)TestStandardUserDefaults);
         TestSettingsChangesAndRetainedValues();
+        TestLiveActivityAvatarOptIn();
         TestConcurrentSettingsAndRewrites();
         method_setImplementation(standardDefaults, originalDefaults);
         [sTestDefaults removePersistentDomainForName:sTestDomain];

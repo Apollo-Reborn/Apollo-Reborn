@@ -104,7 +104,7 @@ static void ApolloSearchScanTable(UITableView *table,
             @try {
                 cell = [dataSource tableView:table cellForRowAtIndexPath:indexPath];
             } @catch (NSException *exception) {
-                ApolloLog(@"[SettingsSearch] scan threw at %ld.%ld: %@", (long)s, (long)r, exception);
+                ApolloLogError(@"[SettingsSearch] scan threw at %ld.%ld: %@", (long)s, (long)r, exception);
                 continue;
             }
             if (!cell) continue;
@@ -186,7 +186,7 @@ static NSArray<ApolloSettingsSearchEntry *> *ApolloSettingsSearchBuildIndex(UITr
         @try {
             [vc loadViewIfNeeded];
         } @catch (NSException *exception) {
-            ApolloLog(@"[SettingsSearch] load of '%@' threw: %@", routeId, exception);
+            ApolloLogError(@"[SettingsSearch] load of '%@' threw: %@", routeId, exception);
             continue;
         }
         UITableView *table = ApolloSearchTableInViewController(vc);
@@ -266,6 +266,12 @@ static NSArray<ApolloSettingsSearchEntry *> *ApolloSettingsSearchBuildIndex(UITr
     boldPostTitles.nativePath = @[ @"Appearance" ];
     boldPostTitles.rowTitle = @"Bold Post Titles";
     [entries addObject:boldPostTitles];
+    ApolloSettingsSearchEntry *iconTheme = [[ApolloSettingsSearchEntry alloc] init];
+    iconTheme.title = @"Settings Icon Theme";
+    iconTheme.breadcrumb = @"Appearance → Other";
+    iconTheme.nativePath = @[ @"Appearance" ];
+    iconTheme.rowTitle = @"Settings Icon Theme";
+    [entries addObject:iconTheme];
 
     // Resolve a leading icon for every result so the list is visually uniform:
     //   own row icon (captured above) → the parent screen/section's icon (by
@@ -574,7 +580,7 @@ static void ApolloSettingsSearchOpenEntry(UIViewController *settingsVC, ApolloSe
     cell.textLabel.text = entry.title;
     cell.detailTextLabel.text = entry.breadcrumb;
     cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
-    cell.imageView.image = entry.iconImage;
+    cell.imageView.image = ApolloResolveSettingsIconImage(entry.iconImage, tableView.traitCollection);
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     [self apollo_applyPrimaryTextColorToCell:cell];
     return cell;

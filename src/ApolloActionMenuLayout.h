@@ -53,7 +53,8 @@ extern ApolloActionMenuContext const ApolloActionMenuContextModeratorComment;
 
 // Presentation order for pickers.
 NSArray<ApolloActionMenuContext> *ApolloActionMenuAllContexts(void);
-// Short picker title ("Feed", "Post", "Post (Comments)", "Comment").
+// The menu's title ("Feed", "Post", "Post with Comments", "Comment",
+// "Moderator Subreddit", …), distinct across all seven menus.
 NSString *ApolloActionMenuContextTitle(ApolloActionMenuContext context);
 // One sentence saying where that menu is opened from.
 NSString *ApolloActionMenuContextDescription(ApolloActionMenuContext context);
@@ -101,6 +102,21 @@ NSString *_Nullable ApolloActionMenuItemIDForKind(ApolloActionMenuContext contex
 // The item id a tweak row (ApolloActionMenuSpec) is stored under.
 NSString *ApolloActionMenuItemIDForSpec(NSString *specIdentifier);
 
+// Touch-and-hold menus. Apollo builds the UIActions of a post's, a comment's
+// and the comments header's long-press menu itself, straight from its own
+// strings — no Action kind travels with them — so a row is matched to its
+// item by what it shows: `imageName` is the row icon's asset or SF Symbol
+// name, `title` its title. The author and subreddit rows are titled with the
+// user's / subreddit's NAME, so those two are matched by icon only; every
+// other row by Apollo's own Action titles (ApolloNativeActionMetadata.h,
+// trailing ellipsis ignored), then by an icon the long-press menus were seen
+// to use for that item. nil for a row this context doesn't catalogue.
+NSString *_Nullable ApolloActionMenuItemIDForContextMenuRow(ApolloActionMenuContext context,
+                                                           NSString *_Nullable title,
+                                                           NSString *_Nullable imageName);
+// The long-press menus' Moderator row (it opens the object's moderator menu).
+BOOL ApolloActionMenuContextMenuRowIsModerator(NSString *_Nullable title, NSString *_Nullable imageName);
+
 #pragma mark - Saved layout
 
 // The saved order, with any catalogue item missing from it (a row added after
@@ -119,6 +135,8 @@ NSUInteger ApolloActionMenuCustomizedContextCount(void);
 
 void ApolloActionMenuSetOrder(ApolloActionMenuContext context, NSArray<NSString *> *order);
 void ApolloActionMenuSetItemHidden(ApolloActionMenuContext context, NSString *itemID, BOOL hidden);
+// Restore native contextual ordering without changing visibility.
+void ApolloActionMenuResetOrder(ApolloActionMenuContext context);
 void ApolloActionMenuResetContext(ApolloActionMenuContext context);
 
 #pragma mark - What the menu actually offered

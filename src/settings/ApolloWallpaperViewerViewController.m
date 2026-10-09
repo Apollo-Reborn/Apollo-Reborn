@@ -397,7 +397,7 @@ static NSMutableDictionary<NSURL *, ApolloWallpaperLoadToken *> *ApolloWallpaper
         strongSelf.imageView.image = image;
         [strongSelf resetZoomGeometry];
         strongSelf.retryView.hidden = (image != nil);
-        if (!image) ApolloLog(@"[Wallpapers] image load failed url=%@ error=%@", URL,
+        if (!image) ApolloLogError(@"[Wallpapers] image load failed url=%@ error=%@", URL,
                               error.localizedDescription ?: @"decode failed");
     }];
 }
@@ -499,7 +499,7 @@ static NSMutableDictionary<NSURL *, ApolloWallpaperLoadToken *> *ApolloWallpaper
        priority:NSURLSessionTaskPriorityHigh
      completion:^(__unused NSData *data, UIImage *image, NSError *error) {
         if (!image && error.code != NSURLErrorCancelled) {
-            ApolloLog(@"[Wallpapers] opening-page preload failed url=%@ error=%@", URL,
+            ApolloLogError(@"[Wallpapers] opening-page preload failed url=%@ error=%@", URL,
                       error.localizedDescription ?: @"decode failed");
         }
         if (ApolloWallpaperInitialPreloadTokens()[URL] == token) {
@@ -1000,7 +1000,7 @@ static NSMutableDictionary<NSURL *, ApolloWallpaperLoadToken *> *ApolloWallpaper
                 [strongSelf.prefetchTokens removeObjectForKey:URL];
             }
             if (!image && error.code != NSURLErrorCancelled) {
-                ApolloLog(@"[Wallpapers] nearby preload failed url=%@ error=%@", URL,
+                ApolloLogError(@"[Wallpapers] nearby preload failed url=%@ error=%@", URL,
                           error.localizedDescription ?: @"decode failed");
             }
         }];

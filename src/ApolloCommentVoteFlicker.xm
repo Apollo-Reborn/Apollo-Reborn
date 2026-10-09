@@ -28,12 +28,18 @@
 //   2. recursivelyEnsureDisplaySynchronously:YES right after the reconfigure,
 //      and again on the next main-queue turn — flushes the display passes the
 //      reconfigure scheduled (the -setNeedsLayout wave lands a turn later).
-// Both selectors exist in Apollo's bundled Texture (verified in the binary).
+//   3. For each flush, image nodes that would commit blank (e.g. the rebuilt
+//      rich link card's hero image) temporarily drop Texture's
+//      shouldBypassEnsureDisplay so the flush waits for them too.
+// All three selectors exist in Apollo's bundled Texture (verified in the binary).
 //
 // Scope: ONLY cells that actually receive a model-update notification while
 // visible (votes, live edits). Cells never get touched during scrolling, so
-// scroll perf is unaffected; the one-off synchronous draw of an already
-// visible cell is a sub-millisecond text render on a tap — imperceptible.
+// scroll perf is unaffected. The one-off synchronous draw of an already
+// visible cell is a sub-millisecond text render on a tap, plus (step 3) one
+// image draw for each network image the vote rebuilt that would otherwise
+// commit blank, such as a link card's hero (~10 ms for a 1280x720 thumbnail
+// in the sim).
 //
 // Covers both the comment rows (CommentSectionController) and the post header
 // in the comments view (CommentsHeaderSectionController) — both flicker the
@@ -45,17 +51,167 @@
 #import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloTranslation.h"
 #import "ApolloState.h"
+#import "ApolloClasses.h"
 
 @interface ASDisplayNode : NSObject
 @property (nonatomic) BOOL neverShowPlaceholders;
 @property (nonatomic) BOOL displaysAsynchronously;
+@property (nonatomic) BOOL shouldBypassEnsureDisplay;
+@property (nonatomic, readonly) BOOL isNodeLoaded;
+@property (nonatomic, readonly) UIView *view;
+@property (nonatomic, readonly) CALayer *layer;
 - (NSArray<ASDisplayNode *> *)subnodes;
+- (void)didEnterHierarchy;
+- (void)didExitHierarchy;
 - (void)setNeedsLayout;
 - (void)layoutIfNeeded;
 - (void)recursivelyEnsureDisplaySynchronously:(BOOL)sync;
 @end
+
+// MARK: - macOS Texture focus redraw
+//
+// The iOS-on-Mac compatibility layer changes window tint/focus state whenever
+// Apollo gains or loses key-window status, including when UIKit presents an
+// alert. Texture responds by invalidating tinted ASTextNode/ASImageNode leaves,
+// then redraws them asynchronously. Track only those leaves while they are in
+// the hierarchy and synchronously finish their pending display at each Mac
+// focus boundary. Normal scrolling and ordinary redraws remain asynchronous.
+static BOOL ApolloVFIsMacRuntime(void) {
+    NSProcessInfo *processInfo = NSProcessInfo.processInfo;
+    return processInfo.isiOSAppOnMac || processInfo.isMacCatalystApp;
+}
+
+static BOOL ApolloVFNeedsMacSynchronousDisplay(id node) {
+    if (!node) return NO;
+    return [node isKindOfClass:ApolloClassASTextNode] ||
+           [node isKindOfClass:ApolloClassASTextNode2] ||
+           [node isKindOfClass:ApolloClassASImageNode];
+}
+
+static NSHashTable *ApolloVFMacDisplayLeaves(void) {
+    static NSHashTable *leaves = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ leaves = [NSHashTable weakObjectsHashTable]; });
+    return leaves;
+}
+
+static void ApolloVFTrackMacDisplayLeaf(id node, BOOL inHierarchy) {
+    if (!ApolloVFNeedsMacSynchronousDisplay(node)) return;
+    NSHashTable *leaves = ApolloVFMacDisplayLeaves();
+    @synchronized (leaves) {
+        if (inHierarchy) [leaves addObject:node];
+        else [leaves removeObject:node];
+    }
+}
+
+static UIWindowScene *ApolloVFFocusSceneForNotification(NSNotification *notification) {
+    id object = notification.object;
+    if ([object isKindOfClass:[UIWindowScene class]]) return object;
+    if ([object isKindOfClass:[UIWindow class]]) return ((UIWindow *)object).windowScene;
+    return nil;
+}
+
+static void ApolloVFFlushTrackedMacDisplayLeaves(UIWindowScene *focusScene) {
+    NSHashTable *leaves = ApolloVFMacDisplayLeaves();
+    NSArray *snapshot = nil;
+    @synchronized (leaves) { snapshot = leaves.allObjects; }
+    for (ASDisplayNode *node in snapshot) {
+        @try {
+            // Check isNodeLoaded before touching .view: asking an unloaded
+            // Texture node for its view can force it to load. Only a node in a
+            // live window can contribute a blank frame, and scene/window
+            // notifications must not flush another Catalyst window.
+            if (![node respondsToSelector:@selector(isNodeLoaded)] || !node.isNodeLoaded) continue;
+            UIView *view = [node respondsToSelector:@selector(view)] ? node.view : nil;
+            UIWindow *window = view.window;
+            if (!window || (focusScene && window.windowScene != focusScene)) continue;
+            if (view.hidden || view.alpha < 0.01 || CGRectIsEmpty(view.bounds)) continue;
+            CGRect frameInWindow = [view convertRect:view.bounds toView:window];
+            if (!CGRectIntersectsRect(window.bounds, frameInWindow)) continue;
+            if (![node respondsToSelector:@selector(recursivelyEnsureDisplaySynchronously:)]) continue;
+            [node recursivelyEnsureDisplaySynchronously:YES];
+        } @catch (__unused NSException *e) {}
+    }
+}
+
+static NSUInteger sApolloVFMacFocusGeneration = 0;
+static CFAbsoluteTime sApolloVFMacLastFocusTime = 0;
+static __weak UIWindowScene *sApolloVFMacLastFocusScene = nil;
+
+static void ApolloVFScheduleMacFocusFlush(UIWindowScene *focusScene) {
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    BOOL sameTransition = sApolloVFMacLastFocusTime > 0 &&
+        now - sApolloVFMacLastFocusTime <= 0.05 &&
+        (!focusScene || !sApolloVFMacLastFocusScene || focusScene == sApolloVFMacLastFocusScene);
+    NSUInteger generation = ++sApolloVFMacFocusGeneration;
+    sApolloVFMacLastFocusTime = now;
+    sApolloVFMacLastFocusScene = focusScene;
+
+    // Catalyst can post scene, application, and window notifications for the
+    // same focus boundary. Keep one immediate/next/late sequence instead of
+    // multiplying synchronous work for duplicate notifications.
+    if (!sameTransition) ApolloVFFlushTrackedMacDisplayLeaves(focusScene);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (generation == sApolloVFMacFocusGeneration) {
+            ApolloVFFlushTrackedMacDisplayLeaves(focusScene);
+        }
+    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(150 * NSEC_PER_MSEC)),
+                   dispatch_get_main_queue(), ^{
+        if (generation == sApolloVFMacFocusGeneration) {
+            ApolloVFFlushTrackedMacDisplayLeaves(focusScene);
+        }
+    });
+}
+
+%group ApolloVFMacTextureSync
+
+%hook ASDisplayNode
+
+- (void)didEnterHierarchy {
+    %orig;
+    ApolloVFTrackMacDisplayLeaf(self, YES);
+}
+
+- (void)didExitHierarchy {
+    ApolloVFTrackMacDisplayLeaf(self, NO);
+    %orig;
+}
+
+%end
+
+%end
+
+static void ApolloVFInstallMacTextureSync(void) {
+    Class displayNodeClass = objc_getClass("ASDisplayNode");
+    if (!displayNodeClass) return;
+    %init(ApolloVFMacTextureSync, ASDisplayNode = displayNodeClass);
+    NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+    NSArray<NSNotificationName> *focusNotifications = @[
+        UISceneWillDeactivateNotification,
+        UISceneDidActivateNotification,
+        UIApplicationWillResignActiveNotification,
+        UIApplicationDidBecomeActiveNotification,
+        UIWindowDidResignKeyNotification,
+        UIWindowDidBecomeKeyNotification,
+    ];
+    for (NSNotificationName name in focusNotifications) {
+        [center addObserverForName:name object:nil queue:[NSOperationQueue mainQueue]
+                        usingBlock:^(NSNotification *notification) {
+            ApolloVFScheduleMacFocusFlush(ApolloVFFocusSceneForNotification(notification));
+        }];
+    }
+    ApolloLog(@"[VoteFlicker] Mac focus redraw guard enabled");
+}
+
+static void ApolloVFInstallMacTextureSyncIfNeeded(void) {
+    if (ApolloVFIsMacRuntime()) ApolloVFInstallMacTextureSync();
+}
+
+// MARK: - end macOS Texture focus redraw
 
 // Weak set of comment/header cells currently on screen. Only consulted when a
 // model-update notification arrives, so the bookkeeping cost is two hash-table
@@ -68,15 +224,8 @@ static void ApolloVFTrackCell(id cell, BOOL visible) {
     else [sApolloVFVisibleCells removeObject:cell];
 }
 
-static id ApolloVFIvar(id obj, const char *name) {
-    if (!obj || !name) return nil;
-    Ivar iv = class_getInstanceVariable(object_getClass(obj), name);
-    if (!iv) return nil;
-    @try { return object_getIvar(obj, iv); } @catch (__unused NSException *e) { return nil; }
-}
-
 static NSString *ApolloVFFullName(id model) {
-    if (!model || ![model respondsToSelector:@selector(fullName)]) return nil;
+    if (![model respondsToSelector:@selector(fullName)]) return nil;
     @try {
         NSString *fn = ((NSString *(*)(id, SEL))objc_msgSend)(model, @selector(fullName));
         return [fn isKindOfClass:[NSString class]] ? fn : nil;
@@ -92,26 +241,75 @@ static NSArray *ApolloVFCellsForUpdatedModel(id note) {
     if (fullName.length == 0) return @[];
     NSMutableArray *hits = [NSMutableArray array];
     for (id cell in sApolloVFVisibleCells.allObjects) {
-        id m = ApolloVFIvar(cell, "comment") ?: ApolloVFIvar(cell, "link");
+        id m = ApolloObjectIvar(cell, "comment") ?: ApolloObjectIvar(cell, "link");
         if ([ApolloVFFullName(m) isEqualToString:fullName]) [hits addObject:cell];
     }
     return hits;
 }
 
+// ASNetworkImageNode's init sets shouldBypassEnsureDisplay, so
+// recursivelyEnsureDisplaySynchronously: starts its draw but never waits for
+// it. A comment vote rebuilds the comment's LinkButtonNode, so the rich link
+// card comes back with a fresh hero image node: the flush drew the rebuilt
+// text in-frame, but the card image committed blank for ~2 frames until its
+// async draw landed. Opt in, for one flush, only the image nodes that would
+// commit blank (in the layer tree, unhidden, non-empty, image set, no contents
+// yet). Image nodes that already show pixels keep bypassing. Texture replays a
+// pending setNeedsDisplay on them a turn later, and that redraw keeps the old
+// contents up until it lands, so waiting on it would only cost main-thread
+// time.
+static void ApolloVFOptInBlankImageNodes(ASDisplayNode *root, NSMutableArray *optedIn) {
+    if (!root) return;
+    Class networkImageClass = ApolloClassASNetworkImageNode;
+    if (!networkImageClass ||
+        ![networkImageClass instancesRespondToSelector:@selector(setShouldBypassEnsureDisplay:)]) {
+        // Without the opt-in a rebuilt card image commits blank again on a vote.
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{
+            ApolloLog(@"[VoteFlicker] blank-image opt-in NOT armed: ASNetworkImageNode or -setShouldBypassEnsureDisplay: missing");
+        });
+        return;
+    }
+    NSMutableArray *pending = [NSMutableArray arrayWithObject:root];
+    while (pending.count > 0) {
+        ASDisplayNode *node = pending.lastObject;
+        [pending removeLastObject];
+        NSArray *children = node.subnodes;
+        if (children.count > 0) [pending addObjectsFromArray:children];
+        if (![node isKindOfClass:networkImageClass] || !node.isNodeLoaded || !node.shouldBypassEnsureDisplay) continue;
+        CALayer *layer = node.layer;
+        if (layer.contents || !layer.superlayer || layer.hidden || CGRectIsEmpty(layer.bounds)) continue;
+        if (!ApolloSendObject(node, @selector(image))) continue;
+        node.shouldBypassEnsureDisplay = NO;
+        [optedIn addObject:node];
+    }
+}
+
 static void ApolloVFEnsureSynchronousDisplay(NSArray *cells, const char *stage) {
+    NSUInteger waitedImages = 0;
     for (ASDisplayNode *cell in cells) {
+        NSMutableArray *optedIn = [NSMutableArray array];
         @try {
             if ([cell respondsToSelector:@selector(setNeverShowPlaceholders:)]) {
                 cell.neverShowPlaceholders = YES;
             }
+            // The rebuilt card's nodes only join the layer tree in the cell's
+            // pending layout pass, which the flush runs first. Run it here so
+            // the scan can see them (the flush then finds no layout to do).
+            CALayer *layer = cell.isNodeLoaded ? cell.layer : nil;
+            if (layer.needsLayout) [layer layoutIfNeeded];
+            ApolloVFOptInBlankImageNodes(cell, optedIn);
             if ([cell respondsToSelector:@selector(recursivelyEnsureDisplaySynchronously:)]) {
                 [cell recursivelyEnsureDisplaySynchronously:YES];
             }
         } @catch (__unused NSException *e) {}
+        // Restore Texture's default even if the flush threw.
+        for (ASDisplayNode *node in optedIn) node.shouldBypassEnsureDisplay = YES;
+        waitedImages += optedIn.count;
     }
     if (cells.count > 0) {
-        ApolloLog(@"[VoteFlicker] ensured synchronous display for %lu cell(s) (%s)",
-                  (unsigned long)cells.count, stage);
+        os_log_info(ApolloFixLog(), "[ApolloFix] [VoteFlicker] ensured synchronous display for %lu cell(s) (%{public}s), waited on %lu new image(s)",
+                    (unsigned long)cells.count, stage, (unsigned long)waitedImages);
     }
 }
 
@@ -156,9 +354,8 @@ static void ApolloVFStabilizeCommentsInfoNode(ASDisplayNode *node, BOOL flush) {
 }
 
 static void ApolloVFRealizeUpdatedCommentsInfo(id postInfo, const char *stage) {
-    if (!postInfo) return;
     @try {
-        ASDisplayNode *commentsInfo = (ASDisplayNode *)ApolloVFIvar(postInfo, "commentsInfoNode");
+        ASDisplayNode *commentsInfo = (ASDisplayNode *)ApolloObjectIvar(postInfo, "commentsInfoNode");
         if (!commentsInfo) return;
         ApolloVFStabilizeCommentsInfoNode(commentsInfo, NO);
         if ([postInfo respondsToSelector:@selector(setNeedsLayout)]) {
@@ -171,7 +368,8 @@ static void ApolloVFRealizeUpdatedCommentsInfo(id postInfo, const char *stage) {
         if ([postInfo respondsToSelector:@selector(recursivelyEnsureDisplaySynchronously:)]) {
             [postInfo recursivelyEnsureDisplaySynchronously:YES];
         }
-        ApolloLog(@"[VoteFlicker] read-comments update realized synchronously (%s)", stage);
+        // Confirmation only (helpful, not essential): info level.
+        os_log_info(ApolloFixLog(), "[ApolloFix] [VoteFlicker] read-comments update realized synchronously (%{public}s)", stage);
     } @catch (__unused NSException *e) {}
 }
 
@@ -224,15 +422,15 @@ static BOOL ApolloVFAccessoryNodeIsLive(id node) {
 }
 
 static BOOL ApolloVFCellRendersCollapsed(id cell) {
-    return ApolloVFAccessoryNodeIsLive(ApolloVFIvar(cell, "totalCollapsedChildrenIndicator")) ||
-           ApolloVFAccessoryNodeIsLive(ApolloVFIvar(cell, "collapseDisclosureIndicator"));
+    return ApolloVFAccessoryNodeIsLive(ApolloObjectIvar(cell, "totalCollapsedChildrenIndicator")) ||
+           ApolloVFAccessoryNodeIsLive(ApolloObjectIvar(cell, "collapseDisclosureIndicator"));
 }
 
 static void ApolloVFNeutralizeCarriedOverCollapse(id note) {
     @try {
         id oldModel = [note isKindOfClass:[NSNotification class]] ? [(NSNotification *)note object] : nil;
         id newModel = [note isKindOfClass:[NSNotification class]] ? [(NSNotification *)note userInfo][@"newModel"] : nil;
-        Class commentClass = objc_getClass("RDKComment");
+        Class commentClass = ApolloClassRDKComment;
         if (!commentClass || ![oldModel isMemberOfClass:commentClass] || ![newModel isMemberOfClass:commentClass]) return;
         if (![newModel respondsToSelector:@selector(collapsed)]) return;
         BOOL newCollapsed = ((BOOL (*)(id, SEL))objc_msgSend)(newModel, @selector(collapsed));
@@ -400,7 +598,7 @@ static void ApolloVFHandleModelUpdate(id note, void (^origCall)(void)) {
 %hook _TtC6Apollo12PostInfoNode
 - (void)didEnterHierarchy {
     %orig;
-    ASDisplayNode *commentsInfo = (ASDisplayNode *)ApolloVFIvar(self, "commentsInfoNode");
+    ASDisplayNode *commentsInfo = (ASDisplayNode *)ApolloObjectIvar(self, "commentsInfoNode");
     ApolloVFStabilizeCommentsInfoNode(commentsInfo, YES);
 }
 
@@ -484,16 +682,17 @@ static void ApolloVFForegroundHeal(const char *stage) {
 
 %ctor {
     %init;
+    ApolloVFInstallMacTextureSyncIfNeeded();
 
     // Vote-window height quiesce (see sApolloVFHeightQuiesceUntil above).
     // Manual swizzle with an existence guard: requeryNodeHeights is a Texture
     // internal — if a future Apollo binary ships without it, the quiesce
     // silently disarms and the rest of the module is unaffected.
     Class tableClass = objc_getClass("ASTableView");
-    Method requeryMethod = tableClass ? class_getInstanceMethod(tableClass, NSSelectorFromString(@"requeryNodeHeights")) : NULL;
+    Method requeryMethod = tableClass ? class_getInstanceMethod(tableClass, @selector(requeryNodeHeights)) : NULL;
     if (requeryMethod) {
         orig_ApolloVFRequeryNodeHeights = (void (*)(id, SEL))method_getImplementation(requeryMethod);
-        method_setImplementation(requeryMethod, (IMP)ApolloVFRequeryNodeHeights);
+        ApolloSetMethodImplementation(tableClass, requeryMethod, (IMP)ApolloVFRequeryNodeHeights);
     }
 
     NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];

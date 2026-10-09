@@ -94,6 +94,9 @@
 - (id)retrieveAccessTokenForApplicationOnlyWithCompletion:(id)completion;
 - (id)retrieveAccessTokenWithCompletion:(id)completion;
 - (id)refreshAccessTokenWithCompletion:(id)completion;
+// The request chokepoint every get/post/put/deletePath: call funnels into.
+- (id)taskWithMethod:(NSString *)method path:(NSString *)path parameters:(id)parameters
+          completion:(void (^)(NSHTTPURLResponse *, id, NSError *))completion;
 @end
 
 // ~100 years, so Apollo never considers the token expired and never tries to
@@ -515,7 +518,7 @@ BOOL ApolloWebJSONSynthesizeSignedInAccount(NSString *username) {
         id cred = ApolloWebJSONMakeSyntheticCredential(username);
         if (cred) [client setValue:cred forKey:@"authorizationCredential"];
     } @catch (NSException *ex) {
-        ApolloLog(@"[WebJSON][identity] account configuration failed: %@", ex);
+        ApolloLogError(@"[WebJSON][identity] account configuration failed: %@", ex);
         return NO;
     }
 
@@ -528,7 +531,7 @@ BOOL ApolloWebJSONSynthesizeSignedInAccount(NSString *username) {
     NSError *err = nil;
     NSData *accountsData = [NSKeyedArchiver archivedDataWithRootObject:newAccounts requiringSecureCoding:NO error:&err];
     if (![accountsData isKindOfClass:[NSData class]]) {
-        ApolloLog(@"[WebJSON][identity] failed to archive accounts array: %@", err);
+        ApolloLogFault(@"[WebJSON][identity] failed to archive accounts array: %@", err);
         return NO;
     }
 
@@ -557,7 +560,7 @@ BOOL ApolloWebJSONSynthesizeSignedInAccount(NSString *username) {
     [newValet addObject:sensitive];
     NSData *sensitiveData = [NSKeyedArchiver archivedDataWithRootObject:newValet requiringSecureCoding:NO error:&err];
     if (![sensitiveData isKindOfClass:[NSData class]]) {
-        ApolloLog(@"[WebJSON][identity] failed to archive sensitive blob: %@", err);
+        ApolloLogFault(@"[WebJSON][identity] failed to archive sensitive blob: %@", err);
         return NO;
     }
 
@@ -714,7 +717,7 @@ void ApolloWebJSONRepairPoisonedAccountBlobs(void) {
     NSError *err = nil;
     NSData *accountsData = [NSKeyedArchiver archivedDataWithRootObject:accounts requiringSecureCoding:NO error:&err];
     if (![accountsData isKindOfClass:[NSData class]]) {
-        ApolloLog(@"[WebJSON][repair] failed to re-archive repaired accounts array: %@ — leaving blob unchanged", err);
+        ApolloLogFault(@"[WebJSON][repair] failed to re-archive repaired accounts array: %@ — leaving blob unchanged", err);
         return;
     }
     [group setObject:accountsData forKey:@"RedditAccounts2"];
@@ -787,7 +790,7 @@ static id ApolloWebJSONThingProperty(id thing, SEL selector) {
 - (id)retrieveAccessTokenForApplicationOnlyWithCompletion:(id)completion {
     if (ApolloWebJSONShouldActForClient(self)) {
         ApolloWebJSONInstallSyntheticCredentialIfNeeded(self);
-        ApolloLogDebug(@"[WebJSON][identity] Short-circuited app-only token mint (cookie session)");
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [WebJSON][identity] Short-circuited app-only token mint (cookie session)");
         ApolloWebJSONFulfillTokenCompletion(completion);
         return nil;
     }
@@ -797,7 +800,7 @@ static id ApolloWebJSONThingProperty(id thing, SEL selector) {
 - (id)retrieveAccessTokenWithCompletion:(id)completion {
     if (ApolloWebJSONShouldActForClient(self)) {
         ApolloWebJSONInstallSyntheticCredentialIfNeeded(self);
-        ApolloLogDebug(@"[WebJSON][identity] Short-circuited token retrieval (cookie session) for u/%@",
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [WebJSON][identity] Short-circuited token retrieval (cookie session) for u/%{public}@",
                        ApolloWebJSONClientUsername(self) ?: @"(anonymous)");
         ApolloWebJSONFulfillTokenCompletion(completion);
         return nil;
@@ -808,7 +811,7 @@ static id ApolloWebJSONThingProperty(id thing, SEL selector) {
 - (id)refreshAccessTokenWithCompletion:(id)completion {
     if (ApolloWebJSONShouldActForClient(self)) {
         ApolloWebJSONInstallSyntheticCredentialIfNeeded(self);
-        ApolloLogDebug(@"[WebJSON][identity] Short-circuited token refresh (cookie session) for u/%@",
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [WebJSON][identity] Short-circuited token refresh (cookie session) for u/%{public}@",
                        ApolloWebJSONClientUsername(self) ?: @"(anonymous)");
         ApolloWebJSONFulfillTokenCompletion(completion);
         return nil;
@@ -889,12 +892,57 @@ static id ApolloWebJSONThingProperty(id thing, SEL selector) {
 
 %end
 
+// The web-session account ApolloWebJSONRewriteRequest will attribute a request
+// from `client` to: the same resolution, run on the client's credential because
+// the request doesn't exist yet. nil for an OAuth account.
+static NSString *ApolloWebJSONWebSessionUsernameForClient(RDKClient *client) {
+    if (!client || !sWebJSONEnabled) return nil;
+    id credential = [client respondsToSelector:@selector(authorizationCredential)] ? [client authorizationCredential] : nil;
+    return ApolloWebJSONWebSessionUsernameForBearer(ApolloWebJSONCredentialTokenString(credential));
+}
+
+// Set on the main thread while a request is re-sent after its web-bearer mint,
+// so that pass never defers again: one mint attempt per request, whatever it
+// returns.
+static __thread BOOL sApolloWebJSONResendingAfterWebBearerMint = NO;
+
 // Validate at the request completion boundary, where the original endpoint
 // survives redirects and every serializer/cache path has already finished.
 %hook RDKClient
 - (id)taskWithMethod:(NSString *)method path:(NSString *)path parameters:(id)parameters
     completion:(void (^)(NSHTTPURLResponse *, id, NSError *))completion {
     if (!completion) return %orig;
+    // OAuth-only moderator endpoints (removal reasons, modactions) go to
+    // oauth.reddit.com with the account's web bearer (ApolloWebJSONRewriteRequest),
+    // but the transport can only use a bearer that's already on hand. The first
+    // such request after launch, or after the last bearer aged out, mints one
+    // here off the main thread and is then sent through this method again.
+    // Every caller of these endpoints discards the returned task (all 30 call
+    // sites in Apollo 1.15.11: the six removal-reason methods and
+    // bulkRemoveComments:, the contributors/banned/muted list and single-user
+    // lookups, the moderators and invited-moderators lists, and the ban,
+    // invite, accept- and decline-invite writes), so the deferred send returns
+    // nil. Anything else passes straight through.
+    if (sWebJSONEnabled && !sApolloWebJSONResendingAfterWebBearerMint && ApolloWebJSONPathNeedsWebBearer(path)) {
+        NSString *sessionUsername = ApolloWebJSONWebSessionUsernameForClient(self).lowercaseString;
+        if (ApolloWebJSONWebBearerNeedsMint(sessionUsername)) {
+            RDKClient *client = self;
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                BOOL minted = ApolloWebJSONKeylessOAuthBearer(sessionUsername).length > 0;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    ApolloLog(@"[WebJSON] %@ a web bearer for u/%@ before %@ %@",
+                              minted ? @"Minted" : @"Could not mint", sessionUsername, method, path);
+                    sApolloWebJSONResendingAfterWebBearerMint = YES;
+                    @try {
+                        [client taskWithMethod:method path:path parameters:parameters completion:completion];
+                    } @finally {
+                        sApolloWebJSONResendingAfterWebBearerMint = NO;
+                    }
+                });
+            });
+            return nil;
+        }
+    }
     NSString *requestMethod = [method copy];
     NSString *requestPath = [path copy];
     NSString *username = ApolloWebJSONShouldActForClient(self) ? ApolloWebJSONClientUsername(self) : nil;
@@ -950,9 +998,10 @@ static id ApolloWebJSONThingProperty(id thing, SEL selector) {
         @try { obj = ApolloWebJSONFixupModeratorsResponseObject(response, obj); }
         @catch (NSException *e) { ApolloLog(@"[WebJSON] moderators-response fixup failed: %@", e); }
         // No legacy equivalent exists for this endpoint at all (see
-        // ApolloWebJSONShouldStubInvitedModerators) — override unconditionally,
-        // including clearing the OAuth-403's validation error, so the Mods
-        // screen just shows no pending invitations instead of an error.
+        // ApolloWebJSONShouldStubInvitedModerators) — when no web bearer
+        // answered it, override the refusal, including clearing its
+        // validation error, so the Mods screen just shows no pending
+        // invitations instead of an error.
         @try {
             if (ApolloWebJSONShouldStubInvitedModerators(response)) {
                 obj = @[];

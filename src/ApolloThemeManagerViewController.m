@@ -382,7 +382,7 @@ enum { ESName, ESVariant, ESColors, ESAdvanced, ESFont, ESGenerate, ESPreview, E
         // reflects any window-level appearance override (Apollo's own theme
         // system / the runtime); the raw screen traits can disagree with what
         // the user is actually looking at.
-        _editingMode = CurrentAppearanceMode(UIScreen.mainScreen.traitCollection);
+        _editingMode = CurrentAppearanceMode(self.traitCollection);
     }
     return self;
 }

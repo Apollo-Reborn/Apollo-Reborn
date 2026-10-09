@@ -45,6 +45,25 @@ BOOL ApolloLibreTranslateNeedsAPIKey(void);
 // every measure (deleted comments) leave that line alone instead of stripping
 // it and racing translation's re-add.
 NSAttributedString *ApolloTranslationTextByRemovingTrailingMarker(NSAttributedString *text);
+
+// "N more replies" (ApolloLoadMoreComments.xm). Main thread only.
+//
+// Translates the not-yet-inserted comments in `things` (RDKComment objects;
+// anything else is ignored) when `commentsController`'s thread is showing
+// translations. Returns NO, and never calls `completion`, when nothing needs
+// a translation; otherwise calls `completion` once on the main queue when the
+// first few (the rows that land on screen) have finished — cached, skipped or
+// failed. The rest are requested too, without being waited for. It never
+// gives up by itself: the caller bounds the wait.
+BOOL ApolloTranslationPrefetchCommentsForInsertion(id commentsController, NSArray *things, void (^completion)(void));
+
+// While the returned token is armed, a comment cell Apollo builds for one of
+// `things` gets its cached translation written into its body text node at
+// creation, before Texture measures the row, so the row is inserted at its
+// translated height. Returns nil when no comment in `things` has a cached
+// translation to use. Disarm with the token (nil is a no-op).
+id ApolloTranslationArmInsertedComments(id commentsController, NSArray *things);
+void ApolloTranslationDisarmInsertedComments(id token);
 __END_DECLS
 
 #if APOLLO_SIM_BUILD

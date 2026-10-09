@@ -9,7 +9,6 @@ static BOOL ApolloShareLinkModeIsValid(NSInteger rawValue) {
 }
 
 ApolloShareLinkMode ApolloShareLinkModeRead(NSUserDefaults *defaults, BOOL hasComment) {
-    if (![defaults isKindOfClass:NSUserDefaults.class]) defaults = NSUserDefaults.standardUserDefaults;
 
     id stored = [defaults objectForKey:ApolloShareLinkModePreferenceKey];
     ApolloShareLinkMode mode;
@@ -27,14 +26,12 @@ ApolloShareLinkMode ApolloShareLinkModeRead(NSUserDefaults *defaults, BOOL hasCo
 }
 
 void ApolloShareLinkModeWrite(NSUserDefaults *defaults, ApolloShareLinkMode mode) {
-    if (![defaults isKindOfClass:NSUserDefaults.class]) defaults = NSUserDefaults.standardUserDefaults;
     if (!ApolloShareLinkModeIsValid(mode)) mode = ApolloShareLinkModeNone;
     [defaults setInteger:mode forKey:ApolloShareLinkModePreferenceKey];
     [defaults setBool:(mode != ApolloShareLinkModeNone) forKey:ApolloShareLinkLegacyEnabledKey];
 }
 
 NSURL *ApolloShareLinkAbsoluteURL(NSURL *url) {
-    if (![url isKindOfClass:NSURL.class]) return nil;
     if (url.scheme.length > 0 && url.host.length > 0) return url;
     NSString *path = url.absoluteString ?: @"";
     if (path.length == 0) return nil;
@@ -52,7 +49,7 @@ static BOOL ApolloShareLinkIsRedditCommentURL(NSURL *url) {
 
 NSURL *ApolloShareLinkCommentURL(id comment, NSURL *postURL) {
     NSURL *fallback = ApolloShareLinkAbsoluteURL(postURL);
-    if (!comment || ![comment respondsToSelector:@selector(urlWithContext:)]) return fallback;
+    if (![comment respondsToSelector:@selector(urlWithContext:)]) return fallback;
 
     @try {
         id value = ((id (*)(id, SEL, NSInteger))objc_msgSend)(comment, @selector(urlWithContext:), 0);
