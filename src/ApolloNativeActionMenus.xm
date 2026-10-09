@@ -180,14 +180,38 @@ BOOL ApolloNativeActionMenuDeferNavigationUpdate(UIView *surface, NSString *key,
 @property (nonatomic, assign) BOOL didRequestConfiguration;
 @property (nonatomic, assign) BOOL dismissing;
 @property (nonatomic, assign) BOOL ended;
+// Issue #1375: UIKit runs the dismissal animator's completion only once every
+// spring in the transition has settled (1.2-1.9 s after the tap on iOS 26/27),
+// but the menu itself has faded out after ~0.3 s. A follow-up menu queued
+// behind this one opens at that fade-out instead.
+@property (nonatomic, assign) BOOL menuFaded;
+@property (nonatomic, strong) CADisplayLink *fadeLink;
+@property (nonatomic, assign) CFTimeInterval dismissalStartTime;
 @property (nonatomic, copy) dispatch_block_t pendingPresentationAction;
 @property (nonatomic, weak) UIWindow *requestWindow;
 @property (nonatomic, assign) NSUInteger requestGeneration;
 @property (nonatomic, strong) id nativePresentation;
 - (BOOL)presentFromView:(UIView *)source completion:(dispatch_block_t)completion;
 - (id)nativeHandoffPresentationForSource:(UIView *)source;
+- (BOOL)hasFadedOutBeforePresentationFromSource:(UIView *)source;
+- (void)fadeLinkTick:(CADisplayLink *)link;
 - (void)captureNativePresentation;
 - (void)finishPresentation;
+@end
+
+// The fade-out watcher's display link retains its target; a weak hop keeps it
+// from holding the presenter (and its anchor) past -finishPresentation.
+@interface ApolloNativeActionMenuFadeLinkProxy : NSObject
+@property (nonatomic, weak) ApolloNativeActionMenuPresenter *presenter;
+- (void)tick:(CADisplayLink *)link;
+@end
+
+@implementation ApolloNativeActionMenuFadeLinkProxy
+- (void)tick:(CADisplayLink *)link {
+    ApolloNativeActionMenuPresenter *presenter = self.presenter;
+    if (presenter) [presenter fadeLinkTick:link];
+    else [link invalidate];
+}
 @end
 
 // Track the latest request separately from retiring sessions, which still own
@@ -729,10 +753,28 @@ static void ApolloNativeActionMenuPrimeChainedSourceView(id actionController) {
     ApolloNativeActionMenuPrimeSource(sourceView, sourcePoint);
 }
 
+// A moderator row waits for UIKit to finish the menu's reverse morph so the
+// page it pushes doesn't start under it. Only the subreddit moderator menu's
+// rows push pages (Mod Queue, Mod Log, …). Every other moderator row acts in
+// place, presents a sheet (Ban User) or opens the next menu (Remove → Add
+// Removal Reason → Select Reason… → Notify user via…, Set Post Flair), and
+// holding those left the screen idle for ~1 s per step (#1375). Option lists
+// (text actions) have no kind and never push.
+static BOOL ApolloNativeActionMenuRowOpensModeratorPage(id actionController, NSInteger row) {
+    void *actionsBuffer = ApolloReadRawIvar(actionController, "actions");
+    int64_t actionCount = ApolloSwiftArrayCount(actionsBuffer);
+    if (row < 0 || row >= actionCount) return NO;
+    uint16_t kind = *(uint16_t *)((uint8_t *)actionsBuffer + 0x20 + row * 0x30);
+    return ApolloActionMenuItemIDForKind(ApolloActionMenuContextModeratorSubreddit, kind) &&
+        !ApolloActionMenuItemIDForKind(ApolloActionMenuContextModeratorPost, kind) &&
+        !ApolloActionMenuItemIDForKind(ApolloActionMenuContextModeratorComment, kind);
+}
+
 static void ApolloNativeActionMenuSelectRow(id actionController, NSInteger row) {
-    // Finish the reverse menu morph before a moderator action changes pages.
+    // Finish the reverse menu morph before a moderator row changes pages.
     // The presenter association is cleared before this deferred call runs.
     if ([objc_getAssociatedObject(actionController, &kApolloNativeActionMenuModeratorSelectionKey) boolValue] &&
+        ApolloNativeActionMenuRowOpensModeratorPage(actionController, row) &&
         ApolloNativeActionMenuPerformAfterDismissal(actionController, ^{
             ApolloNativeActionMenuSelectRow(actionController, row);
         })) return;
@@ -1284,13 +1326,83 @@ static id ApolloNativeActionMenuCompactMenuStyle(void) {
     [self captureNativePresentation];
     self.dismissing = YES;
     // Retain this preview/anchor through reverse morph and late preview callbacks.
-    if (animator) [animator addCompletion:^{ [self finishPresentation]; }];
-    else [self finishPresentation];
+    if (animator) {
+        [animator addCompletion:^{ [self finishPresentation]; }];
+        [self watchMenuFadeOut];
+    } else {
+        [self finishPresentation];
+    }
+}
+
+// The dismissing presentation's menu view (private UIKit, read defensively).
+- (UIView *)dismissingMenuView {
+    id presentation = self.nativePresentation;
+    SEL uiControllerSelector = @selector(uiController);
+    if (![presentation respondsToSelector:uiControllerSelector]) return nil;
+    id uiController = ((id (*)(id, SEL))objc_msgSend)(presentation, uiControllerSelector);
+    SEL menuViewSelector = @selector(menuView);
+    if (![uiController respondsToSelector:menuViewSelector]) return nil;
+    id menuView = ((id (*)(id, SEL))objc_msgSend)(uiController, menuViewSelector);
+    return [menuView isKindOfClass:UIView.class] ? menuView : nil;
+}
+
+- (void)watchMenuFadeOut {
+    if (self.fadeLink) return;
+    if (![self dismissingMenuView]) {
+        // A future UIKit without these views: the animator completion stays
+        // the only release, as before.
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            ApolloLog(@"[NativeActionMenu] No menu view to watch; follow-up menus wait for UIKit's completion");
+        });
+        return;
+    }
+    self.dismissalStartTime = CACurrentMediaTime();
+    ApolloNativeActionMenuFadeLinkProxy *proxy = [ApolloNativeActionMenuFadeLinkProxy new];
+    proxy.presenter = self;
+    self.fadeLink = [CADisplayLink displayLinkWithTarget:proxy selector:@selector(tick:)];
+    [self.fadeLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+}
+
+- (void)stopWatchingMenuFadeOut {
+    [self.fadeLink invalidate];
+    self.fadeLink = nil;
+}
+
+- (void)fadeLinkTick:(__unused CADisplayLink *)link {
+    if (self.ended || self.menuFaded) {
+        [self stopWatchingMenuFadeOut];
+        return;
+    }
+    UIView *menuView = [self dismissingMenuView];
+    CALayer *layer = menuView.layer.presentationLayer ?: menuView.layer;
+    // Below 2% opacity the collapsed menu no longer shows.
+    if (menuView.window && !menuView.hidden && layer.opacity > 0.02f) return;
+    [self stopWatchingMenuFadeOut];
+    self.menuFaded = YES;
+    dispatch_block_t next = self.pendingPresentationAction;
+    // A chosen action keeps priority over a queued menu, as in -finishPresentation.
+    if (!next || self.afterDismissalAction) return;
+    self.pendingPresentationAction = nil;
+    ApolloLog(@"[NativeActionMenu] Menu faded out %.0f ms into its dismissal; opening the next one",
+              (CACurrentMediaTime() - self.dismissalStartTime) * 1000.0);
+    dispatch_async(dispatch_get_main_queue(), next);
+}
+
+// A dismissing menu that has faded out no longer draws a lens of its own, so a
+// menu from another source may open now instead of waiting for UIKit to settle.
+// One reusing the same owned navigation surface still needs UIKit's handoff
+// (or the completion): both transitions would drive that surface.
+- (BOOL)hasFadedOutBeforePresentationFromSource:(UIView *)source {
+    if (!self.dismissing || !self.menuFaded || self.ended) return NO;
+    UIView *surface = ApolloNavigationActionsMenuSourceView(source);
+    return !surface || surface != self.morphPreview.view;
 }
 
 - (void)finishPresentation {
     if (self.ended) return;
     self.ended = YES;
+    [self stopWatchingMenuFadeOut];
     UIView *source = self.sourceView;
     BOOL ownsAnchor = objc_getAssociatedObject(source, &kApolloNativeActionMenuControllerKey) == self;
     if (self.interaction) [source removeInteraction:self.interaction];
@@ -1387,9 +1499,11 @@ static id ApolloNativeActionMenuCompactMenuStyle(void) {
         return YES;
     }
     id previousPresentation = [active nativeHandoffPresentationForSource:source];
-    if (active && active != self && !active.ended && !previousPresentation) {
+    if (active && active != self && !active.ended && !previousPresentation &&
+        ![active hasFadedOutBeforePresentationFromSource:source]) {
         // Dismiss an open/preparing menu first. Compatible requests during
-        // dismissal reuse its outgoing transition instead of this queue.
+        // dismissal reuse its outgoing transition instead of this queue, and
+        // the queue opens once the dismissing menu has faded out.
         __weak UIView *weakSource = source;
         active.pendingPresentationAction = ^{
             UIView *liveSource = weakSource;
