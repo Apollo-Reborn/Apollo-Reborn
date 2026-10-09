@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <title>Helios vampire cape</title>
+  <desc>Editable vector recreation of the black vampire collar with crimson satin lining. Transparent canvas. Place behind the Helios helmet, above the background. The two panels are mirrored; their inner portions reconstruct fabric hidden by the original helmet.</desc>
+  <defs>
+    <linearGradient id="cape-leather" x1="38" y1="484" x2="247" y2="690" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#343236"/>
+      <stop offset=".12" stop-color="#141318"/>
+      <stop offset=".4" stop-color="#030306"/>
+      <stop offset=".68" stop-color="#0B090E"/>
+      <stop offset="1" stop-color="#020205"/>
+    </linearGradient>
+    <linearGradient id="cape-satin" x1="67" y1="439" x2="298" y2="724" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#C60036"/>
+      <stop offset=".22" stop-color="#AD002A"/>
+      <stop offset=".5" stop-color="#650018"/>
+      <stop offset=".76" stop-color="#30000D"/>
+      <stop offset="1" stop-color="#9A0028"/>
+    </linearGradient>
+    <radialGradient id="cape-satin-sheen" cx="86" cy="483" r="200" gradientUnits="userSpaceOnUse" gradientTransform="translate(86 483) rotate(-32) scale(1 .63) translate(-86 -483)">
+      <stop stop-color="#FF003F" stop-opacity=".82"/>
+      <stop offset=".48" stop-color="#EB003C" stop-opacity=".35"/>
+      <stop offset="1" stop-color="#C50032" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="cape-top-edge" x1="32" y1="444" x2="330" y2="395" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF5A7A"/>
+      <stop offset=".27" stop-color="#FF164F"/>
+      <stop offset=".72" stop-color="#AF002C"/>
+      <stop offset="1" stop-color="#530018"/>
+    </linearGradient>
+    <linearGradient id="cape-fold-edge" x1="34" y1="445" x2="311" y2="849" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#87828A" stop-opacity=".72"/>
+      <stop offset=".25" stop-color="#2B252E" stop-opacity=".25"/>
+      <stop offset=".65" stop-color="#6F5B67" stop-opacity=".32"/>
+      <stop offset="1" stop-color="#12080D" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="cape-inner-fold" x1="253" y1="641" x2="322" y2="849" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#170009" stop-opacity="0"/>
+      <stop offset=".63" stop-color="#2C000D" stop-opacity=".8"/>
+      <stop offset="1" stop-color="#D00032" stop-opacity=".7"/>
+    </linearGradient>
+    <g id="cape-left-panel">
+      <!-- Black outer fabric. -->
+      <path d="M32 444 C85 395 174 370 273 376 C304 378 330 387 352 401 C282 480 252 565 259 655 C265 743 297 815 328 867 C253 816 174 791 122 740 C78 697 76 642 63 583 C52 532 43 482 32 444Z" fill="url(#cape-leather)"/>
+      <!-- Crimson lining, folded toward the viewer along the outer edge. -->
+      <path id="cape-lining" d="M32 444 C85 395 174 370 273 376 C304 378 330 387 352 401 C282 480 252 565 259 655 C265 743 297 815 328 867 C262 804 204 743 169 676 C137 615 133 558 114 520 C96 485 66 466 32 444Z" fill="url(#cape-satin)"/>
+      <path d="M32 444 C85 395 174 370 273 376 C304 378 330 387 352 401 C282 480 252 565 259 655 C265 743 297 815 328 867 C262 804 204 743 169 676 C137 615 133 558 114 520 C96 485 66 466 32 444Z" fill="url(#cape-satin-sheen)"/>
+      <path d="M253 617 C260 718 297 815 328 867 C295 837 276 819 252 791 C252 736 244 679 253 617Z" fill="url(#cape-inner-fold)"/>
+      <!-- Slim reflected light on the rolled upper edge and leather seam. -->
+      <path d="M33 444 C86 395 174 371 273 377 C305 379 331 388 351 401" stroke="url(#cape-top-edge)" stroke-width="2.5" stroke-linecap="round"/>
+      <path d="M33 445 C67 467 96 486 114 520 C133 558 137 615 169 676 C204 743 262 804 327 866" stroke="url(#cape-fold-edge)" stroke-width="2"/>
+      <path d="M35 452 C57 537 69 633 89 684 C124 761 205 790 280 835" stroke="#D1BECF" stroke-opacity=".09" stroke-width="1.4"/>
+    </g>
+  </defs>
+  <g id="vampire-cape">
+    <use href="#cape-left-panel"/>
+    <use href="#cape-left-panel" transform="translate(1024 0) scale(-1 1)"/>
+  </g>
+</svg>
