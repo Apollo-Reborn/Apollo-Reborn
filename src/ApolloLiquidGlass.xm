@@ -11,8 +11,9 @@
 #import "ApolloNavigationTitlePresentation.h"
 #import "ApolloFindInCommentsGlass.h"
 #import "ApolloClasses.h"
+#import "ApolloSubredditSwitcherSheet.h"
 
-/// Helpers for restoring long-press to activate account switcher w/ Liquid Glass
+/// Helpers for the Posts and account tab long-press shortcuts in Liquid Glass.
 static char kApolloTabButtonSetupKey;
 static char kApolloFloatingTabItemViewSetupKey;
 static char kApolloTabBarApplyingAdaptiveAppearanceKey;
@@ -227,22 +228,13 @@ static UITabBar *ApolloTabBarForTabObject(id tabObject) {
     return nil;
 }
 
-static BOOL ApolloIsProfileTabView(UIView *view) {
+static UITabBar *ApolloTabBarForTabView(UIView *view) {
     UITabBar *tabBar = FindAncestorTabBar(view);
-    UITabBarItem *item = ApolloTabBarItemForButtonInTabBar(view, tabBar);
-    if (!item) {
-        item = ApolloTabBarItemForTabView(view);
-    }
-
     if (!tabBar) {
         id tabObject = ApolloSendObjectReturningSelector(view, @selector(item));
         tabBar = ApolloTabBarForTabObject(tabObject);
     }
-
-    if (!tabBar || !item) return NO;
-
-    NSArray<UITabBarItem *> *items = tabBar.items;
-    return items.count > 2 && items[2] == item;
+    return tabBar;
 }
 
 // Opens Apollo's account switcher by invoking ProfileViewController's bar button action.
@@ -310,7 +302,7 @@ static void OpenAccountManager(UIWindow *sourceWindow) {
     }
 }
 
-static void ApolloInstallAccountTabLongPress(UIView *view, const void *setupKey) {
+static void ApolloInstallTabShortcutLongPress(UIView *view, const void *setupKey) {
     if (!IsLiquidGlass() || !view.window) return;
     if (objc_getAssociatedObject(view, setupKey)) return;
     objc_setAssociatedObject(view, setupKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -322,13 +314,23 @@ static void ApolloInstallAccountTabLongPress(UIView *view, const void *setupKey)
     [view addGestureRecognizer:longPress];
 }
 
-static void ApolloHandleAccountTabLongPress(UIView *view, UILongPressGestureRecognizer *recognizer) {
+static void ApolloHandleTabShortcutLongPress(UIView *view, UILongPressGestureRecognizer *recognizer) {
     if (recognizer.state != UIGestureRecognizerStateBegan) {
         return;
     }
 
-    UITabBar *tabBar = FindAncestorTabBar(view);
-    if (ApolloIsProfileTabView(view)) {
+    UITabBar *tabBar = ApolloTabBarForTabView(view);
+    UITabBarItem *item = ApolloTabBarItemForButtonInTabBar(view, tabBar) ?: ApolloTabBarItemForTabView(view);
+    if (!tabBar || !item) return;
+
+    NSArray<UITabBarItem *> *items = tabBar.items;
+    if (item == items.firstObject) {
+        ApolloCancelLiquidLensGesture(tabBar);
+        if (ApolloPresentPostsTabSubredditSheet(view.window)) {
+            UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+            [feedback impactOccurred];
+        }
+    } else if (items.count > 2 && item == items[2]) {
         ApolloCancelLiquidLensGesture(tabBar);
         OpenAccountManager(view.window);
     }
@@ -505,7 +507,7 @@ static void ApolloInsetLiquidGlassTabBadges(UIView *tabButton) {
 - (void)didMoveToWindow {
     %orig;
 
-    ApolloInstallAccountTabLongPress(self, &kApolloTabButtonSetupKey);
+    ApolloInstallTabShortcutLongPress(self, &kApolloTabButtonSetupKey);
 
     // Toggle 'highlighted' to trigger Liquid Glass tab bar to re-layout labels correctly
     BOOL wasHighlighted = self.highlighted;
@@ -515,7 +517,7 @@ static void ApolloInsetLiquidGlassTabBadges(UIView *tabButton) {
 
 %new
 - (void)apollo_tabButtonLongPressed:(UILongPressGestureRecognizer *)recognizer {
-    ApolloHandleAccountTabLongPress(self, recognizer);
+    ApolloHandleTabShortcutLongPress(self, recognizer);
 }
 
 %new
@@ -529,12 +531,12 @@ static void ApolloInsetLiquidGlassTabBadges(UIView *tabButton) {
 
 - (void)didMoveToWindow {
     %orig;
-    ApolloInstallAccountTabLongPress(self, &kApolloFloatingTabItemViewSetupKey);
+    ApolloInstallTabShortcutLongPress(self, &kApolloFloatingTabItemViewSetupKey);
 }
 
 %new
 - (void)apollo_tabButtonLongPressed:(UILongPressGestureRecognizer *)recognizer {
-    ApolloHandleAccountTabLongPress(self, recognizer);
+    ApolloHandleTabShortcutLongPress(self, recognizer);
 }
 
 %new
