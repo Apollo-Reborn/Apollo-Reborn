@@ -63,6 +63,42 @@ previous lineup and the icon active when it is generated, and deliberately
 represents at least three packs. This is entirely local: it requires no network
 request, remote configuration, or separate registry field.
 
+### Holiday seasons
+
+The top-level `"seasons"` list in `icons.json` gives the Spotlight a holiday
+lean. It is still five icons a day, but while a holiday window is open its icons
+lead the lineup and the header reads e.g. "Daily Spotlight · Halloween":
+
+| Days until the window's `end` | Holiday slots (of 5) |
+|-------------------------------|----------------------|
+| 14 or more                    | 1                    |
+| 7–13                          | 2                    |
+| 0–6 (final week)              | 3                    |
+
+```json
+{ "id": "halloween", "title": "Halloween", "start": "10-01", "end": "10-31",
+  "iconIDs": ["witching-hour", "helios-count"],
+  "colorMatchIconIDs": ["LG-andru", "LG-burnt-orange"] }
+```
+
+- `start`/`end` — inclusive `MM-DD` dates in one year (no wrap past Dec 31,
+  no Feb 29). Windows may not overlap.
+- `iconIDs` — icons made for the holiday. They fill the slots first.
+- `colorMatchIconIDs` — icons that only share the holiday's colors. They fill
+  whatever slots the made-for icons leave open.
+- Holiday icons may repeat from yesterday, so even a two-icon holiday has one
+  in the Spotlight every day of its window; within a tier, icons not shown
+  yesterday go first. The other slots keep the normal rotation.
+- Only Liquid Glass `group` icons can be listed; Standard-pack additions
+  (`standardPack`) never appear in the Spotlight.
+
+**When you add icons, check them against the seasons.** A new holiday icon
+goes in that season's `iconIDs` (ahead of the color matches); a new color
+match goes in `colorMatchIconIDs`. A holiday with no list yet gets a new
+season entry. `make lg-previews` rejects unknown IDs, overlaps, and bad dates,
+and `tests/run_liquid_glass_spotlight_tests.sh` fails while the generated
+header is out of date (`--calendar` prints sample lineups).
+
 After editing `icons.json`:
 
 ```bash
@@ -87,7 +123,7 @@ is not needed — the preview PNGs for existing icons are already in Assets.car.
    ```
    liquid-glass/icons/<id>/<id>.icon/        # paste the .icon package here
    ```
-3. Append the icon to **`liquid-glass/icons.json`** — set `id`, `displayName`, `designer`, and `group` (required, must name one of the ids in `"groups"`). This is the only registration step — the generated header, the icon picker, and `patch.sh` all read from this file.
+3. Append the icon to **`liquid-glass/icons.json`** — set `id`, `displayName`, `designer`, and `group` (required, must name one of the ids in `"groups"`). This is the only registration step — the generated header, the icon picker, and `patch.sh` all read from this file. If the icon belongs to a holiday (or matches its colors), add it to that entry in `"seasons"` too (see [Holiday seasons](#holiday-seasons)).
 4. Generate the 104×104 @2x PNG previews from the `.icon` package:
    ```bash
    python3 liquid-glass/scripts/generate_icon_previews.py --icons <id>

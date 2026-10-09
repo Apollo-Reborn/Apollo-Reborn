@@ -10,6 +10,7 @@
 #import "ApolloBarkNotifications.h"
 #import "ApolloLiquidGlassIconIDs.h"
 #import "ApolloLiquidGlassIconSelectionState.h"
+#import "ApolloLiquidGlassSpotlight.h"
 #import "ApolloThemeRuntime.h"
 #import "settings/ApolloSettingsTableViewController.h"
 
@@ -22,6 +23,9 @@
 //   • A "Featured" section — five compact icon cards selected from the full
 //     Liquid Glass registry by a deterministic daily shuffle. The choices stay
 //     stable for the local calendar day and require no network connection.
+//     During a holiday window from icons.json "seasons" (Halloween, Christmas,
+//     ...), 1–3 of the five go to that holiday's icons, more as it nears,
+//     and the header names the holiday. See ApolloLiquidGlassSpotlight.m.
 //   • An adaptive grid of tappable "icon pack" cards (fanned sample artwork +
 //     title + icon count) — one card per group in icons.json. Tapping a card
 //     pushes LGGroupIconsViewController, a 2-up (adaptive on wider screens)
@@ -658,27 +662,63 @@ static LGIconRow *sFeaturedRows  = NULL;
 static NSInteger   sFeaturedCount = 0;
 static NSInteger   sFeaturedDayIdentifier = NSNotFound;
 
+// The date the Spotlight is built for. Simulator builds accept a fixed date
+// (`-ApolloLGSpotlightDate 2026-10-28` launch argument) so the seasonal
+// lineups can be checked without changing the Mac's clock.
+static NSDate *LGSpotlightDate(void) {
+#if APOLLO_SIM_BUILD
+    NSString *override = [NSUserDefaults.standardUserDefaults stringForKey:@"ApolloLGSpotlightDate"];
+    if (override.length) {
+        NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+        formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+        formatter.dateFormat = @"yyyy-MM-dd";
+        NSDate *date = [formatter dateFromString:override];
+        if (date) return [date dateByAddingTimeInterval:12 * 60 * 60];
+    }
+#endif
+    return NSDate.date;
+}
+
 static NSInteger LGCurrentCalendarDayIdentifier(void) {
     NSDateComponents *parts = [NSCalendar.currentCalendar
         components:NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay
-          fromDate:NSDate.date];
+          fromDate:LGSpotlightDate()];
     return parts.year * 10000 + parts.month * 100 + parts.day;
 }
 
-static uint64_t LGDailyRandomNext(uint64_t *state) {
-    uint64_t value = *state;
-    value ^= value >> 12;
-    value ^= value << 25;
-    value ^= value >> 27;
-    *state = value;
-    return value * UINT64_C(2685821657736338717);
+// Holiday windows are Gregorian month/days. Read the date in the Gregorian
+// calendar explicitly: NSCalendar.currentCalendar can be Buddhist, Hebrew,
+// Japanese, etc., whose month numbers would put a window on the wrong days.
+static const LGSeasonDef *LGActiveSeason(NSInteger *outDaysUntilEnd) {
+    NSCalendar *gregorian = [NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian];
+    NSDateComponents *parts = [gregorian
+        components:NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay
+          fromDate:LGSpotlightDate()];
+    for (size_t i = 0; i < kLGSeasonCount; i++) {
+        const LGSeasonDef *season = &kLGSeasons[i];
+        NSInteger daysUntilEnd = ApolloLGSeasonDaysUntilEnd(parts.year, parts.month, parts.day,
+                                                            season->startMonth, season->startDay,
+                                                            season->endMonth, season->endDay);
+        if (daysUntilEnd == NSNotFound) continue;
+        if (outDaysUntilEnd) *outDaysUntilEnd = daysUntilEnd;
+        return season;
+    }
+    return NULL;
 }
 
-typedef struct {
-    LGIconRow *row;
-    NSInteger groupIndex;
-    BOOL selected;
-} LGFeaturedCandidate;
+static NSArray<NSString *> *LGSeasonIconIDs(const char *const *iconIDs, size_t count) {
+    NSMutableArray<NSString *> *result = [NSMutableArray arrayWithCapacity:count];
+    for (size_t i = 0; i < count; i++) [result addObject:@(iconIDs[i])];
+    return result;
+}
+
+static NSSet<NSString *> *LGSeasonAllIconIDs(const LGSeasonDef *season) {
+    if (!season) return [NSSet set];
+    NSMutableSet<NSString *> *result = [NSMutableSet setWithArray:
+        LGSeasonIconIDs(season->iconIDs, season->iconIDCount)];
+    [result addObjectsFromArray:LGSeasonIconIDs(season->colorMatchIconIDs, season->colorMatchIconIDCount)];
+    return result;
+}
 
 static LGIconRow *LGFeaturedRowForID(NSString *iconID, NSInteger *groupIndex) {
     for (NSInteger gi = 0; gi < sGroupCount; gi++) {
@@ -719,88 +759,79 @@ static BOOL LGApplyStoredFeaturedIDs(NSArray<NSString *> *iconIDs) {
 }
 
 static NSArray<NSString *> *LGGenerateDailyFeaturedIDs(NSInteger dayIdentifier,
-                                                        NSSet<NSString *> *excludedIDs) {
-    NSInteger capacity = 0;
-    for (NSInteger gi = 0; gi < sGroupCount; gi++) capacity += sGroups[gi].count;
-    LGFeaturedCandidate *candidates = capacity > 0
-        ? (LGFeaturedCandidate *)calloc((size_t)capacity, sizeof(LGFeaturedCandidate))
-        : NULL;
-    NSInteger candidateCount = 0;
+                                                        NSArray<NSString *> *previousLineup,
+                                                        NSString *activeIconID) {
+    NSMutableArray<NSString *> *iconIDs = [NSMutableArray array];
+    NSMutableArray<NSNumber *> *groupIndexes = [NSMutableArray array];
     for (NSInteger gi = 0; gi < sGroupCount; gi++) {
         for (NSInteger ri = 0; ri < sGroups[gi].count; ri++) {
-            LGIconRow *row = &sGroups[gi].rows[ri];
-            if ([excludedIDs containsObject:row->iconID]) continue;
-            candidates[candidateCount++] = (LGFeaturedCandidate){ row, gi, NO };
+            [iconIDs addObject:sGroups[gi].rows[ri].iconID];
+            [groupIndexes addObject:@(gi)];
         }
     }
 
-    uint64_t randomState = ((uint64_t)dayIdentifier << 32) ^ UINT64_C(0xA90110DA17F34D6B);
-    for (NSInteger i = candidateCount - 1; i > 0; i--) {
-        NSInteger j = (NSInteger)(LGDailyRandomNext(&randomState) % (uint64_t)(i + 1));
-        LGFeaturedCandidate swap = candidates[i];
-        candidates[i] = candidates[j];
-        candidates[j] = swap;
-    }
+    NSInteger daysUntilEnd = NSNotFound;
+    const LGSeasonDef *season = LGActiveSeason(&daysUntilEnd);
+    NSArray<NSArray<NSString *> *> *tiers = season
+        ? @[ LGSeasonIconIDs(season->iconIDs, season->iconIDCount),
+             LGSeasonIconIDs(season->colorMatchIconIDs, season->colorMatchIconIDCount) ]
+        : @[];
+    NSInteger seasonalSlots = ApolloLGSeasonalSlotCount(daysUntilEnd);
+    NSArray<NSString *> *lineup = ApolloLGSpotlightLineup(iconIDs, groupIndexes, sGroupCount,
+                                                          kLGDailyFeaturedCount, dayIdentifier,
+                                                          previousLineup ?: @[], activeIconID,
+                                                          tiers, seasonalSlots);
+    ApolloLog(@"[LGIconPicker] Daily Spotlight %ld: season=%s (%ld day(s) left, %ld slot(s)) lineup=%@",
+              (long)dayIdentifier, season ? season->seasonID : "none",
+              (long)(season ? daysUntilEnd : 0), (long)seasonalSlots,
+              [lineup componentsJoinedByString:@","]);
+    return lineup;
+}
 
-    NSInteger *groupOrder = (NSInteger *)calloc((size_t)sGroupCount, sizeof(NSInteger));
-    for (NSInteger gi = 0; gi < sGroupCount; gi++) groupOrder[gi] = gi;
-    for (NSInteger i = sGroupCount - 1; i > 0; i--) {
-        NSInteger j = (NSInteger)(LGDailyRandomNext(&randomState) % (uint64_t)(i + 1));
-        NSInteger swap = groupOrder[i];
-        groupOrder[i] = groupOrder[j];
-        groupOrder[j] = swap;
-    }
+// The header names the holiday only when today's lineup actually features
+// its icons (a lineup stored before an update, or one whose holiday icons are
+// all unregistered on this IPA, keeps the plain title).
+static NSString *sFeaturedSeasonTitle = nil;
 
-    LGIconRow *selected[kLGDailyFeaturedCount] = {};
-    NSInteger selectedCount = 0;
-    NSInteger requiredGroups = MIN(3, sGroupCount);
-    for (NSInteger orderIndex = 0; orderIndex < sGroupCount && selectedCount < requiredGroups; orderIndex++) {
-        NSInteger wantedGroup = groupOrder[orderIndex];
-        for (NSInteger ci = 0; ci < candidateCount; ci++) {
-            if (!candidates[ci].selected && candidates[ci].groupIndex == wantedGroup) {
-                candidates[ci].selected = YES;
-                selected[selectedCount++] = candidates[ci].row;
-                break;
-            }
-        }
+static void LGUpdateFeaturedSeasonTitle(NSArray<NSString *> *lineup) {
+    const LGSeasonDef *season = LGActiveSeason(NULL);
+    NSSet<NSString *> *seasonIconIDs = LGSeasonAllIconIDs(season);
+    BOOL featuresSeason = NO;
+    for (NSString *iconID in lineup) {
+        if ([seasonIconIDs containsObject:iconID]) { featuresSeason = YES; break; }
     }
-    for (NSInteger ci = 0; ci < candidateCount && selectedCount < kLGDailyFeaturedCount; ci++) {
-        if (candidates[ci].selected) continue;
-        candidates[ci].selected = YES;
-        selected[selectedCount++] = candidates[ci].row;
-    }
-    for (NSInteger i = selectedCount - 1; i > 0; i--) {
-        NSInteger j = (NSInteger)(LGDailyRandomNext(&randomState) % (uint64_t)(i + 1));
-        LGIconRow *swap = selected[i];
-        selected[i] = selected[j];
-        selected[j] = swap;
-    }
+    sFeaturedSeasonTitle = featuresSeason ? @(season->title) : nil;
+}
 
-    NSMutableArray<NSString *> *result = [NSMutableArray arrayWithCapacity:(NSUInteger)selectedCount];
-    for (NSInteger i = 0; i < selectedCount; i++) [result addObject:selected[i]->iconID];
-    free(groupOrder);
-    free(candidates);
-    return result;
+static NSString *LGFeaturedSectionTitle(void) {
+    return sFeaturedSeasonTitle.length
+        ? [NSString stringWithFormat:@"%@ · %@", kLGFeaturedSectionTitle, sFeaturedSeasonTitle]
+        : kLGFeaturedSectionTitle;
 }
 
 // Returns YES when the visible set changed. Persisting the IDs keeps the row
 // stable for the entire day. On a new day the previous lineup and the active
-// icon are excluded, then the selection deliberately spans at least 3 packs.
+// icon are excluded (holiday icons may repeat, see ApolloLGSpotlightLineup),
+// then the selection deliberately spans at least 3 packs.
 static BOOL LGPopulateDailyFeaturedRows(NSInteger dayIdentifier) {
     if (sFeaturedDayIdentifier == dayIdentifier) return NO;
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
     NSNumber *storedDay = [defaults objectForKey:kLGDailyFeaturedDayDefaultsKey];
     NSArray<NSString *> *storedIDs = [defaults arrayForKey:kLGDailyFeaturedIDsDefaultsKey];
     if (storedDay.integerValue == dayIdentifier && LGApplyStoredFeaturedIDs(storedIDs)) {
+        LGUpdateFeaturedSeasonTitle(storedIDs);
         sFeaturedDayIdentifier = dayIdentifier;
         return YES;
     }
 
-    NSMutableSet<NSString *> *excluded = [NSMutableSet setWithArray:storedIDs ?: @[]];
-    NSString *activeIconID = LGActiveIconID();
-    if (activeIconID.length) [excluded addObject:activeIconID];
-    NSArray<NSString *> *newIDs = LGGenerateDailyFeaturedIDs(dayIdentifier, excluded);
+    NSArray<NSString *> *previousLineup = [storedIDs filteredArrayUsingPredicate:
+        [NSPredicate predicateWithBlock:^BOOL(id iconID, __unused NSDictionary *bindings) {
+            return [iconID isKindOfClass:NSString.class];
+        }]];
+    NSArray<NSString *> *newIDs = LGGenerateDailyFeaturedIDs(dayIdentifier, previousLineup,
+                                                             LGActiveIconID());
     if (!LGApplyStoredFeaturedIDs(newIDs)) return NO;
+    LGUpdateFeaturedSeasonTitle(newIDs);
     [defaults setInteger:dayIdentifier forKey:kLGDailyFeaturedDayDefaultsKey];
     [defaults setObject:newIDs forKey:kLGDailyFeaturedIDsDefaultsKey];
     sFeaturedDayIdentifier = dayIdentifier;
@@ -4209,7 +4240,7 @@ static void LGScheduleDailyFeaturedRollover(id viewController) {
     if (LGAlternateIconsAvailable()) {
         NSInteger forwardedSection = LGForwardedNativeSection(self);
         if (forwardedSection != NSNotFound) return %orig(tableView, forwardedSection);
-        if (LGHasFeaturedSection() && section == LGFeaturedSectionIndex()) return kLGFeaturedSectionTitle;
+        if (LGHasFeaturedSection() && section == LGFeaturedSectionIndex()) return LGFeaturedSectionTitle();
         if (section == LGPacksSectionIndex()) return kLGSectionBrandTitle;
         if (section == LGStandardPacksSectionIndex()) return kLGStandardSectionTitle;
         return %orig(tableView, LGRemapSectionToOriginal(section));

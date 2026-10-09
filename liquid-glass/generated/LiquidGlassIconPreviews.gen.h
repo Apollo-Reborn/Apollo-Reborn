@@ -157,4 +157,79 @@ static const size_t kLGStandardPackEntries_ultraCount = 9;
 
 static const size_t kLGIconGroupCount = 4;
 
+// Daily Spotlight seasons (icons.json "seasons"). Windows are inclusive
+// Gregorian month/day ranges within one year and never overlap.
+typedef struct {
+    const char        *seasonID;
+    const char        *title;
+    int                startMonth;
+    int                startDay;
+    int                endMonth;
+    int                endDay;
+    const char *const *iconIDs;
+    size_t             iconIDCount;
+    const char *const *colorMatchIconIDs;
+    size_t             colorMatchIconIDCount;
+} LGSeasonDef;
+
+static const char *const kLGSeasonColorMatches_valentines[] = {
+    "LG-pink",
+    "LG-crimson",
+    "LG-peachy",
+};
+
+static const char *const kLGSeasonColorMatches_st_patricks[] = {
+    "LG-green",
+    "LG-gold",
+};
+
+static const char *const kLGSeasonIcons_may_the_4th[] = {
+    "LG-chosen-one",
+    "LG-rule-of-two",
+};
+
+static const char *const kLGSeasonIcons_pride[] = {
+    "LG-pride",
+    "LG-trans",
+    "LG-stonewall",
+};
+
+static const char *const kLGSeasonColorMatches_pride[] = {
+    "LG-six-colors",
+    "LG-atp",
+};
+
+static const char *const kLGSeasonIcons_canada_day[] = {
+    "LG-canada",
+};
+
+static const char *const kLGSeasonIcons_halloween[] = {
+    "witching-hour",
+    "helios-count",
+};
+
+static const char *const kLGSeasonColorMatches_halloween[] = {
+    "LG-andru",
+    "LG-burnt-orange",
+};
+
+static const char *const kLGSeasonColorMatches_christmas[] = {
+    "helios-cryo",
+    "helios-cryo-halo",
+    "LG-crimson",
+    "LG-green",
+    "LG-gold",
+};
+
+static const LGSeasonDef kLGSeasons[] = {
+    { "valentines", "Valentine's Day", 2, 1, 2, 14, NULL, 0, kLGSeasonColorMatches_valentines, 3 },
+    { "st-patricks", "St. Patrick's Day", 3, 10, 3, 17, NULL, 0, kLGSeasonColorMatches_st_patricks, 2 },
+    { "may-the-4th", "May the 4th", 5, 4, 5, 4, kLGSeasonIcons_may_the_4th, 2, NULL, 0 },
+    { "pride", "Pride Month", 6, 1, 6, 30, kLGSeasonIcons_pride, 3, kLGSeasonColorMatches_pride, 2 },
+    { "canada-day", "Canada Day", 7, 1, 7, 1, kLGSeasonIcons_canada_day, 1, NULL, 0 },
+    { "halloween", "Halloween", 10, 1, 10, 31, kLGSeasonIcons_halloween, 2, kLGSeasonColorMatches_halloween, 2 },
+    { "christmas", "Christmas", 12, 1, 12, 25, NULL, 0, kLGSeasonColorMatches_christmas, 5 },
+};
+static const size_t kLGSeasonCount = 7;
+
 static const char *const kLGPrimaryIconIDCString = "jryng";

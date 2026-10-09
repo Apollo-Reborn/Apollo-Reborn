@@ -31,12 +31,30 @@ through its "designer" field, where they remain visible inside the pack. The
 picker selects its daily Featured icons from these generated group entries at
 runtime, so Featured choices require no separate registry field.
 
+Optional top-level "seasons" give the Daily Spotlight a holiday lean:
+
+  "seasons": [
+    { "id": "halloween", "title": "Halloween", "start": "10-01", "end": "10-31",
+      "iconIDs": ["witching-hour"], "colorMatchIconIDs": ["LG-andru"] }
+  ]
+
+  "start"/"end"      — inclusive MM-DD window in one calendar year (no wrap
+                       past Dec 31). Windows may not overlap.
+  "iconIDs"          — icons made for the holiday; featured first.
+  "colorMatchIconIDs"— icons that only share the holiday's colors; they fill
+                       any seasonal slots the made-for icons leave open.
+
+Seasonal icons must be Liquid Glass "group" icons (the Spotlight cannot show
+standardPack icons). The runtime claims 1–3 of the five Spotlight slots for
+the active season, rising as the window's end date approaches.
+
 Preview images are NOT embedded here. They are compiled as named imagesets
 into the app's Assets.car by rebuild_assets.py and loaded at runtime via
 [UIImage imageNamed:@"lg-preview-{iconID}-{variant}"].
 """
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
@@ -60,6 +78,130 @@ def load_registry(lg_dir: str) -> dict:
         print(f"invalid registry at {path}", file=sys.stderr)
         sys.exit(1)
     return registry
+
+
+def write_string_array(fp, name: str, values: list[str]) -> str:
+    """Writes a C string array when non-empty; returns its name or NULL."""
+    if not values:
+        return "NULL"
+    fp.write(f"static const char *const {name}[] = {{\n")
+    for value in values:
+        fp.write(f'    "{escape(value)}",\n')
+    fp.write("};\n\n")
+    return name
+
+
+def write_seasons(fp, seasons: list[dict]) -> None:
+    fp.write("// Daily Spotlight seasons (icons.json \"seasons\"). Windows are inclusive\n")
+    fp.write("// Gregorian month/day ranges within one year and never overlap.\n")
+    fp.write("typedef struct {\n")
+    fp.write("    const char        *seasonID;\n")
+    fp.write("    const char        *title;\n")
+    fp.write("    int                startMonth;\n")
+    fp.write("    int                startDay;\n")
+    fp.write("    int                endMonth;\n")
+    fp.write("    int                endDay;\n")
+    fp.write("    const char *const *iconIDs;\n")
+    fp.write("    size_t             iconIDCount;\n")
+    fp.write("    const char *const *colorMatchIconIDs;\n")
+    fp.write("    size_t             colorMatchIconIDCount;\n")
+    fp.write("} LGSeasonDef;\n\n")
+
+    rows = []
+    for season in seasons:
+        sid = c_id(season["id"])
+        icons = write_string_array(fp, f"kLGSeasonIcons_{sid}", season["iconIDs"])
+        matches = write_string_array(fp, f"kLGSeasonColorMatches_{sid}", season["colorMatchIconIDs"])
+        (start_month, start_day), (end_month, end_day) = season["start"], season["end"]
+        rows.append(f'    {{ "{escape(season["id"])}", "{escape(season["title"])}", '
+                    f'{start_month}, {start_day}, {end_month}, {end_day}, '
+                    f'{icons}, {len(season["iconIDs"])}, '
+                    f'{matches}, {len(season["colorMatchIconIDs"])} }},\n')
+    if not rows:
+        # Zero-length arrays are not standard C/C++; keep one inert row.
+        rows.append("    { NULL, NULL, 0, 0, 0, 0, NULL, 0, NULL, 0 },\n")
+    fp.write("static const LGSeasonDef kLGSeasons[] = {\n")
+    for row in rows:
+        fp.write(row)
+    fp.write("};\n")
+    fp.write(f"static const size_t kLGSeasonCount = {len(seasons)};\n\n")
+
+
+def parse_month_day(value, season_id: str, key: str):
+    match = re.fullmatch(r"(\d{2})-(\d{2})", value) if isinstance(value, str) else None
+    if not match:
+        print(f'error: season "{season_id}" has invalid "{key}" {value!r}; use "MM-DD"',
+              file=sys.stderr)
+        return None
+    month, day = int(match.group(1)), int(match.group(2))
+    try:
+        # 2026 is not a leap year, so 02-29 is rejected: it would only exist
+        # one year in four.
+        datetime.date(2026, month, day)
+    except ValueError:
+        print(f'error: season "{season_id}" has impossible "{key}" {value!r}', file=sys.stderr)
+        return None
+    return month, day
+
+
+def parse_seasons(raw_seasons, group_icon_ids: set[str]):
+    """Validates icons.json "seasons"; returns normalized dicts or None."""
+    if not isinstance(raw_seasons, list):
+        print('error: "seasons" must be a list', file=sys.stderr)
+        return None
+    seasons: list[dict] = []
+    seen_ids: set[str] = set()
+    for raw in raw_seasons:
+        season_id = raw.get("id") if isinstance(raw, dict) else None
+        if not isinstance(season_id, str) or not season_id or season_id in seen_ids:
+            print(f"error: season {raw!r} needs a unique string \"id\"", file=sys.stderr)
+            return None
+        seen_ids.add(season_id)
+        title = raw.get("title")
+        if not isinstance(title, str) or not title.strip():
+            print(f'error: season "{season_id}" needs a "title"', file=sys.stderr)
+            return None
+        start = parse_month_day(raw.get("start"), season_id, "start")
+        if start is None:
+            return None
+        end = parse_month_day(raw.get("end"), season_id, "end")
+        if end is None:
+            return None
+        if start > end:
+            print(f'error: season "{season_id}" starts after it ends; windows cannot wrap '
+                  'past Dec 31 (split it into two seasons)', file=sys.stderr)
+            return None
+
+        lists = {}
+        used: set[str] = set()
+        for key in ("iconIDs", "colorMatchIconIDs"):
+            values = raw.get(key, [])
+            if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
+                print(f'error: season "{season_id}" "{key}" must be a list of icon IDs',
+                      file=sys.stderr)
+                return None
+            for icon_id in values:
+                if icon_id not in group_icon_ids:
+                    print(f'error: season "{season_id}" lists "{icon_id}", which is not a '
+                          'Liquid Glass group icon (standardPack icons cannot be featured)',
+                          file=sys.stderr)
+                    return None
+                if icon_id in used:
+                    print(f'error: season "{season_id}" lists "{icon_id}" twice', file=sys.stderr)
+                    return None
+                used.add(icon_id)
+            lists[key] = values
+        if not used:
+            print(f'error: season "{season_id}" has no icons', file=sys.stderr)
+            return None
+
+        for other in seasons:
+            if start <= other["end"] and other["start"] <= end:
+                print(f'error: seasons "{other["id"]}" and "{season_id}" overlap',
+                      file=sys.stderr)
+                return None
+        seasons.append({"id": season_id, "title": title, "start": start, "end": end, **lists})
+    return seasons
 
 
 def main() -> int:
@@ -122,6 +264,11 @@ def main() -> int:
             standard_buckets[standard_pack].append(
                 (icon_id, display_name, designer, native_anchor_row)
             )
+
+    group_icon_ids = {icon_id for entries in buckets.values() for icon_id, _, _ in entries}
+    seasons = parse_seasons(registry.get("seasons", []), group_icon_ids)
+    if seasons is None:
+        return 1
 
     with open(out_path, "w") as fp:
         fp.write("// Auto-generated by liquid-glass/scripts/generate_previews_header.py.\n")
@@ -198,6 +345,8 @@ def main() -> int:
 
         fp.write(f"static const size_t kLGIconGroupCount = {len(raw_groups)};\n\n")
 
+        write_seasons(fp, seasons)
+
         primary = registry["primaryIconID"]
         fp.write(f'static const char *const kLGPrimaryIconIDCString = "{escape(primary)}";\n')
 
@@ -206,7 +355,12 @@ def main() -> int:
     summary_parts.extend(f"{len(entries)} standard/{pack_id}"
                          for pack_id, entries in standard_buckets.items() if entries)
     summary = ", ".join(summary_parts)
-    print(f"Wrote {len(raw_groups)} groups ({summary}), {total} total → {out_path}")
+    season_summary = ", ".join(
+        f"{season['id']} {len(season['iconIDs'])}+{len(season['colorMatchIconIDs'])}"
+        for season in seasons
+    ) or "none"
+    print(f"Wrote {len(raw_groups)} groups ({summary}), {total} total; "
+          f"seasons: {season_summary} → {out_path}")
     return 0
 
 

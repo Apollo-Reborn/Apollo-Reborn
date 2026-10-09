@@ -22,6 +22,38 @@
       "description": "A mix of standalone icon concepts, including small thematic sets too short for their own pack."
     }
   ],
+  "seasons": [
+    {
+      "id": "valentines", "title": "Valentine's Day", "start": "02-01", "end": "02-14",
+      "colorMatchIconIDs": ["LG-pink", "LG-crimson", "LG-peachy"]
+    },
+    {
+      "id": "st-patricks", "title": "St. Patrick's Day", "start": "03-10", "end": "03-17",
+      "colorMatchIconIDs": ["LG-green", "LG-gold"]
+    },
+    {
+      "id": "may-the-4th", "title": "May the 4th", "start": "05-04", "end": "05-04",
+      "iconIDs": ["LG-chosen-one", "LG-rule-of-two"]
+    },
+    {
+      "id": "pride", "title": "Pride Month", "start": "06-01", "end": "06-30",
+      "iconIDs": ["LG-pride", "LG-trans", "LG-stonewall"],
+      "colorMatchIconIDs": ["LG-six-colors", "LG-atp"]
+    },
+    {
+      "id": "canada-day", "title": "Canada Day", "start": "07-01", "end": "07-01",
+      "iconIDs": ["LG-canada"]
+    },
+    {
+      "id": "halloween", "title": "Halloween", "start": "10-01", "end": "10-31",
+      "iconIDs": ["witching-hour", "helios-count"],
+      "colorMatchIconIDs": ["LG-andru", "LG-burnt-orange"]
+    },
+    {
+      "id": "christmas", "title": "Christmas", "start": "12-01", "end": "12-25",
+      "colorMatchIconIDs": ["helios-cryo", "helios-cryo-halo", "LG-crimson", "LG-green", "LG-gold"]
+    }
+  ],
   "icons": [
     { "id": "apollo",                   "displayName": "Apollo",              "designer": "IllIIllIllIllII", "group": "original" },
     { "id": "AppIcon",                  "displayName": "Apollo Glass",        "designer": "IllIIllIllIllII", "group": "original" },
