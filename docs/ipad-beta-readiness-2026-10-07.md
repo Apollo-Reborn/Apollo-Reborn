@@ -4,11 +4,11 @@ Recommendation: close to an opt-in beta, but finish the integration and release
 checks below before shipping this branch. Keep the layout off by default and
 retain the existing welcome/opt-out flow.
 
-Integration update — 9 October 2026: current main `6d658f1` is now integrated.
-The nine shared-source conflicts were resolved while retaining pane-specific
+Integration update — 9 October 2026: current main `931223e` is now integrated.
+The shared-source conflicts were resolved while retaining pane-specific
 scene routing, search sessions and header geometry, and adopting main's shared
 runtime helpers and updated settings. Simulator and device package builds pass,
-as do the pane-policy checks and 39 executable-SDK/Liquid Glass checks. Physical
+as do the pane-policy checks and 46 executable-SDK/Liquid Glass checks. Physical
 device, keyboard and release-readiness gaps below remain independent of this
 merge. The latest mini portrait capture also shows a feed title obscured by the
 top tabs; that remains an open chrome issue.
@@ -17,7 +17,7 @@ top tabs; that remains an open chrome issue.
 
 1. Complete the targeted UI regression checks for the 9 October main integration,
    and repeat them when shared navigation, search, settings or media code changes.
-   The previously missing main commits are incorporated through `6d658f1`.
+   The previously missing main commits are incorporated through `931223e`.
 2. Fix the reproduced portrait sidebar-to-Settings toolbar overlap. The Settings
    navigation bar stays at y=32 while the top tabs occupy y=36, causing overlap.
    It settles only after further navigation. Reproduced in the welcome audit and

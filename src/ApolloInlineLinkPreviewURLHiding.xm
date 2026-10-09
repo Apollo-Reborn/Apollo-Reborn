@@ -294,7 +294,9 @@ static NSAttributedString *ApolloLPHookRewrittenText(id textNode, NSAttributedSt
         return;
     }
     objc_setAssociatedObject(self, kApolloLPURLHidingReentrancyKey, (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    @try { %orig(rewritten); } @catch (__unused NSException *exception) {}
+    @try {
+        %orig(rewritten);
+    } @catch (__unused NSException *exception) {}
     objc_setAssociatedObject(self, kApolloLPURLHidingReentrancyKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloLPLogURLHide(hiddenCount, self);
 }
@@ -311,7 +313,9 @@ static NSAttributedString *ApolloLPHookRewrittenText(id textNode, NSAttributedSt
         return;
     }
     objc_setAssociatedObject(self, kApolloLPURLHidingReentrancyKey, (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    @try { %orig(rewritten); } @catch (__unused NSException *exception) {}
+    @try {
+        %orig(rewritten);
+    } @catch (__unused NSException *exception) {}
     objc_setAssociatedObject(self, kApolloLPURLHidingReentrancyKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloLPLogURLHide(hiddenCount, self);
 }

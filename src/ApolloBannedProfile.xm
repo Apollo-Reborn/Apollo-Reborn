@@ -1,4 +1,5 @@
 #import "ApolloBannedProfile.h"
+#import "ApolloAccountCredentials.h"   // ApolloActiveAccountUsername
 #import "ApolloCommon.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloThemeRuntime.h"
@@ -113,8 +114,15 @@ static NSString *ApolloBannedProfileCurrentLoggedInUsername(void) {
 
 static BOOL ApolloBannedProfileIsCurrentLoggedInUser(NSString *username) {
     NSString *current = ApolloBannedProfileCurrentLoggedInUsername();
-    if (current.length == 0) return NO;
-    return ApolloBannedProfileUsernamesMatch(current, username);
+    if (current.length > 0 && ApolloBannedProfileUsernamesMatch(current, username)) return YES;
+    // The live currentUser only fills in once Apollo's /api/v1/me answers. When
+    // that's refused (an API-Key-Free account Reddit is rate-limiting answers
+    // HTTP 429 to everything, #1353) or still in flight, it stays empty, and a
+    // suspended flag cached for the user's own account put "u/… has been
+    // banned" over their own profile tab. The active account from disk is the
+    // same person and is known from launch.
+    NSString *active = ApolloActiveAccountUsername();
+    return active.length > 0 && ApolloBannedProfileUsernamesMatch(active, username);
 }
 
 static NSString *ApolloBannedProfileUsernameFromViewControllerDirect(UIViewController *viewController) {
