@@ -38,8 +38,8 @@ static NSString *const kApolloGalleryCellID = @"ApolloGalleryTile";
 // play, and only this many at once: every playing tile is a decoder session.
 // Twelve covers a portrait screen of GIF-shaped tiles (two columns, six rows
 // of 16:9) so a GIF subreddit moves edge to edge; a four-column landscape grid
-// can show sixteen, and there the lower index paths win, so the tiles nearest
-// the top of the screen are the ones that move.
+// can show sixteen, and there the tiles mostly on screen win, top to bottom,
+// before the slivers at the edges (see -apollo_tilesInPlaybackOrder).
 static NSInteger const kApolloGalleryMaxPlayingTiles = 12;
 // Of those, at most this many may be real .gif files animated through
 // FLAnimatedImage: unlike the hardware-decoded mp4/HLS tiles, every GIF frame
@@ -1181,9 +1181,7 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
     NSInteger playing = 0;
     NSInteger animatedGIFs = 0;
     NSInteger hostLookups = 0;
-    NSArray<NSIndexPath *> *visible =
-        [collectionView.indexPathsForVisibleItems sortedArrayUsingSelector:@selector(compare:)];
-    for (NSIndexPath *indexPath in visible) {
+    for (NSIndexPath *indexPath in [self apollo_tilesInPlaybackOrder]) {
         ApolloGalleryTileCell *cell = (ApolloGalleryTileCell *)[collectionView cellForItemAtIndexPath:indexPath];
         if (![cell isKindOfClass:[ApolloGalleryTileCell class]]) continue;
         BOOL gif = cell.playsAnimatedGIF;
@@ -1208,6 +1206,26 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
                   (long)playing, (long)animatedGIFs, (long)hostLookups, allowed, sGalleryAutoplayVideos,
                   sGalleryAutoplayGIFs);
     }
+}
+
+// The visible tiles in the order they claim the cap: those at least half on
+// screen first, then the slivers at the top and bottom edges, each group top
+// to bottom. Index order alone let a strip peeking out under the nav bar take
+// a slot from a whole tile further down once sports clips competed for them.
+- (NSArray<NSIndexPath *> *)apollo_tilesInPlaybackOrder {
+    UICollectionView *collectionView = self.collectionView;
+    CGRect viewport = UIEdgeInsetsInsetRect(collectionView.bounds, collectionView.adjustedContentInset);
+    NSMutableArray<NSIndexPath *> *mostlyVisible = [NSMutableArray array];
+    NSMutableArray<NSIndexPath *> *slivers = [NSMutableArray array];
+    for (NSIndexPath *indexPath in
+         [collectionView.indexPathsForVisibleItems sortedArrayUsingSelector:@selector(compare:)]) {
+        CGRect frame = [collectionView layoutAttributesForItemAtIndexPath:indexPath].frame;
+        CGRect shown = CGRectIntersection(frame, viewport);
+        BOOL mostly = !CGRectIsNull(shown) && CGRectGetHeight(shown) * 2.0 >= CGRectGetHeight(frame);
+        [(mostly ? mostlyVisible : slivers) addObject:indexPath];
+    }
+    [mostlyVisible addObjectsFromArray:slivers];
+    return mostlyVisible;
 }
 
 // A refresh run from -collectionView:willDisplayCell:... can't start the tile
