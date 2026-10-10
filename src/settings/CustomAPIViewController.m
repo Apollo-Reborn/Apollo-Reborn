@@ -1226,9 +1226,10 @@ typedef NS_ENUM(NSInteger, Tag) {
 }
 
 - (ApolloSettingsSection *)buildSetupSection {
+    __weak typeof(self) weakSelf = self;
     ApolloSettingsRow *assistant =
-        [ApolloSettingsRow disclosureRowWithID:@"setup.assistant" title:@"Setup Assistant" detail:nil
-            push:^UIViewController * { return [ApolloSetupAssistantViewController new]; }];
+        [ApolloSettingsRow buttonRowWithID:@"setup.assistant" title:@"Setup Assistant"
+            action:^{ ApolloSetupAssistantPresentFrom(weakSelf); }];
     assistant.iconSystemName = @"wand.and.stars";
     assistant.iconTileColor = UIColor.systemPurpleColor;
     ApolloSettingsRow *apiKeys =

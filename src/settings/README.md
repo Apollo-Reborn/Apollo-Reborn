@@ -30,9 +30,12 @@ Do **not** add the setting to `ApolloBackupRestore.m`'s statics re-sync block: s
 
 ### Setup Assistant
 
-`ApolloSetupAssistant` is a four-page form (connect/restore, starting point,
-appearance, summary). `ApolloSetupPreset` owns the Foundation-only preset maps
-and the first-launch classification. The bootstrap snapshots persistent domains
+`ApolloSetupAssistant` is a four-page modal UIKit pager (connect/restore, starting
+point, appearance, summary), with decorative artwork, swipe navigation and a
+fixed footer. All Settings/search/deep-link entry points present the same sheet.
+Its optional feature and privacy details use the shared form layer.
+`ApolloSetupPreset` owns the Foundation-only preset maps and the first-launch
+classification. The bootstrap snapshots persistent domains
 in `+load`, before constructor migrations/unlock flags can make a new install
 look configured. Existing preference domains are conservatively excluded from
 automatic onboarding; the Settings route `setup-assistant` stays available and

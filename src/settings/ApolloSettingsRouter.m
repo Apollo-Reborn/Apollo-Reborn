@@ -188,7 +188,11 @@ BOOL ApolloSettingsRouteOpenNow(NSString *routeId) {
         [nav dismissViewControllerAnimated:NO completion:nil];
     }
     [nav popToRootViewControllerAnimated:NO];
-    [nav pushViewController:builder() animated:YES];
+    if ([routeId.lowercaseString isEqualToString:@"setup-assistant"]) {
+        ApolloSetupAssistantPresentFrom(nav);
+    } else {
+        [nav pushViewController:builder() animated:YES];
+    }
     ApolloLog(@"[SettingsRouter] Opened route '%@'", routeId);
     return YES;
 }
