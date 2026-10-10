@@ -2164,9 +2164,13 @@ static void ApolloDuoSplitOpen(ApolloDuoSplitState *state) {
     [sDuoSplitDeferredPresentations removeObject:state];
     NSArray *stack = [outer.viewControllers copy];
     NSUInteger rootIndex = 0;
-    // The most recently opened profile owns the dashboard, regardless of tab.
-    for (NSUInteger index = 1; index < stack.count; index++) {
-        if ([ApolloDuoSplitKind(stack[index]) isEqualToString:@"account"]) rootIndex = index;
+    // Only landscape has a profile dashboard. Portrait keeps visited profiles
+    // on the Posts navigation stack; promoting one to Account here would make
+    // the next update collapse it, then reopen Posts and repeat indefinitely.
+    if (ApolloDuoSplitShouldOpen((id)outer.tabBarController)) {
+        for (NSUInteger index = 1; index < stack.count; index++) {
+            if ([ApolloDuoSplitKind(stack[index]) isEqualToString:@"account"]) rootIndex = index;
+        }
     }
     if (rootIndex) {
         state.tabRoot = state.root;
@@ -2438,12 +2442,17 @@ static void ApolloDuoSplitUpdate(void) {
         BOOL postsOpen = [state.kind isEqualToString:@"subreddits"] && ApolloDuoSplitIsUnfolded();
         if (!open && !postsOpen) ApolloDuoSplitClose(state, NO);
         else {
-            // Native Swift pushes can bypass the ObjC push hook. Normalize a
-            // newly visited profile before rebuilding its full-width header.
-            for (UIViewController *page in [state.secondary.viewControllers copy]) {
-                if (page != state.root && [ApolloDuoSplitKind(page) isEqualToString:@"account"]) {
-                    ApolloDuoSplitClose(state, YES);
-                    break;
+            // Native Swift pushes can bypass the ObjC push hook. On rotation
+            // into landscape, a profile may also still be on the portrait feed
+            // stack. Normalize either path before installing its dashboard.
+            if (open) {
+                NSArray *pages = [(state.feed.viewControllers ?: @[])
+                    arrayByAddingObjectsFromArray:state.secondary.viewControllers ?: @[]];
+                for (UIViewController *page in pages) {
+                    if (page != state.root && [ApolloDuoSplitKind(page) isEqualToString:@"account"]) {
+                        ApolloDuoSplitClose(state, YES);
+                        break;
+                    }
                 }
             }
             // Search stays full-width until a result is opened. Once it has
@@ -2534,8 +2543,17 @@ static BOOL ApolloDuoSplitRoutePush(UINavigationController *nav, UIViewControlle
         [page isKindOfClass:UISplitViewController.class]) return NO;
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, YES);
     if (state.split && !state.changing && [ApolloDuoSplitKind(page) isEqualToString:@"account"]) {
-        ApolloDuoSplitNavigateProfile(state, page, YES);
-        return YES;
+        if (ApolloDuoSplitShouldOpen((id)state.outer.tabBarController)) {
+            ApolloDuoSplitNavigateProfile(state, page, YES);
+            return YES;
+        }
+        // The portrait drawer is an overlay, not a profile sidebar. Push onto
+        // the retained feed so native Back returns to the previous page.
+        if (state.feed && (nav == state.primary || nav == state.outer)) {
+            [state.feed pushViewController:page animated:animated];
+            [state.host setListVisible:NO animated:animated];
+            return YES;
+        }
     }
     if (state.feed && !state.changing) {
         if (state.host.postsColumnsPaired && (nav == state.feed || nav == state.outer)) {
