@@ -44,6 +44,7 @@
 #import "ApolloAccountCredentials.h"
 #import "ApolloPerAccountFavorites.h"
 #import "ApolloFavoritesSorting.h"
+#import "ApolloSubredditInfoCache.h"
 #import "ApolloAICloudBridge.h"
 #import "crash/ApolloCrashManager.h"
 #import "crash/ApolloCrashContext.h"
@@ -3621,6 +3622,8 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     // be configured once per process, so this must not move later.
     @autoreleasepool {
         [[ApolloCrashManager sharedManager] installCrashRecorderIfEnabled];
+        // Update saved icons before Apollo's native tracker loads them.
+        ApolloSubredditPrepareNativeIcons();
         [ApolloCrashContext start];
         [[ApolloCrashPromptCoordinator sharedCoordinator] start];
     }

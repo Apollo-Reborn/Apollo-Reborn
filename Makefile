@@ -96,6 +96,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloChatRoomDirectory.m \
     $(SRC_DIR)/ApolloUserProfileCache.m \
     $(SRC_DIR)/ApolloSubredditInfoCache.m \
+    $(SRC_DIR)/ApolloNativeSubredditIcons.m \
     $(SRC_DIR)/ApolloSubredditCustomBannerCache.m \
     $(SRC_DIR)/ApolloSubredditCustomIconCache.m \
     $(SRC_DIR)/ApolloSubredditDefaultAssets.c \
