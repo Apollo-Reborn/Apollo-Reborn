@@ -1930,8 +1930,9 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
     }
     CGFloat maximumWidth = geometry.maximumContentWidth;
     CGFloat fittedWidth = searching ? maximumWidth : MIN(maximumWidth, [controller naturalContentWidth]);
+    CGFloat widthTolerance = 0.5 / MAX(1.0, titleControl.traitCollection.displayScale);
     BOOL widthChanged = !controller.fittedWidthConstraint ||
-        fabs(controller.fittedWidthConstraint.constant - fittedWidth) > 0.5;
+        fabs(controller.fittedWidthConstraint.constant - fittedWidth) > widthTolerance;
     if (!controller.fittedWidthConstraint) {
         controller.fittedWidthConstraint = [titleControl.widthAnchor constraintEqualToConstant:fittedWidth];
         controller.fittedWidthConstraint.priority = 999;
