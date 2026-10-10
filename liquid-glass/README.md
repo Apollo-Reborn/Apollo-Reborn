@@ -71,9 +71,13 @@ lead the lineup and the header reads e.g. "Daily Spotlight · Halloween":
 
 | Days until the window's `end` | Holiday slots (of 5) |
 |-------------------------------|----------------------|
-| 14 or more                    | 1                    |
-| 7–13                          | 2                    |
-| 0–6 (final week)              | 3                    |
+| 14 or more                    | 2                    |
+| 7–13                          | 3                    |
+| 0–6 (final week)              | all 5                |
+
+A holiday with fewer icons than slots fills the rest with everyday picks, and
+while a holiday is on, the everyday picks never include another holiday's
+icons.
 
 ```json
 { "id": "halloween", "title": "Halloween", "start": "10-01", "end": "10-31",

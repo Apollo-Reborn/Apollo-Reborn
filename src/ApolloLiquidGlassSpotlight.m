@@ -26,11 +26,11 @@ NSInteger ApolloLGSeasonDaysUntilEnd(NSInteger year, NSInteger month, NSInteger 
     return ApolloLGDaysFromCivil(year, endMonth, endDay) - ApolloLGDaysFromCivil(year, month, day);
 }
 
-NSInteger ApolloLGSeasonalSlotCount(NSInteger daysUntilEnd) {
+NSInteger ApolloLGSeasonalSlotCount(NSInteger daysUntilEnd, NSInteger lineupCount) {
     if (daysUntilEnd == NSNotFound || daysUntilEnd < 0) return 0;
-    if (daysUntilEnd < 7) return 3;
-    if (daysUntilEnd < 14) return 2;
-    return 1;
+    if (daysUntilEnd < 7) return MAX(lineupCount, 0);
+    if (daysUntilEnd < 14) return MIN(3, MAX(lineupCount, 0));
+    return MIN(2, MAX(lineupCount, 0));
 }
 
 static uint64_t ApolloLGSpotlightRandomNext(uint64_t *state) {
@@ -58,6 +58,7 @@ NSArray<NSString *> *ApolloLGSpotlightLineup(NSArray<NSString *> *iconIDs,
                                              NSString *activeIconID,
                                              NSArray<NSArray<NSString *> *> *seasonalTiers,
                                              NSDictionary<NSString *, NSNumber *> *seasonalOnlyGroups,
+                                             NSSet<NSString *> *everydayExcluded,
                                              NSInteger seasonalSlots) {
     if (iconIDs.count != groupIndexes.count || lineupCount <= 0 || groupCount < 0) return @[];
 
@@ -102,7 +103,7 @@ NSArray<NSString *> *ApolloLGSpotlightLineup(NSArray<NSString *> *iconIDs,
     for (NSUInteger i = 0; i < iconIDs.count; i++) {
         NSString *iconID = iconIDs[i];
         if ([previous containsObject:iconID] || [iconID isEqualToString:activeIconID] ||
-            [seasonal containsObject:iconID]) continue;
+            [seasonal containsObject:iconID] || [everydayExcluded containsObject:iconID]) continue;
         [candidates addObject:@(i)];
     }
 
@@ -118,8 +119,11 @@ NSArray<NSString *> *ApolloLGSpotlightLineup(NSArray<NSString *> *iconIDs,
     NSMutableIndexSet *taken = [NSMutableIndexSet indexSet];
     NSMutableArray<NSString *> *picked = [NSMutableArray array];
     NSInteger requiredGroups = MIN(3, groupCount);
+    // Holiday picks can take every slot (Christmas week is all Ultra); the
+    // pack rule then stops short instead of growing the lineup past its size.
     for (NSInteger orderIndex = 0;
-         orderIndex < groupCount && (NSInteger)coveredGroups.count < requiredGroups;
+         orderIndex < groupCount && (NSInteger)coveredGroups.count < requiredGroups &&
+         (NSInteger)(seasonal.count + picked.count) < lineupCount;
          orderIndex++) {
         NSUInteger wantedGroup = groupOrder[(NSUInteger)orderIndex].unsignedIntegerValue;
         if ([coveredGroups containsIndex:wantedGroup]) continue;

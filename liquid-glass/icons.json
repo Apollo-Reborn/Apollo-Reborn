@@ -55,8 +55,8 @@
     },
     {
       "id": "christmas", "title": "Christmas", "start": "12-01", "end": "12-25",
-      "iconIDs": ["santapollo", "sir-yule-treemas", "ye-snow-guardian", "george", "under-the-tree",
-                  "under-the-tree-ii", "under-the-tree-iii", "LG-calico"]
+      "iconIDs": ["ye-snow-guardian", "sir-yule-treemas", "george", "santapollo", "under-the-tree",
+                  "under-the-tree-ii", "under-the-tree-iii"]
     }
   ],
   "nativeIcons": [

@@ -24,7 +24,7 @@
 //     Liquid Glass registry by a deterministic daily shuffle. The choices stay
 //     stable for the local calendar day and require no network connection.
 //     During a holiday window from icons.json "seasons" (Halloween, Christmas,
-//     ...), 1–3 of the five go to that holiday's icons, more as it nears,
+//     ...), its icons take 2, then 3, then all five cards in the final week,
 //     and the header names the holiday. See ApolloLiquidGlassSpotlight.m.
 //   • An adaptive grid of tappable "icon pack" cards (fanned sample artwork +
 //     title + icon count) — one card per group in icons.json. Tapping a card
@@ -785,7 +785,10 @@ static BOOL LGApplyStoredFeaturedIDs(NSArray<NSString *> *iconIDs) {
         [groups addIndex:(NSUInteger)groupIndex];
         resolved[i] = *row;
     }
-    if (groups.count < MIN(3, sGroupCount)) return NO;
+    // Holiday picks can fill the lineup from one pack (Christmas week is all
+    // Ultra), so the three-pack rule only applies to lineups without them.
+    BOOL hasHolidayPick = [LGSeasonAllIconIDs(LGActiveSeason(NULL)) intersectsSet:uniqueIDs];
+    if (!hasHolidayPick && groups.count < MIN(3, sGroupCount)) return NO;
     if (!sFeaturedRows) {
         sFeaturedRows = (LGIconRow *)calloc((size_t)kLGDailyFeaturedCount, sizeof(LGIconRow));
     }
@@ -812,7 +815,16 @@ static NSArray<NSString *> *LGGenerateDailyFeaturedIDs(NSInteger dayIdentifier,
         ? @[ LGSeasonIconIDs(season->iconIDs, season->iconIDCount),
              LGSeasonIconIDs(season->colorMatchIconIDs, season->colorMatchIconIDCount) ]
         : @[];
-    NSInteger seasonalSlots = ApolloLGSeasonalSlotCount(daysUntilEnd);
+    NSInteger seasonalSlots = ApolloLGSeasonalSlotCount(daysUntilEnd, kLGDailyFeaturedCount);
+    // While one holiday is on, the everyday picks skip every other holiday's
+    // own icons (no Witching Hour under "Daily Spotlight · Christmas").
+    NSMutableSet<NSString *> *otherHolidayIcons = [NSMutableSet set];
+    if (season) {
+        for (size_t i = 0; i < kLGSeasonCount; i++) {
+            if (&kLGSeasons[i] == season) continue;
+            [otherHolidayIcons addObjectsFromArray:LGSeasonIconIDs(kLGSeasons[i].iconIDs, kLGSeasons[i].iconIDCount)];
+        }
+    }
     NSMutableDictionary<NSString *, NSNumber *> *standardGroups = [NSMutableDictionary dictionary];
     for (NSInteger i = 0; i < sSpotlightStandardIconCount; i++) {
         standardGroups[sSpotlightStandardIcons[i].row.iconID] = @(sGroupCount + sSpotlightStandardIcons[i].pack);
@@ -820,7 +832,8 @@ static NSArray<NSString *> *LGGenerateDailyFeaturedIDs(NSInteger dayIdentifier,
     NSArray<NSString *> *lineup = ApolloLGSpotlightLineup(iconIDs, groupIndexes, sGroupCount,
                                                           kLGDailyFeaturedCount, dayIdentifier,
                                                           previousLineup ?: @[], activeIconID,
-                                                          tiers, standardGroups, seasonalSlots);
+                                                          tiers, standardGroups, otherHolidayIcons,
+                                                          seasonalSlots);
     ApolloLog(@"[LGIconPicker] Daily Spotlight %ld: season=%s (%ld day(s) left, %ld slot(s)) lineup=%@",
               (long)dayIdentifier, season ? season->seasonID : "none",
               (long)(season ? daysUntilEnd : 0), (long)seasonalSlots,

@@ -60,8 +60,8 @@ additions, and Apollo's own icons described under top-level "nativeIcons":
                    shows the right checkmark after a Spotlight tap.
 
 Standard-pack and native icons are holiday-only: they never join the everyday
-rotation. The runtime claims 1–3 of the five Spotlight slots for the active
-season, rising as the window's end date approaches.
+rotation. The active season's icons take 2, then 3, then all five Spotlight
+slots as the window's end date approaches.
 
 Preview images are NOT embedded here. They are compiled as named imagesets
 into the app's Assets.car by rebuild_assets.py and loaded at runtime via

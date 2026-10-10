@@ -247,14 +247,13 @@ static const char *const kLGSeasonIcons_halloween[] = {
 };
 
 static const char *const kLGSeasonIcons_christmas[] = {
-    "santapollo",
-    "sir-yule-treemas",
     "ye-snow-guardian",
+    "sir-yule-treemas",
     "george",
+    "santapollo",
     "under-the-tree",
     "under-the-tree-ii",
     "under-the-tree-iii",
-    "LG-calico",
 };
 
 static const LGSeasonDef kLGSeasons[] = {
@@ -265,7 +264,7 @@ static const LGSeasonDef kLGSeasons[] = {
     { "canada-day", "Canada Day", 7, 1, 7, 1, kLGSeasonIcons_canada_day, 1, NULL, 0 },
     { "independence-day", "Independence Day", 7, 4, 7, 4, kLGSeasonIcons_independence_day, 2, NULL, 0 },
     { "halloween", "Halloween", 10, 1, 10, 31, kLGSeasonIcons_halloween, 8, NULL, 0 },
-    { "christmas", "Christmas", 12, 1, 12, 25, kLGSeasonIcons_christmas, 8, NULL, 0 },
+    { "christmas", "Christmas", 12, 1, 12, 25, kLGSeasonIcons_christmas, 7, NULL, 0 },
 };
 static const size_t kLGSeasonCount = 8;
 

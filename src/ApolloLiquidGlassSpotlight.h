@@ -13,10 +13,11 @@ FOUNDATION_EXPORT NSInteger ApolloLGSeasonDaysUntilEnd(NSInteger year, NSInteger
                                                        NSInteger startMonth, NSInteger startDay,
                                                        NSInteger endMonth, NSInteger endDay);
 
-// Spotlight slots a season claims with `daysUntilEnd` days left: 1 while the
-// holiday is two weeks or more away, 2 when it is 7-13 days away, 3 in the
-// final week (0-6 days). 0 outside the window (NSNotFound or negative).
-FOUNDATION_EXPORT NSInteger ApolloLGSeasonalSlotCount(NSInteger daysUntilEnd);
+// Spotlight slots a season claims with `daysUntilEnd` days left: 2 while the
+// holiday is two weeks or more away, 3 when it is 7-13 days away, and the whole
+// lineup (`lineupCount`) in the final week (0-6 days). 0 outside the window
+// (NSNotFound or negative). A holiday with fewer icons fills what it can.
+FOUNDATION_EXPORT NSInteger ApolloLGSeasonalSlotCount(NSInteger daysUntilEnd, NSInteger lineupCount);
 
 // Builds one day's lineup of `lineupCount` icon IDs.
 //
@@ -35,7 +36,9 @@ FOUNDATION_EXPORT NSInteger ApolloLGSeasonalSlotCount(NSInteger daysUntilEnd);
 // `seasonalOnlyGroups` maps holiday-only icons (Standard-pack icons, which are
 // not in `iconIDs`) to a pack index of their own (>= groupCount). They can be
 // seasonal picks and count as a pack for the three-pack rule, but never join
-// the everyday rotation.
+// the everyday rotation. `everydayExcluded` keeps more icons out of the
+// everyday picks (the picker passes other holidays' icons while one is on).
+// When holiday picks fill the lineup, the three-pack rule gives way.
 FOUNDATION_EXPORT NSArray<NSString *> *ApolloLGSpotlightLineup(NSArray<NSString *> *iconIDs,
                                                                 NSArray<NSNumber *> *groupIndexes,
                                                                 NSInteger groupCount,
@@ -45,6 +48,7 @@ FOUNDATION_EXPORT NSArray<NSString *> *ApolloLGSpotlightLineup(NSArray<NSString 
                                                                 NSString * _Nullable activeIconID,
                                                                 NSArray<NSArray<NSString *> *> *seasonalTiers,
                                                                 NSDictionary<NSString *, NSNumber *> *seasonalOnlyGroups,
+                                                                NSSet<NSString *> *everydayExcluded,
                                                                 NSInteger seasonalSlots);
 
 NS_ASSUME_NONNULL_END
