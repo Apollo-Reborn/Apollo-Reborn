@@ -702,6 +702,21 @@ static UIBarButtonItem *ApolloActionsProfileVisibleMoreItem(UIViewController *co
     return ApolloActionsProfileItem(controller, "moreOptionsBarButtonItem");
 }
 
+static void ApolloActionsRemoveProfileAccountsItem(UIViewController *controller, UIBarButtonItem *accounts) {
+    if (!accounts) return;
+    UINavigationItem *item = controller.navigationItem;
+    // Apollo allocates this item even for visited profiles. Remove only that
+    // stored item, preserving native Back/More and any unrelated actions.
+    for (NSUInteger side = 0; side < 2; side++) {
+        NSArray *current = side ? item.rightBarButtonItems : item.leftBarButtonItems;
+        if (!current || [current indexOfObjectIdenticalTo:accounts] == NSNotFound) continue;
+        NSMutableArray *items = [current mutableCopy];
+        [items removeObjectIdenticalTo:accounts];
+        if (side) [item setRightBarButtonItems:items animated:NO];
+        else [item setLeftBarButtonItems:items animated:NO];
+    }
+}
+
 static void ApolloActionsApplyDuoProfileItems(UIViewController *controller) {
     if (!IsLiquidGlass() || !controller) return;
     // The Account sidebar has a horizontal bar of its own. Its controls do
@@ -712,6 +727,15 @@ static void ApolloActionsApplyDuoProfileItems(UIViewController *controller) {
     BOOL previouslyApplied = [objc_getAssociatedObject(controller, &kActionsDuoProfileAppliedKey) boolValue];
     if (!trailingRail && !previouslyApplied && !sidebar) return;
     UIBarButtonItem *accounts = ApolloActionsProfileItem(controller, "accountsBarButtonItem");
+    // A visited profile may be the root of a temporary Duo detail stack.
+    // Ownership belongs to the original Account tab, not that temporary root
+    // or a username that has not finished loading yet.
+    if (!ApolloDuoSplitIsOwnAccountController(controller)) {
+        ApolloActionsRemoveProfileAccountsItem(controller, accounts);
+        objc_setAssociatedObject(controller, &kActionsDuoProfileAppliedKey, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return;
+    }
     UIBarButtonItem *more = ApolloActionsProfileVisibleMoreItem(controller, accounts);
     if (!accounts || !more) return;
 

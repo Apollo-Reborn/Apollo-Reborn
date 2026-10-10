@@ -393,7 +393,7 @@ static void ApolloDuoSlideView(UIView *view, CGFloat from, CGFloat to, NSTimeInt
         self.accountHeaderClip.clipsToBounds = YES;
         [self.accountHeaderClip addSubview:self.accountHeader];
         [self.view addSubview:self.accountHeaderClip];
-        [self.view addSubview:self.accountsButton];
+        if (self.accountsButton) [self.view addSubview:self.accountsButton];
         [self.view addSubview:self.moreButton];
         [self.view addSubview:self.sidebarNavigationBar];
         if (self.profileBackButton) [self.view addSubview:self.profileBackButton];
@@ -2016,6 +2016,7 @@ static void ApolloDuoSearchUpdateBackItem(ApolloDuoSplitState *state) {
 
 static void ApolloDuoAccountPrepareHost(ApolloDuoSplitState *state, ApolloDuoSplitHost *host) {
     UIViewController *profile = state.root;
+    BOOL ownAccount = ApolloDuoSplitIsOwnAccountController(profile);
     host.accountHeader = ApolloDuoAccountProfileHeader(profile);
     UINavigationBar *sidebarBar = [[UINavigationBar alloc] init];
     UINavigationBarAppearance *sidebarAppearance = [UINavigationBarAppearance new];
@@ -2064,22 +2065,25 @@ static void ApolloDuoAccountPrepareHost(ApolloDuoSplitState *state, ApolloDuoSpl
         host.profileBackButton = back;
     }
     __weak ApolloDuoSplitState *weakState = state;
-    UIButton *accounts = [UIButton buttonWithType:UIButtonTypeSystem];
     UIButtonConfiguration *configuration;
-    if (@available(iOS 26.0, *)) configuration = [UIButtonConfiguration glassButtonConfiguration];
-    else configuration = [UIButtonConfiguration tintedButtonConfiguration];
-    configuration.baseForegroundColor = UIColor.labelColor;
-    configuration.image = [UIImage systemImageNamed:@"person.2" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:18 weight:UIImageSymbolWeightRegular]];
-    configuration.contentInsets = NSDirectionalEdgeInsetsZero;
-    accounts.accessibilityLabel = @"Accounts";
-    configuration.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-    accounts.configuration = configuration;
-    [accounts addAction:[UIAction actionWithHandler:^(__unused UIAction *action) {
-        UIViewController *root = weakState.root;
-        SEL selector = NSSelectorFromString(@"accountsBarButtonItemTappedWithSender:");
-        if ([root respondsToSelector:selector]) ((void (*)(id, SEL, id))objc_msgSend)(root, selector, nil);
-    }] forControlEvents:UIControlEventTouchUpInside];
-    host.accountsButton = accounts;
+    if (ownAccount) {
+        UIButton *accounts = [UIButton buttonWithType:UIButtonTypeSystem];
+        if (@available(iOS 26.0, *)) configuration = [UIButtonConfiguration glassButtonConfiguration];
+        else configuration = [UIButtonConfiguration tintedButtonConfiguration];
+        configuration.baseForegroundColor = UIColor.labelColor;
+        configuration.image = [UIImage systemImageNamed:@"person.2" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:18 weight:UIImageSymbolWeightRegular]];
+        configuration.contentInsets = NSDirectionalEdgeInsetsZero;
+        accounts.accessibilityLabel = @"Accounts";
+        configuration.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+        accounts.configuration = configuration;
+        [accounts addAction:[UIAction actionWithHandler:^(__unused UIAction *action) {
+            UIViewController *root = weakState.root;
+            SEL selector = @selector(accountsBarButtonItemTappedWithSender:);
+            if ([root respondsToSelector:selector]) ((void (*)(id, SEL, id))objc_msgSend)(root, selector, nil);
+        }] forControlEvents:UIControlEventTouchUpInside];
+        accounts.tintColor = UIColor.labelColor;
+        host.accountsButton = accounts;
+    }
     UIButton *more = [UIButton buttonWithType:UIButtonTypeSystem];
     if (@available(iOS 26.0, *)) configuration = [UIButtonConfiguration glassButtonConfiguration];
     else configuration = [UIButtonConfiguration tintedButtonConfiguration];
@@ -2091,14 +2095,25 @@ static void ApolloDuoAccountPrepareHost(ApolloDuoSplitState *state, ApolloDuoSpl
     configuration.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
     more.configuration = configuration;
     more.accessibilityLabel = @"More Options";
-    UIAction *trophies = [UIAction actionWithTitle:@"Trophies" image:[UIImage systemImageNamed:@"trophy"] identifier:nil handler:^(__unused UIAction *action) {
-        ApolloDuoAccountSelect(weakState, @"Trophies");
-    }];
-    UIMenu *nativeMenu = ApolloProfileMoreMenuForController(profile);
-    more.menu = [UIMenu menuWithTitle:@"" children:[(nativeMenu.children ?: @[]) arrayByAddingObject:trophies]];
-    more.showsMenuAsPrimaryAction = YES;
+    if (ownAccount) {
+        UIAction *trophies = [UIAction actionWithTitle:@"Trophies" image:[UIImage systemImageNamed:@"trophy"] identifier:nil handler:^(__unused UIAction *action) {
+            ApolloDuoAccountSelect(weakState, @"Trophies");
+        }];
+        UIMenu *nativeMenu = ApolloProfileMoreMenuForController(profile);
+        more.menu = [UIMenu menuWithTitle:@"" children:[(nativeMenu.children ?: @[]) arrayByAddingObject:trophies]];
+        more.showsMenuAsPrimaryAction = YES;
+    } else {
+        // Visited profiles use Apollo's own actions for that user. The native
+        // menu hook anchors its presentation to this button in the dashboard.
+        __weak UIButton *weakMore = more;
+        [more addAction:[UIAction actionWithHandler:^(__unused UIAction *action) {
+            UIViewController *root = weakState.root;
+            SEL selector = @selector(moreOptionsBarButtonItemTappedWithSender:);
+            if ([root respondsToSelector:selector])
+                ((void (*)(id, SEL, id))objc_msgSend)(root, selector, weakMore);
+        }] forControlEvents:UIControlEventTouchUpInside];
+    }
     host.moreButton = more;
-    accounts.tintColor = UIColor.labelColor;
     more.tintColor = ApolloNavigationChromeColor();
 }
 

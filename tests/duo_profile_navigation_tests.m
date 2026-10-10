@@ -1,14 +1,59 @@
 #import <Foundation/Foundation.h>
 
+@interface UIBarButtonItem : NSObject
+@end
+@implementation UIBarButtonItem
+@end
+
+// Equal-but-distinct items prove cleanup removes the stored Accounts instance,
+// not another control that happens to compare equal to it.
+@interface EquivalentBarButtonItem : UIBarButtonItem
+@end
+@implementation EquivalentBarButtonItem
+- (BOOL)isEqual:(id)other { return [other isKindOfClass:EquivalentBarButtonItem.class]; }
+- (NSUInteger)hash { return 1; }
+@end
+
+@interface UINavigationItem : NSObject
+@property (nonatomic, copy) NSArray<UIBarButtonItem *> *leftBarButtonItems;
+@property (nonatomic, copy) NSArray<UIBarButtonItem *> *rightBarButtonItems;
+@property (nonatomic) NSUInteger leftWrites;
+@property (nonatomic) NSUInteger rightWrites;
+- (void)setLeftBarButtonItems:(NSArray<UIBarButtonItem *> *)items animated:(BOOL)animated;
+- (void)setRightBarButtonItems:(NSArray<UIBarButtonItem *> *)items animated:(BOOL)animated;
+@end
+@implementation UINavigationItem
+@synthesize leftBarButtonItems = _leftBarButtonItems;
+@synthesize rightBarButtonItems = _rightBarButtonItems;
+- (void)setLeftBarButtonItems:(NSArray<UIBarButtonItem *> *)items {
+    _leftBarButtonItems = [items copy];
+    self.leftWrites++;
+}
+- (void)setRightBarButtonItems:(NSArray<UIBarButtonItem *> *)items {
+    _rightBarButtonItems = [items copy];
+    self.rightWrites++;
+}
+- (void)setLeftBarButtonItems:(NSArray<UIBarButtonItem *> *)items animated:(__unused BOOL)animated {
+    self.leftBarButtonItems = items;
+}
+- (void)setRightBarButtonItems:(NSArray<UIBarButtonItem *> *)items animated:(__unused BOOL)animated {
+    self.rightBarButtonItems = items;
+}
+@end
+
 @interface UIViewController : NSObject
 @property (nonatomic, copy) NSString *kind;
+@property (nonatomic, copy) NSString *title;
+@property (nonatomic, strong) UINavigationItem *navigationItem;
 @end
 @implementation UIViewController
 @end
 
+@class ApolloDuoSplitState;
 @interface UINavigationController : UIViewController
 @property (nonatomic, copy) NSArray<UIViewController *> *viewControllers;
 @property (nonatomic, strong) id tabBarController;
+@property (nonatomic, weak) ApolloDuoSplitState *duoState;
 @property (nonatomic) BOOL lastPushAnimated;
 - (void)pushViewController:(UIViewController *)page animated:(BOOL)animated;
 @end
@@ -22,6 +67,12 @@
 @interface UISplitViewController : UIViewController
 @end
 @implementation UISplitViewController
+@end
+
+@interface UITabBarController : UIViewController
+@property (nonatomic, copy) NSArray<UIViewController *> *viewControllers;
+@end
+@implementation UITabBarController
 @end
 
 @interface ApolloDuoSplitHost : NSObject
@@ -56,12 +107,13 @@
 static BOOL landscape, unfolded;
 static NSUInteger closes, dashboardNavigations;
 static BOOL lastClosePreserved;
-static ApolloDuoSplitState *currentState;
+static id mainTabs;
+static id ApolloMainTabBarController(void) { return mainTabs; }
 static BOOL ApolloDuoSplitShouldOpen(__unused id tabs) { return landscape; }
 static BOOL ApolloDuoSplitIsUnfolded(void) { return unfolded; }
 static NSString *ApolloDuoSplitKind(UIViewController *page) { return page.kind; }
-static ApolloDuoSplitState *ApolloDuoSplitStateForNavigation(__unused UINavigationController *nav,
-                                                          __unused BOOL create) { return currentState; }
+static ApolloDuoSplitState *ApolloDuoSplitStateForNavigation(UINavigationController *nav,
+                                                          __unused BOOL create) { return nav.duoState; }
 static void ApolloDuoSplitClose(__unused ApolloDuoSplitState *state, BOOL preserve) {
     closes++;
     lastClosePreserved = preserve;
@@ -84,6 +136,9 @@ static void UpdateDecision(ApolloDuoSplitState *state) {
 }
 
 // INCLUDE_PRODUCTION_PROFILE_ROUTING
+// INCLUDE_PRODUCTION_PROFILE_OWNERSHIP
+// INCLUDE_PRODUCTION_ARRAY_IDENTITY
+// INCLUDE_PRODUCTION_ACCOUNTS_REMOVAL
 
 static NSUInteger checks, failures;
 static void Check(BOOL condition, NSString *message) {
@@ -96,6 +151,7 @@ static void Check(BOOL condition, NSString *message) {
 static UIViewController *Page(NSString *kind) {
     UIViewController *page = [UIViewController new];
     page.kind = kind;
+    page.navigationItem = [UINavigationItem new];
     return page;
 }
 static ApolloDuoSplitState *Posts(void) {
@@ -112,8 +168,134 @@ static ApolloDuoSplitState *Posts(void) {
     state.host = [ApolloDuoSplitHost new];
     state.host.listVisible = YES;
     state.outer.viewControllers = [@[state.root] arrayByAddingObjectsFromArray:state.feed.viewControllers];
-    currentState = state;
+    for (UINavigationController *navigation in @[state.outer, state.primary, state.feed, state.secondary]) {
+        navigation.duoState = state;
+    }
     return state;
+}
+
+static UINavigationController *Navigation(UIViewController *root) {
+    UINavigationController *navigation = [UINavigationController new];
+    navigation.viewControllers = root ? @[root] : @[];
+    return navigation;
+}
+
+static void CheckProfileOwnership(void) {
+    UIViewController *own = Page(@"account");
+    UIViewController *visited = Page(@"account");
+    mainTabs = nil;
+    Check(!ApolloDuoSplitIsOwnAccountController(own), @"an unavailable tab controller does not imply own Account");
+    mainTabs = [NSObject new];
+    Check(!ApolloDuoSplitIsOwnAccountController(own), @"a non-tab root does not imply own Account");
+
+    UITabBarController *tabs = [UITabBarController new];
+    mainTabs = tabs;
+    UINavigationController *accountNavigation = Navigation(own);
+    tabs.viewControllers = @[Navigation(Page(@"subreddits")), accountNavigation, visited, Navigation(nil)];
+    Check(ApolloDuoSplitIsOwnAccountController(own), @"the native Account tab root owns Accounts before user data loads");
+    Check(!ApolloDuoSplitIsOwnAccountController(nil) && !ApolloDuoSplitIsOwnAccountController(visited),
+          @"nil and a profile outside a tab navigation stack do not own Accounts");
+    accountNavigation.viewControllers = @[own, visited];
+    own.title = @"old-account";
+    visited.title = @"new-account";
+    own.title = @"new-account";
+    Check(ApolloDuoSplitIsOwnAccountController(own) && !ApolloDuoSplitIsOwnAccountController(visited),
+          @"account switching keeps tab ownership even when a visited profile has the same username");
+
+    // Promotion changes the dashboard root and navigation containment, but
+    // never turns a visited profile into the user's Account tab.
+    landscape = YES;
+    for (NSString *kind in @[@"subreddits", @"search", @"account"]) {
+        ApolloDuoSplitState *state = [ApolloDuoSplitState new];
+        state.kind = kind;
+        state.root = [kind isEqualToString:@"account"] ? own : Page(kind);
+        state.outer = Navigation(state.root);
+        state.outer.duoState = state;
+        state.outer.tabBarController = tabs;
+        tabs.viewControllers = [kind isEqualToString:@"account"] ? @[state.outer] : @[state.outer, accountNavigation];
+        state.outer.viewControllers = @[state.root, visited];
+        Check(ApolloDuoSplitIsOwnAccountController(own) && !ApolloDuoSplitIsOwnAccountController(visited),
+              [NSString stringWithFormat:@"%@ pushed profile stays visited on the closed/native stack", kind]);
+        Check(PromoteProfile(state) == 1 && state.root == visited,
+              [NSString stringWithFormat:@"%@ profile uses production landscape promotion", kind]);
+        Check(ApolloDuoSplitIsOwnAccountController(own) && !ApolloDuoSplitIsOwnAccountController(visited),
+              @"ownership remains correct while preparing the dashboard before split installation");
+        state.split = [UISplitViewController new];
+        state.outer.viewControllers = @[Page(@"host")];
+        state.secondary = Navigation(visited);
+        state.secondary.duoState = state;
+        Check(!ApolloDuoSplitIsOwnAccountController(visited),
+              @"becoming the landscape detail navigation root does not grant Accounts");
+        Check(ApolloDuoSplitIsOwnAccountController(own),
+              @"the original Account tab retains ownership while a visited dashboard is visible");
+        // Model the retained native stack after rotating or folding back.
+        state.outer.viewControllers = [state.profilePrefix arrayByAddingObject:visited];
+        state.root = state.tabRoot;
+        state.kind = state.tabKind;
+        state.tabRoot = nil;
+        state.profilePrefix = nil;
+        state.split = nil;
+        Check(ApolloDuoSplitIsOwnAccountController(own) && !ApolloDuoSplitIsOwnAccountController(visited),
+              @"rotating or folding out of the dashboard preserves profile ownership");
+    }
+
+    UIViewController *replacement = Page(@"account");
+    accountNavigation.viewControllers = @[replacement];
+    tabs.viewControllers = @[accountNavigation];
+    Check(ApolloDuoSplitIsOwnAccountController(replacement) && !ApolloDuoSplitIsOwnAccountController(own),
+          @"replacing the native Account root transfers ownership and invalidates the old controller");
+    ApolloDuoSplitState *accountState = [ApolloDuoSplitState new];
+    accountState.root = replacement;
+    accountState.split = [UISplitViewController new];
+    accountNavigation.duoState = accountState;
+    accountNavigation.viewControllers = @[Page(@"host")];
+    Check(ApolloDuoSplitIsOwnAccountController(replacement) && !ApolloDuoSplitIsOwnAccountController(own),
+          @"an own-account dashboard resolves its retained root behind the host controller");
+    accountState.tabRoot = replacement;
+    accountState.root = visited;
+    Check(ApolloDuoSplitIsOwnAccountController(replacement) && !ApolloDuoSplitIsOwnAccountController(visited),
+          @"a visited dashboard on Account uses tabRoot instead of its promoted profile root");
+    mainTabs = nil;
+}
+
+static void CheckAccountsRemoval(void) {
+    UIViewController *profile = Page(@"account");
+    UINavigationItem *item = profile.navigationItem;
+    UIBarButtonItem *accounts = [EquivalentBarButtonItem new];
+    UIBarButtonItem *lookalike = [EquivalentBarButtonItem new];
+    UIBarButtonItem *back = [UIBarButtonItem new];
+    UIBarButtonItem *more = [UIBarButtonItem new];
+    item.leftBarButtonItems = @[back, accounts, lookalike];
+    item.rightBarButtonItems = @[accounts, more];
+    item.leftWrites = item.rightWrites = 0;
+    ApolloActionsRemoveProfileAccountsItem(profile, accounts);
+    Check(ApolloActionsArraysIdentical(item.leftBarButtonItems, @[back, lookalike]),
+          @"Accounts cleanup preserves leading Back and an equal-but-distinct control in order");
+    Check(ApolloActionsArraysIdentical(item.rightBarButtonItems, @[more]),
+          @"Accounts cleanup preserves the exact native More item");
+    Check(item.leftWrites == 1 && item.rightWrites == 1, @"cleanup writes each changed side once");
+    for (NSUInteger pass = 0; pass < 20; pass++) ApolloActionsRemoveProfileAccountsItem(profile, accounts);
+    Check(item.leftWrites == 1 && item.rightWrites == 1,
+          @"repeated layout cleanup performs no navigation-item writes after convergence");
+
+    for (NSUInteger side = 0; side < 2; side++) {
+        item.leftBarButtonItems = side ? @[back] : @[accounts, back];
+        item.rightBarButtonItems = side ? @[more, accounts] : @[more];
+        item.leftWrites = item.rightWrites = 0;
+        ApolloActionsRemoveProfileAccountsItem(profile, accounts);
+        Check(ApolloActionsArraysIdentical(item.leftBarButtonItems, @[back])
+              && ApolloActionsArraysIdentical(item.rightBarButtonItems, @[more]),
+              @"cleanup repairs both horizontal and trailing-rail Accounts placement");
+        Check(item.leftWrites == (side ? 0 : 1) && item.rightWrites == (side ? 1 : 0),
+              @"cleanup does not republish the unaffected side");
+    }
+    item.leftBarButtonItems = nil;
+    item.rightBarButtonItems = nil;
+    item.leftWrites = item.rightWrites = 0;
+    ApolloActionsRemoveProfileAccountsItem(profile, accounts);
+    Check(item.leftBarButtonItems == nil && item.rightBarButtonItems == nil
+          && item.leftWrites == 0 && item.rightWrites == 0,
+          @"a not-yet-loaded profile keeps its absent native items without setter churn");
 }
 
 int main(void) {
@@ -194,6 +376,8 @@ int main(void) {
         unfolded = NO;
         UpdateDecision(state);
         Check(closes == 1 && !lastClosePreserved, @"closing Duo still collapses Posts normally");
+        CheckProfileOwnership();
+        CheckAccountsRemoval();
         printf("%lu checks, %lu failures\n", (unsigned long)checks, (unsigned long)failures);
         return failures ? 1 : 0;
     }

@@ -7,16 +7,23 @@ trap 'rm -rf -- "$test_build_dir"' EXIT HUP INT TERM
 
 # Extract the shipping decisions, not a second implementation of the policy.
 # UIKit containment and animation are doubled by the Foundation-only harness.
-# An optional source path supports checking the regression against an old rev.
-python3 - "$test_repo_root" "$test_build_dir" "${1:-$test_repo_root/src/ApolloDuoSplitView.xm}" <<'PY'
+# Optional source paths support checking regressions against older revisions.
+python3 - "$test_repo_root" "$test_build_dir" \
+    "${1:-$test_repo_root/src/ApolloDuoSplitView.xm}" \
+    "${2:-$test_repo_root/src/ApolloNavigationActions.xm}" <<'PY'
 from pathlib import Path
 import sys
 
-root, output, source_path = map(Path, sys.argv[1:])
+root, output, source_path, actions_path = map(Path, sys.argv[1:])
 source = source_path.read_text()
+actions = actions_path.read_text()
 
 def section(start, end):
     return source.split(start, 1)[1].split(end, 1)[0]
+
+def function(text, declaration):
+    start = text.index(declaration)
+    return text[start:text.index('\n}', start) + 2]
 
 promotion = section('    NSArray *stack = [outer.viewControllers copy];', '    NSArray *detail = stack.count')
 update = section('        BOOL postsOpen =', '            // Search stays full-width')
@@ -28,6 +35,12 @@ test = test.replace('// INCLUDE_PRODUCTION_PROFILE_PROMOTION', promotion)
 test = test.replace('// INCLUDE_PRODUCTION_UPDATE_DECISION', 'BOOL postsOpen =' + update + '\n    }')
 test = test.replace('// INCLUDE_PRODUCTION_PROFILE_ROUTING',
                     'static BOOL ApolloDuoSplitRoutePush(' + routing + '\n    return NO;\n}')
+test = test.replace('// INCLUDE_PRODUCTION_PROFILE_OWNERSHIP',
+                    function(source, 'BOOL ApolloDuoSplitIsOwnAccountController('))
+test = test.replace('// INCLUDE_PRODUCTION_ARRAY_IDENTITY',
+                    function(actions, 'static BOOL ApolloActionsArraysIdentical('))
+test = test.replace('// INCLUDE_PRODUCTION_ACCOUNTS_REMOVAL',
+                    function(actions, 'static void ApolloActionsRemoveProfileAccountsItem('))
 (output / 'DuoProfileNavigation.m').write_text(test)
 PY
 
