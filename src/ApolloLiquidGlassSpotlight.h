@@ -31,6 +31,11 @@ FOUNDATION_EXPORT NSInteger ApolloLGSeasonalSlotCount(NSInteger daysUntilEnd);
 // holiday set keeps showing all season; icons not shown yesterday still go
 // first within a tier. With no seasonal picks the result matches the original
 // non-seasonal shuffle for the same inputs.
+//
+// `seasonalOnlyGroups` maps holiday-only icons (Standard-pack icons, which are
+// not in `iconIDs`) to a pack index of their own (>= groupCount). They can be
+// seasonal picks and count as a pack for the three-pack rule, but never join
+// the everyday rotation.
 FOUNDATION_EXPORT NSArray<NSString *> *ApolloLGSpotlightLineup(NSArray<NSString *> *iconIDs,
                                                                 NSArray<NSNumber *> *groupIndexes,
                                                                 NSInteger groupCount,
@@ -39,6 +44,7 @@ FOUNDATION_EXPORT NSArray<NSString *> *ApolloLGSpotlightLineup(NSArray<NSString 
                                                                 NSArray<NSString *> *previousLineup,
                                                                 NSString * _Nullable activeIconID,
                                                                 NSArray<NSArray<NSString *> *> *seasonalTiers,
+                                                                NSDictionary<NSString *, NSNumber *> *seasonalOnlyGroups,
                                                                 NSInteger seasonalSlots);
 
 NS_ASSUME_NONNULL_END

@@ -44,9 +44,24 @@ Optional top-level "seasons" give the Daily Spotlight a holiday lean:
   "colorMatchIconIDs"— icons that only share the holiday's colors; they fill
                        any seasonal slots the made-for icons leave open.
 
-Seasonal icons must be Liquid Glass "group" icons (the Spotlight cannot show
-standardPack icons). The runtime claims 1–3 of the five Spotlight slots for
-the active season, rising as the window's end date approaches.
+Seasons may list Liquid Glass "group" icons, the tweak's "standardPack"
+additions, and Apollo's own icons described under top-level "nativeIcons":
+
+  "nativeIcons": [
+    { "id": "santapollo", "displayName": "Santapollo", "designer": "Matthew Skiles",
+      "standardPack": "ultra", "nativeRow": 37 }
+  ]
+
+  "id"           — Apollo's alternate icon name (CFBundleAlternateIcons key).
+  "standardPack" — originals | community | ultra | sekrit.
+  "nativeRow"    — the icon's row in Apollo 1.15.11's own list for that pack
+                   (Ultra rows don't count the tweak's inserted sequels). The
+                   picker saves it as the selected Standard row, so the pack
+                   shows the right checkmark after a Spotlight tap.
+
+Standard-pack and native icons are holiday-only: they never join the everyday
+rotation. The runtime claims 1–3 of the five Spotlight slots for the active
+season, rising as the window's end date approaches.
 
 Preview images are NOT embedded here. They are compiled as named imagesets
 into the app's Assets.car by rebuild_assets.py and loaded at runtime via
@@ -59,6 +74,10 @@ import json
 import os
 import re
 import sys
+
+
+# Standard packs a "nativeIcons" entry can belong to (LGStandardPack in the picker).
+NATIVE_STANDARD_PACKS = {"originals", "community", "ultra", "sekrit"}
 
 
 def escape(s: str) -> str:
@@ -89,6 +108,67 @@ def write_string_array(fp, name: str, values: list[str]) -> str:
         fp.write(f'    "{escape(value)}",\n')
     fp.write("};\n\n")
     return name
+
+
+def write_native_icons(fp, natives: list[dict]) -> None:
+    fp.write("// Apollo's own icons that seasons can feature (icons.json \"nativeIcons\").\n")
+    fp.write("// nativeRow is the icon's row in Apollo 1.15.11's list for standardPack.\n")
+    fp.write("typedef struct {\n")
+    fp.write("    const char *iconID;\n")
+    fp.write("    const char *displayName;\n")
+    fp.write("    const char *designer;\n")
+    fp.write("    const char *standardPack;\n")
+    fp.write("    int         nativeRow;\n")
+    fp.write("} LGNativeIconEntry;\n\n")
+    fp.write("static const LGNativeIconEntry kLGNativeIcons[] = {\n")
+    for native in natives:
+        fp.write(f'    {{ "{escape(native["id"])}", "{escape(native["displayName"])}", '
+                 f'"{escape(native["designer"])}", "{native["standardPack"]}", {native["nativeRow"]} }},\n')
+    if not natives:
+        # Zero-length arrays are not standard C/C++; keep one inert row.
+        fp.write("    { NULL, NULL, NULL, NULL, 0 },\n")
+    fp.write("};\n")
+    fp.write(f"static const size_t kLGNativeIconCount = {len(natives)};\n\n")
+
+
+def parse_native_icons(raw_natives, taken_ids: set[str]):
+    """Validates icons.json "nativeIcons"; returns normalized dicts or None."""
+    if not isinstance(raw_natives, list):
+        print('error: "nativeIcons" must be a list', file=sys.stderr)
+        return None
+    natives: list[dict] = []
+    seen: set[str] = set()
+    for raw in raw_natives:
+        icon_id = raw.get("id") if isinstance(raw, dict) else None
+        if not isinstance(icon_id, str) or not icon_id or icon_id in seen or icon_id in taken_ids:
+            print(f"error: native icon {raw!r} needs an \"id\" not used by any other icon",
+                  file=sys.stderr)
+            return None
+        seen.add(icon_id)
+        display_name = raw.get("displayName")
+        designer = raw.get("designer", "")
+        pack = raw.get("standardPack")
+        native_row = raw.get("nativeRow")
+        if not isinstance(display_name, str) or not display_name.strip() or not isinstance(designer, str):
+            print(f'error: native icon "{icon_id}" needs a "displayName" (and a string "designer")',
+                  file=sys.stderr)
+            return None
+        if pack not in NATIVE_STANDARD_PACKS:
+            print(f'error: native icon "{icon_id}" has invalid "standardPack" {pack!r}; must be one '
+                  f'of {sorted(NATIVE_STANDARD_PACKS)}', file=sys.stderr)
+            return None
+        if isinstance(native_row, bool) or not isinstance(native_row, int) or native_row < 0:
+            print(f'error: native icon "{icon_id}" needs a nonnegative integer "nativeRow"',
+                  file=sys.stderr)
+            return None
+        for other in natives:
+            if other["standardPack"] == pack and other["nativeRow"] == native_row:
+                print(f'error: native icons "{other["id"]}" and "{icon_id}" share {pack} row '
+                      f'{native_row}', file=sys.stderr)
+                return None
+        natives.append({"id": icon_id, "displayName": display_name, "designer": designer,
+                        "standardPack": pack, "nativeRow": native_row})
+    return natives
 
 
 def write_seasons(fp, seasons: list[dict]) -> None:
@@ -144,7 +224,7 @@ def parse_month_day(value, season_id: str, key: str):
     return month, day
 
 
-def parse_seasons(raw_seasons, group_icon_ids: set[str]):
+def parse_seasons(raw_seasons, featurable_ids: set[str]):
     """Validates icons.json "seasons"; returns normalized dicts or None."""
     if not isinstance(raw_seasons, list):
         print('error: "seasons" must be a list', file=sys.stderr)
@@ -181,9 +261,9 @@ def parse_seasons(raw_seasons, group_icon_ids: set[str]):
                       file=sys.stderr)
                 return None
             for icon_id in values:
-                if icon_id not in group_icon_ids:
+                if icon_id not in featurable_ids:
                     print(f'error: season "{season_id}" lists "{icon_id}", which is not a '
-                          'Liquid Glass group icon (standardPack icons cannot be featured)',
+                          'Liquid Glass group icon, a standardPack icon, or a "nativeIcons" entry',
                           file=sys.stderr)
                     return None
                 if icon_id in used:
@@ -266,7 +346,13 @@ def main() -> int:
             )
 
     group_icon_ids = {icon_id for entries in buckets.values() for icon_id, _, _ in entries}
-    seasons = parse_seasons(registry.get("seasons", []), group_icon_ids)
+    standard_icon_ids = {entry[0] for entries in standard_buckets.values() for entry in entries}
+    natives = parse_native_icons(registry.get("nativeIcons", []), group_icon_ids | standard_icon_ids)
+    if natives is None:
+        return 1
+    native_icon_ids = {native["id"] for native in natives}
+    seasons = parse_seasons(registry.get("seasons", []),
+                            group_icon_ids | standard_icon_ids | native_icon_ids)
     if seasons is None:
         return 1
 
@@ -345,6 +431,7 @@ def main() -> int:
 
         fp.write(f"static const size_t kLGIconGroupCount = {len(raw_groups)};\n\n")
 
+        write_native_icons(fp, natives)
         write_seasons(fp, seasons)
 
         primary = registry["primaryIconID"]
@@ -359,8 +446,8 @@ def main() -> int:
         f"{season['id']} {len(season['iconIDs'])}+{len(season['colorMatchIconIDs'])}"
         for season in seasons
     ) or "none"
-    print(f"Wrote {len(raw_groups)} groups ({summary}), {total} total; "
-          f"seasons: {season_summary} → {out_path}")
+    print(f"Wrote {len(raw_groups)} groups ({summary}), {total} total, "
+          f"{len(natives)} native; seasons: {season_summary} → {out_path}")
     return 0
 
 

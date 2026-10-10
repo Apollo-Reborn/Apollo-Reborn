@@ -57,11 +57,15 @@ NSArray<NSString *> *ApolloLGSpotlightLineup(NSArray<NSString *> *iconIDs,
                                              NSArray<NSString *> *previousLineup,
                                              NSString *activeIconID,
                                              NSArray<NSArray<NSString *> *> *seasonalTiers,
+                                             NSDictionary<NSString *, NSNumber *> *seasonalOnlyGroups,
                                              NSInteger seasonalSlots) {
     if (iconIDs.count != groupIndexes.count || lineupCount <= 0 || groupCount < 0) return @[];
 
     NSMutableDictionary<NSString *, NSNumber *> *groupForIconID =
-        [NSMutableDictionary dictionaryWithCapacity:iconIDs.count];
+        [NSMutableDictionary dictionaryWithCapacity:iconIDs.count + seasonalOnlyGroups.count];
+    [seasonalOnlyGroups enumerateKeysAndObjectsUsingBlock:^(NSString *iconID, NSNumber *group, __unused BOOL *stop) {
+        groupForIconID[iconID] = group;
+    }];
     for (NSUInteger i = 0; i < iconIDs.count; i++) groupForIconID[iconIDs[i]] = groupIndexes[i];
     NSSet<NSString *> *previous = [NSSet setWithArray:previousLineup];
 
@@ -92,6 +96,8 @@ NSArray<NSString *> *ApolloLGSpotlightLineup(NSArray<NSString *> *iconIDs,
     // Everything below is the original daily shuffle, minus the seasonal
     // picks: candidates and pack order from the base stream, one icon from
     // each not-yet-covered pack until three are represented, then fill.
+    // Candidates come from `iconIDs` only, so holiday-only icons never appear
+    // outside their season.
     NSMutableArray<NSNumber *> *candidates = [NSMutableArray arrayWithCapacity:iconIDs.count];
     for (NSUInteger i = 0; i < iconIDs.count; i++) {
         NSString *iconID = iconIDs[i];

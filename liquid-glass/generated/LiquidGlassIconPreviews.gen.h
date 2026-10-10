@@ -157,6 +157,33 @@ static const size_t kLGStandardPackEntries_ultraCount = 9;
 
 static const size_t kLGIconGroupCount = 4;
 
+// Apollo's own icons that seasons can feature (icons.json "nativeIcons").
+// nativeRow is the icon's row in Apollo 1.15.11's list for standardPack.
+typedef struct {
+    const char *iconID;
+    const char *displayName;
+    const char *designer;
+    const char *standardPack;
+    int         nativeRow;
+} LGNativeIconEntry;
+
+static const LGNativeIconEntry kLGNativeIcons[] = {
+    { "ye-snow-guardian", "Ye Snow Guardian", "Qi Sandor", "ultra", 2 },
+    { "jackopollo", "Jack-o'-pollo", "Anthony Piraino (The Iconfactory)", "ultra", 11 },
+    { "sir-yule-treemas", "Sir Yule Treemas", "Anthony Piraino (The Iconfactory)", "ultra", 13 },
+    { "demogorgon", "Demogorgon", "Matthew Skiles", "ultra", 21 },
+    { "apolloween", "Apollowe'en", "Anthony Piraino (The Iconfactory)", "ultra", 23 },
+    { "george", "Gingerbread George", "Qi Sandor", "ultra", 25 },
+    { "gordon-ramesses", "Gordon Ramesses", "Matthew Skiles", "ultra", 35 },
+    { "santapollo", "Santapollo", "Matthew Skiles", "ultra", 37 },
+    { "frankenpollo", "Frankenpollo", "Matthew Skiles", "ultra", 54 },
+    { "under-the-tree", "Under the Tree", "Qi Sandor", "ultra", 56 },
+    { "poe-the-space-ghost", "Poe the Space Ghost", "hinkeroniarts", "community", 2 },
+    { "murica", "America!", "", "sekrit", 4 },
+    { "usa2", "Super America", "", "sekrit", 5 },
+};
+static const size_t kLGNativeIconCount = 13;
+
 // Daily Spotlight seasons (icons.json "seasons"). Windows are inclusive
 // Gregorian month/day ranges within one year and never overlap.
 typedef struct {
@@ -203,22 +230,31 @@ static const char *const kLGSeasonIcons_canada_day[] = {
     "LG-canada",
 };
 
+static const char *const kLGSeasonIcons_independence_day[] = {
+    "murica",
+    "usa2",
+};
+
 static const char *const kLGSeasonIcons_halloween[] = {
     "witching-hour",
     "helios-count",
+    "jackopollo",
+    "apolloween",
+    "frankenpollo",
+    "gordon-ramesses",
+    "demogorgon",
+    "poe-the-space-ghost",
 };
 
-static const char *const kLGSeasonColorMatches_halloween[] = {
-    "LG-andru",
-    "LG-burnt-orange",
-};
-
-static const char *const kLGSeasonColorMatches_christmas[] = {
-    "helios-cryo",
-    "helios-cryo-halo",
-    "LG-crimson",
-    "LG-green",
-    "LG-gold",
+static const char *const kLGSeasonIcons_christmas[] = {
+    "santapollo",
+    "sir-yule-treemas",
+    "ye-snow-guardian",
+    "george",
+    "under-the-tree",
+    "under-the-tree-ii",
+    "under-the-tree-iii",
+    "LG-calico",
 };
 
 static const LGSeasonDef kLGSeasons[] = {
@@ -227,9 +263,10 @@ static const LGSeasonDef kLGSeasons[] = {
     { "may-the-4th", "May the 4th", 5, 4, 5, 4, kLGSeasonIcons_may_the_4th, 2, NULL, 0 },
     { "pride", "Pride Month", 6, 1, 6, 30, kLGSeasonIcons_pride, 3, kLGSeasonColorMatches_pride, 2 },
     { "canada-day", "Canada Day", 7, 1, 7, 1, kLGSeasonIcons_canada_day, 1, NULL, 0 },
-    { "halloween", "Halloween", 10, 1, 10, 31, kLGSeasonIcons_halloween, 2, kLGSeasonColorMatches_halloween, 2 },
-    { "christmas", "Christmas", 12, 1, 12, 25, NULL, 0, kLGSeasonColorMatches_christmas, 5 },
+    { "independence-day", "Independence Day", 7, 4, 7, 4, kLGSeasonIcons_independence_day, 2, NULL, 0 },
+    { "halloween", "Halloween", 10, 1, 10, 31, kLGSeasonIcons_halloween, 8, NULL, 0 },
+    { "christmas", "Christmas", 12, 1, 12, 25, kLGSeasonIcons_christmas, 8, NULL, 0 },
 };
-static const size_t kLGSeasonCount = 7;
+static const size_t kLGSeasonCount = 8;
 
 static const char *const kLGPrimaryIconIDCString = "jryng";
