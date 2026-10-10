@@ -2623,7 +2623,7 @@ static id ApolloFindResponderForSelector(SEL sel, id imageNode) {
         !ApolloShouldAutoplayInlineGIFCached() && ApolloPausedInlineGIFWantsPlayOverlay()) {
         UIView *overlay = objc_getAssociatedObject(imageNode, &kApolloPlayOverlayViewKey);
         UIView *nodeView = ([imageNode respondsToSelector:@selector(isNodeLoaded)] && [imageNode isNodeLoaded])
-            ? [imageNode view] : nil;
+            ? ApolloNodeView(imageNode) : nil;
         if (!overlay || !nodeView || overlay.superview != nodeView) {
             ApolloLog(@"[AutoplayGIF] tap heal node=%p overlay=%p detached=1", imageNode, overlay);
             if ([objc_getAssociatedObject(imageNode, &kApolloInlineGIFUserForcedPlayKey) boolValue]) {
@@ -2637,7 +2637,7 @@ static id ApolloFindResponderForSelector(SEL sel, id imageNode) {
 
     NSArray *imageChestItems = objc_getAssociatedObject(imageNode, &kApolloImageChestItemsKey);
     if (imageChestItems.count > 0) {
-        UIView *view = [imageNode respondsToSelector:@selector(view)] ? [imageNode view] : nil;
+        UIView *view = ApolloNodeView(imageNode);
         NSURL *albumURL = objc_getAssociatedObject(imageNode, &kApolloOriginalImageURLKey);
         if (![albumURL isKindOfClass:[NSURL class]] || !ApolloImageChestIsPostURL(albumURL)) albumURL = nil;
         if (ApolloPresentImageChestItemsWithAlbumURL(imageChestItems, view, 0, albumURL)) return;
@@ -2650,7 +2650,7 @@ static id ApolloFindResponderForSelector(SEL sel, id imageNode) {
     NSURL *url = objc_getAssociatedObject(imageNode, &kApolloOriginalImageURLKey)
               ?: objc_getAssociatedObject(imageNode, &kApolloImageURLKey);
     if (![url isKindOfClass:[NSURL class]]) return;
-    UIView *sourceView = [imageNode respondsToSelector:@selector(view)] ? [imageNode view] : nil;
+    UIView *sourceView = ApolloNodeView(imageNode);
     if (ApolloPresentRedditVideoCommentURL(url, sourceView)) return;
     if (ApolloImageChestIsPostURL(url)) {
         ApolloPresentOrResolveImageChestAlbumURL(url, sourceView, ^{
@@ -4242,7 +4242,7 @@ static void ApolloStartInlineGIFPlayback(ASNetworkImageNode *imageNode) {
     dispatch_async(dispatch_get_main_queue(), ^{
         objc_setAssociatedObject(imageNode, &kApolloInlineGIFUserForcedPlayKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-        UIView *view = [imageNode respondsToSelector:@selector(view)] ? [imageNode view] : nil;
+        UIView *view = ApolloNodeView(imageNode);
         if (view) ApolloSetInlineGIFUserForcedPlay(view, YES);
 
         if (ApolloResumeInlineGIFPlaybackIfPossible(imageNode)) {

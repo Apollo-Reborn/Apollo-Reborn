@@ -69,7 +69,7 @@ static UITableView *FindFirstTableViewInView(UIView *view) {
 }
 
 static UITableView *GetCommentsTableView(UIViewController *viewController) {
-    UIView *tableNodeView = [ApolloObjectIvar(viewController, "tableNode") view];
+    UIView *tableNodeView = ApolloNodeView(ApolloObjectIvar(viewController, "tableNode"));
     if ([tableNodeView isKindOfClass:[UITableView class]]) {
         return (UITableView *)tableNodeView;
     }
