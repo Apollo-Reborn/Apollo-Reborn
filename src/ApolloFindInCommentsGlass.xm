@@ -372,7 +372,7 @@ CGRect ApolloFindInCommentsGlassTrailingFrame(UINavigationItem *navItem, UIView 
 
 static UIScrollView *FGTableForVC(UIViewController *vc) {
     id tableNode = ApolloObjectIvar(vc, "tableNode");
-    UIView *tv = [tableNode respondsToSelector:@selector(view)] ? [tableNode view] : nil;
+    UIView *tv = ApolloNodeView(tableNode);
     return [tv isKindOfClass:[UIScrollView class]] ? (UIScrollView *)tv : nil;
 }
 

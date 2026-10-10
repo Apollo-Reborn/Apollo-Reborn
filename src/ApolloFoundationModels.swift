@@ -17,7 +17,11 @@
 import Foundation
 import os
 #if canImport(FoundationModels)
-import FoundationModels
+// The linker flag alone is insufficient with Xcode 26's Swift autolinker: a
+// normal import can still emit a strong LC_LOAD_DYLIB. Mark the import itself
+// weak so iOS/macCatalyst releases below 26 can load before availability checks
+// route this bridge to its unavailable path.
+@_weakLinked import FoundationModels
 #endif
 
 // Matches ApolloLog's os_log subsystem ("apollofix") so these diagnostics land

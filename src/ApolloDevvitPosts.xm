@@ -2404,7 +2404,7 @@ static void ApolloDevvitRegisterHostParent(id parentNode) {
 
 static UITableView *ApolloDevvitTableViewForNode(id node) {
     if (![node isNodeLoaded]) return nil;
-    UIView *v = [node view];
+    UIView *v = ApolloNodeView(node);
     while (v && ![v isKindOfClass:[UITableView class]]) v = v.superview;
     return (UITableView *)v;
 }
@@ -2614,7 +2614,7 @@ static void ApolloDevvitReloadRowForParentAttempt(id parentNode, NSString *fullN
     }
     UITableViewCell *cell = nil;
     UITableView *table = nil;
-    for (UIView *v = [parentNode view]; v; v = v.superview) {
+    for (UIView *v = ApolloNodeView(parentNode); v; v = v.superview) {
         if (!cell && [v isKindOfClass:[UITableViewCell class]]) cell = (UITableViewCell *)v;
         if (cell && [v isKindOfClass:[UITableView class]]) { table = (UITableView *)v; break; }
     }
@@ -2742,7 +2742,7 @@ static void ApolloDevvitRelayoutHosts(BOOL feedOnly) {
         for (id parent in sDevvitHostParents.allObjects) {
             BOOL isFeedRow = richMediaClass && [parent isKindOfClass:richMediaClass];
             if (feedOnly && !isFeedRow) continue;
-            if (![parent isNodeLoaded] || ![parent view].window) continue;
+            if (![parent isNodeLoaded] || !ApolloNodeView(parent).window) continue;
             if (!isFeedRow) {
                 ApolloDevvitInvalidateUpToCell((ASDisplayNode *)parent);
                 UITableView *table = ApolloDevvitTableViewForNode(parent);
@@ -2779,8 +2779,8 @@ static void ApolloDevvitRelayoutHosts(BOOL feedOnly) {
                            dispatch_get_main_queue(), ^{
                 for (id parent in sDevvitHostParents.allObjects) {
                     if (richMediaClass && [parent isKindOfClass:richMediaClass]) continue;
-                    if (![parent isNodeLoaded] || ![parent view].window) continue;
-                    ApolloDevvitMountCommentsHeadersInView([parent view].window);
+                    if (![parent isNodeLoaded] || !ApolloNodeView(parent).window) continue;
+                    ApolloDevvitMountCommentsHeadersInView(ApolloNodeView(parent).window);
                     break;
                 }
             });
@@ -3069,7 +3069,7 @@ static void ApolloDevvitMountCommentsHeadersInView(UIView *root) {
     Class richMediaClass = ApolloClassRichMediaNode;
     for (id parent in sDevvitHostParents.allObjects) {
         if (richMediaClass && [parent isKindOfClass:richMediaClass]) continue;  // feed rows
-        if (![parent isNodeLoaded] || ![[parent view] isDescendantOfView:root]) continue;
+        if (![parent isNodeLoaded] || ![ApolloNodeView(parent) isDescendantOfView:root]) continue;
         ASDisplayNode *host = objc_getAssociatedObject(parent, kApolloDevvitHostNodeKey);
         if (!host || ![host isNodeLoaded]) continue;
         // A widget shell without a page (torn down, or failed) must not
@@ -3103,7 +3103,7 @@ static void ApolloDevvitReleaseCommentsWidgetsInView(UIView *root) {
         if (!sDevvitFeedWidgets) continue;  // rows show no widgets while that setting is off
         for (id parent in sDevvitHostParents.allObjects) {
             if (!richMediaClass || ![parent isKindOfClass:richMediaClass]) continue;
-            if (![parent isNodeLoaded] || ![parent view].window) continue;
+            if (![parent isNodeLoaded] || !ApolloNodeView(parent).window) continue;
             RDKLink *link = ApolloDevvitLinkOfParent(parent);
             if (!fullName || ![ApolloDevvitFullName(link) isEqualToString:fullName]) continue;
             ASDisplayNode *host = objc_getAssociatedObject(parent, kApolloDevvitHostNodeKey);
@@ -3201,7 +3201,7 @@ void ApolloDevvitDebugSweep(void) {
             @try { pf = ((CGRect (*)(id, SEL))objc_msgSend)(parent, @selector(frame)); } @catch (__unused id e) {}
             UITableViewCell *cell = nil; UITableView *table = nil;
             if ([parent isNodeLoaded]) {
-                for (UIView *v = [parent view]; v; v = v.superview) {
+                for (UIView *v = ApolloNodeView(parent); v; v = v.superview) {
                     if (!cell && [v isKindOfClass:[UITableViewCell class]]) cell = (UITableViewCell *)v;
                     if (cell && [v isKindOfClass:[UITableView class]]) { table = (UITableView *)v; break; }
                 }
