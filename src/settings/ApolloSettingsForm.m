@@ -636,10 +636,12 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
             // Shared pool: reset what a sibling's configure block may have added
             // (e.g. Translation's "Add Language…" disclosure chevron).
             cell.accessoryType = UITableViewCellAccessoryNone;
-            // Match switch/disclosure rows: unavailable actions must look
-            // disabled too. Reset both values for this shared reuse pool.
-            cell.selectionStyle = enabled ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
+            // Reset appearance for reused cells when the action is disabled.
+            cell.selectionStyle = enabled
+                ? UITableViewCellSelectionStyleDefault
+                : UITableViewCellSelectionStyleNone;
             cell.textLabel.enabled = enabled;
+
             if (enabled) {
                 [self apollo_applyAccentActionTextColorToCell:cell];
             } else {

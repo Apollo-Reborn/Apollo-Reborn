@@ -74,16 +74,16 @@ typedef NS_ENUM(NSInteger, ApolloPFDetailSection) {
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     if (section == ApolloPFDetailSectionKeywords) return @"Keywords";
-    if (section == ApolloPFDetailSectionFlairs) return @"Flairs";
+    if (section == ApolloPFDetailSectionFlairs) return @"Post Flairs";
     return nil;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == ApolloPFDetailSectionKeywords)
-        return [NSString stringWithFormat:@"Hide posts in r/%@ whose title or link contains any of these words (case-insensitive).", self.subredditName];
+        return [NSString stringWithFormat:@"Exclude posts in r/%@ containing these keywords in their title or link. Capitalisation doesn’t matter.", self.subredditName];
     if (section == ApolloPFDetailSectionFlairs)
-        return [NSString stringWithFormat:@"Hide posts in r/%@ with any of these post flairs. Type the flair label exactly as it appears on posts (case-insensitive).", self.subredditName];
-    return @"Stops filtering this subreddit and clears its keywords and flairs.";
+        return [NSString stringWithFormat:@"Exclude posts in r/%@ with any of these post flairs. Capitalisation doesn’t matter.", self.subredditName];
+    return nil;
 }
 
 #pragma mark - Cells
@@ -93,7 +93,7 @@ typedef NS_ENUM(NSInteger, ApolloPFDetailSection) {
 
     if (section == ApolloPFDetailSectionRemove) {
         UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
-        cell.textLabel.text = @"Remove This Subreddit";
+        cell.textLabel.text = @"Remove Subreddit Filter";
         cell.textLabel.textColor = [UIColor systemRedColor];
         cell.textLabel.textAlignment = NSTextAlignmentCenter;
         return cell;
@@ -110,7 +110,7 @@ typedef NS_ENUM(NSInteger, ApolloPFDetailSection) {
 
     // "Add ..." row.
     UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
-    cell.textLabel.text = (section == ApolloPFDetailSectionKeywords) ? @"Add Keyword..." : @"Add Flair...";
+    cell.textLabel.text = (section == ApolloPFDetailSectionKeywords) ? @"Add Keyword..." : @"Add Post Flair...";
     [self apollo_applyAccentActionTextColorToCell:cell];
     return cell;
 }
@@ -136,11 +136,11 @@ typedef NS_ENUM(NSInteger, ApolloPFDetailSection) {
     if (![self isAddRowAtIndexPath:indexPath]) return;
 
     BOOL isKeyword = (indexPath.section == ApolloPFDetailSectionKeywords);
-    NSString *title = isKeyword ? @"Add Keyword" : @"Add Flair";
+    NSString *title = isKeyword ? @"Add Keyword" : @"Add Post Flair";
     NSString *message = isKeyword
-        ? @"Posts in this subreddit whose title or link contains this word are hidden."
-        : @"Posts in this subreddit with this flair label are hidden.";
-    NSString *placeholder = isKeyword ? @"giveaway" : @"Fanart";
+        ? @"Enter a keyword to filter by."
+        : @"Enter a post flair to filter by.";
+    NSString *placeholder = isKeyword ? @"Keyword" : @"Post flair";
     [self presentAddPromptWithTitle:title message:message placeholder:placeholder onAdd:^(NSString *text) {
         if (isKeyword) {
             [ApolloPostFilterStore addKeyword:text forSubreddit:self.subredditName];
@@ -196,12 +196,27 @@ typedef NS_ENUM(NSInteger, ApolloPFDetailSection) {
     }];
     __weak UIAlertController *weakAlert = alert;
     [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Add" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+
+    UIAlertAction *addAction =
+        [UIAlertAction actionWithTitle:@"Add" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
         UITextField *tf = weakAlert.textFields.firstObject;
         NSString *text = tf.text ?: @"";
         if ([text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]].length == 0) return;
         if (onAdd) onAdd(text);
-    }]];
+    }];
+
+    addAction.enabled = NO;
+    [alert addAction:addAction];
+    alert.preferredAction = addAction;
+
+    UITextField *field = alert.textFields.firstObject;
+    [field addAction:[UIAction actionWithHandler:^(__kindof UIAction *action) {
+        NSString *text = ((UITextField *)action.sender).text ?: @"";
+        addAction.enabled =
+            [text stringByTrimmingCharactersInSet:
+                [NSCharacterSet whitespaceAndNewlineCharacterSet]].length > 0;
+    }] forControlEvents:UIControlEventEditingChanged];
+
     [self presentViewController:alert animated:YES completion:nil];
 }
 
