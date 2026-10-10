@@ -38,10 +38,12 @@
 #import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloCreatedAtAlert.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
 #import "UIWindow+Apollo.h"
+#import "ApolloClasses.h"
 
 // MARK: - Minimal AsyncDisplayKit forward declarations
 
@@ -57,27 +59,15 @@
 - (NSDate *)createdUTC;
 @end
 
-// MARK: - Runtime ivar helpers
-
-static id SRTIvar(id obj, const char *name) {
-    Class cls = obj ? object_getClass(obj) : Nil;
-    while (cls) {
-        Ivar iv = class_getInstanceVariable(cls, name);
-        if (iv) return object_getIvar(obj, iv);
-        cls = class_getSuperclass(cls);
-    }
-    return nil;
-}
-
 static NSTimeInterval SRTNow(void) {
     return [NSDate date].timeIntervalSinceReferenceDate;
 }
 
 // The comment-count node for a feed cell: cell.postInfoNode.commentsInfoNode.
 static ApolloSRTNode *SRTCommentsNodeForCell(id cell) {
-    id postInfoNode = SRTIvar(cell, "postInfoNode");
+    id postInfoNode = ApolloObjectIvar(cell, "postInfoNode");
     if (!postInfoNode) return nil;
-    return (ApolloSRTNode *)SRTIvar(postInfoNode, "commentsInfoNode");
+    return (ApolloSRTNode *)ApolloObjectIvar(postInfoNode, "commentsInfoNode");
 }
 
 // YES if `touch` falls inside `node`'s layer (in cellView coords), expanded by
@@ -188,7 +178,7 @@ static UILabel *SRTTranslationMarkerLabel(id postInfoNode) {
 // Feed cells carry score/comments/age (+ optional 🌐 translation marker); the
 // comments header carries score/%/age (+ marker).
 static NSArray<ApolloSRTTarget *> *SRTTargetsForCell(id cell, UIView *cellView) {
-    id postInfoNode = SRTIvar(cell, "postInfoNode");
+    id postInfoNode = ApolloObjectIvar(cell, "postInfoNode");
     if (!postInfoNode || !cellView || !cellView.layer) return @[];
     const struct { const char *ivar; SRTStatKind kind; __unsafe_unretained NSString *caption; } specs[] = {
         {"pointsButtonNode",           SRTStatKindScore,      @"Upvote"},
@@ -201,7 +191,7 @@ static NSArray<ApolloSRTTarget *> *SRTTargetsForCell(id cell, UIView *cellView) 
     for (int i = 0; i < (int)(sizeof(specs) / sizeof(specs[0])); i++) {
         // Disabled icons still APPEAR in the loupe (the user can slide over them);
         // releasing on one just does nothing — gated in SRTActivateTarget, not here.
-        ApolloSRTNode *node = (ApolloSRTNode *)SRTIvar(postInfoNode, specs[i].ivar);
+        ApolloSRTNode *node = (ApolloSRTNode *)ApolloObjectIvar(postInfoNode, specs[i].ivar);
         if (!node || node.isHidden) continue;
         CALayer *layer = nil; @try { layer = node.layer; } @catch (__unused id e) {}
         if (!layer) continue;
@@ -256,9 +246,7 @@ static CGRect SRTClaimRect(id cell, UIView *cellView, NSArray<ApolloSRTTarget *>
     CGFloat bottom = CGRectGetMaxY(u) + 20.0;
 
     // Feed cells: the row is the cell's last line — claim the trailing padding.
-    static Class headerClass;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ headerClass = NSClassFromString(@"_TtC6Apollo22CommentsHeaderCellNode"); });
+    Class headerClass = ApolloClassCommentsHeaderCellNode;
     BOOL isHeader = headerClass && [cell isMemberOfClass:headerClass];
     CGFloat cellBottom = CGRectGetHeight(cellView.bounds);
     if (!isHeader && cellBottom - CGRectGetMaxY(u) < 44.0) bottom = cellBottom;
@@ -283,7 +271,7 @@ static CGFloat SRTXEdgeDistance(CGRect rect, CGFloat x) {
 // the vertically nearer midline wins (crossover = mid-gap); on the stats line
 // (•••), the nearer horizontal span wins.
 static BOOL SRTPointOnExcludedNeighbour(id cell, UIView *cellView, NSArray<ApolloSRTTarget *> *targets, CGPoint pt) {
-    id postInfoNode = SRTIvar(cell, "postInfoNode");
+    id postInfoNode = ApolloObjectIvar(cell, "postInfoNode");
     if (!postInfoNode || !cellView.layer || targets.count == 0) return NO;
     CGRect u = targets.firstObject.rect;
     for (ApolloSRTTarget *t in targets) u = CGRectUnion(u, t.rect);
@@ -293,7 +281,7 @@ static BOOL SRTPointOnExcludedNeighbour(id cell, UIView *cellView, NSArray<Apoll
         "flairNode", "cakedayNode", "moreOptionsButtonNode",
     };
     for (size_t i = 0; i < sizeof(neighbours) / sizeof(neighbours[0]); i++) {
-        ApolloSRTNode *node = (ApolloSRTNode *)SRTIvar(postInfoNode, neighbours[i]);
+        ApolloSRTNode *node = (ApolloSRTNode *)ApolloObjectIvar(postInfoNode, neighbours[i]);
         if (!node || node.isHidden) continue;
         CALayer *layer = nil;
         @try { layer = node.layer; } @catch (__unused id e) {}
@@ -372,7 +360,7 @@ static NSInteger SRTNearestTargetIndex(NSArray<ApolloSRTTarget *> *targets, CGFl
 
         // Material: real glass on iOS 26 (matches the nav-bar look), blur fallback.
         UIVisualEffect *effect = nil;
-        Class glassCls = NSClassFromString(@"UIGlassEffect");
+        Class glassCls = objc_getClass("UIGlassEffect");
         if (IsLiquidGlass() && glassCls) {
             effect = [[glassCls alloc] init];
         } else {
@@ -547,20 +535,20 @@ static void SRTOpenPostForCell(id cell, UIView *cellView, BOOL jump) {
 //   CompactPostCellNode:    upvoteButtonNode (directly on the cell)
 //   CommentsHeaderCellNode: quickBarNode.upvoteButton
 static id SRTUpvoteButtonForCell(id cell) {
-    id direct = SRTIvar(cell, "upvoteButtonNode");
+    id direct = ApolloObjectIvar(cell, "upvoteButtonNode");
     if (direct) return direct;
-    id optionButtons = SRTIvar(cell, "optionButtonsNode");
-    id fromOptions = optionButtons ? SRTIvar(optionButtons, "upvoteButton") : nil;
+    id optionButtons = ApolloObjectIvar(cell, "optionButtonsNode");
+    id fromOptions = optionButtons ? ApolloObjectIvar(optionButtons, "upvoteButton") : nil;
     if (fromOptions) return fromOptions;
-    id quickBar = SRTIvar(cell, "quickBarNode");
-    return quickBar ? SRTIvar(quickBar, "upvoteButton") : nil;
+    id quickBar = ApolloObjectIvar(cell, "quickBarNode");
+    return quickBar ? ApolloObjectIvar(quickBar, "upvoteButton") : nil;
 }
 
 // Fire the button's own action exactly like a tap: ASControlNode event
 // TouchUpInside (1 << 4). Goes through Apollo's real vote path (state, API,
 // arrow color), so it stays correct across app versions.
 static BOOL SRTSendTouchUpInside(id controlNode) {
-    SEL sel = NSSelectorFromString(@"sendActionsForControlEvents:withEvent:");
+    SEL sel = @selector(sendActionsForControlEvents:withEvent:);
     if (!controlNode || ![controlNode respondsToSelector:sel]) return NO;
     ((void (*)(id, SEL, NSUInteger, id))objc_msgSend)(controlNode, sel, (NSUInteger)(1 << 4), nil);
     return YES;
@@ -571,11 +559,11 @@ static BOOL SRTSendTouchUpInside(id controlNode) {
 // links against that one: shared.pendingLabel = marker; handleCellTap:nil.
 static BOOL SRTToggleTranslationForMarker(UILabel *marker) {
     if (!marker) return NO;
-    Class cls = NSClassFromString(@"ApolloFeedMarkerTapTarget");
+    Class cls = objc_getClass("ApolloFeedMarkerTapTarget");
     if (!cls || ![cls respondsToSelector:@selector(shared)]) return NO;
     id shared = ((id (*)(id, SEL))objc_msgSend)(cls, @selector(shared));
-    SEL setSel = NSSelectorFromString(@"setPendingLabel:");
-    SEL tapSel = NSSelectorFromString(@"handleCellTap:");
+    SEL setSel = @selector(setPendingLabel:);
+    SEL tapSel = @selector(handleCellTap:);
     if (![shared respondsToSelector:setSel] || ![shared respondsToSelector:tapSel]) return NO;
     ((void (*)(id, SEL, id))objc_msgSend)(shared, setSel, marker);
     ((void (*)(id, SEL, id))objc_msgSend)(shared, tapSel, nil);
@@ -604,8 +592,8 @@ static void SRTActivateTarget(id cell, UIView *cellView, ApolloSRTTarget *target
             ApolloInfoKind ik = target.kind == SRTStatKindPercentage ? ApolloInfoKindPercentage
                               : target.kind == SRTStatKindEdited      ? ApolloInfoKindEdited
                                                                       : ApolloInfoKindAge;
-            id link = SRTIvar(cell, "link");
-            id comment = SRTIvar(cell, "comment");
+            id link = ApolloObjectIvar(cell, "link");
+            id comment = ApolloObjectIvar(cell, "comment");
             UIWindow *window = cellView.window;
             CGRect anchor = window ? [cellView convertRect:target.rect toView:nil] : CGRectNull;
             ApolloPresentInfoDetail(ik, link, comment, cellView, anchor, window);
@@ -807,7 +795,6 @@ static void SRTWireCornerFailureRequirements(UIGestureRecognizer *loupe, UIView 
         }
     }
 }
-
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gr shouldReceiveTouch:(UITouch *)touch {
     id cell = SRTCellForGesture(gr);
@@ -1216,9 +1203,9 @@ static UITableView *SRTFindTable(UIView *v) {
 }
 
 static UITableView *SRTTableForVC(UIViewController *vc) {
-    id tableNode = SRTIvar(vc, "tableNode");
+    id tableNode = ApolloObjectIvar(vc, "tableNode");
     if (tableNode) {
-        SEL viewSel = NSSelectorFromString(@"view");
+        SEL viewSel = @selector(view);
         if ([tableNode respondsToSelector:viewSel]) {
             UIView *tv = ((id (*)(id, SEL))objc_msgSend)(tableNode, viewSel);
             if ([tv isKindOfClass:[UITableView class]]) return (UITableView *)tv;
@@ -1230,9 +1217,9 @@ static UITableView *SRTTableForVC(UIViewController *vc) {
 // First row whose node is a CommentCellNode (the start of the comment section,
 // after the post header / media / summary / action rows).
 static NSIndexPath *SRTFirstCommentIndexPath(id tableNode, UITableView *tableView) {
-    Class commentCellClass = NSClassFromString(@"_TtC6Apollo15CommentCellNode");
+    Class commentCellClass = ApolloClassCommentCellNode;
     if (!commentCellClass) return nil;
-    SEL nodeSel = NSSelectorFromString(@"nodeForRowAtIndexPath:");
+    SEL nodeSel = @selector(nodeForRowAtIndexPath:);
     if (!tableNode || ![tableNode respondsToSelector:nodeSel]) return nil;
     NSInteger sections = [tableView numberOfSections];
     for (NSInteger s = 0; s < sections; s++) {
@@ -1260,8 +1247,8 @@ static const CGFloat kSRTLandingMargin = 0.0;
 // Returns NAN if not resolvable. A UITableView's layer bounds.origin == contentOffset,
 // so converting a descendant layer into it yields content coordinates directly.
 static CGFloat SRTQuickBarTopContentY(id tableNode, UITableView *tableView) {
-    Class headerClass = NSClassFromString(@"_TtC6Apollo22CommentsHeaderCellNode");
-    SEL nodeSel = NSSelectorFromString(@"nodeForRowAtIndexPath:");
+    Class headerClass = ApolloClassCommentsHeaderCellNode;
+    SEL nodeSel = @selector(nodeForRowAtIndexPath:);
     if (!headerClass || !tableNode || ![tableNode respondsToSelector:nodeSel] || !tableView.layer) return NAN;
     NSInteger sections = [tableView numberOfSections];
     for (NSInteger s = 0; s < sections; s++) {
@@ -1270,7 +1257,7 @@ static CGFloat SRTQuickBarTopContentY(id tableNode, UITableView *tableView) {
             NSIndexPath *ip = [NSIndexPath indexPathForRow:r inSection:s];
             id node = ((id (*)(id, SEL, id))objc_msgSend)(tableNode, nodeSel, ip);
             if (![node isMemberOfClass:headerClass]) continue;
-            id quickBar = SRTIvar(node, "quickBarNode");
+            id quickBar = ApolloObjectIvar(node, "quickBarNode");
             CALayer *qbLayer = nil;
             @try { qbLayer = [(ApolloSRTNode *)quickBar layer]; } @catch (__unused id e) {}
             if (!qbLayer) return NAN;
@@ -1286,13 +1273,12 @@ static CGFloat SRTQuickBarTopContentY(id tableNode, UITableView *tableView) {
 // (preferred, so the up/down/reply row stays visible), else the first comment as a
 // fallback — at the top of the scroll area, just under the nav bar. Clamped to the
 // current scroll range. Returns NAN when there's nothing to anchor to yet.
-static CGFloat SRTLandingOffset(id tableNode, UITableView *tv, NSIndexPath *firstCommentIP) {
+static CGFloat SRTLandingOffset(UITableView *tv, CGFloat qbTop, NSIndexPath *firstCommentIP) {
     CGFloat insetTop = tv.adjustedContentInset.top;
     CGFloat insetBottom = tv.adjustedContentInset.bottom;
     CGFloat viewportH = tv.bounds.size.height;
     CGFloat maxOff = MAX(-insetTop, tv.contentSize.height - viewportH + insetBottom);
     CGFloat targetTop;
-    CGFloat qbTop = SRTQuickBarTopContentY(tableNode, tv);
     if (!isnan(qbTop))          targetTop = qbTop - kSRTLandingMargin;
     else if (firstCommentIP)    targetTop = [tv rectForRowAtIndexPath:firstCommentIP].origin.y;
     else                        return NAN;
@@ -1309,7 +1295,7 @@ static CGFloat SRTLandingOffset(id tableNode, UITableView *tv, NSIndexPath *firs
 // exist, we pin to the header the moment it's measured, so the view slides in
 // already scrolled to the discussion instead of opening at the top and jumping down.
 static int SRTPinLanding(UIViewController *vc) {
-    id tableNode = SRTIvar(vc, "tableNode");
+    id tableNode = ApolloObjectIvar(vc, "tableNode");
     UITableView *tv = SRTTableForVC(vc);
     if (!tv) return -1;
 
@@ -1337,7 +1323,7 @@ static int SRTPinLanding(UIViewController *vc) {
     CGFloat qbTop = SRTQuickBarTopContentY(tableNode, tv);
     // Only pay for the first-comment scan when the header anchor is unavailable.
     NSIndexPath *first = isnan(qbTop) ? SRTFirstCommentIndexPath(tableNode, tv) : nil;
-    CGFloat desired = SRTLandingOffset(tableNode, tv, first);
+    CGFloat desired = SRTLandingOffset(tv, qbTop, first);
     if (isnan(desired)) return -1;                                   // nothing to anchor to yet
 
     CGFloat cur = tv.contentOffset.y;
@@ -1378,7 +1364,7 @@ static void SRTTick(__weak UIViewController *weakVC, long gen, NSDate *deadline)
 
     BOOL pastDeadline = ([deadline timeIntervalSinceNow] <= 0);
 
-    id tableNode = SRTIvar(vc, "tableNode");
+    id tableNode = ApolloObjectIvar(vc, "tableNode");
     UITableView *tableView = SRTTableForVC(vc);
     if (!tableView) {
         if (!pastDeadline) SRTScheduleTick(weakVC, gen, deadline);
@@ -1432,11 +1418,11 @@ static void SRTScheduleTick(__weak UIViewController *weakVC, long gen, NSDate *d
 // Return nil there and no menu appears — no timing, no arbitration. We return
 // nil only where the loupe would claim the press (SRTPointClaimedForLoupe) and
 // the magnifier is on; everywhere else %orig runs and the menu behaves stock.
-static BOOL SRTShouldSuppressMenu(id interaction, CGPoint location) {
+static BOOL SRTShouldSuppressMenu(UIContextMenuInteraction *interaction, CGPoint location) {
     if (!sIconRowMagnifier) return NO;
     UIView *iview = nil;
-    @try { if ([interaction respondsToSelector:@selector(view)]) iview = [interaction view]; } @catch (__unused id e) {}
-    if (![iview isKindOfClass:[UIView class]]) return NO;
+    @try { iview = interaction.view; } @catch (__unused id e) {}
+    if (!iview) return NO;
     // Recover the cell + its cellView by finding our loupe gesture on the
     // interaction's view (or an ancestor). That gesture carries the cell node.
     id cell = nil; UIView *cellView = nil;

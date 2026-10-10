@@ -72,6 +72,7 @@
 #import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloSearchNativeBar.h"
 #import "ApolloNavigationActions.h"
@@ -96,20 +97,8 @@
 - (void)setDidDisplayNodeContentWithRenderingContext:(id)block;
 @end
 
-// Runtime ivar reader; walks the superclass chain so inherited ivars resolve.
-static id FGObjectIvar(id object, const char *name) {
-    if (!object || !name) return nil;
-    Class cls = object_getClass(object);
-    while (cls) {
-        Ivar ivar = class_getInstanceVariable(cls, name);
-        if (ivar) return object_getIvar(object, ivar);
-        cls = class_getSuperclass(cls);
-    }
-    return nil;
-}
-
 static UITextField *FGApolloField(UIViewController *vc) {
-    id field = FGObjectIvar(vc, "searchTextField");
+    id field = ApolloObjectIvar(vc, "searchTextField");
     return [field isKindOfClass:[UITextField class]] ? (UITextField *)field : nil;
 }
 
@@ -382,13 +371,13 @@ CGRect ApolloFindInCommentsGlassTrailingFrame(UINavigationItem *navItem, UIView 
 }
 
 static UIScrollView *FGTableForVC(UIViewController *vc) {
-    id tableNode = FGObjectIvar(vc, "tableNode");
+    id tableNode = ApolloObjectIvar(vc, "tableNode");
     UIView *tv = [tableNode respondsToSelector:@selector(view)] ? [tableNode view] : nil;
     return [tv isKindOfClass:[UIScrollView class]] ? (UIScrollView *)tv : nil;
 }
 
 static UIView *FGJumpButton(UIViewController *vc) {
-    id button = FGObjectIvar(vc, "commentJumpButton");
+    id button = ApolloObjectIvar(vc, "commentJumpButton");
     return [button isKindOfClass:[UIView class]] ? (UIView *)button : nil;
 }
 

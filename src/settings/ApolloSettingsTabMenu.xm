@@ -12,6 +12,7 @@
 #import "ApolloSettingsForm.h"
 #import "SavedCategoriesViewController.h"
 #import "ApolloThemeManagerViewController.h"
+#import "ApolloClasses.h"
 
 // Match the account switcher's medium impact for deliberate menu actions.
 static void ApolloSettingsMenuHaptic(void) {
@@ -80,10 +81,6 @@ static void ApolloClearConsumedSettingsTouch(UITabBarController *controller) {
 
 // Identify the native item rather than waiting for Glass's normal and lens
 // copies to finish animating into matching positions after the bar expands.
-static id ApolloSettingsObjectForSelector(id object, NSString *name) {
-    SEL selector = NSSelectorFromString(name);
-    return [object respondsToSelector:selector] ? ((id (*)(id, SEL))objc_msgSend)(object, selector) : nil;
-}
 
 static BOOL ApolloSettingsTabViewIsVisible(UIView *view, UIWindow *window, UITouch *touch) {
     if (![view isKindOfClass:UIView.class] || !window || view.window != window) return NO;
@@ -119,9 +116,9 @@ static UIView *ApolloFindSettingsItemView(UIView *view, UITabBarItem *settingsIt
                                          UIWindow *window, UITouch *touch, NSUInteger railIndex,
                                          NSUInteger itemCount) {
     if (view.hidden || view.alpha <= 0.01) return nil;
-    id item = ApolloSettingsObjectForSelector(view, @"item");
+    id item = ApolloSendObject(view, @selector(item));
     BOOL matches = item == settingsItem
-        || ApolloSettingsObjectForSelector(item, @"_linkedTabBarItem") == settingsItem;
+        || ApolloSendObject(item, @selector(_linkedTabBarItem)) == settingsItem;
     if (!matches && railIndex != NSNotFound) {
         matches = ApolloSettingsRailButtonAtIndex(view, railIndex, itemCount);
     }
@@ -149,7 +146,7 @@ static UIView *ApolloSettingsTabView(UITabBarController *controller, UITouch *to
         }
     }
     if (!settingsItem) return nil;
-    UIView *button = ApolloSettingsObjectForSelector(settingsItem, @"_tabBarButton");
+    UIView *button = ApolloSendObject(settingsItem, @selector(_tabBarButton));
     if (ApolloSettingsTabViewIsVisible(button, window, touch)
         && (rail || [button isDescendantOfView:controller.tabBar])) return button;
     Ivar viewIvar = class_getInstanceVariable(settingsItem.class, "_view");
@@ -166,7 +163,7 @@ static UINavigationController *ApolloSettingsShortcutNavigation(UITabBarControll
     for (UIViewController *child in controller.viewControllers) {
         if (![child isKindOfClass:UINavigationController.class]) continue;
         UINavigationController *nav = (UINavigationController *)child;
-        if ([ApolloSettingsTabRoot(nav) isKindOfClass:NSClassFromString(@"_TtC6Apollo22SettingsViewController")]) return nav;
+        if ([ApolloSettingsTabRoot(nav) isKindOfClass:ApolloClassSettingsViewController]) return nav;
     }
     return nil;
 }
@@ -235,7 +232,7 @@ static void ApolloPushSettingsShortcut(UITabBarController *controller, UIViewCon
 // UIKit owns the context menu's layout, separators, backdrop and animation.
 // Limit native menu placement without intercepting the underlying page.
 static UIView *ApolloSettingsMenuList(UIView *view) {
-    if ([NSStringFromClass(view.class) isEqualToString:@"_UIContextMenuListView"]) return view;
+    if ([view isMemberOfClass:ApolloClassUIContextMenuListView]) return view;
     for (UIView *child in view.subviews) {
         UIView *list = ApolloSettingsMenuList(child);
         if (list) return list;
@@ -356,6 +353,14 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
     return YES;
 }
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)other {
+    // Apollo's classic hold selects a tab at 0.35s, before our menu's 0.5s
+    // threshold. Let it proceed only if this Settings-only hold fails, so
+    // holding Settings opens the menu without switching or popping its stack.
+    return !IsLiquidGlass()
+        && other.view == self.controller.tabBar
+        && [other isKindOfClass:objc_getClass("_TtC6Apollo32ApolloLongPressGestureRecognizer")];
+}
 - (void)held:(UILongPressGestureRecognizer *)gesture {
     if (gesture.state != UIGestureRecognizerStateBegan || self.anchor || self.controller.presentedViewController) return;
     UIView *tab = self.pressedTab;
@@ -365,7 +370,7 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
     // Present from a proxy so the tab bar's glass selection gesture cannot
     // cancel the native menu on finger-up or lift the entire tab bar as a preview.
     self.interaction = [[UIContextMenuInteraction alloc] initWithDelegate:self];
-    SEL present = NSSelectorFromString(@"_presentMenuAtLocation:");
+    SEL present = @selector(_presentMenuAtLocation:);
     if (![self.interaction respondsToSelector:present]) return;
     UIView *container = self.controller.view;
     CGRect sourceFrame = [tab convertRect:tab.bounds toView:container];
@@ -392,7 +397,7 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
     self.anchor.userInteractionEnabled = YES;
     [container addSubview:self.anchor];
     [self.anchor addInteraction:self.interaction];
-    SEL driver = NSSelectorFromString(@"_setFallbackDriverStyle:");
+    SEL driver = @selector(_setFallbackDriverStyle:);
     if ([self.interaction respondsToSelector:driver]) {
         ((void (*)(id, SEL, NSUInteger))objc_msgSend)(self.interaction, driver, 1);
     }
@@ -411,7 +416,8 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
         NSMutableArray<UIMenu *> *groups = [NSMutableArray array];
         for (NSString *identifier in ApolloSettingsShortcutIDs()) {
             UIAction *action = [UIAction actionWithTitle:ApolloSettingsShortcutTitle(identifier)
-                image:images[identifier] identifier:nil handler:^(__unused UIAction *action) {
+                image:ApolloResolveSettingsIconImage(images[identifier], weakController.traitCollection)
+                identifier:nil handler:^(__unused UIAction *action) {
                     ApolloSettingsMenuHaptic();
                     weakSelf.pendingAction = ^{
                         if ([identifier isEqualToString:@"feature-requests"]) {
@@ -471,17 +477,17 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
 }
 // Match UIKit's button-menu presentation: actions only, anchored bloom.
 - (id)_contextMenuInteraction:(UIContextMenuInteraction *)interaction styleForMenuWithConfiguration:(UIContextMenuConfiguration *)configuration {
-    Class cls = NSClassFromString(@"_UIContextMenuStyle");
-    SEL factory = NSSelectorFromString(@"defaultStyle");
+    Class cls = objc_getClass("_UIContextMenuStyle");
+    SEL factory = @selector(defaultStyle);
     if (![cls respondsToSelector:factory]) return nil;
     id style = ((id (*)(id, SEL))objc_msgSend)(cls, factory);
-    SEL layout = NSSelectorFromString(@"setPreferredLayout:");
-    SEL overlap = NSSelectorFromString(@"setShouldMenuOverlapSourcePreview:");
+    SEL layout = @selector(setPreferredLayout:);
+    SEL overlap = @selector(setShouldMenuOverlapSourcePreview:);
     if ([style respondsToSelector:layout]) ((void (*)(id, SEL, NSInteger))objc_msgSend)(style, layout, 3);
     // Avoid morphing the full menu through the tiny transparent preview,
     // which stretches the rows into a bubble during the glass entrance.
     if ([style respondsToSelector:overlap]) ((void (*)(id, SEL, BOOL))objc_msgSend)(style, overlap, NO);
-    SEL containerSetter = NSSelectorFromString(@"setContainerView:");
+    SEL containerSetter = @selector(setContainerView:);
     if ([style respondsToSelector:containerSetter]) {
         ((void (*)(id, SEL, id))objc_msgSend)(style, containerSetter, self.menuLayoutContainer);
     }
@@ -688,7 +694,7 @@ static UIViewController *sShortcutCapturedScreen;
 
 static UIViewController *ApolloFindNativeSettingsRoot(UIViewController *controller) {
     UIViewController *root = ApolloSettingsTabRoot(controller);
-    if ([root isKindOfClass:NSClassFromString(@"_TtC6Apollo22SettingsViewController")]) return root;
+    if ([root isKindOfClass:ApolloClassSettingsViewController]) return root;
     NSArray *children = [controller isKindOfClass:UITabBarController.class] ? ((UITabBarController *)controller).viewControllers
         : [controller isKindOfClass:UINavigationController.class] ? ((UINavigationController *)controller).viewControllers : controller.childViewControllers;
     for (UIViewController *child in children) {

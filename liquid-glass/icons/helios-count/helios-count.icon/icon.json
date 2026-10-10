@@ -1,0 +1,300 @@
+{
+  "fill-specializations" : [
+    {
+      "value" : "system-light"
+    },
+    {
+      "appearance" : "dark",
+      "value" : "system-dark"
+    }
+  ],
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "blend-mode-specializations" : [
+            {
+              "value" : "normal"
+            },
+            {
+              "appearance" : "dark",
+              "value" : "normal"
+            }
+          ],
+          "fill-specializations" : [
+            {
+              "value" : {
+                "solid" : "extended-gray:1.00000,1.00000"
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "extended-gray:1.00000,1.00000"
+              }
+            }
+          ],
+          "image-name" : "Apollo Antenna Ball copy.svg",
+          "name" : "Apollo Antenna Ball copy",
+          "opacity-specializations" : [
+            {
+              "value" : 1
+            },
+            {
+              "appearance" : "dark",
+              "value" : 1
+            }
+          ],
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              -0.0744079813192684,
+              -341.6759495577272
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 4
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.2
+      }
+    },
+    {
+      "layers" : [
+        {
+          "blend-mode" : "plus-lighter",
+          "fill" : {
+            "automatic-gradient" : "display-p3:0.63485,0.13519,0.17658,1.00000"
+          },
+          "hidden" : false,
+          "image-name" : "Apollo Eyes Icon.svg",
+          "name" : "Apollo Eyes Icon",
+          "position" : {
+            "scale" : 0.88,
+            "translation-in-points" : [
+              -0.44617413018318075,
+              -2.1072663557754368
+            ]
+          }
+        },
+        {
+          "blend-mode" : "hard-light",
+          "glass" : false,
+          "image-name" : "fangs.svg",
+          "name" : "fangs",
+          "position" : {
+            "scale" : 1.01,
+            "translation-in-points" : [
+              0,
+              106
+            ]
+          }
+        },
+        {
+          "fill-specializations" : [
+            {
+              "value" : {
+                "solid" : "extended-gray:0.00000,1.00000"
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "display-p3:0.12829,0.12671,0.12671,1.00000"
+              }
+            }
+          ],
+          "hidden" : false,
+          "image-name" : "Apollo Antenna Icon 2.svg",
+          "name" : "Apollo Antenna Icon 2",
+          "opacity-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : 1
+            }
+          ],
+          "position" : {
+            "scale" : 0.71,
+            "translation-in-points" : [
+              0.021998675139229817,
+              -74.75958391564131
+            ]
+          }
+        },
+        {
+          "fill" : {
+            "solid" : "extended-gray:0.00000,1.00000"
+          },
+          "glass" : false,
+          "hidden" : false,
+          "image-name" : "Apollo Helmet Space.svg",
+          "name" : "Apollo Helmet Space",
+          "position" : {
+            "scale" : 1.32,
+            "translation-in-points" : [
+              0.22561604584541328,
+              124.92348377656322
+            ]
+          }
+        },
+        {
+          "blend-mode" : "normal",
+          "fill-specializations" : [
+            {
+              "value" : {
+                "solid" : "display-p3:0.06172,0.05705,0.06958,1.00000"
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "extended-gray:0.00000,1.00000"
+              }
+            },
+            {
+              "appearance" : "tinted",
+              "value" : "automatic"
+            }
+          ],
+          "glass" : false,
+          "image-name" : "vampire-cape-black 2.svg",
+          "name" : "vampire-cape-black 2",
+          "opacity-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : 1
+            }
+          ],
+          "position" : {
+            "scale" : 0.88,
+            "translation-in-points" : [
+              -0.05855465901436219,
+              65
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.1
+      }
+    },
+    {
+      "layers" : [
+        {
+          "fill-specializations" : [
+            {
+              "value" : {
+                "solid" : "extended-gray:1.00000,1.00000"
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "extended-gray:1.00000,1.00000"
+              }
+            }
+          ],
+          "glass" : true,
+          "image-name" : "Apollo Helmet.svg",
+          "name" : "Apollo Helmet",
+          "position" : {
+            "scale" : 1.44,
+            "translation-in-points" : [
+              -0.028785250204919066,
+              69.94951211087493
+            ]
+          }
+        }
+      ],
+      "name" : "Group",
+      "position" : {
+        "scale" : 0.92,
+        "translation-in-points" : [
+          0,
+          0
+        ]
+      },
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 2.4
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.7
+      }
+    },
+    {
+      "layers" : [
+        {
+          "image-name" : "vampire-cape.svg",
+          "name" : "vampire-cape",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              -0.05855465901436219,
+              29.06737766901449
+            ]
+          }
+        },
+        {
+          "fill-specializations" : [
+            {
+              "value" : {
+                "solid" : "extended-gray:0.00000,1.00000"
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "extended-gray:0.25000,1.00000"
+              }
+            }
+          ],
+          "image-name" : "bats.svg",
+          "name" : "bats"
+        },
+        {
+          "image-name" : "red-background.svg",
+          "name" : "red-background",
+          "opacity-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : 0
+            }
+          ],
+          "position" : {
+            "scale" : 1.07,
+            "translation-in-points" : [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "name" : "Group",
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.6
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.2
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}

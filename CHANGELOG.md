@@ -4,6 +4,95 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v3.9.0] - 2026-10-09
+
+### Features
+
+- Add an **in-app update prompt**: from the next release on, Apollo Reborn checks for updates once a day and, when one is out, lets you send it to AltStore, SideStore, Feather, or FlareStore or download the IPA, with the release notes a tap away (#1343: @IllIIllIllIllII)
+  - Tap **Later** or **Skip this version** to put it off, check any time with **Check for Updates** (About), or turn off **Automatic Update Checks** (Privacy, on by default); jailbreak installs don't check
+  - What's New now shows the app icon you picked instead of the default one
+- Open the **subreddit switcher** as a native sheet when you tap a feed's title, with search, your favorites, and live results, instead of the small floating dropdown; typing a multireddit like apple+iphone still works (#1313, #1387: @IllIIllIllIllII)
+  - Press and hold the **Posts** tab to open it while a feed is open, now on Liquid Glass too, and the search field stays in place as you scroll the sheet
+- Add a **Liquid Glass** switch (Interface → Appearance, on by default) so Liquid Glass builds can use Apollo's classic look without installing a different IPA; quit and reopen Apollo for the change to apply (#1384: @IllIIllIllIllII)
+  - Shown on Liquid Glass builds on iOS 26 and later, except inside LiveContainer; while it's off, Liquid Glass-only options are hidden
+- Add a **Minimize** Hide Style for **Hide Bars on Scroll** (Interface → Tab Bar, Liquid Glass) that shrinks the tab bar into a small glass pill showing the current tab as you scroll, like Safari; tap the pill or scroll back up to bring the full bar back (#1349, #1384: @IllIIllIllIllII)
+  - With any Hide Style on Liquid Glass, a tab bar or header hidden by scrolling now slides back in when you open a page or go back or forward, and the tab bar no longer comes back on its own after 30 seconds
+- Add **Reduce Rate Limiting** (Accounts & API Keys → Experimental, off by default) so **API-Key-Free** accounts hit Reddit's request limit less often: profile pictures load in batches without their collectible frames, Community Highlights refresh every 30 minutes instead of every 2, and your sign-in is checked less often (#1369: @icpryde)
+  - Apollo offers it once: when you sign in without an API key, or, if you're already signed in, the first time you hit the limit
+  - Even with it off, API-Key-Free accounts skip repeated account requests at launch and when you come back to the app, Community Highlights wait out a rate limit, and your own profile no longer shows "has been banned" during one
+- Add **Kagi** to the Search tab's **Search With** menu for Kagi subscribers: paste your Kagi Session Link once, then search Reddit through Kagi with the same result cards, Read More, and filters as Google, plus each post's score, comments, and age right away (#1305: @nickclyde)
+  - Each page of results counts as one search on your Kagi plan; change or remove the link under Accounts & API Keys → Kagi Search
+- Add **Open via Nitter** (Open in App → X / Twitter, off by default) to open X and Twitter links on a Nitter instance you pick from a live list or enter yourself, so you can read posts and profiles without an X account (#1334: @nickclyde)
+  - Shared and copied links stay on x.com
+- Open **Edit Profile** (your profile's ••• menu) inside Apollo on iOS 16 and later, signed in as the current account and styled with your theme, instead of in Safari, which often wasn't signed in (#1367: @icpryde)
+  - API-key accounts without a **Reddit Web Sign-In** are asked to sign in once first
+- Add **True Black Keyboard** (Interface → Display & Navigation, off by default) to make the keyboard's background pure black for OLED screens, in dark mode, light mode, or always (#1316: @IllIIllIllIllII)
+- Add **Settings Icon Theme** (Settings → Appearance → Other, Light by default) to show settings icons as colored symbols on dark tiles, like iOS Settings in dark mode, either always (Dark) or only in dark mode (System) (#1377: @IllIIllIllIllII)
+  - Pixel Pals now gets a rounded-square icon with your current pet, and the main Settings list drops its duplicate Apollo Ultra row (it's still under About)
+- Add a **User Profiles** settings page that brings Profile Layout, **Show User Profile Pictures**, and **Profile Picture Shape** together, with a live sample comment showing how profile pictures look (#1352: @IllIIllIllIllII)
+  - Show User Profile Pictures and Profile Picture Shape move here from Interface → Display & Navigation
+- Reorganize **Subreddits** settings into Subreddit List, Subreddit Appearance, and Search Tab Sources, and redesign **Subreddit List Sections** (formerly Subreddit Sections) with a preview that looks like your real subreddit list (#1350, #1351: @IllIIllIllIllII)
+  - **Show Subreddit Icons** moves here from Apollo's Appearance settings, and Section Order rows now drag by their handle
+  - Also fixes subreddit list rows keeping the previous light or dark mode's colors with **Subreddit List Enhancements** off
+- Rework **Customize Action Menus** (Interface → Menus, formerly Action Menus) with clearer descriptions, a summary only on menus you've changed, **All Menus** showing where each action is hidden, and a **Reset Menu…** that can reset just the order (#1282, #1323, #1368: @AcornElf, @icpryde)
+  - Touch-and-hold menus on posts and comments now follow your layout too, so hidden actions stay hidden and the order matches the ••• menu
+  - Brings back **Remind Me In…** in the ••• menus on posts and comments on Liquid Glass, and lets you hide or move it
+- Add a **Comment Link** option to **Share as Image**: Include Link becomes a **Link** menu with No Link, Post Link, or Comment Link when you share a comment, and comment GIFs shared as video carry the chosen link too (#1278: @Thetromboneman1)
+  - If Include Link was on, it carries over as Post Link
+- Add tile size buttons to **Gallery View** (the − and + magnifying glasses at the top) to switch between four tile sizes, from a denser grid to a single column; your choice is remembered (#1357: @jordanearle)
+- Write **Apollo AI** summaries in your language even when the post, article, or comments are in another one, with a new **Language** setting (Apollo AI → Summaries, Device Default by default) (#1362: @icpryde)
+  - Summaries saved before this update are written again the next time you open their thread
+- Add **Custom Headers** to Apollo AI's Custom provider, for services that need extra request headers, such as the `x-opencode-session` header OpenCode Go now asks for (#1286: @icpryde)
+- Start a **crosspost**'s title as the original post's title, like reddit.com does, with an (x) to clear it; long titles now wrap onto up to five lines instead of being cut off (#1290: @icpryde)
+- Show the newest commenter's **profile picture** next to their name in the follow-thread **Live Activity** when **Show User Profile Pictures** is on (#1296: @icpryde)
+  - Needs a self-hosted Notification Backend with avatar support
+- Add **Witching Hour** and **Count Helios**, two Halloween icons, to the Helios icon pack (#1378: @IllIIllIllIllII)
+
+### Performance
+
+- Use less memory for very large images in **Gallery View**, Image Chest albums, and Chat, which now load at the size they're shown instead of at full resolution (#1320: @ryannair05)
+
+### Fixes
+
+- Fix crashes when adding or removing a **favorite** on the Subreddits list, while writing a **Media** post (for example after changing its flair), and when swiping between pages of the fullscreen **media viewer** (#1336: @icpryde)
+- Fix Apollo crashing when you switch accounts with the **Inbox** open, and a rare crash when the Inbox is closed right after it opens (#1284, #1379: @icpryde)
+- Fix very long **text posts** showing a blank body at the largest text sizes, or after Apollo had been open a while (#1381: @icpryde)
+- Fix **Continue with Google** doing nothing and **Continue with Apple** showing an error on Reddit's sign-in page; both now open Google's or Apple's sign-in in a sheet, with or without an API key (#1372: @icpryde)
+- Fix moderator tools for **API-Key-Free** moderators that came up empty, kept spinning, or silently failed (#1298, #1304, #1311: @icpryde)
+  - **Removal Reasons**, **Ban Users**, **Mute Users**, **Approved Submitters**, and Apollo's own **Moderator Mail** (with Use Modern Moderator Mail off) now load, and removing a post offers **Add Removal Reason**
+  - Bans, moderator invites, and accepting or declining an invite now reach Reddit
+- Fix **Set Post Flair** on **API-Key-Free** accounts saying "Flair set!" while the post kept its old flair, and **AutoModerator** saves never reaching Reddit (#1309: @icpryde)
+- Fix the subreddit **Sidebar** staying mostly empty and **Set User Flair** showing a blank or outdated current flair on **API-Key-Free** accounts (#1312, #1327: @IllIIllIllIllII, @nickclyde)
+  - Image posts in feeds and your current flair no longer rely on Old Reddit, which Reddit is starting to restrict
+- Stop the pause of a second or more between **Liquid Glass menus** when reporting a post or comment, setting post flair, or removing a post as a moderator; the next menu now opens right away (#1382: @icpryde)
+  - Moderator actions such as Remove, Approve, and Spam also go through right away, and Ban User opens without the wait
+- Fix swiping from the left edge still going back with **Disable Navigation Gestures** on (Settings → Gestures), and on Liquid Glass stop a right swipe over a comment leaving the thread instead of running the comment's swipe action (#1370: @icpryde)
+- Stop **YouTube** videos on iOS 27 playing with captions you can't turn off; captions now show only when Closed Captions + SDH is on in iOS Settings or you turn on Subtitles in the player (#1371: @icpryde)
+- Stop the search bar under the header flashing as a feed or post opens with **Header Style** set to Hard, the iOS 27 default on Liquid Glass (#1373: @icpryde)
+- Show a message instead of an endless spinner when a profile's **Comments** or **Posts** come back empty, as they do when someone hides their history, or when a feed or list fails to load (#1341: @icpryde)
+- Hide profile stats entirely when **Stat Cards** is off (User Profiles → Profile Layout) instead of falling back to Apollo's karma and account-age row (#1348: @IllIIllIllIllII)
+- Fix posts after the first from each subreddit showing an empty circle instead of their **subreddit icon** in Home, Popular, All, and multireddits (#1363: @icpryde)
+- Fix tapping the **Posts** tab sometimes stopping short of the top of a long feed; it now goes all the way up like a status-bar tap, and the **Return Button** can take you back (#1360: @IllIIllIllIllII)
+- Make the **subreddit header** and **Community Highlights** follow when you switch subreddits from the feed's title, instead of keeping the previous subreddit's (#1287: @icpryde)
+- Load **more replies** smoothly: the spinner stays until the replies fade in, and in a translated thread they arrive already translated instead of switching language and shifting the comments below (#1358: @icpryde)
+- Fix **Bulk Translation** skipping comments that start with a quote, a list, or a link, and show translated quotes, lists, bold, and italics the way Apollo shows the original (#1294: @icpryde)
+- Fix **translation** labels naming the wrong language or showing on text that wasn't translated: "Translated from…", the feed's 🌐 badge and the Translate button now name the language the translation service actually translated from, and skip comments and posts it returned unchanged (#1380: @icpryde)
+  - Short comments that were translated without a label before now show one
+- Stop a comment's **rich link card** image flashing each time you vote (#1356: @icpryde)
+- Say why a **RedGIFs** post couldn't load instead of "RedGIFs error :(", such as removed, not found, not available in your region, or RedGIFs can't be reached (#1359: @icpryde)
+- Keep a fullscreen **GIF or video** playing behind the comments sheet you open with **Swipe Up for Comments**, instead of it stopping or the screen going black (#1277: @Thetromboneman1)
+- Fade the background when you drag a fullscreen image or video away sideways or at an angle, not only straight up or down (#1320: @ryannair05)
+- Fix touching and holding a **modmail** or private message doing nothing on Liquid Glass, and long messages ending in a band of empty space (#1307, #1308: @icpryde)
+- Keep **Google** search's cookies across launches on iOS 16 and earlier, so Google stops asking you to sign in or pass its check every time (#1315: @icpryde)
+- Fix the **GIF picker**'s search bar looking double-layered on Liquid Glass (#1283: @icpryde)
+- Color the navigation and tab bars with your **custom theme**'s Bars & Chrome color on non-Liquid-Glass builds, so the swipe-down search bar in subreddits and posts sits inside the top bar instead of looking like a separate strip (#1280: @Thetromboneman1)
+- Fix **Apollo Reborn settings** footers and subtitles growing to body size under Rounded, Serif, and Monospaced theme fonts, and headers and footers keeping the old theme after you change it in **Theme Manager** (#1293, #1297, #1322: @icpryde)
+- Stop the **Apollo AI** settings list jumping while you scroll it, after a cancelled swipe-back, and when you come back to it (#1288, #1291: @icpryde)
+- Keep the section titles in **Settings Shortcuts** still when you add or remove a shortcut, and on non-Liquid-Glass builds open its menu over the screen you're on when you hold the Settings tab, instead of switching to Settings first (#1355, #1384: @icpryde, @IllIIllIllIllII)
+- Stop the **iPad** tab bar covering page titles and the Search tab's search field on Liquid Glass; titles and search fields now get their own row below the tabs (#1314: @IllIIllIllIllII)
+  - **Move Tab Bar to Bottom** is now **Tab Bar Position** (Interface → Tab Bar, Top by default), and the tabs keep their text labels in either position
+- Reduce post and comment text and icons blanking out on **Mac** when you switch to or away from Apollo (#1301: @Thetromboneman1)
+
 ## [v3.8.5] - 2026-09-29
 
 ### Features
@@ -993,6 +1082,7 @@ There are currently a few limitations:
 ## [v1.0.0] - 2023-10-13
 - Initial release
 
+[v3.9.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.8.5...v1.15.11_3.9.0
 [v3.8.5]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.8.0...v1.15.11_3.8.5
 [v3.8.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.7.1...v1.15.11_3.8.0
 [v3.7.1]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.7.0...v1.15.11_3.7.1

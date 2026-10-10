@@ -24,6 +24,7 @@
 
 #import "ApolloAccountCredentials.h"
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloState.h"
 #import "ApolloTagFilters.h"
 #import "ApolloWebJSON.h"
@@ -32,6 +33,7 @@
 #import "Tweak.h"
 #import "UIWindow+Apollo.h"
 #import "UserDefaultConstants.h"
+#import "ApolloClasses.h"
 
 extern NSString *const ApolloTagFiltersChangedNotification;
 
@@ -60,23 +62,10 @@ static const void *kApolloTagAppliedLinkKey = &kApolloTagAppliedLinkKey;  // NSV
 static const void *kApolloTagOverlayKindKey = &kApolloTagOverlayKindKey;  // NSString on overlay: @"title" or @"media"
 static const void *kApolloTagNativeObscuredKey = &kApolloTagNativeObscuredKey; // NSNumber BOOL: Apollo's native obscured overlay was seen for this cell+link
 
-static id ApolloTagIvarValueByName(id obj, const char *name) {
-    if (!obj || !name) return nil;
-    Class cls = object_getClass(obj);
-    while (cls) {
-        Ivar ivar = class_getInstanceVariable(cls, name);
-        if (ivar) {
-            return object_getIvar(obj, ivar);
-        }
-        cls = class_getSuperclass(cls);
-    }
-    return nil;
-}
-
 static RDKLink *ApolloTagLinkFromCell(id cell) {
     if (!cell) return nil;
-    id v = ApolloTagIvarValueByName(cell, "link");
-    if ([v isMemberOfClass:objc_getClass("RDKLink")]) return (RDKLink *)v;
+    id v = ApolloObjectIvar(cell, "link");
+    if ([v isMemberOfClass:ApolloClassRDKLink]) return (RDKLink *)v;
     return nil;
 }
 
@@ -168,7 +157,7 @@ static UIView *ApolloTagViewForNode(id node) {
 
 // Returns the title subnode's view, if loaded and visible.
 static UIView *ApolloTagTitleViewForCell(id cell) {
-    id node = ApolloTagIvarValueByName(cell, "titleNode");
+    id node = ApolloObjectIvar(cell, "titleNode");
     UIView *v = ApolloTagViewForNode(node);
     if (v && !v.isHidden && v.bounds.size.width > 4 && v.bounds.size.height > 4) return v;
     return nil;
@@ -179,10 +168,10 @@ static UIView *ApolloTagTitleViewForCell(id cell) {
 // richMediaNode-bearing ivars first, then falls back to thumbnailNode.
 static UIView *ApolloTagMediaViewForCell(id cell, id *outRichMediaNode) {
     if (outRichMediaNode) *outRichMediaNode = nil;
-    id richMedia = ApolloTagIvarValueByName(cell, "richMediaNode");
+    id richMedia = ApolloObjectIvar(cell, "richMediaNode");
     if (!richMedia) {
-        id cross = ApolloTagIvarValueByName(cell, "crosspostNode");
-        if (cross) richMedia = ApolloTagIvarValueByName(cross, "richMediaNode");
+        id cross = ApolloObjectIvar(cell, "crosspostNode");
+        if (cross) richMedia = ApolloObjectIvar(cross, "richMediaNode");
     }
     if (richMedia) {
         UIView *v = ApolloTagViewForNode(richMedia);
@@ -192,7 +181,7 @@ static UIView *ApolloTagMediaViewForCell(id cell, id *outRichMediaNode) {
         }
     }
     // Large Thumbnails / link-card variants: media lives on thumbnailNode.
-    id thumb = ApolloTagIvarValueByName(cell, "thumbnailNode");
+    id thumb = ApolloObjectIvar(cell, "thumbnailNode");
     UIView *tv = ApolloTagViewForNode(thumb);
     if (tv && !tv.isHidden && tv.bounds.size.width > 4 && tv.bounds.size.height > 4) {
         return tv;
@@ -205,7 +194,7 @@ static UIView *ApolloTagMediaViewForCell(id cell, id *outRichMediaNode) {
 // hosted video / GIF posts.
 static BOOL ApolloTagMediaIsVideo(id richMediaNode) {
     if (!richMediaNode) return NO;
-    id vn = ApolloTagIvarValueByName(richMediaNode, "videoNode");
+    id vn = ApolloObjectIvar(richMediaNode, "videoNode");
     return vn != nil;
 }
 
@@ -513,7 +502,7 @@ static BOOL ApolloTagNativeWillBlurNSFW(BOOL isNSFW) {
 // user reveal.)
 static BOOL ApolloTagMediaNativelyObscured(id cell, id richMediaNode, BOOL latchTrusted) {
     id overlay = richMediaNode
-        ? ApolloTagIvarValueByName(richMediaNode, "obscuredContentInfoOverlayNode") : nil;
+        ? ApolloObjectIvar(richMediaNode, "obscuredContentInfoOverlayNode") : nil;
     if (!latchTrusted) {
         objc_setAssociatedObject(cell, kApolloTagNativeObscuredKey, nil,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -533,7 +522,7 @@ static NSArray<NSDictionary *> *ApolloTagBlurEntriesForCell(id cell, RDKLink *li
     UIView *cellView = ApolloTagCellView(cell);
     if (!cellView || cellView.bounds.size.width < 8 || cellView.bounds.size.height < 8) return @[];
 
-    Class compactCls = objc_getClass("_TtC6Apollo19CompactPostCellNode");
+    Class compactCls = ApolloClassCompactPostCellNode;
     BOOL isCompact = compactCls && [cell isKindOfClass:compactCls];
 
     NSMutableArray<NSDictionary *> *entries = [NSMutableArray array];
@@ -552,7 +541,7 @@ static NSArray<NSDictionary *> *ApolloTagBlurEntriesForCell(id cell, RDKLink *li
         for (NSString *name in @[@"thumbnailNode", @"titleNode"]) {
             BOOL isTitle = [name isEqualToString:@"titleNode"];
             if (!isTitle && skipCompactThumb) continue;
-            id node = ApolloTagIvarValueByName(cell, name.UTF8String);
+            id node = ApolloObjectIvar(cell, name.UTF8String);
             UIView *v = ApolloTagViewForNode(node);
             if (v && !v.isHidden && v.bounds.size.width > 4 && v.bounds.size.height > 4) {
                 CGRect f = [v.superview convertRect:v.frame toView:cellView];
@@ -682,7 +671,7 @@ static void ApolloTagInstallBlurOverlay(id cell, RDKLink *link) {
     }
 
     // Suppress kinds the user has already individually revealed.
-    NSSet<NSString *> *revealedKinds = [ApolloTagRevealedKindsForCell(cell, NO) copy] ?: [NSSet set];
+    NSSet<NSString *> *revealedKinds = ApolloTagRevealedKindsForCell(cell, NO);
     if (revealedKinds.count > 0) {
         NSMutableArray<NSDictionary *> *filtered = [NSMutableArray arrayWithCapacity:entries.count];
         for (NSDictionary *e in entries) {
@@ -766,8 +755,7 @@ static void ApolloTagApplyDecisionToCell(id cell) {
         if (objc_getAssociatedObject(cell, kApolloTagOverlaysKey) ||
             objc_getAssociatedObject(cell, kApolloTagDecisionKey)) {
             objc_setAssociatedObject(cell, kApolloTagDecisionKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            UIView *cellView = ApolloTagCellView(cell);
-            if (cellView) cellView.hidden = NO;
+            ApolloTagCellView(cell).hidden = NO;
             ApolloTagRemoveBlurOverlay(cell);
         }
         return;
@@ -789,12 +777,10 @@ static void ApolloTagApplyDecisionToCell(id cell) {
 
     objc_setAssociatedObject(cell, kApolloTagDecisionKey, decision, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    UIView *cellView = ApolloTagCellView(cell);
+    ApolloTagCellView(cell).hidden = NO;
     if ([decision isEqualToString:@"blur"]) {
-        if (cellView) cellView.hidden = NO;
         ApolloTagInstallBlurOverlay(cell, link);
     } else {
-        if (cellView) cellView.hidden = NO;
         ApolloTagRemoveBlurOverlay(cell);
     }
 }
@@ -808,12 +794,7 @@ static UIViewController *ApolloTagPresenterForCell(id cell) {
         if (vc) return vc;
     } @catch (__unused id e) {}
     UIView *view = ApolloTagCellView(cell);
-    UIWindow *window = view.window;
-    if (!window) {
-        for (UIWindow *w in ApolloAllWindows()) {
-            if (w.isKeyWindow) { window = w; break; }
-        }
-    }
+    UIWindow *window = view.window ?: ApolloKeyWindow();
     return [window visibleViewController];
 }
 
@@ -890,9 +871,51 @@ static void ApolloTagPresentConfirmAlertForOverlay(id cell, UIVisualEffectView *
 // animated one, the recreated headers then glide their labels into place from
 // the previous frame instead of just appearing (issue #919). Reloading a table
 // that cannot contain a post cell was never doing anything for this feature.
+//
+// Being an ASTableView is not enough either. A table needs this refresh when
+// it shows a post cell (this file's hooks, plus Apollo's own obscuring), or
+// when it is a comment thread: Apollo obscures a thread's header itself
+// (CommentsHeaderCellNode / RichMediaHeaderCellNode read the account's
+// noProfanity) and CommentsViewController has no account-change handler, so
+// this walk is what redraws the header, wherever the thread is scrolled.
+//
+// Every other Texture list has to be left alone. Apollo's ListAdapter lists
+// keep their own record of the rows their table shows and update it by
+// diffing. On an account switch Apollo empties the Inbox's messages but leaves
+// its table alone, and the old rows stay up until the new account's first page
+// replaces them. This walk runs on every account switch. Its reloadData re-read
+// the emptied list behind the adapter's back, so the adapter's next diff (such
+// as a load-more page still in flight for the previous account) deleted rows
+// the table no longer had. UIKit threw "attempt to delete row 24 from section 0
+// which only contains 0 rows before the update" (#1374; #865 was the same
+// crash). The Inbox shows no post cell, so there is nothing to redraw there.
+static UIViewController *ApolloTagTableOwner(UIView *tableView) {
+    for (UIResponder *responder = tableView.nextResponder; responder; responder = responder.nextResponder) {
+        if ([responder isKindOfClass:[UIViewController class]]) return (UIViewController *)responder;
+    }
+    return nil;
+}
+
+static BOOL ApolloTagTableNeedsRefresh(UITableView *tableView, UIViewController *owner) {
+    if (ApolloClassCommentsViewController && [owner isKindOfClass:ApolloClassCommentsViewController]) return YES;
+    id tableNode = ApolloSendObject(tableView, @selector(tableNode));
+    // A Texture without these calls can't be checked, so refresh as before.
+    if (![tableNode respondsToSelector:@selector(visibleNodes)]) return YES;
+    // Texture tracks this list itself (the cells UIKit reported on screen), so
+    // reading it doesn't make UIKit lay out cells.
+    NSArray *nodes = ApolloSendObject(tableNode, @selector(visibleNodes));
+    for (id node in nodes) {
+        if ((ApolloClassLargePostCellNode && [node isKindOfClass:ApolloClassLargePostCellNode]) ||
+            (ApolloClassCompactPostCellNode && [node isKindOfClass:ApolloClassCompactPostCellNode])) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
 static void ApolloTagRefreshAllVisibleCells(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        Class postTableClass = objc_getClass("ASTableView");
+        Class postTableClass = ApolloClassASTableView;
         void (^__block walk)(UIView *) = nil;
         void (^localWalk)(UIView *) = ^(UIView *root) {
             BOOL hostsPostCells = postTableClass ? [root isKindOfClass:postTableClass]
@@ -902,7 +925,13 @@ static void ApolloTagRefreshAllVisibleCells(void) {
                                                  : [root isKindOfClass:[UITableView class]];
             if (hostsPostCells) {
                 UITableView *tv = (UITableView *)root;
-                @try { [tv reloadData]; } @catch (__unused id e) {}
+                UIViewController *owner = ApolloTagTableOwner(tv);
+                if (!ApolloTagTableNeedsRefresh(tv, owner)) {
+                    ApolloLog(@"[TagFilters] Refresh left %@ alone: no post cell on screen, not a comment thread",
+                              NSStringFromClass(owner ? [owner class] : [tv class]));
+                } else {
+                    @try { [tv reloadData]; } @catch (__unused id e) {}
+                }
             }
             for (UIView *sub in root.subviews) walk(sub);
         };

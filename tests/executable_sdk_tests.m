@@ -78,6 +78,15 @@ static uint32_t OldFirstExecutableSDK(void) {
     return header ? ApolloSDKVersionFromMachO(header, sizeof(*header) + header->sizeofcmds) : 0;
 }
 
+static void TestGlassCompatibilityEligibility(void) {
+    Check(!ApolloSDKSupportsLiquidGlassCompatibility(0x00100000, true), @"standard build cannot toggle into glass");
+    Check(!ApolloSDKSupportsLiquidGlassCompatibility(0x00130000, false), @"older OS cannot toggle glass");
+    Check(ApolloSDKSupportsLiquidGlassCompatibility(0x00130000, true), @"SDK 19 glass patch supports classic mode");
+    Check(ApolloSDKSupportsLiquidGlassCompatibility(0x001A0600, true), @"SDK 26 supports classic mode");
+    Check(!ApolloSDKSupportsLiquidGlassCompatibility(0x001B0000, true), @"SDK 27 ignores compatibility and must not offer toggle");
+    Check(!ApolloSDKSupportsLiquidGlassCompatibility(0x001C0000, true), @"future SDK cannot promise compatibility");
+}
+
 static void TestImageSelection(void) {
     SDKFixture host = Fixture(0x001A0000, PLATFORM_IOS, MH_EXECUTE);
     SDKFixture guest = Fixture(0x00100000, PLATFORM_IOS, MH_DYLIB);
@@ -90,6 +99,7 @@ static void TestImageSelection(void) {
     Check(ApolloSDKEnablesLiquidGlass(OldFirstExecutableSDK(), true),
           @"old first-executable detector reproduces false glass for a classic hosted guest");
     Check(GetLinkedSDKVersion() == guest.build.sdk, @"hosted guest is selected despite MH_DYLIB filetype");
+    Check(ApolloNativeImageHeader()->filetype == MH_DYLIB, @"hosted guest remains identifiable for launch-mode eligibility");
     Check(!ApolloSDKEnablesLiquidGlass(GetLinkedSDKVersion(), true),
           @"standard, noext and glass-icons guests retain classic chrome under a glass-linked host");
     Check(!ApolloSDKEnablesLiquidGlass(GetLinkedSDKVersion(), false), @"classic guest stays classic on iOS 18");
@@ -210,6 +220,7 @@ static void TestLoadCommands(void) {
 
 int main(void) {
     @autoreleasepool {
+        TestGlassCompatibilityEligibility();
         TestImageSelection();
         TestLoadCommands();
         printf("PASS: %u executable SDK and Liquid Glass checks\n", checks);

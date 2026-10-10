@@ -10,6 +10,8 @@
 #import <Photos/Photos.h>
 #import <AVFoundation/AVFoundation.h>
 #import <objc/message.h>
+#import <objc/runtime.h>
+#import "ApolloClasses.h"
 
 // Pages either side of the current one kept warm with their FULL-SIZE image.
 // Deliberately shallow — full-res warm-up is the expensive kind of prefetch on
@@ -36,15 +38,6 @@ static NSString *const kApolloGalleryViewerCellID = @"ApolloGalleryViewerCell";
 // issue #1000). Everything else about the page is unchanged: it is still a
 // UIImageView, so contentMode, `image`, and the zoom geometry all behave.
 // Resolved once; a nil result means GIFs fall back to their poster frame.
-static Class ApolloGalleryPageImageViewClass(void) {
-    static Class viewClass;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        viewClass = NSClassFromString(@"FLAnimatedImageView") ?: UIImageView.class;
-    });
-    return viewClass;
-}
-
 // FLAnimatedImageView goes on animating whatever it was last handed until the
 // animation is cleared explicitly — its -setImage: only clears it when the new
 // image is non-nil, so `imageView.image = nil` on a recycled cell would leave
@@ -83,7 +76,7 @@ static void ApolloGalleryViewerActivateAudioSession(void) {
     AVAudioSession *session = [AVAudioSession sharedInstance];
     NSError *error = nil;
     if (![session setCategory:AVAudioSessionCategoryPlayback error:&error]) {
-        ApolloLog(@"[Gallery] audio session category failed: %@", error.localizedDescription);
+        ApolloLogError(@"[Gallery] audio session category failed: %@", error.localizedDescription);
         return;
     }
     [session setActive:YES error:NULL];
@@ -144,16 +137,14 @@ static void ApolloGalleryViewerActivateAudioSession(void) {
         // Panning is only meaningful once zoomed in; while at 1x the paging
         // scroll view and the dismiss gesture own the touch.
         _zoomView.panGestureRecognizer.enabled = NO;
-        if (@available(iOS 11.0, *)) {
-            _zoomView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
-        }
+        _zoomView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
         [self.contentView addSubview:_zoomView];
 
         _mediaContainerView = [[UIView alloc] initWithFrame:_zoomView.bounds];
         _mediaContainerView.backgroundColor = UIColor.blackColor;
         [_zoomView addSubview:_mediaContainerView];
 
-        _imageView = [[ApolloGalleryPageImageViewClass() alloc] initWithFrame:_mediaContainerView.bounds];
+        _imageView = [[(ApolloClassFLAnimatedImageView ?: UIImageView.class) alloc] initWithFrame:_mediaContainerView.bounds];
         _imageView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         _imageView.contentMode = UIViewContentModeScaleAspectFit;
         _imageView.backgroundColor = UIColor.blackColor;
@@ -458,7 +449,7 @@ static ApolloGalleryChromePillView *ApolloGalleryChromePill(UIView *content, CGF
     ApolloGalleryChromePillView *pill = [[ApolloGalleryChromePillView alloc] initWithFrame:CGRectZero];
     pill.clipsToBounds = YES;
 
-    Class glassClass = NSClassFromString(@"UIGlassEffect");
+    Class glassClass = ApolloClassUIGlassEffect;
     if (IsLiquidGlass() && glassClass) {
         pill.backgroundColor = UIColor.clearColor;
         id effect = [[glassClass alloc] init];
@@ -700,9 +691,7 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
     self.collectionView.backgroundColor = UIColor.blackColor;
     self.collectionView.showsHorizontalScrollIndicator = NO;
     self.collectionView.alwaysBounceVertical = NO;
-    if (@available(iOS 11.0, *)) {
-        self.collectionView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
-    }
+    self.collectionView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
     [self.collectionView registerClass:[ApolloGalleryViewerCell class] forCellWithReuseIdentifier:kApolloGalleryViewerCellID];
     [self.view addSubview:self.collectionView];
 
@@ -876,7 +865,7 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
     self.infoPanel.layer.cornerCurve = kCACornerCurveContinuous;
     self.infoPanel.clipsToBounds = YES;
     {
-        Class glassClass = NSClassFromString(@"UIGlassEffect");
+        Class glassClass = ApolloClassUIGlassEffect;
         if (IsLiquidGlass() && glassClass) {
             self.infoPanel.backgroundColor = UIColor.clearColor;
             UIVisualEffectView *glass = [[UIVisualEffectView alloc] initWithEffect:[[glassClass alloc] init]];
@@ -968,11 +957,8 @@ static UIInterfaceOrientation ApolloGalleryInterfaceOrientationForDevice(UIDevic
 }
 
 - (UIInterfaceOrientation)apollo_currentInterfaceOrientation {
-    if (@available(iOS 13.0, *)) {
-        UIWindowScene *scene = self.view.window.windowScene;
-        if (scene) return scene.interfaceOrientation;
-    }
-    return UIInterfaceOrientationPortrait;
+    UIWindowScene *scene = self.view.window.windowScene;
+    return scene ? scene.interfaceOrientation : UIInterfaceOrientationPortrait;
 }
 
 // Debounced: a physical turn passes through several intermediate readings
@@ -1065,7 +1051,7 @@ static UIInterfaceOrientation ApolloGalleryInterfaceOrientationForDevice(UIDevic
         UIWindowSceneGeometryPreferencesIOS *preferences =
             [[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:mask];
         [scene requestGeometryUpdateWithPreferences:preferences errorHandler:^(NSError *error) {
-            ApolloLog(@"[Gallery] rotate request failed: %@", error.localizedDescription);
+            ApolloLogError(@"[Gallery] rotate request failed: %@", error.localizedDescription);
         }];
     }
 }
@@ -2188,7 +2174,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
                 if (success) {
                     [weakSelf apollo_showToast:@"Saved"];
                 } else {
-                    ApolloLog(@"[Gallery] save failed: %@", error.localizedDescription);
+                    ApolloLogError(@"[Gallery] save failed: %@", error.localizedDescription);
                     [weakSelf apollo_showToast:@"Save failed"];
                 }
             });

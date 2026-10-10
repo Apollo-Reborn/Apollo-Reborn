@@ -1,12 +1,13 @@
 #import "ApolloWebAuthViewController.h"
 #import "ApolloManualSignInViewController.h"
+#import "ApolloWebAuthPopupViewController.h"
 #import "ApolloWebSessionLoginViewController.h"
 #import "ApolloState.h"
 #import "ApolloCommon.h"
 
 #import <WebKit/WebKit.h>
 
-@interface ApolloWebAuthViewController () <WKNavigationDelegate>
+@interface ApolloWebAuthViewController () <WKNavigationDelegate, WKUIDelegate>
 @property (nonatomic, strong) WKWebView *webView;
 @property (nonatomic, strong) UIActivityIndicatorView *spinner;
 @property (nonatomic, copy) NSURL *authURL;
@@ -67,6 +68,7 @@
     self.webView = [[WKWebView alloc] initWithFrame:self.view.bounds configuration:config];
     self.webView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     self.webView.navigationDelegate = self;
+    self.webView.UIDelegate = self;
     [self.view addSubview:self.webView];
 
     self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
@@ -266,9 +268,25 @@
     if (self.finished) return;
     self.finished = YES;
     ASWebAuthenticationSessionCompletionHandler completion = self.completion;
-    [self.navigationController dismissViewControllerAnimated:YES completion:^{
-        if (completion) completion(url, error);
-    }];
+    ApolloWebAuthClosePopups(self, ^{
+        [self.navigationController dismissViewControllerAnimated:YES completion:^{
+            if (completion) completion(url, error);
+        }];
+    });
+}
+
+#pragma mark - WKUIDelegate
+
+// "Continue with Google" and "Continue with Apple" open their sign-in page in a
+// popup window (#1342); see ApolloWebAuthPopupViewController.
+- (WKWebView *)webView:(WKWebView *)webView
+    createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration
+               forNavigationAction:(WKNavigationAction *)navigationAction
+                    windowFeatures:(WKWindowFeatures *)windowFeatures {
+    if (self.finished) return nil;
+    return [ApolloWebAuthPopupViewController presentPopupFromViewController:self
+                                                              configuration:configuration
+                                                           navigationAction:navigationAction];
 }
 
 #pragma mark - WKNavigationDelegate
@@ -390,14 +408,14 @@ decisionHandler:(void (^)(WKNavigationResponsePolicy))decisionHandler {
     // fired when decidePolicyForNavigationAction cancels a navigation — expected.
     if (error.code == NSURLErrorCancelled) return;
     if ([error.domain isEqualToString:@"WebKitErrorDomain"] && error.code == 102) return;
-    ApolloLog(@"[WebAuth] Provisional navigation failed: %@", error);
+    ApolloLogError(@"[WebAuth] Provisional navigation failed: %@", error);
     [self _finishWithURL:nil error:error];
 }
 
 - (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error {
     [self.spinner stopAnimating];
     if (error.code == NSURLErrorCancelled) return;
-    ApolloLog(@"[WebAuth] Navigation failed: %@", error);
+    ApolloLogError(@"[WebAuth] Navigation failed: %@", error);
     [self _finishWithURL:nil error:error];
 }
 

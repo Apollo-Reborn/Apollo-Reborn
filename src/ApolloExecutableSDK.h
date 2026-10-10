@@ -63,4 +63,12 @@ static inline bool ApolloSDKEnablesLiquidGlass(uint32_t sdk, bool glassRuntime) 
     return glassRuntime && (sdk >> 16) >= 19;
 }
 
+// Apple ignores UIDesignRequiresCompatibility for executables linked with
+// SDK 27+. The released glass patch stamps SDK 19 (the original iOS 26
+// encoding); SDK 26 is supported too. Do not offer a switch that UIKit would
+// ignore if a future packager raises the executable's SDK again.
+static inline bool ApolloSDKSupportsLiquidGlassCompatibility(uint32_t sdk, bool glassRuntime) {
+    return ApolloSDKEnablesLiquidGlass(sdk, glassRuntime) && (sdk >> 16) < 27;
+}
+
 #endif

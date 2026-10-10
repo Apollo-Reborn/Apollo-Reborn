@@ -89,7 +89,7 @@ static CGFloat const kBBIconGap     = 6.0;
 }
 
 - (UIColor *)apollo_accent {
-    return ApolloThemeAccentColor() ?: self.tintColor ?: [UIColor systemBlueColor];
+    return ApolloThemeAccentColor() ?: self.tintColor;
 }
 
 - (void)apollo_applyAccent {

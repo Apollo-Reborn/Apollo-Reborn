@@ -14,14 +14,16 @@
 
 #import <AVFoundation/AVFoundation.h>
 #import <objc/message.h>
+#import "ApolloClasses.h"
 
 // Target tile width. The column count is derived from it so the grid widens
 // sensibly on iPad and in landscape instead of stretching two huge columns.
-static CGFloat const kApolloGalleryTargetTileWidth = 185.0;
-static NSInteger const kApolloGalleryMinColumns = 2;
+static CGFloat const kApolloGalleryTileWidths[] = {128.0, 185.0, 260.0, 360.0};
+static NSString *const kApolloGalleryTileSizeKey = @"ApolloGalleryTileSize";
+static NSInteger const kApolloGalleryMinColumns = 1;
 // An enum, not a `static const NSInteger`: the waterfall layout sizes a
 // fixed-length C array with it, which needs a compile-time constant.
-enum { kApolloGalleryMaxColumns = 5 };
+enum { kApolloGalleryMaxColumns = 12, kApolloGalleryTileSizeCount = 4 };
 static CGFloat const kApolloGalleryTileSpacing = 3.0;
 // Aspect clamp: a 1:8 panorama would otherwise produce a tile taller than the
 // screen, and a very wide one collapses to a sliver.
@@ -163,15 +165,6 @@ static double const kApolloGalleryTilePeakBitRate = 1500000.0;
 // same memory-safe way the viewer plays it — compressed data plus a small
 // frame window, never every frame as a bitmap (issue #1000). Resolved once;
 // nil means GIF tiles without an mp4 transcode simply stay stills.
-static Class ApolloGalleryTileImageViewClass(void) {
-    static Class viewClass;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        viewClass = NSClassFromString(@"FLAnimatedImageView") ?: UIImageView.class;
-    });
-    return viewClass;
-}
-
 // FLAnimatedImageView keeps animating whatever it was last handed until the
 // animation is cleared explicitly (its -setImage: only clears it for a non-nil
 // image), so every change of what a tile shows goes through here.
@@ -228,7 +221,7 @@ static void *kApolloGalleryTileItemStatusContext = &kApolloGalleryTileItemStatus
         self.contentView.layer.cornerCurve = kCACornerCurveContinuous;
         self.contentView.backgroundColor = [UIColor colorWithWhite:0.5 alpha:0.14];
 
-        _imageView = [[ApolloGalleryTileImageViewClass() alloc] initWithFrame:self.contentView.bounds];
+        _imageView = [[(ApolloClassFLAnimatedImageView ?: UIImageView.class) alloc] initWithFrame:self.contentView.bounds];
         _imageView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         _imageView.contentMode = UIViewContentModeScaleAspectFill;
         _imageView.clipsToBounds = YES;
@@ -425,8 +418,7 @@ static void *kApolloGalleryTileItemStatusContext = &kApolloGalleryTileItemStatus
 - (void)apollo_startPlayerWithURL:(NSURL *)url {
     AVPlayerItem *playerItem = [AVPlayerItem playerItemWithURL:url];
     playerItem.preferredPeakBitRate = kApolloGalleryTilePeakBitRate;
-    CGFloat scale = self.traitCollection.displayScale > 0.0 ? self.traitCollection.displayScale
-                                                            : UIScreen.mainScreen.scale;
+    CGFloat scale = self.traitCollection.displayScale;
     CGSize size = self.contentView.bounds.size;
     if (size.width > 0.0 && size.height > 0.0) {
         playerItem.preferredMaximumResolution = CGSizeMake(size.width * scale, size.height * scale);
@@ -503,7 +495,7 @@ static void *kApolloGalleryTileItemStatusContext = &kApolloGalleryTileItemStatus
         typeof(self) strongSelf = weakSelf;
         // Reused or stopped meanwhile: the failure belongs to an old item.
         if (!strongSelf || strongSelf.observedPlayerItem != playerItem) return;
-        ApolloLog(@"[Gallery] tile stream failed to load (%@ %ld); keeping the poster",
+        ApolloLogError(@"[Gallery] tile stream failed to load (%@ %ld); keeping the poster",
                   error.domain, (long)error.code);
         [strongSelf stopPlayback];
     });
@@ -561,6 +553,9 @@ static void *kApolloGalleryTileItemStatusContext = &kApolloGalleryTileItemStatus
 @property (nonatomic, strong) UIRefreshControl *refreshControl;
 @property (nonatomic, weak, nullable) ApolloGalleryImageViewer *activeViewer;
 @property (nonatomic, strong, nullable) UIBarButtonItem *filterBarButtonItem;
+@property (nonatomic, strong) UIBarButtonItem *largerTilesItem;
+@property (nonatomic, strong) UIBarButtonItem *smallerTilesItem;
+@property (nonatomic) NSInteger tileSizeIndex;
 // YES from -apollo_beginInitialLoad until that batch reports back. Only its
 // completion stops the centre spinner and the refresh control and settles the
 // empty state, so whatever drops the batch first (a filter change — the feed
@@ -803,6 +798,8 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
     // 27 alike, in both orientations. Do not compensate the top inset again.
     self.title = @"Gallery";
     self.view.backgroundColor = self.gridBackgroundColor ?: UIColor.systemBackgroundColor;
+    NSNumber *savedTileSize = [NSUserDefaults.standardUserDefaults objectForKey:kApolloGalleryTileSizeKey];
+    self.tileSizeIndex = savedTileSize ? MAX(0, MIN(kApolloGalleryTileSizeCount - 1, savedTileSize.integerValue)) : 1;
 
     self.waterfallLayout = [[ApolloGalleryWaterfallLayout alloc] init];
     self.waterfallLayout.spacing = kApolloGalleryTileSpacing;
@@ -973,12 +970,42 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
         self.waterfallLayout.columnCount = columns;
         [self.waterfallLayout invalidateLayout];
     }
+
+    // UIKit installs Gallery's full-width bottom scroll-edge material after
+    // the collection view has already entered the window. Register that late
+    // effect after layout so Minimize can keep it hidden behind the compact pill.
+    ApolloApplyScrollEdgeEffectStyle(self.collectionView);
+}
+
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+    if (scrollView != self.collectionView ||
+        sTabBarHideStyle != ApolloTabBarHideStyleMinimize ||
+        ![[NSUserDefaults standardUserDefaults] boolForKey:UDKeyNativeHideBarsOnScroll]) return;
+
+    // The first drag can create a fresh edge-effect object after the layout
+    // pass above. Only revisit the shared styler while that late object is
+    // visible; after it is registered, the Minimize edge state filters subsequent
+    // UIKit visibility writes without doing work on every scroll callback.
+    SEL bottomSelector = NSSelectorFromString(@"bottomEdgeEffect");
+    id effect = [scrollView respondsToSelector:bottomSelector]
+        ? ((id (*)(id, SEL))objc_msgSend)(scrollView, bottomSelector)
+        : nil;
+    if ([effect respondsToSelector:@selector(isHidden)] &&
+        !((BOOL (*)(id, SEL))objc_msgSend)(effect, @selector(isHidden))) {
+        ApolloApplyScrollEdgeEffectStyle(scrollView);
+    }
 }
 
 - (NSInteger)apollo_columnCountForWidth:(CGFloat)width {
     if (width <= 0.0) return kApolloGalleryMinColumns;
-    NSInteger columns = (NSInteger)floor(width / kApolloGalleryTargetTileWidth);
-    return MAX(kApolloGalleryMinColumns, MIN(kApolloGalleryMaxColumns, columns));
+    NSInteger columns = (NSInteger)floor((width + kApolloGalleryTileSpacing) /
+        (kApolloGalleryTileWidths[self.tileSizeIndex] + kApolloGalleryTileSpacing));
+    // Preserve the familiar two-column default on narrow phones. The larger
+    // sizes may intentionally become one column; small windows never force
+    // two tiles below the 128pt lower bound.
+    NSInteger minimum = self.tileSizeIndex < 2 && width >= 2 * kApolloGalleryTileWidths[0] + kApolloGalleryTileSpacing
+        ? 2 : kApolloGalleryMinColumns;
+    return MAX(minimum, MIN(kApolloGalleryMaxColumns, columns));
 }
 
 // Rotation reshuffles the whole waterfall — a different column count and
@@ -989,18 +1016,15 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
 // that relative height (rather than snapping the anchor to the exact center)
 // is what makes portrait → landscape → portrait land back on the original
 // offset instead of drifting a little on every round trip.
-- (void)viewWillTransitionToSize:(CGSize)size
-       withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
-    [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
-
+- (NSIndexPath *)apollo_visibleAnchorRelativeCenter:(CGFloat *)relativeCenter {
     UICollectionView *collectionView = self.collectionView;
-    if (!collectionView || self.feed.items.count == 0) return;
+    if (!collectionView || self.feed.items.count == 0) return nil;
 
     UIEdgeInsets insets = collectionView.adjustedContentInset;
     CGFloat visibleTop = collectionView.contentOffset.y + insets.top;
     // Pinned at the top: leave the offset to UIKit so the grid stays flush
     // under the bar instead of anchoring partway into tile 0.
-    if (visibleTop <= 1.0) return;
+    if (visibleTop <= 1.0) return nil;
     CGFloat visibleHeight = MAX(collectionView.bounds.size.height - insets.top - insets.bottom, 1.0);
     CGFloat visibleCenter = visibleTop + visibleHeight / 2.0;
 
@@ -1023,10 +1047,17 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
             anchorRelative = (itemCenter - visibleTop) / visibleHeight;
         }
     }
-    if (!anchorPath) return;
+    if (relativeCenter) *relativeCenter = anchorRelative;
+    return anchorPath;
+}
 
-    NSIndexPath *path = anchorPath;
-    CGFloat relative = anchorRelative;
+- (void)viewWillTransitionToSize:(CGSize)size
+       withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
+    [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
+    CGFloat relative = 0.5;
+    NSIndexPath *path = [self apollo_visibleAnchorRelativeCenter:&relative];
+    if (!path) return;
+
     __weak typeof(self) weakSelf = self;
     [coordinator animateAlongsideTransition:^(id<UIViewControllerTransitionCoordinatorContext> context) {
         [weakSelf apollo_scrollToAnchorItem:path relativeCenter:relative forSize:size];
@@ -1180,6 +1211,33 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
 
 #pragma mark Sort
 
+- (void)apollo_updateTileSizeControls {
+    self.smallerTilesItem.enabled = self.tileSizeIndex > 0;
+    self.largerTilesItem.enabled = self.tileSizeIndex < kApolloGalleryTileSizeCount - 1;
+    NSString *value = [NSString stringWithFormat:@"Size %ld of %d", (long)self.tileSizeIndex + 1, kApolloGalleryTileSizeCount];
+    self.smallerTilesItem.accessibilityValue = value;
+    self.largerTilesItem.accessibilityValue = value;
+}
+
+- (void)apollo_changeTileSizeBy:(NSInteger)step {
+    NSInteger next = MAX(0, MIN(kApolloGalleryTileSizeCount - 1, self.tileSizeIndex + step));
+    if (next == self.tileSizeIndex) return;
+    CGFloat relative = 0.5;
+    NSIndexPath *anchor = [self apollo_visibleAnchorRelativeCenter:&relative];
+    self.tileSizeIndex = next;
+    [NSUserDefaults.standardUserDefaults setObject:@(next) forKey:kApolloGalleryTileSizeKey];
+    self.waterfallLayout.columnCount = [self apollo_columnCountForWidth:self.collectionView.bounds.size.width];
+    [self.waterfallLayout invalidateLayout];
+    [self.collectionView layoutIfNeeded];
+    if (anchor) [self apollo_scrollToAnchorItem:anchor relativeCenter:relative forSize:self.collectionView.bounds.size];
+    else [self.collectionView setContentOffset:CGPointMake(0, -self.collectionView.adjustedContentInset.top) animated:NO];
+    [self apollo_updateTileSizeControls];
+    [self apollo_refreshTilePlayback];
+}
+
+- (void)apollo_largerTiles { [self apollo_changeTileSizeBy:1]; }
+- (void)apollo_smallerTiles { [self apollo_changeTileSizeBy:-1]; }
+
 - (void)apollo_installNavigationButtons {
     UIBarButtonItem *sort = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"arrow.up.arrow.down"]
                                                              style:UIBarButtonItemStylePlain
@@ -1195,8 +1253,17 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
     self.filterBarButtonItem.accessibilityLabel = @"Filter media";
     self.filterBarButtonItem.menu = [self apollo_buildFilterMenu];
 
-    // Rightmost first in this array, so: [filter] [sort].
-    self.navigationItem.rightBarButtonItems = @[sort, self.filterBarButtonItem];
+    self.largerTilesItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"plus.magnifyingglass"]
+        style:UIBarButtonItemStylePlain target:self action:@selector(apollo_largerTiles)];
+    self.largerTilesItem.accessibilityLabel = @"Larger gallery tiles";
+    self.largerTilesItem.accessibilityIdentifier = @"ApolloGalleryLargerTiles";
+    self.smallerTilesItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"minus.magnifyingglass"]
+        style:UIBarButtonItemStylePlain target:self action:@selector(apollo_smallerTiles)];
+    self.smallerTilesItem.accessibilityLabel = @"Smaller gallery tiles";
+    self.smallerTilesItem.accessibilityIdentifier = @"ApolloGallerySmallerTiles";
+    // Rightmost first. The zoom pair changes post size without changing sort.
+    self.navigationItem.rightBarButtonItems = @[sort, self.filterBarButtonItem, self.largerTilesItem, self.smallerTilesItem];
+    [self apollo_updateTileSizeControls];
 }
 
 // A filled glyph while a filter is narrowing things down, so it's obvious at a
@@ -1638,7 +1705,7 @@ static void ApolloGalleryDebugRotate(CFNotificationCenterRef center, void *obser
                     initWithInterfaceOrientations:(portrait ? UIInterfaceOrientationMaskLandscapeRight
                                                             : UIInterfaceOrientationMaskPortrait)];
             [scene requestGeometryUpdateWithPreferences:preferences errorHandler:^(NSError *error) {
-                ApolloLog(@"[GalleryDebug] rotate failed: %@", error);
+                ApolloLogError(@"[GalleryDebug] rotate failed: %@", error);
             }];
             ApolloLog(@"[GalleryDebug] rotate -> %@", portrait ? @"landscape" : @"portrait");
         }

@@ -22,7 +22,7 @@ wrapper_line=$(grep -n -F 'return [^id {' "$test_source" | cut -d: -f1)
 [ -n "$wrapper_line" ] || fail 'profile node wrapper is missing'
 [ "$profile_lookup_line" -lt "$scope_guard_line" ] || fail 'scope guard must follow profile resolution'
 [ "$scope_guard_line" -lt "$wrapper_line" ] || fail 'scope guard must run before creating the wrapper block'
-grep -F 'UIViewController *owner = ApolloHiddenListAdapterController(adapter);' "$test_source" >/dev/null || \
+grep -F 'UIViewController *owner = ApolloReadSwiftWeakObjectIvar(adapter, "viewController");' "$test_source" >/dev/null || \
     fail 'ListAdapter weak owner is not the primary scope signal'
 grep -F 'return [owner isKindOfClass:profileClass] ? owner : nil;' "$test_source" >/dev/null || \
     fail 'attached non-profile adapters must fail closed'

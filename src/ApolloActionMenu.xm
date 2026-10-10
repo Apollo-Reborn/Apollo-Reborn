@@ -46,6 +46,7 @@
 
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import "ApolloClasses.h"
 
 #pragma mark - Registry
 
@@ -199,7 +200,7 @@ static BOOL ApolloActionMenuControllerIsModeratorOnly(id controller) {
 static char kApolloActionMenuControllerContextKey;
 
 void ApolloActionMenuCaptureContextForController(id controller) {
-    if (![controller isKindOfClass:objc_getClass("_TtC6Apollo16ActionController")]) return;
+    if (![controller isKindOfClass:ApolloClassActionController]) return;
     if (objc_getAssociatedObject(controller, &kApolloActionMenuControllerContextKey)) return;
     ApolloActionMenuContext context = ApolloActionMenuTakeArmedContext();
     if (!context) return;
@@ -487,13 +488,11 @@ static ApolloActionMenuSlotState *ApolloActionMenuSlotsForController(id controll
     }
     NSMutableArray<ApolloActionMenuSpec *> *matched = [NSMutableArray array];
     for (ApolloActionMenuSpec *spec in sApolloActionMenuRegistry) {
-        BOOL (^matches)(id, NSString *) = spec.matches;
-        if (!matches) continue;
         BOOL specMatches = NO;
         @try {
-            specMatches = matches(controller, menuTitle);
+            specMatches = spec.matches(controller, menuTitle);
         } @catch (NSException *exception) {
-            ApolloLog(@"[ActionMenu] spec '%@' matches: threw %@", spec.identifier, exception);
+            ApolloLogError(@"[ActionMenu] spec '%@' matches: threw %@", spec.identifier, exception);
         }
         if (!specMatches) continue;
         NSString *specItemID = ApolloActionMenuItemIDForSpec(spec.identifier);
@@ -835,7 +834,7 @@ void ApolloActionMenuInjectMenuElements(NSMutableArray<UIMenuElement *> *childre
                                                     image:image
                                                identifier:nil
                                                   handler:^(__unused __kindof UIAction *sender) {
-                if (perform) perform(actionController);
+                perform(actionController);
             }];
 
             UIMenuElement *element = action;
@@ -855,7 +854,7 @@ void ApolloActionMenuInjectMenuElements(NSMutableArray<UIMenuElement *> *childre
             }
             [children insertObject:element atIndex:MIN(index, children.count)];
         } @catch (NSException *exception) {
-            ApolloLog(@"[ActionMenu] spec '%@' build threw: %@", spec.identifier, exception);
+            ApolloLogError(@"[ActionMenu] spec '%@' build threw: %@", spec.identifier, exception);
         }
     }
 }
@@ -921,7 +920,7 @@ UIMenu *ApolloActionMenuApplyLayoutToContextMenu(UIMenu *menu, NSString *context
     @try {
         return ApolloActionMenuLayoutContextMenu(menu, context);
     } @catch (NSException *exception) {
-        ApolloLog(@"[ActionMenu] long-press %@ layout threw %@ — showing Apollo's menu", context, exception.name);
+        ApolloLogError(@"[ActionMenu] long-press %@ layout threw %@ — showing Apollo's menu", context, exception.name);
         return menu;
     }
 }
@@ -963,7 +962,7 @@ static UIMenu *ApolloActionMenuLayoutContextMenu(UIMenu *menu, ApolloActionMenuC
     // Hidden rows go. Then, under a saved order, the catalogued rows are
     // sorted by it and dealt back into the slots catalogued rows occupied, so
     // a row this context doesn't know keeps Apollo's position — the comments
-    // header's Moderator row stays first and Remind Me In… last.
+    // header's Moderator row stays first.
     NSSet<NSString *> *hidden = ApolloActionMenuHiddenItemIDs(context);
     NSMutableArray<UIMenuElement *> *kept = [NSMutableArray arrayWithCapacity:children.count];
     NSMutableArray *keptIDs = [NSMutableArray arrayWithCapacity:children.count];
@@ -1019,9 +1018,7 @@ static UIMenu *ApolloActionMenuLayoutContextMenu(UIMenu *menu, ApolloActionMenuC
     return [menu menuByReplacingChildren:result];
 }
 
-#pragma mark - Legacy path: the single table/geometry owner
-
-#pragma mark - Injected-row tap dispatch
+#pragma mark - Legacy path: injected-row tap dispatch
 
 // The spec behind `indexPath`, or nil when the row is native or was appended
 // by someone else (a third-party tweak stacking its own row after ours).
@@ -1053,14 +1050,16 @@ static void ApolloActionMenuPerformSpec(id controller, UITableView *tableView,
         [cell setHighlighted:NO animated:YES];
     }
 
-    __strong id strongSelf = controller;
+    // `controller` is a strong parameter here, so the completion block keeps
+    // the sheet alive until perform runs. ApolloActionMenuRegister guarantees
+    // every spec has a perform block.
     void (^perform)(id) = spec.perform;
     if (spec.legacyDismissesSheet) {
         [(UIViewController *)controller dismissViewControllerAnimated:YES completion:^{
-            if (perform) perform(strongSelf);
+            perform(controller);
         }];
-    } else if (perform) {
-        perform(strongSelf);
+    } else {
+        perform(controller);
     }
 }
 
@@ -1089,7 +1088,7 @@ static ApolloActionMenuWillSelectIMP sApolloActionMenuOrigWillSelect = NULL;
 // The native kind at a row of the (already permuted) actions buffer.
 static uint16_t ApolloActionMenuNativeKindAtRow(id controller, NSInteger row) {
     void *buffer = ApolloReadRawIvar(controller, "actions");
-    int64_t count = buffer ? ApolloSwiftArrayCount(buffer) : 0;
+    int64_t count = ApolloSwiftArrayCount(buffer);
     if (row < 0 || row >= count) return UINT16_MAX;
     return *(uint16_t *)((uint8_t *)buffer + kApolloActionMenuNativeElementsOffset
                          + (NSUInteger)row * kApolloActionMenuNativeElementStride);
@@ -1113,7 +1112,7 @@ static NSIndexPath *ApolloActionMenuWillSelectRow(id self, SEL _cmd, UITableView
 }
 
 static void ApolloActionMenuInstallWillSelect(void) {
-    Class cls = objc_getClass("_TtC6Apollo16ActionController");
+    Class cls = ApolloClassActionController;
     if (!cls) {
         ApolloLog(@"[ActionMenu] ActionController class missing — willSelect dispatch not installed");
         return;
@@ -1129,7 +1128,7 @@ static void ApolloActionMenuInstallWillSelect(void) {
     if (class_addMethod(cls, sel, (IMP)ApolloActionMenuWillSelectRow, method_getTypeEncoding(existing))) {
         sApolloActionMenuOrigWillSelect = (ApolloActionMenuWillSelectIMP)method_getImplementation(existing); // inherited
     } else {
-        sApolloActionMenuOrigWillSelect = (ApolloActionMenuWillSelectIMP)method_setImplementation(existing, (IMP)ApolloActionMenuWillSelectRow); // own
+        sApolloActionMenuOrigWillSelect = (ApolloActionMenuWillSelectIMP)ApolloSetMethodImplementation(cls, existing, (IMP)ApolloActionMenuWillSelectRow); // own
     }
     ApolloLog(@"[ActionMenu] willSelectRowAtIndexPath: wrapped an existing implementation on ActionController");
 }

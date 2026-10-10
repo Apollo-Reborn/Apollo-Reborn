@@ -2,8 +2,13 @@
 
 // Extracted from Apollo's Action enum title and icon switch tables.
 // Regenerate from the binary if Apollo's actionKind values change.
+// Index 2 is filled in by hand: the extraction recorded an empty title for
+// Remind Me In… and Apollo's sheet buffer carries none either, so the glass
+// ••• renderer dropped Apollo's reminder row and the long-press title match
+// couldn't see it. The wording is what Apollo's classic sheet and its
+// long-press menus show.
 static NSString *const kApolloNativeActionDefaultTitles[] = {
-    @"Translate", @"Crosspost", @"", @"Upvote",
+    @"Translate", @"Crosspost", @"Remind Me In…", @"Upvote",
     @"Undo Upvote", @"Downvote", @"Undo Downvote", @"Save",
     @"Saved Category", @"All", @"Add Category", @"Unsave",
     @"Reply", @"Collapse", @"Collapse to Top", @"Share",

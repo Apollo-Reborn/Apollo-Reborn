@@ -8,6 +8,7 @@
 #import "ApolloThemeRuntime.h"
 #import "UserDefaultConstants.h"
 #import "settings/ApolloSettingsTableViewController.h"
+#import "settings/TranslationSettingsViewController.h"
 
 #import <math.h>
 #import <QuartzCore/QuartzCore.h>
@@ -1091,6 +1092,21 @@ static void ApolloAIConfigureHeaderTextField(UITextField *field) {
         cell.selectionStyle = sEnableAISummaries ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
     };
 
+    // The language every summary is written in, whatever language the post,
+    // article or comments are in. Device Default follows the device language.
+    // Greyed with the master switch, like When Opening a Thread. Titled just
+    // "Language" (it sits under Summaries) so "Device Default (English)" fits
+    // at large text sizes.
+    ApolloSettingsRow *summaryLanguage =
+        [ApolloSettingsRow valueRowWithID:@"summaryLanguage"
+                                    title:@"Language"
+                                   detail:^NSString * { return [weakSelf summaryLanguageDetailText]; }
+                                 onSelect:^{
+            if (!sEnableAISummaries) return;
+            [weakSelf presentSummaryLanguagePicker];
+        }];
+    summaryLanguage.configure = summaryMode.configure;
+
     // Which backend generates summaries. Apple runs on-device; the cloud
     // providers post the text to a third-party API under the user's own key.
     ApolloSettingsRow *provider =
@@ -1253,8 +1269,8 @@ static void ApolloAIConfigureHeaderTextField(UITextField *field) {
                                            rows:@[ provider, providerKey, providerModel, providerModels, providerBaseURL ]],
         customHeaders,
         [ApolloSettingsSection sectionWithTitle:@"Summaries"
-                                         footer:@"Minimum Post Length only applies to text posts, not linked articles. Brief, Balanced and In-depth set how much detail a summary goes into.\n\nWhen Opening a Thread: Generate on Open prepares summaries in the background and keeps them collapsed until you tap. Open Automatically expands them on their own. Tap to Summarize only starts when you tap a summary card."
-                                           rows:@[ postSummaries, postThreshold, postDetail, commentSummaries, commentDetail, summaryMode ]],
+                                         footer:@"Minimum Post Length only applies to text posts, not linked articles. Brief, Balanced and In-depth set how much detail a summary goes into.\n\nWhen Opening a Thread: Generate on Open prepares summaries in the background and keeps them collapsed until you tap. Open Automatically expands them on their own. Tap to Summarize only starts when you tap a summary card.\n\nLanguage: summaries are written in this language, whatever language the post, article or comments are in. Device Default uses your device's language."
+                                           rows:@[ postSummaries, postThreshold, postDetail, commentSummaries, commentDetail, summaryMode, summaryLanguage ]],
         [ApolloSettingsSection sectionWithTitle:@"Availability"
                                          footer:availabilityFooter
                                            rows:@[ availability ]],
@@ -1267,7 +1283,7 @@ static void ApolloAIConfigureHeaderTextField(UITextField *field) {
 #pragma mark - Helpers
 
 - (NSInteger)modelAvailabilityStatus {
-    Class bridgeClass = NSClassFromString(@"ApolloFoundationModels");
+    Class bridgeClass = objc_getClass("ApolloFoundationModels");
     if (!bridgeClass || ![bridgeClass respondsToSelector:@selector(shared)]) return 4;
 
     ApolloFoundationModels *bridge = [(id)bridgeClass shared];
@@ -1574,6 +1590,7 @@ static void ApolloAIConfigureHeaderTextField(UITextField *field) {
     [self reloadRowWithID:@"commentSummaries"];
     [self reloadRowWithID:@"commentDetail"];
     [self reloadRowWithID:@"summaryMode"];
+    [self reloadRowWithID:@"summaryLanguage"];
 }
 
 #pragma mark - Detent sliders (post length + summary detail)
@@ -1732,6 +1749,67 @@ static void ApolloAIConfigureHeaderTextField(UITextField *field) {
                                 titles, [self currentSummaryMode], ^(NSInteger pickedIndex) {
         [weakSelf applySummaryMode:(ApolloAISummaryMode)pickedIndex];
     });
+}
+
+#pragma mark - Summary language
+
+// English name for a language identifier: Translation's name for its codes,
+// else the system's ("Chinese, Traditional" for a zh-Hant device).
+static NSString *ApolloAISettingsLanguageName(NSString *identifier) {
+    for (NSDictionary<NSString *, NSString *> *option in ApolloTranslationLanguageOptions()) {
+        if (option[@"code"].length > 0 && [option[@"code"] isEqualToString:identifier]) return option[@"name"];
+    }
+    return [[NSLocale localeWithLocaleIdentifier:@"en_US"] localizedStringForLocaleIdentifier:identifier] ?: identifier;
+}
+
+// "Device Default (English)", the picked language, or, when Apple's model
+// can't write the picked one (picked under a cloud provider), what summaries
+// actually use: "Greek (using English)".
+- (NSString *)summaryLanguageDetailText {
+    BOOL picked = NO;
+    NSString *inUse = ApolloAISummaryLanguage(&picked);
+    NSString *inUseName = inUse.length > 0 ? ApolloAISettingsLanguageName(inUse) : nil;
+    if (sAISummaryLanguage.length == 0) {
+        return inUseName ? [NSString stringWithFormat:@"Device Default (%@)", inUseName] : @"Device Default";
+    }
+    NSString *choiceName = ApolloAISettingsLanguageName(sAISummaryLanguage);
+    if (picked || !inUseName) return choiceName;
+    return [NSString stringWithFormat:@"%@ (using %@)", choiceName, inUseName];
+}
+
+// Translation's language list, narrowed to what Apple's on-device model writes
+// while Apple is the provider (cloud models write all of them). If the model
+// can't say (before iOS 26), the full list stays, like Translation's filter.
+- (void)presentSummaryLanguagePicker {
+    BOOL onDevice = !ApolloAIIsCloudProvider();
+    NSMutableArray<NSString *> *titles = [NSMutableArray array];
+    NSMutableArray<NSString *> *codes = [NSMutableArray array];
+    NSInteger currentIndex = -1;
+    for (NSDictionary<NSString *, NSString *> *option in ApolloTranslationLanguageOptions()) {
+        NSString *code = option[@"code"];
+        if (code.length > 0 && onDevice && !ApolloAIOnDeviceCanWrite(code)) continue;
+        if ([code isEqualToString:(sAISummaryLanguage ?: @"")]) currentIndex = (NSInteger)titles.count;
+        [titles addObject:option[@"name"]];
+        [codes addObject:code];
+    }
+    __weak __typeof(self) weakSelf = self;
+    ApolloSettingsPresentPicker(self, [self cellForRowID:@"summaryLanguage"], @"Summary Language",
+                                titles, currentIndex, ^(NSInteger pickedIndex) {
+        [weakSelf applySummaryLanguage:codes[(NSUInteger)pickedIndex]];
+    });
+}
+
+// Summaries already cached in another language regenerate the next time their
+// thread opens: the language is part of each summary's generation profile.
+// The row is updated in place, not with -reloadRowWithID:: a reload goes through
+// UIKit's post-update scroll restore, which moved this list ~160pt whenever the
+// top edge of the screen sat inside a section footer (see src/settings/README.md).
+- (void)applySummaryLanguage:(NSString *)code {
+    sAISummaryLanguage = code.length > 0 ? [code copy] : nil;
+    [[NSUserDefaults standardUserDefaults] setObject:(sAISummaryLanguage ?: @"") forKey:UDKeyAISummaryLanguage];
+    UITableViewCell *cell = [self cellForRowID:@"summaryLanguage"];
+    cell.detailTextLabel.text = [self summaryLanguageDetailText];
+    [cell setNeedsLayout];
 }
 
 #pragma mark - Actions

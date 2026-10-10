@@ -1,10 +1,12 @@
 #import "ApolloWebSessionLoginViewController.h"
+#import "ApolloWebAuthPopupViewController.h"
 #import "ApolloWebJSON.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloAccountCredentials.h"
 #import "ApolloState.h"
 #import "ApolloCommon.h"
 #import "UIWindow+Apollo.h"
+#import "ApolloReduceRateLimiting.h"
 #import "UserDefaultConstants.h"
 
 #import <WebKit/WebKit.h>
@@ -20,7 +22,7 @@
 // keeps them (Hydra's trick).
 static const NSTimeInterval kFarFutureCookieInterval = 10000.0 * 24 * 60 * 60;
 
-@interface ApolloWebSessionLoginViewController () <WKNavigationDelegate>
+@interface ApolloWebSessionLoginViewController () <WKNavigationDelegate, WKUIDelegate>
 @property (nonatomic, strong) WKWebView *webView;
 @property (nonatomic, strong) UIActivityIndicatorView *spinner;
 @property (nonatomic, copy) NSURL *loginURL;
@@ -124,20 +126,6 @@ static const NSTimeInterval kReharvestTimeout = 25.0;
 
 #pragma mark - Expired-session re-auth entry point
 
-+ (UIWindow *)_apolloKeyWindow {
-    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-        for (UIWindow *w in ((UIWindowScene *)scene).windows) {
-            if (w.isKeyWindow) return w;
-        }
-    }
-    UIScene *anyScene = UIApplication.sharedApplication.connectedScenes.anyObject;
-    if ([anyScene isKindOfClass:[UIWindowScene class]]) {
-        return ((UIWindowScene *)anyScene).windows.firstObject;
-    }
-    return nil;
-}
-
 + (void)presentExpiredSessionPromptForUsername:(NSString *)username {
     [self presentExpiredSessionPromptForUsername:username completion:nil];
 }
@@ -145,7 +133,7 @@ static const NSTimeInterval kReharvestTimeout = 25.0;
 + (void)presentExpiredSessionPromptForUsername:(NSString *)username
                                     completion:(void (^)(BOOL success))completion {
     completion = [completion copy];
-    UIViewController *top = [[self _apolloKeyWindow] visibleViewController];
+    UIViewController *top = [(ApolloKeyWindow() ?: ApolloAllWindows().firstObject) visibleViewController];
     if (!top) { if (completion) completion(NO); return; }
     // Already in the login flow (or some other modal we shouldn't interrupt).
     if ([top isMemberOfClass:[ApolloWebSessionLoginViewController class]]) {
@@ -170,7 +158,7 @@ static const NSTimeInterval kReharvestTimeout = 25.0;
             [ApolloWebSessionLoginViewController loginControllerForReauthenticationOfUsername:username];
         vc.authenticationCompletion = completion;
         UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
-        UIViewController *presenter = [[self _apolloKeyWindow] visibleViewController] ?: top;
+        UIViewController *presenter = [(ApolloKeyWindow() ?: ApolloAllWindows().firstObject) visibleViewController] ?: top;
         [presenter presentViewController:nav animated:YES completion:nil];
     }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"Later"
@@ -213,6 +201,7 @@ static const NSTimeInterval kReharvestTimeout = 25.0;
     self.webView = [[WKWebView alloc] initWithFrame:self.view.bounds configuration:config];
     self.webView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     self.webView.navigationDelegate = self;
+    self.webView.UIDelegate = self;
     [self.view addSubview:self.webView];
 
     self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
@@ -673,7 +662,29 @@ static void ApolloWebSessionHarvestFromCookieStore(WKHTTPCookieStore *cookieStor
     [self _dismissWithAuthenticationSuccess:NO];
 }
 
-// Called after a successful harvest. When an account was synthesized, Apollo must
+// Called after a successful harvest. A primary (API-Key-Free) sign-in first
+// gets the one-time Reduce Rate Limiting offer, then finishes as below.
+- (void)_finishWithUser:(NSString *)username accountSynthesized:(BOOL)synthesized {
+    // Reddit's smaller request budget starts to apply with an API-Key-Free
+    // sign-in. A targeted feature sign-in (requiredUsername: Chat/Modmail/Polls
+    // for an account that keeps its API key) doesn't change how that account
+    // reads, so it isn't asked.
+    if (self.requiredUsername.length == 0) {
+        __weak typeof(self) weakSelf = self;
+        // The offer is an alert from this sheet, so a Google/Apple popup still
+        // open above it closes first, as it does before "Signed In" below;
+        // otherwise the sheet looks busy and the offer is skipped.
+        ApolloWebAuthClosePopups(self, ^{
+            ApolloReduceRateLimitingOfferAtSignIn(self, ^{
+                [weakSelf _completeFinishWithUser:username accountSynthesized:synthesized];
+            });
+        });
+        return;
+    }
+    [self _completeFinishWithUser:username accountSynthesized:synthesized];
+}
+
+// The rest of a successful harvest. When an account was synthesized, Apollo must
 // relaunch for AccountManager to load it (it reads accounts once per launch), so
 // we prompt to quit & reopen — mirroring the settings-restore flow's exit(0).
 // iOS can't relaunch the app for us, so the copy says "quit & reopen", not
@@ -681,7 +692,7 @@ static void ApolloWebSessionHarvestFromCookieStore(WKHTTPCookieStore *cookieStor
 // Session Login settings row shows a "restart to activate" reminder rather than
 // leaving them with a silently-blank account tab. Otherwise (account already
 // present / synthesis skipped) just dismiss with no prompt.
-- (void)_finishWithUser:(NSString *)username accountSynthesized:(BOOL)synthesized {
+- (void)_completeFinishWithUser:(NSString *)username accountSynthesized:(BOOL)synthesized {
     if (!synthesized) {
         ApolloWebSessionEntry *entry = self.requiredUsername.length > 0
             ? ApolloWebSessionPollFor(username)
@@ -712,15 +723,19 @@ static void ApolloWebSessionHarvestFromCookieStore(WKHTTPCookieStore *cookieStor
         BOOL hasSession = ApolloWebSessionFor(username).cookieHeader.length > 0;
         [self _dismissWithAuthenticationSuccess:hasSession];
     }]];
-    [self presentViewController:alert animated:YES completion:nil];
+    ApolloWebAuthClosePopups(self, ^{
+        [self presentViewController:alert animated:YES completion:nil];
+    });
 }
 
 - (void)_dismissWithAuthenticationSuccess:(BOOL)success {
     void (^completion)(BOOL) = self.authenticationCompletion;
     self.authenticationCompletion = nil;
-    [self.navigationController dismissViewControllerAnimated:YES completion:^{
-        if (completion) completion(success);
-    }];
+    ApolloWebAuthClosePopups(self, ^{
+        [self.navigationController dismissViewControllerAnimated:YES completion:^{
+            if (completion) completion(success);
+        }];
+    });
 }
 
 #pragma mark - Opportunistic feature-session harvest (from OAuth)
@@ -828,6 +843,20 @@ static void ApolloWebSessionHarvestFromCookieStore(WKHTTPCookieStore *cookieStor
     });
 }
 
+#pragma mark - WKUIDelegate
+
+// "Continue with Google" and "Continue with Apple" open their sign-in page in a
+// popup window (#1342); see ApolloWebAuthPopupViewController.
+- (WKWebView *)webView:(WKWebView *)webView
+    createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration
+               forNavigationAction:(WKNavigationAction *)navigationAction
+                    windowFeatures:(WKWindowFeatures *)windowFeatures {
+    if (self.finished) return nil;
+    return [ApolloWebAuthPopupViewController presentPopupFromViewController:self
+                                                              configuration:configuration
+                                                           navigationAction:navigationAction];
+}
+
 #pragma mark - WKNavigationDelegate
 
 - (void)webView:(WKWebView *)webView
@@ -867,13 +896,13 @@ decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
     // decisionHandler cancels — expected, not failures.
     if (error.code == NSURLErrorCancelled) return;
     if ([error.domain isEqualToString:@"WebKitErrorDomain"] && error.code == 102) return;
-    ApolloLog(@"[WebJSON] Provisional navigation failed: %@", error);
+    ApolloLogError(@"[WebJSON] Provisional navigation failed: %@", error);
 }
 
 - (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error {
     [self.spinner stopAnimating];
     if (error.code == NSURLErrorCancelled) return;
-    ApolloLog(@"[WebJSON] Navigation failed: %@", error);
+    ApolloLogError(@"[WebJSON] Navigation failed: %@", error);
 }
 
 @end
@@ -932,12 +961,12 @@ decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
 }
 
 - (void)webView:(WKWebView *)webView didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
-    ApolloLog(@"[WebJSON] Silent re-harvest navigation failed for u/%@: %@", self.username, error.localizedDescription);
+    ApolloLogError(@"[WebJSON] Silent re-harvest navigation failed for u/%@: %@", self.username, error.localizedDescription);
     [self _finish:NO];
 }
 
 - (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error {
-    ApolloLog(@"[WebJSON] Silent re-harvest navigation failed for u/%@: %@", self.username, error.localizedDescription);
+    ApolloLogError(@"[WebJSON] Silent re-harvest navigation failed for u/%@: %@", self.username, error.localizedDescription);
     [self _finish:NO];
 }
 
@@ -1056,23 +1085,5 @@ void ApolloPresentSwitchToAPIKeyFlow(UIViewController *host, NSString *username,
     [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction *a) {
         if (completion) completion(NO);
     }]];
-    [host presentViewController:alert animated:YES completion:nil];
-}
-
-void ApolloPresentSwitchToKeylessFlow(UIViewController *host, NSString *username) {
-    if (username.length == 0) return;
-    UIAlertController *alert = [UIAlertController
-        alertControllerWithTitle:@"Sign In Without API Key?"
-                         message:[NSString stringWithFormat:@"You'll sign in to reddit.com as u/%@ in a web view. The account's stored API key stays saved but won't be used while the web session exists.", username]
-                  preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Continue" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
-        // The add-account variant clears the shared cookie jar first so the
-        // web view isn't pre-signed-in as some OTHER account — the user must
-        // authenticate as the account they're converting.
-        ApolloWebSessionLoginViewController *vc = [ApolloWebSessionLoginViewController loginControllerForAdditionalAccount];
-        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
-        [host presentViewController:nav animated:YES completion:nil];
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
     [host presentViewController:alert animated:YES completion:nil];
 }

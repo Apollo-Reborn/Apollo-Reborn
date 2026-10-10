@@ -4,6 +4,15 @@
 // PRODUCTION_HELPERS
 
 typedef void (^Completion)(NSHTTPURLResponse *, id, NSError *);
+// Duplicate-read sharing only acts for API-Key-Free accounts; these clients
+// have none, so every request goes out with its own completion.
+typedef Completion ApolloWebJSONTaskCompletion;
+static ApolloWebJSONTaskCompletion ApolloWebJSONShareAccountRead(NSString *username, NSString *method, NSString *path,
+                                                                id parameters, ApolloWebJSONTaskCompletion completion) {
+    (void)username; (void)method; (void)path; (void)parameters;
+    return completion;
+}
+static id ApolloWebJSONSharedReadPlaceholderTask(void) { return nil; }
 static id nextObject;
 static NSError *nextError;
 static NSHTTPURLResponse *nextResponse;

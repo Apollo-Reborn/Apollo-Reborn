@@ -20,6 +20,7 @@
 #import "ApolloRedgifsTokenRefresh.h"
 #import "ApolloNotificationBackend.h"
 #import "ApolloUsageHeartbeat.h"
+#import "ApolloUpdateChecker.h"
 #import "ApolloPushNotifications.h"
 #import "ApolloBarkNotifications.h"
 #import "ApolloLiquidGlassIconSelectionState.h"
@@ -28,6 +29,7 @@
 #import "ApolloDuoCompatibility.h"
 #import "ApolloTranslation.h"
 #import "ApolloRedgifsMissingDuration.h"
+#import "ApolloRedgifsErrorCards.h"
 #import "Tweak.h"
 #import "settings/CustomAPIViewController.h"
 #import "settings/ApolloAutomaticBackup.h"
@@ -40,6 +42,7 @@
 #import "ApolloToast.h"
 #import "ApolloWebJSON.h"
 #import "ApolloWebSessionStore.h"
+#import "ApolloReduceRateLimiting.h"
 #import "ApolloWebSessionLoginViewController.h"
 #import "ApolloMessageDraftStore.h"
 #import "ApolloAccountCredentials.h"
@@ -919,9 +922,9 @@ static long ApolloMirrorAccountsBlobLength(void) {
 // Device lock state — "protected data available" is NO while the device is locked. A keychain
 // read that fails only when this is NO is the accessibility-class signature of the warm signout.
 static NSString *ApolloProtectedDataString(void) {
-    id app = [UIApplication respondsToSelector:@selector(sharedApplication)] ? [UIApplication sharedApplication] : nil;
-    if (![app respondsToSelector:@selector(isProtectedDataAvailable)]) return @"?";
-    return [app isProtectedDataAvailable] ? @"unlocked" : @"LOCKED";
+    UIApplication *app = UIApplication.sharedApplication;
+    if (!app) return @"?";
+    return app.isProtectedDataAvailable ? @"unlocked" : @"LOCKED";
 }
 
 // Every physical copy of the account item across access groups, with each copy's group, byte
@@ -1815,7 +1818,7 @@ static void ApolloRefreshSubredditListSourceAsync(
                         NSURLErrorBadServerResponse,
                         @"The source returned no valid subreddit entries.");
                 }
-                ApolloLog(@"[RandomSources] Refresh failed for %@: HTTP %ld bytes=%lu error=%@",
+                ApolloLogError(@"[RandomSources] Refresh failed for %@: HTTP %ld bytes=%lu error=%@",
                           key, (long)http.statusCode, (unsigned long)data.length,
                           resultError.localizedDescription ?: @"invalid/empty response");
             }
@@ -2116,22 +2119,7 @@ static const char kARCompletion = '\0';
     id<ASWebAuthenticationPresentationContextProviding> provider = [self presentationContextProvider];
     UIWindow *window = [provider presentationAnchorForWebAuthenticationSession:self];
 
-    if (!window) {
-        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-            if (scene.activationState == UISceneActivationStateForegroundActive
-                    && [scene isKindOfClass:[UIWindowScene class]]) {
-                NSArray<UIWindow *> *sceneWindows = ((UIWindowScene *)scene).windows;
-                for (UIWindow *candidate in sceneWindows) {
-                    if (candidate.isKeyWindow) {
-                        window = candidate;
-                        break;
-                    }
-                }
-                window = window ?: sceneWindows.firstObject;
-                if (window) break;
-            }
-        }
-    }
+    if (!window) window = ApolloKeyWindow() ?: ApolloAllWindows().firstObject;
 
     ApolloLog(@"[WebAuth] presenting from window=%@", window);
 
@@ -2421,7 +2409,7 @@ static NSURL *ApolloWriteTrendingPlist(NSDictionary *table) {
         uint8_t bytes[] = {0x30, 0x01, 0x00};
         [[NSData dataWithBytes:bytes length:sizeof(bytes)] writeToFile:dummyPath atomically:YES];
     }
-    ApolloLogDebug(@"[StoreKit] Spoofing appStoreReceiptURL -> %@", dummyPath);
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [StoreKit] Spoofing appStoreReceiptURL -> %{public}@", dummyPath);
     return [NSURL fileURLWithPath:dummyPath isDirectory:NO];
 }
 %end
@@ -2432,7 +2420,7 @@ static NSURL *ApolloWriteTrendingPlist(NSDictionary *table) {
 // Rewrite x.com links as twitter.com
 - (NSString *)host {
     NSString *originalHost = %orig;
-    if (originalHost && [originalHost isEqualToString:@"x.com"]) {
+    if ([originalHost isEqualToString:@"x.com"]) {
         return @"twitter.com";
     }
     return originalHost;
@@ -2889,6 +2877,10 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
     // ApolloRedgifsMissingDuration.h). Rebinding the parameter hands the
     // repaired completion to every RedGIFs path below.
     if (completionHandler && [host isEqualToString:@"api.redgifs.com"] && [path hasPrefix:@"/v2/gifs/"]) {
+        // Innermost, so it sees the response Apollo finally gets (after the
+        // token retry and the duration fill): a failed lookup's card then says
+        // why (see ApolloRedgifsErrorCards.xm).
+        completionHandler = ApolloRedgifsCompletionRecordingLookupResult(self, request, completionHandler);
         completionHandler = ApolloRedgifsCompletionFillingMissingDuration(self, request, completionHandler,
             ^NSURLSessionDataTask *(NSURLRequest *headerRequest, ApolloRedgifsLookupCompletion headerCompletion) {
                 return %orig(headerRequest, headerCompletion);
@@ -2923,6 +2915,9 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
         [modifiedRequest setValue:nil forHTTPHeaderField:@"Content-Length"];
 
         void (^newCompletionHandler)(NSData *data, NSURLResponse *response, NSError *error) = ^(NSData *data, NSURLResponse *response, NSError *error) {
+            // When minting fails Apollo fails its queued lookups unsent; their
+            // cards say why (see ApolloRedgifsErrorCards.xm).
+            ApolloRedgifsRecordTokenMintResult(data, response, error);
             if (!error && data) {
                 NSError *jsonError = nil;
                 NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
@@ -3425,10 +3420,10 @@ static void ApolloInstallNotificationsUnavailableOverlay(UIViewController *contr
 // and fire repeatedly without the App Store's rate limiting. Suppress both APIs.
 %hook SKStoreReviewController
 + (void)requestReview {
-    ApolloLogDebug(@"[StoreKit] Suppressing SKStoreReviewController requestReview");
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [StoreKit] Suppressing SKStoreReviewController requestReview");
 }
 + (void)requestReviewInScene:(UIWindowScene *)windowScene {
-    ApolloLogDebug(@"[StoreKit] Suppressing SKStoreReviewController requestReviewInScene:");
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [StoreKit] Suppressing SKStoreReviewController requestReviewInScene:");
 }
 %end
 
@@ -3705,14 +3700,15 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeySubredditLayoutPreviewPinned: @YES,
                                     UDKeyCommunityHighlights: @NO,
                                     UDKeyCommunityHighlightsWeb: @NO,
-                                    UDKeyAutoHideTabBarShowOnIdle: @YES,
                                     UDKeyClassicTabBarScrollBehavior: @NO,
                                     UDKeyHideTopBarOnScroll: @NO,
                                     UDKeyTabBarCollapseSide: @0,
                                     UDKeyKeepSearchBarInPlace: @NO,
                                     UDKeyIPadTabBarBottom: @NO,
+                                    UDKeySettingsIconAppearance: @(ApolloSettingsIconAppearanceLight),
                                     UDKeyTabBarSwipeNavigation: @NO,
                                     UDKeyDuoLandscapeFeedLayout: @0,
+                                    UDKeyLiquidGlassEnabled: @YES,
                                     UDKeyIconRowMagnifier: @YES,
                                     UDKeyInfoRowTapUpvote: @YES,
                                     UDKeyInfoRowTapComments: @YES,
@@ -3745,6 +3741,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyAIPostWordThreshold: @150,
                                     UDKeyAIPostSummaryDetail: @(ApolloAISummaryDetailBalanced),
                                     UDKeyAICommentSummaryDetail: @(ApolloAISummaryDetailBalanced),
+                                    UDKeyAISummaryLanguage: @"",
                                     UDKeyEnableTapToSummarize: @NO,
                                     UDKeyEnableAIAutoExpandSummaries: @NO,
                                     UDKeyAISummaryProvider: @"apple",
@@ -3766,7 +3763,10 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyPostFilterSubreddits: @{},
                                     UDKeyPostFilterNameSubstrings: @[],
                                     UDKeyImgurAlbumFallbackProxies: @YES,
+                                    UDKeyAutomaticUpdateChecks: @YES,
                                     UDKeyWebJSONEnabled: @NO,
+                                    UDKeyReduceRateLimiting: @NO,
+                                    UDKeyReduceRateLimitingOffered: @NO,
                                     UDKeyUseModernRedditChat: @NO,
                                     UDKeyUseModernRedditModmail: @NO,
                                     UDKeyNotificationBackendURL: @"",
@@ -3846,6 +3846,9 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
         sAICommentSummaryDetail = ApolloAISummaryDetailBalanced;
         [standardDefaults setInteger:sAICommentSummaryDetail forKey:UDKeyAICommentSummaryDetail];
     }
+    NSString *aiSummaryLanguage = (NSString *)[standardDefaults objectForKey:UDKeyAISummaryLanguage];
+    sAISummaryLanguage = ([aiSummaryLanguage isKindOfClass:[NSString class]] && aiSummaryLanguage.length > 0)
+        ? [aiSummaryLanguage copy] : nil;
     sEnableTapToSummarize = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableTapToSummarize];
     sEnableAIAutoExpandSummaries = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableAIAutoExpandSummaries];
     // "Tap to Summarize" and "Open Summaries Automatically" are mutually exclusive in
@@ -4002,22 +4005,20 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     sCommunityHighlightsWeb = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyCommunityHighlightsWeb];
     sClassicTabBarScrollBehavior = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyClassicTabBarScrollBehavior];
     sHideTopBarOnScroll = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyHideTopBarOnScroll];
-    if (ApolloSupportsNativeTabBarScrollBehavior() &&
-        ![standardDefaults boolForKey:UDKeyAutoHideTabBarShowOnIdle]) {
-        // Idle re-expansion is now bundled into both selectable scroll modes.
-        // Normalize older/restored independent-switch state on supported OSes.
-        [standardDefaults setBool:YES forKey:UDKeyAutoHideTabBarShowOnIdle];
-        ApolloLog(@"[AutoHideTabBarFix] Migrated scroll behavior to include idle re-expansion");
-    }
     NSInteger storedTabBarHideStyle =
         [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyTabBarCollapseSide];
     if (storedTabBarHideStyle < ApolloTabBarHideStyleLeft ||
-        storedTabBarHideStyle > ApolloTabBarHideStyleDown) {
+        storedTabBarHideStyle > ApolloTabBarHideStyleMinimize) {
         storedTabBarHideStyle = ApolloTabBarHideStyleLeft;
     }
     sTabBarHideStyle = (ApolloTabBarHideStyle)storedTabBarHideStyle;
     sKeepSearchBarInPlace = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyKeepSearchBarInPlace];
     sIPadTabBarBottom = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyIPadTabBarBottom];
+    NSInteger settingsIconAppearance = [standardDefaults integerForKey:UDKeySettingsIconAppearance];
+    sSettingsIconAppearance = settingsIconAppearance >= ApolloSettingsIconAppearanceSystem && settingsIconAppearance <= ApolloSettingsIconAppearanceDark
+        ? (ApolloSettingsIconAppearance)settingsIconAppearance : ApolloSettingsIconAppearanceLight;
+    // sLiquidGlassEnabled was already latched in ApolloCommon +load. Do not
+    // reload it here: UIKit and early hook constructors use that launch choice.
     sTabBarSwipeNavigation = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyTabBarSwipeNavigation];
     sDuoLandscapeFeedLayout = [standardDefaults integerForKey:UDKeyDuoLandscapeFeedLayout];
     // Value 1 belonged to the removed side-by-side experiment. Keep Focused
@@ -4162,6 +4163,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     // installed below — in the simulator the keychain is virtualized by those
     // hooks, so reading before they're in place returns nothing.
     sWebJSONEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyWebJSONEnabled];
+    sReduceRateLimiting = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyReduceRateLimiting];
     sPollsFeatureEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyPollsEnabled];
     sPollOptionAlignment = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyPollOptionAlignment];
     if (sPollOptionAlignment != ApolloPollOptionAlignmentCenter && sPollOptionAlignment != ApolloPollOptionAlignmentLeft) {
@@ -4185,7 +4187,11 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(NSNotification *note) {
-        ApolloShowRedditRateLimitToast([note.userInfo[@"seconds"] doubleValue]);
+        NSTimeInterval seconds = [note.userInfo[@"seconds"] doubleValue];
+        // An account that signed in before the Reduce Rate Limiting offer
+        // existed gets it here, once, in place of the toast.
+        if (ApolloReduceRateLimitingOfferAtRateLimit(seconds)) return;
+        ApolloShowRedditRateLimitToast(seconds);
     }];
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
                                                       object:nil
@@ -4364,8 +4370,9 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     // walks all ~2k loaded images per call, and four separate calls paid that
     // walk four times. The Security bindings have to be installed here, before
     // the Web JSON keychain hydration below, so this is the call the others join.
-    // (ApolloSwiftSingletonCapture and ApolloRedgifsQueuedFetchesLock rebind
-    // only Apollo's own image with rebind_symbols_image, which skips that walk.)
+    // (ApolloSwiftSingletonCapture, ApolloRedgifsQueuedFetchesLock and
+    // ApolloImageUploadHost rebind only Apollo's own image with
+    // rebind_symbols_image, which skips that walk.)
     struct rebinding rebindings[5 + 2 * ApolloRebornMaxAppendedRebindings] = {
         {"SecItemAdd", (void *)SecItemAdd_replacement, (void **)&SecItemAdd_orig},
         {"SecItemCopyMatching", (void *)SecItemCopyMatching_replacement, (void **)&SecItemCopyMatching_orig},
@@ -4374,9 +4381,9 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
         {"uname", (void *)uname_replacement, (void **)&uname_orig},
     };
     size_t rebindingCount = 5;
-    rebindingCount += ApolloImageUploadHostAppendRebindings(&rebindings[rebindingCount]);
     rebindingCount += ApolloPhotoComposerAppendRebindings(&rebindings[rebindingCount]);
     rebind_symbols(rebindings, rebindingCount);
+    ApolloImageUploadHostInstallRebindings();
 
     if ([[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableFLEX]) {
         if (!%c(FLEXManager)) {
@@ -4481,6 +4488,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                      queue:[NSOperationQueue mainQueue]
                 usingBlock:^(NSNotification *note) {
         ApolloSendUsageHeartbeatIfNeeded();
+        ApolloUpdateCheckIfNeeded();
     }];
 
     // Login-persistence diagnostics: snapshot where the account lives at each lifecycle

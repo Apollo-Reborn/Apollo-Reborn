@@ -32,19 +32,20 @@
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 
+#import "ApolloAppIcon.h"
 #import "ApolloCommon.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloWhatsNew.h"
+#import "ApolloWhatsNewHalloween.h"
 #import "ApolloWhatsNewCatalog.gen.h"
 #import "UIWindow+Apollo.h"
 #import "UserDefaultConstants.h"
 #import "Version.h"
 
-// Forward declarations — defined in the Presentation section below, but the
-// view controller's viewDidLoad (above that in this file) needs both for the
-// header's icon and "Version X.Y.Z" caption.
+// Forward declaration — defined in the Presentation section below, but the
+// view controller's viewDidLoad (above that in this file) needs it for the
+// header's "Version X.Y.Z" caption.
 static NSString *ApolloWhatsNewCurrentVersion(void);
-static UIImage *ApolloWhatsNewCurrentAppIcon(void);
 
 // MARK: - View Controller
 //
@@ -71,6 +72,7 @@ static UIImage *ApolloWhatsNewCurrentAppIcon(void);
 
     UIScrollView *_scrollView;
     UIStackView *_headerStack;
+    UIImageView *_iconView;
     UILabel *_titleLabel;
     NSLayoutConstraint *_headerTopConstraint;
     NSArray<UIView *> *_rowViews;
@@ -78,6 +80,7 @@ static UIImage *ApolloWhatsNewCurrentAppIcon(void);
     UIVisualEffectView *_bottomFadeView;
 
     BOOL _hasAnimatedIn;
+    BOOL _halloween;
 }
 
 - (instancetype)initWithHeadline:(NSString *)headline items:(NSArray<NSDictionary *> *)items {
@@ -93,7 +96,11 @@ static UIImage *ApolloWhatsNewCurrentAppIcon(void);
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor systemBackgroundColor];
 
-    UIColor *accent = ApolloThemeAccentColor() ?: self.view.tintColor ?: [UIColor systemBlueColor];
+    // 3.9.0 only: a one-off Halloween look (ApolloWhatsNewHalloween.m) with a
+    // pumpkin-orange accent, Count Helios in the header and a flock of bats.
+    _halloween = ApolloWhatsNewHalloweenWantedForVersion(ApolloWhatsNewCurrentVersion());
+
+    UIColor *accent = (_halloween ? ApolloWhatsNewHalloweenAccent() : nil) ?: ApolloThemeAccentColor() ?: self.view.tintColor;
     _accent = accent;
 
     _continueButton = [self apollo_makeContinueButtonWithAccent:accent];
@@ -155,12 +162,14 @@ static UIImage *ApolloWhatsNewCurrentAppIcon(void);
         [content.widthAnchor constraintEqualToAnchor:_scrollView.frameLayoutGuide.widthAnchor],
     ]];
 
-    UIImageView *iconView = [[UIImageView alloc] initWithImage:ApolloWhatsNewCurrentAppIcon()];
+    UIImage *headerIcon = (_halloween ? ApolloWhatsNewHalloweenIcon() : nil) ?: ApolloCurrentAppIcon();
+    UIImageView *iconView = [[UIImageView alloc] initWithImage:headerIcon];
     iconView.contentMode = UIViewContentModeScaleAspectFit;
     iconView.layer.cornerRadius = 16;
     iconView.layer.cornerCurve = kCACornerCurveContinuous;
     iconView.clipsToBounds = YES;
     iconView.hidden = (iconView.image == nil);
+    _iconView = iconView;
     [NSLayoutConstraint activateConstraints:@[
         [iconView.widthAnchor constraintEqualToConstant:64],
         [iconView.heightAnchor constraintEqualToConstant:64],
@@ -234,6 +243,21 @@ static UIImage *ApolloWhatsNewCurrentAppIcon(void);
     if (_hasAnimatedIn) return;
     _hasAnimatedIn = YES;
     [self apollo_animateEntrance];
+    [self apollo_playBatsIfNeeded];
+}
+
+// 3.9.0 only (ApolloWhatsNewHalloween.m): a small flock of bats bursts out of
+// the header icon as the header lands. Measured after apollo_animateEntrance, whose
+// animation blocks have already applied the header's final layout to the
+// model layers, so this is where the icon ends up, not where it starts.
+- (void)apollo_playBatsIfNeeded {
+    if (!_halloween) return;
+    CGPoint origin = CGPointMake(CGRectGetMidX(self.view.bounds), CGRectGetHeight(self.view.bounds) * 0.2);
+    if (_iconView && !_iconView.hidden) {
+        origin = [_iconView convertPoint:CGPointMake(CGRectGetMidX(_iconView.bounds), CGRectGetMidY(_iconView.bounds))
+                                  toView:self.view];
+    }
+    ApolloWhatsNewPlayBats(self.view, origin, 0.7);
 }
 
 // Roughly centers the (still hidden) icon+title+version header in the
@@ -389,14 +413,7 @@ static UIImage *ApolloWhatsNewCurrentAppIcon(void);
 // MARK: - Presentation
 
 static UIViewController *ApolloWhatsNewTopViewController(void) {
-    UIWindow *keyWindow = nil;
-    for (UIWindow *window in ApolloAllWindows()) {
-        if (window.isKeyWindow) {
-            keyWindow = window;
-            break;
-        }
-    }
-    return [keyWindow visibleViewController];
+    return [ApolloKeyWindow() visibleViewController];
 }
 
 // A top VC that's mid-transition, or already presenting something, will
@@ -430,31 +447,6 @@ static NSString *ApolloWhatsNewCurrentVersion(void) {
         }
     }
     return version;
-}
-
-// The app's CURRENTLY active icon (default or whichever alternate the user
-// picked via the icon picker) — not just the primary one — read straight
-// from Info.plist's CFBundleIcons the same way UIApplication itself resolves
-// alternateIconName, so the header always matches what's actually on the
-// home screen.
-static UIImage *ApolloWhatsNewCurrentAppIcon(void) {
-    NSDictionary *icons = [NSBundle mainBundle].infoDictionary[@"CFBundleIcons"];
-    if (![icons isKindOfClass:[NSDictionary class]]) return nil;
-
-    NSArray<NSString *> *iconFiles = nil;
-    NSString *alternateName = [UIApplication sharedApplication].alternateIconName;
-    if (alternateName.length > 0) {
-        NSDictionary *alternates = icons[@"CFBundleAlternateIcons"];
-        NSDictionary *iconInfo = [alternates isKindOfClass:[NSDictionary class]] ? alternates[alternateName] : nil;
-        iconFiles = [iconInfo[@"CFBundleIconFiles"] isKindOfClass:[NSArray class]] ? iconInfo[@"CFBundleIconFiles"] : nil;
-    }
-    if (iconFiles.count == 0) {
-        NSDictionary *primary = icons[@"CFBundlePrimaryIcon"];
-        iconFiles = [primary[@"CFBundleIconFiles"] isKindOfClass:[NSArray class]] ? primary[@"CFBundleIconFiles"] : nil;
-    }
-
-    NSString *iconName = iconFiles.lastObject;
-    return iconName.length > 0 ? [UIImage imageNamed:iconName] : nil;
 }
 
 // Builds and presents the sheet over the current top view controller,

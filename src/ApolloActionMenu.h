@@ -172,8 +172,8 @@ void ApolloActionMenuInjectMenuElements(NSMutableArray<UIMenuElement *> *childre
 // UIContextMenu whose actions are that object's ••• menu (post, post-detail,
 // comment — ApolloActionMenuLayout.h's context ids), so it follows the same
 // saved layout: hidden rows dropped, the rows the context catalogues re-sorted
-// among their own slots (a row it doesn't catalogue — Moderator in the
-// comments header, Remind Me In… — keeps its place). Returns `menu` itself
+// among their own slots (a row it doesn't catalogue, like Moderator in the
+// comments header, keeps its place). Returns `menu` itself
 // when neither this context nor the moderator menu its Moderator row opens is
 // customised, and for the image/video/link menus the same long press shows
 // over media or a link; otherwise a copy. Called by the UIContextMenu

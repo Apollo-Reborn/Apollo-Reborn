@@ -533,7 +533,7 @@ NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
         // it (an active web session exists) — otherwise this is just the
         // normal OAuth path and logging would fire for every request.
         if (ApolloActiveWebSession() != nil) {
-            ApolloLogDebug(@"[WebJSON] Foreign real bearer (u/%@) on %@ %@ — leaving on oauth path",
+            os_log_debug(ApolloFixLog(), "[ApolloFix] [WebJSON] Foreign real bearer (u/%{public}@) on %{public}@ %{public}@ — leaving on oauth path",
                            ApolloWebJSONUsernameForRegisteredBearer(bearer) ?: @"unknown", request.HTTPMethod ?: @"GET", url.path);
         }
         return nil;
@@ -589,7 +589,7 @@ NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
         [modMutable setValue:session.cookieHeader forHTTPHeaderField:@"Cookie"];
         modMutable.HTTPShouldHandleCookies = NO;
         [modMutable setValue:ApolloWebJSONBrowserUserAgent() forHTTPHeaderField:@"User-Agent"];
-        ApolloLogDebug(@"[WebJSON] Rewrote moderators GET %@ -> %@ for u/%@", url.absoluteString, modURL.absoluteString, sessionUsername);
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [WebJSON] Rewrote moderators GET %{public}@ -> %{public}@ for u/%{public}@", url.absoluteString, modURL.absoluteString, sessionUsername);
         return modMutable;
     }
 
@@ -694,7 +694,7 @@ NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
 
     [mutable setValue:ApolloWebJSONBrowserUserAgent() forHTTPHeaderField:@"User-Agent"];
 
-    ApolloLogDebug(@"[WebJSON] Rewrote %@ %@ -> %@ for u/%@ (%@%@)",
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [WebJSON] Rewrote %{public}@ %{public}@ -> %{public}@ for u/%{public}@ (%{public}@%{public}@)",
                    method, url.absoluteString, rewrittenURL.absoluteString, sessionUsername,
                    isWrite ? @"write" : @"read",
                    (isWrite && session.modhash.length > 0) ? @", modhash" : @"");
@@ -945,10 +945,16 @@ void ApolloWebJSONNoteMalformedAccountResponse(NSString *username, NSString *pat
 // switch. Public 200 responses never reset this independent check schedule.
 void ApolloWebJSONCheckAccountSession(NSString *username) {
     if (!sWebJSONEnabled || username.length == 0 || ApolloWebSessionFor(username).cookieHeader.length == 0) return;
+    // Each check is a request on the session's own small budget, sent at most
+    // once a minute while the account browses. Reduce Rate Limiting stretches
+    // that to every ten minutes; an expired session still shows up sooner
+    // through the block-page streak and malformed-response checks, which call
+    // ApolloWebJSONVerifySessionThenAnnounce directly.
+    NSTimeInterval interval = sReduceRateLimiting ? 600.0 : 60.0;
     @synchronized (ApolloWebJSONExpiryLock()) {
         if (!sIdentityProbeDates) sIdentityProbeDates = [NSMutableDictionary dictionary];
         NSDate *last = sIdentityProbeDates[username];
-        if (last && -last.timeIntervalSinceNow < 60.0) return;
+        if (last && -last.timeIntervalSinceNow < interval) return;
         sIdentityProbeDates[username] = [NSDate date];
     }
     ApolloWebJSONVerifySessionThenAnnounce(username);
@@ -1106,6 +1112,169 @@ NSTimeInterval ApolloWebJSONOptionalReadBackoff(NSString *username) {
         until = sRateLimitedUntilByUser[key].doubleValue;
     }
     return MAX(0.0, until - [[NSDate date] timeIntervalSince1970]);
+}
+
+#pragma mark - Duplicate account reads
+
+// See ApolloWebJSONShareAccountRead in the header.
+static NSTimeInterval const kApolloWebJSONSharedReadWindow = 5.0;
+
+@interface ApolloWebJSONSharedRead : NSObject
+@property (nonatomic, strong) NSHTTPURLResponse *response;
+@property (nonatomic, strong) id object;
+@property (nonatomic) NSTimeInterval finishedAt;
+@end
+@implementation ApolloWebJSONSharedRead
+@end
+
+// All three guarded by ApolloWebJSONSharedReadLock. Keys are
+// "<lowercased username>|<path>?<sorted params>".
+static NSMutableDictionary<NSString *, NSMutableArray<ApolloWebJSONTaskCompletion> *> *sSharedReadWaiters;
+static NSMutableDictionary<NSString *, ApolloWebJSONSharedRead *> *sRecentSharedReads;
+// Lowercased username -> writes sent so far; a read is kept for sharing only
+// when no write from the same account went out while it was in flight.
+static NSMutableDictionary<NSString *, NSNumber *> *sAccountWriteCounts;
+
+static NSObject *ApolloWebJSONSharedReadLock(void) {
+    static NSObject *lock;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [NSObject new]; });
+    return lock;
+}
+
+static BOOL ApolloWebJSONPathIsSharedAccountRead(NSString *path) {
+    NSString *p = [path.lowercaseString componentsSeparatedByString:@"?"].firstObject ?: @"";
+    while ([p hasPrefix:@"/"]) p = [p substringFromIndex:1];
+    if ([p hasSuffix:@".json"]) p = [p substringToIndex:p.length - 5];
+    static NSSet<NSString *> *exact;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        exact = [NSSet setWithArray:@[ @"api/v1/me", @"api/multi/mine", @"prefs/friends", @"prefs/blocked",
+                                       @"message/inbox", @"message/unread", @"message/messages" ]];
+    });
+    return [exact containsObject:p] || [p hasPrefix:@"subreddits/mine/"] || [p hasPrefix:@"api/filter/"];
+}
+
+// nil unless the request may be shared: a GET to one of the account endpoints
+// above, with plain string/number parameters.
+static NSString *ApolloWebJSONSharedReadKey(NSString *user, NSString *method, NSString *path, id parameters) {
+    if (![method.uppercaseString isEqualToString:@"GET"]) return nil;
+    if (![path isKindOfClass:[NSString class]] || !ApolloWebJSONPathIsSharedAccountRead(path)) return nil;
+    NSMutableArray<NSString *> *pairs = [NSMutableArray array];
+    if (parameters) {
+        if (![parameters isKindOfClass:[NSDictionary class]]) return nil;
+        for (id key in (NSDictionary *)parameters) {
+            id value = ((NSDictionary *)parameters)[key];
+            if (![value isKindOfClass:[NSString class]] && ![value isKindOfClass:[NSNumber class]]) return nil;
+            [pairs addObject:[NSString stringWithFormat:@"%@=%@", key, value]];
+        }
+        [pairs sortUsingSelector:@selector(compare:)];
+    }
+    return [NSString stringWithFormat:@"%@|%@?%@", user, path, [pairs componentsJoinedByString:@"&"]];
+}
+
+// RDKClient's markRead:YES sends mark=true (the message/<where> listings) or
+// markRead=true (a new modmail conversation) on a GET, and Reddit marks those
+// messages read, so that GET is a write. Apollo 1.15.11 passes NO at every call
+// site; this keeps the rule true if one ever passes YES.
+static BOOL ApolloWebJSONRequestMarksRead(id parameters) {
+    if (![parameters isKindOfClass:[NSDictionary class]]) return NO;
+    for (NSString *flag in @[ @"mark", @"markRead" ]) {
+        id value = ((NSDictionary *)parameters)[flag];
+        if (([value isKindOfClass:[NSString class]] || [value isKindOfClass:[NSNumber class]]) && [value boolValue]) return YES;
+    }
+    return NO;
+}
+
+// A write can change what these reads return: forget the account's recent
+// answers, and let reads already in flight answer only the callers they have.
+// Called when a write is sent and again when it's answered.
+static void ApolloWebJSONNoteAccountWrite(NSString *user) {
+    NSString *prefix = [user stringByAppendingString:@"|"];
+    @synchronized (ApolloWebJSONSharedReadLock()) {
+        if (!sAccountWriteCounts) sAccountWriteCounts = [NSMutableDictionary dictionary];
+        sAccountWriteCounts[user] = @(sAccountWriteCounts[user].unsignedIntegerValue + 1);
+        for (NSString *key in sRecentSharedReads.allKeys) {
+            if ([key hasPrefix:prefix]) [sRecentSharedReads removeObjectForKey:key];
+        }
+        for (NSString *key in sSharedReadWaiters.allKeys) {
+            if ([key hasPrefix:prefix]) [sSharedReadWaiters removeObjectForKey:key];
+        }
+    }
+}
+
+ApolloWebJSONTaskCompletion ApolloWebJSONShareAccountRead(NSString *username, NSString *method, NSString *path,
+                                                         id parameters, ApolloWebJSONTaskCompletion completion) {
+    NSString *user = username.lowercaseString;
+    if (!sWebJSONEnabled || user.length == 0 || !completion) return completion;
+    if (![method.uppercaseString isEqualToString:@"GET"] || ApolloWebJSONRequestMarksRead(parameters)) {
+        // Noted again once it's answered: a read sent while the write was in
+        // flight may have been answered from before it, so it isn't reused.
+        ApolloWebJSONNoteAccountWrite(user);
+        return [^(NSHTTPURLResponse *response, id object, NSError *error) {
+            ApolloWebJSONNoteAccountWrite(user);
+            completion(response, object, error);
+        } copy];
+    }
+    NSString *key = ApolloWebJSONSharedReadKey(user, method, path, parameters);
+    if (!key) return completion;
+
+    ApolloWebJSONSharedRead *recent = nil;
+    NSMutableArray<ApolloWebJSONTaskCompletion> *waiters = nil;
+    BOOL joined = NO;
+    NSUInteger writeCount = 0;
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    @synchronized (ApolloWebJSONSharedReadLock()) {
+        if (!sSharedReadWaiters) sSharedReadWaiters = [NSMutableDictionary dictionary];
+        if (!sRecentSharedReads) sRecentSharedReads = [NSMutableDictionary dictionary];
+        for (NSString *k in sRecentSharedReads.allKeys) {
+            if (now - sRecentSharedReads[k].finishedAt > kApolloWebJSONSharedReadWindow) [sRecentSharedReads removeObjectForKey:k];
+        }
+        recent = sRecentSharedReads[key];
+        if (!recent) {
+            waiters = sSharedReadWaiters[key];
+            if (waiters) {
+                [waiters addObject:[completion copy]];
+                joined = YES;
+            } else {
+                waiters = [NSMutableArray arrayWithObject:[completion copy]];
+                sSharedReadWaiters[key] = waiters;
+                writeCount = sAccountWriteCounts[user].unsignedIntegerValue;
+            }
+        }
+    }
+    if (recent) {
+        ApolloLog(@"[WebJSON] Reused a %.1fs-old GET %@ for u/%@ instead of sending it again", now - recent.finishedAt, path, user);
+        // Asynchronously, like the network answer it stands in for.
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(recent.response, recent.object, nil); });
+        return nil;
+    }
+    if (joined) {
+        ApolloLog(@"[WebJSON] Joined the GET %@ already in flight for u/%@ instead of sending it again", path, user);
+        return nil;
+    }
+    return [^(NSHTTPURLResponse *response, id object, NSError *error) {
+        NSArray<ApolloWebJSONTaskCompletion> *callers;
+        @synchronized (ApolloWebJSONSharedReadLock()) {
+            callers = [waiters copy];
+            // Identity check: a write may have dropped this entry, and an
+            // identical read sent after it may own the key now.
+            if (sSharedReadWaiters[key] == waiters) [sSharedReadWaiters removeObjectForKey:key];
+            BOOL succeeded = !error && object && response.statusCode >= 200 && response.statusCode < 300;
+            if (succeeded && sAccountWriteCounts[user].unsignedIntegerValue == writeCount) {
+                ApolloWebJSONSharedRead *read = [ApolloWebJSONSharedRead new];
+                read.response = response;
+                read.object = object;
+                read.finishedAt = [NSDate timeIntervalSinceReferenceDate];
+                sRecentSharedReads[key] = read;
+            }
+        }
+        for (ApolloWebJSONTaskCompletion caller in callers) caller(response, object, error);
+    } copy];
+}
+
+NSURLSessionDataTask *ApolloWebJSONSharedReadPlaceholderTask(void) {
+    return [[NSURLSession sharedSession] dataTaskWithURL:[NSURL URLWithString:@"about:blank"]];
 }
 
 static void ApolloWebJSONNoteWebBearerResponse(NSURLRequest *request, NSHTTPURLResponse *http);
@@ -1371,13 +1540,13 @@ static NSDictionary<NSString *, NSDictionary *> *ApolloWebJSONFetchFullPostsForM
                 @synchronized (results) { foundPreview = results[identifier] != nil; }
                 if (!foundPreview) {
                     ApolloWebJSONFinishMediaHydration(identifier, nil);
-                    ApolloLog(@"[WebJSON] Direct-image metadata failed for t3_%@: HTTP %ld, %lu bytes, error=%@",
+                    ApolloLogError(@"[WebJSON] Direct-image metadata failed for t3_%@: HTTP %ld, %lu bytes, error=%@",
                               identifier, (long)HTTPResponse.statusCode,
                               (unsigned long)responseData.length, error);
                 }
             } @catch (NSException *exception) {
                 ApolloWebJSONFinishMediaHydration(identifier, nil);
-                ApolloLog(@"[WebJSON] Direct-image metadata parsing failed for t3_%@: %@",
+                ApolloLogError(@"[WebJSON] Direct-image metadata parsing failed for t3_%@: %@",
                           identifier, exception);
             } @finally {
                 dispatch_group_leave(group);
@@ -1494,7 +1663,7 @@ NSData *ApolloWebJSONFixupListingMediaResponseData(NSURLResponse *response, NSDa
     NSData *fixed = [NSJSONSerialization dataWithJSONObject:root options:0 error:NULL];
     if (!fixed) return data;
 
-    ApolloLogDebug(@"[WebJSON] Hydrated image metadata for %lu direct Reddit post%@ in %@",
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [WebJSON] Hydrated image metadata for %lu direct Reddit post%{public}@ in %{public}@",
                    (unsigned long)repaired, repaired == 1 ? @"" : @"s", responseURL.path);
     return fixed;
 }

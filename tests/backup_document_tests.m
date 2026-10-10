@@ -9,6 +9,7 @@ static NSMutableArray *results;
 static UIWindow *testWindow;
 static NSURL *backup;
 os_log_t ApolloFixLog(void) { return os_log_create("apollo.backup.tests", "tests"); }
+void ApolloLogEmit(os_log_type_t type, NSString *format, ...) { (void)type; (void)format; }
 NSArray *ApolloAllWindows(void) { return testWindow ? @[testWindow] : @[]; }
 BOOL ApolloBackupRestoreRestoreFromZipURL(NSURL *url, NSString **title, NSString **message) {
     restoreCalls++; *title=@"Invalid Backup"; *message=@"Test engine rejected this fixture."; return NO;

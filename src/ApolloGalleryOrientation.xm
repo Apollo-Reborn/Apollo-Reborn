@@ -99,8 +99,7 @@ static BOOL ApolloGalleryOrientationGalleryIsVisible(UIViewController *viewContr
 - (UIInterfaceOrientationMask)application:(UIApplication *)application
     supportedInterfaceOrientationsForWindow:(UIWindow *)window {
     UIInterfaceOrientationMask mask = %orig;
-    UIViewController *root = window.rootViewController;
-    BOOL galleryVisible = root && ApolloGalleryOrientationGalleryIsVisible(root);
+    BOOL galleryVisible = ApolloGalleryOrientationGalleryIsVisible(window.rootViewController);
     if (galleryVisible) {
         mask |= UIInterfaceOrientationMaskAllButUpsideDown;
     }

@@ -1,5 +1,6 @@
 #import "ApolloSettingsShortcutsViewController.h"
 #import "ApolloSettingsRouter.h"
+#import "ApolloSiriSettingsViewController.h"
 
 #import <objc/message.h>
 
@@ -62,6 +63,9 @@ static void ApolloSettingsRouterEnsureRegistry(void) {
             };
 
         add(@"reborn", @"Apollo Reborn", @"Settings", ApolloSettingsInsetGrouped([CustomAPIViewController class]));
+        if (NSClassFromString(@"ApolloContentBridge")) {
+            add(@"siri-spotlight", @"Siri & Spotlight", @"Apollo Reborn", ApolloSettingsInsetGrouped([ApolloSiriSettingsViewController class]));
+        }
         // The hub's group screens (settings IA restructure).
         add(@"accounts-api-keys", @"Accounts & API Keys", @"Apollo Reborn → Setup", ApolloSettingsInsetGrouped([ApolloAccountsAPIKeysViewController class]));
         add(@"posts-feeds", @"Posts & Feeds", @"Apollo Reborn → Features", ApolloSettingsInsetGrouped([ApolloPostsFeedsViewController class]));
@@ -73,20 +77,21 @@ static void ApolloSettingsRouterEnsureRegistry(void) {
             return [[ApolloFeedShortcutsSettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
         });
         add(@"subreddit-layout", @"Subreddit Layout", @"Apollo Reborn → Features → Subreddits", ApolloSettingsInsetGrouped([ApolloSubredditLayoutViewController class]));
-        add(@"subreddit-sections", @"Subreddit Sections", @"Apollo Reborn → Features → Subreddits", ^UIViewController *{
+        add(@"subreddit-sections", @"Subreddit List Sections", @"Apollo Reborn → Features → Subreddits", ^UIViewController *{
             return [[ApolloSubredditSectionsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
         });
-        add(@"profile-layout", @"Profile Layout", @"Apollo Reborn → Features", ApolloSettingsInsetGrouped([ApolloProfileLayoutViewController class]));
+        add(@"user-profiles", @"User Profiles", @"Apollo Reborn → Features", ApolloSettingsInsetGrouped([ApolloUserProfilesSettingsViewController class]));
+        add(@"profile-layout", @"Profile Layout", @"Apollo Reborn → Features → User Profiles", ApolloSettingsInsetGrouped([ApolloProfileLayoutViewController class]));
         add(@"settings-shortcuts", @"Settings Shortcuts", @"Apollo Reborn → Interface → Tab Bar", ApolloSettingsInsetGrouped([ApolloSettingsShortcutsViewController class]));
         add(@"interface", @"Interface", @"Apollo Reborn → Features", ApolloSettingsInsetGrouped([ApolloInterfaceSettingsViewController class]));
-        add(@"action-menus", @"Action Menus", @"Apollo Reborn → Features → Interface", ApolloSettingsInsetGrouped([ApolloActionMenuSettingsViewController class]));
+        add(@"action-menus", @"Customize Action Menus", @"Apollo Reborn → Features → Interface", ApolloSettingsInsetGrouped([ApolloActionMenuSettingsViewController class]));
         // One route per menu editor (settings search indexes a screen per route,
         // so each menu's items stay searchable and open in the right editor).
         for (NSString *context in [@[ ApolloActionMenuEditorAllMenus ] arrayByAddingObjectsFromArray:ApolloActionMenuAllContexts()]) {
             BOOL all = [context isEqualToString:ApolloActionMenuEditorAllMenus];
             add([@"action-menus-" stringByAppendingString:context],
                 all ? @"All Menus" : ApolloActionMenuContextTitle(context),
-                @"Apollo Reborn → Features → Interface → Action Menus",
+                @"Apollo Reborn → Features → Interface → Customize Action Menus",
                 ^UIViewController *{ return [[ApolloActionMenuEditorViewController alloc] initWithContext:context]; });
         }
         add(@"notification-backend", @"Notification Backend", @"Apollo Reborn → Advanced", ApolloSettingsInsetGrouped([ApolloNotificationBackendViewController class]));
@@ -108,7 +113,7 @@ static void ApolloSettingsRouterEnsureRegistry(void) {
             return [[ApolloThemeManagerViewController alloc] init]; // default init = hub/list mode
         });
 
-        sRouteAliases = @{ @"pip": @"picture-in-picture", @"ai": @"apollo-ai", @"profiles": @"profile-layout" };
+        sRouteAliases = @{ @"pip": @"picture-in-picture", @"ai": @"apollo-ai", @"profiles": @"user-profiles" };
         [sRouteAliases enumerateKeysAndObjectsUsingBlock:^(NSString *alias, NSString *canonical, BOOL *stop) {
             builders[alias] = builders[canonical];
             titles[alias] = titles[canonical];
@@ -164,7 +169,7 @@ BOOL ApolloSettingsRouteOpenNow(NSString *routeId) {
         @try {
             ((void (*)(id, SEL))objc_msgSend)(tabBarController, @selector(goToSettingsTab));
         } @catch (NSException *exception) {
-            ApolloLog(@"[SettingsRouter] goToSettingsTab threw: %@", exception);
+            ApolloLogError(@"[SettingsRouter] goToSettingsTab threw: %@", exception);
         }
     }
 

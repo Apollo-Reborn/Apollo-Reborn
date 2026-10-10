@@ -72,6 +72,7 @@
 #import "ApolloCommon.h"
 #import "ApolloUserProfileCache.h"
 #import "ApolloWebSessionStore.h"
+#import "ApolloReduceRateLimiting.h"
 
 // Minimal surface of Apollo's RedditKit classes used here. Real definitions live
 // in Headers/ObjC/{RDKClient,RDKOAuthCredential,RDKAccessToken}.h (not on the
@@ -518,7 +519,7 @@ BOOL ApolloWebJSONSynthesizeSignedInAccount(NSString *username) {
         id cred = ApolloWebJSONMakeSyntheticCredential(username);
         if (cred) [client setValue:cred forKey:@"authorizationCredential"];
     } @catch (NSException *ex) {
-        ApolloLog(@"[WebJSON][identity] account configuration failed: %@", ex);
+        ApolloLogError(@"[WebJSON][identity] account configuration failed: %@", ex);
         return NO;
     }
 
@@ -531,7 +532,7 @@ BOOL ApolloWebJSONSynthesizeSignedInAccount(NSString *username) {
     NSError *err = nil;
     NSData *accountsData = [NSKeyedArchiver archivedDataWithRootObject:newAccounts requiringSecureCoding:NO error:&err];
     if (![accountsData isKindOfClass:[NSData class]]) {
-        ApolloLog(@"[WebJSON][identity] failed to archive accounts array: %@", err);
+        ApolloLogFault(@"[WebJSON][identity] failed to archive accounts array: %@", err);
         return NO;
     }
 
@@ -560,7 +561,7 @@ BOOL ApolloWebJSONSynthesizeSignedInAccount(NSString *username) {
     [newValet addObject:sensitive];
     NSData *sensitiveData = [NSKeyedArchiver archivedDataWithRootObject:newValet requiringSecureCoding:NO error:&err];
     if (![sensitiveData isKindOfClass:[NSData class]]) {
-        ApolloLog(@"[WebJSON][identity] failed to archive sensitive blob: %@", err);
+        ApolloLogFault(@"[WebJSON][identity] failed to archive sensitive blob: %@", err);
         return NO;
     }
 
@@ -717,7 +718,7 @@ void ApolloWebJSONRepairPoisonedAccountBlobs(void) {
     NSError *err = nil;
     NSData *accountsData = [NSKeyedArchiver archivedDataWithRootObject:accounts requiringSecureCoding:NO error:&err];
     if (![accountsData isKindOfClass:[NSData class]]) {
-        ApolloLog(@"[WebJSON][repair] failed to re-archive repaired accounts array: %@ — leaving blob unchanged", err);
+        ApolloLogFault(@"[WebJSON][repair] failed to re-archive repaired accounts array: %@ — leaving blob unchanged", err);
         return;
     }
     [group setObject:accountsData forKey:@"RedditAccounts2"];
@@ -790,7 +791,7 @@ static id ApolloWebJSONThingProperty(id thing, SEL selector) {
 - (id)retrieveAccessTokenForApplicationOnlyWithCompletion:(id)completion {
     if (ApolloWebJSONShouldActForClient(self)) {
         ApolloWebJSONInstallSyntheticCredentialIfNeeded(self);
-        ApolloLogDebug(@"[WebJSON][identity] Short-circuited app-only token mint (cookie session)");
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [WebJSON][identity] Short-circuited app-only token mint (cookie session)");
         ApolloWebJSONFulfillTokenCompletion(completion);
         return nil;
     }
@@ -800,7 +801,7 @@ static id ApolloWebJSONThingProperty(id thing, SEL selector) {
 - (id)retrieveAccessTokenWithCompletion:(id)completion {
     if (ApolloWebJSONShouldActForClient(self)) {
         ApolloWebJSONInstallSyntheticCredentialIfNeeded(self);
-        ApolloLogDebug(@"[WebJSON][identity] Short-circuited token retrieval (cookie session) for u/%@",
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [WebJSON][identity] Short-circuited token retrieval (cookie session) for u/%{public}@",
                        ApolloWebJSONClientUsername(self) ?: @"(anonymous)");
         ApolloWebJSONFulfillTokenCompletion(completion);
         return nil;
@@ -811,7 +812,7 @@ static id ApolloWebJSONThingProperty(id thing, SEL selector) {
 - (id)refreshAccessTokenWithCompletion:(id)completion {
     if (ApolloWebJSONShouldActForClient(self)) {
         ApolloWebJSONInstallSyntheticCredentialIfNeeded(self);
-        ApolloLogDebug(@"[WebJSON][identity] Short-circuited token refresh (cookie session) for u/%@",
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [WebJSON][identity] Short-circuited token refresh (cookie session) for u/%{public}@",
                        ApolloWebJSONClientUsername(self) ?: @"(anonymous)");
         ApolloWebJSONFulfillTokenCompletion(completion);
         return nil;
@@ -957,7 +958,12 @@ static __thread BOOL sApolloWebJSONResendingAfterWebBearerMint = NO;
         if (object && !guarded) ApolloWebJSONNoteMalformedAccountResponse(username, requestPath);
         completion(response, guarded, error);
     };
-    return %orig(method, path, parameters, wrapped);
+
+    // API-Key-Free duplicate account reads: an identical one in flight or just
+    // answered is shared instead of sent again (ApolloWebJSONShareAccountRead).
+    ApolloWebJSONTaskCompletion send = ApolloWebJSONShareAccountRead(username, requestMethod, requestPath, parameters, wrapped);
+    if (!send) return ApolloWebJSONSharedReadPlaceholderTask();
+    return %orig(method, path, parameters, send);
 }
 %end
 
@@ -993,6 +999,14 @@ static __thread BOOL sApolloWebJSONResendingAfterWebBearerMint = NO;
             @try { [[ApolloUserProfileCache sharedCache] ingestUserDataByAccountIDsResponse:obj]; }
             @catch (NSException *e) { ApolloLog(@"[UserAvatars] user_data_by_account_ids ingest failed: %@", e); }
         }
+    }
+    // Reduce Rate Limiting sends feed avatars through that same batch, which
+    // takes t2_ fullnames, and Apollo's post model doesn't keep the author's:
+    // note them from the listing as it goes by.
+    if (sShowUserAvatars && [obj isKindOfClass:[NSDictionary class]] &&
+        [((NSDictionary *)obj)[@"kind"] isEqual:@"Listing"] && ApolloReduceRateLimitingActive()) {
+        @try { [[ApolloUserProfileCache sharedCache] noteAuthorFullNamesFromListing:obj]; }
+        @catch (NSException *e) { ApolloLog(@"[UserAvatars] listing author ingest failed: %@", e); }
     }
     if (sWebJSONEnabled) {
         @try { obj = ApolloWebJSONFixupModeratorsResponseObject(response, obj); }

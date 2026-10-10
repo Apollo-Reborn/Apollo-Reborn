@@ -1581,7 +1581,7 @@ static void ApolloDuoPostsToggleSplit(ApolloDuoSplitState *state) {
     BOOL hasComments = state.secondary.viewControllers.count > 1 || state.feed.viewControllers.count > 1;
     BOOL animate = surface.window && ApolloDuoPostsHasLandscapeColumns(state)
         && hasComments && !UIAccessibilityIsReduceMotionEnabled();
-    ApolloLogDebug(@"[DuoSplit] toggle enabled=%d animated=%d reduceMotion=%d",
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [DuoSplit] toggle enabled=%d animated=%d reduceMotion=%d",
         !state.host.postsSplitEnabled, animate, UIAccessibilityIsReduceMotionEnabled());
     ApolloDuoPostsStopGeometry(state.feed.viewIfLoaded);
     ApolloDuoPostsStopGeometry(state.secondary.viewIfLoaded);

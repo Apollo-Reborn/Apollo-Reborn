@@ -112,7 +112,7 @@ static NSSet<NSString *> *ApolloFTCrestFillerTokens(void) {
             @"sd", @"ad", @"fk", @"sk", @"bk", @"if", @"fsv", @"vfb", @"vfl", @"tsg", @"tsv", @"sv",
             @"spvgg", @"club", @"de", @"del", @"di", @"da", @"do", @"la", @"le", @"los", @"las", @"the",
             @"of", @"and", @"y", @"e", @"cp", @"cs", @"ca", @"kv", @"rsc", @"nk", @"hnk", @"gnk", @"ks",
-            @"pfc", @"jk", @"sf", @"cfc", @"afc", @"sfc", @"cb", @"rb",
+            @"pfc", @"jk", @"sf", @"cfc", @"sfc", @"cb", @"rb",
         ]];
     });
     return set;

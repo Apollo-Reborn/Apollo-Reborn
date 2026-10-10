@@ -13,7 +13,7 @@
     },
     {
       "id": "helios", "title": "Helios",
-      "coverIconIDs": ["helios-legacy", "helios-cryo", "helios"],
+      "coverIconIDs": ["witching-hour", "helios", "helios-count"],
       "description": "Icons inspired by the Hyper Suit 4000 icon from Apollo, and the Modern icons by paulo1manso."
     },
     {
@@ -107,6 +107,8 @@
     { "id": "helios-ultra",             "displayName": "Ultra",               "designer": "IllIIllIllIllII", "group": "helios" },
     { "id": "helios-ultra-halo",        "displayName": "Ultra Halo",          "designer": "IllIIllIllIllII", "group": "helios" },
     { "id": "helios-pixel",             "displayName": "Pixels",              "designer": "IllIIllIllIllII", "group": "helios" },
+    { "id": "witching-hour",             "displayName": "Witching Hour",       "designer": "IllIIllIllIllII", "group": "helios" },
+    { "id": "helios-count",              "displayName": "Count Helios",        "designer": "IllIIllIllIllII", "group": "helios" },
 
     { "id": "in-the-jungle",            "displayName": "Safari",              "designer": "Matthew Skiles",  "standardPack": "ultra" },
     { "id": "space-paws",               "displayName": "Space Paws",          "designer": "Raphael Lopes",   "standardPack": "ultra" },

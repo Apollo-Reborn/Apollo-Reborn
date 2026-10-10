@@ -8,6 +8,7 @@
 #import <objc/message.h>
 #import <math.h>
 #import <string.h>
+#import "ApolloClasses.h"
 
 static char kApolloTopBarScrollStateKey;
 static char kApolloTopBarScrollToTopActiveKey;
@@ -78,7 +79,7 @@ static BOOL ApolloTopBarScrollEnabled(void) {
 
 BOOL ApolloSubredditListIsEditing(UINavigationController *controller) {
     UIViewController *top = controller.topViewController;
-    Class listClass = objc_getClass("_TtC6Apollo24RedditListViewController");
+    Class listClass = ApolloClassRedditListViewController;
     return listClass && [top isKindOfClass:listClass] && top.isEditing;
 }
 
@@ -462,6 +463,10 @@ static void ApolloTopBarSetNavigationHidden(UINavigationController *controller, 
     ApolloTopBarAnimate(state, from, state.hiddenOffset, animated);
     ApolloLog(@"[AutoHideTopBar] %@ offset=%.1f headerEffects=%lu reason=%@",
         hidden ? @"hidden" : @"revealed", state.hiddenOffset, (unsigned long)state.headerParts.count, reason);
+}
+
+void ApolloTopBarRevealNavigationController(UINavigationController *controller, NSString *reason) {
+    ApolloTopBarSetNavigationHidden(controller, NO, YES, reason);
 }
 
 void ApolloTopBarSetScrollToTopActive(UINavigationController *controller, BOOL active) {

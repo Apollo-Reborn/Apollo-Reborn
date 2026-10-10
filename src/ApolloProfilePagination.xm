@@ -16,6 +16,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 
 typedef void (^ApolloProfileOverviewCompletion)(NSArray *items, id pagination, NSError *error);
 
@@ -37,13 +38,9 @@ static char kApolloProfilePageStateKey;
 static NSHashTable<UIViewController *> *sApolloProfilePageOwners;
 static NSMapTable<id, ApolloProfilePageBinding *> *sApolloProfilePageBindings;
 
-static id ApolloProfilePageObjectIvar(id object, const char *name) {
-    Ivar ivar = object ? class_getInstanceVariable(object_getClass(object), name) : NULL;
-    return ivar ? object_getIvar(object, ivar) : nil;
-}
 
 static id ApolloProfileCurrentPagination(UIViewController *owner) {
-    return ApolloProfilePageObjectIvar(owner, "pagination");
+    return ApolloObjectIvar(owner, "pagination");
 }
 
 static ApolloProfilePageState *ApolloProfilePageStateForOwner(UIViewController *owner) {
@@ -62,16 +59,15 @@ static void ApolloProfilePageCompleteOldBatch(UIViewController *owner) {
     // arrives: by then the same context may belong to a new account's fetch.
     // ASDK's completeBatchFetching:NO leaves the context fetching; YES frees it
     // for future pages. No table mutation or synthetic native response is needed.
-    id node = ApolloProfilePageObjectIvar(owner, "tableNode");
+    id node = ApolloObjectIvar(owner, "tableNode");
     if (![node respondsToSelector:@selector(isNodeLoaded)] ||
         !((BOOL (*)(id, SEL))objc_msgSend)(node, @selector(isNodeLoaded))) return;
-    if (![node respondsToSelector:@selector(view)]) return;
     id table = ((id (*)(id, SEL))objc_msgSend)(node, @selector(view));
-    SEL contextSelector = NSSelectorFromString(@"batchContext");
+    SEL contextSelector = @selector(batchContext);
     if (![table respondsToSelector:contextSelector]) return;
     id context = ((id (*)(id, SEL))objc_msgSend)(table, contextSelector);
-    SEL fetchingSelector = NSSelectorFromString(@"isFetching");
-    SEL completeSelector = NSSelectorFromString(@"completeBatchFetching:");
+    SEL fetchingSelector = @selector(isFetching);
+    SEL completeSelector = @selector(completeBatchFetching:);
     if ([context respondsToSelector:fetchingSelector] &&
         [context respondsToSelector:completeSelector] &&
         ((BOOL (*)(id, SEL))objc_msgSend)(context, fetchingSelector)) {
@@ -215,10 +211,10 @@ static BOOL ApolloProfilePageIsAccountTab(UIViewController *owner) {
 %end
 
 %ctor {
-    Class profileClass = NSClassFromString(@"Apollo.ProfileViewController");
-    if (!profileClass) profileClass = NSClassFromString(@"_TtC6Apollo21ProfileViewController");
+    Class profileClass = objc_getClass("Apollo.ProfileViewController");
+    if (!profileClass) profileClass = objc_getClass("_TtC6Apollo21ProfileViewController");
     if (!profileClass || !class_getInstanceVariable(profileClass, "pagination") ||
-        !class_getInstanceMethod(NSClassFromString(@"RDKClient"),
+        !class_getInstanceMethod(objc_getClass("RDKClient"),
             @selector(overviewOfUserWithUsername:pagination:completion:))) return;
     sApolloProfilePageOwners = [NSHashTable weakObjectsHashTable];
     sApolloProfilePageBindings = [NSMapTable mapTableWithKeyOptions:NSPointerFunctionsWeakMemory | NSPointerFunctionsObjectPointerPersonality

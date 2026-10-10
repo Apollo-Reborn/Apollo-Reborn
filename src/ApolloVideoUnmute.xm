@@ -4,8 +4,10 @@
 #import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
+#import "ApolloClasses.h"
 
 // =============================================================================
 // MARK: - Overview
@@ -148,11 +150,11 @@ static __weak id sSilencedForViewer = nil;
 static AVPlayer *GetPlayerFromVideoNode(id videoNode);
 static void SyncMuteButtonIcon(id richMediaNode, BOOL isMuted);
 
-// Safely read an ObjC object ivar by name. class_getInstanceVariable walks
-// the superclass chain, so this works for inherited ivars too.
-static id GetIvarObject(id obj, const char *ivarName) {
+// ApolloObjectIvar plus a diagnostic when the ivar is missing (an Apollo
+// layout change). Use ApolloObjectIvar directly where absence is expected.
+static APOLLO_IVAR_NAME id GetIvarObject(id obj, const char *ivarName) {
     if (!obj) return nil;
-    Ivar ivar = class_getInstanceVariable([obj class], ivarName);
+    Ivar ivar = class_getInstanceVariable(object_getClass(obj), ivarName);
     if (!ivar) {
         ApolloLog(@"[VideoUnmute] GetIvarObject: ivar '%s' not found on %@", ivarName, [obj class]);
         return nil;
@@ -160,28 +162,12 @@ static id GetIvarObject(id obj, const char *ivarName) {
     return object_getIvar(obj, ivar);
 }
 
-static id GetIvarObjectQuiet(id obj, const char *ivarName) {
-    if (!obj) return nil;
-    Ivar ivar = class_getInstanceVariable([obj class], ivarName);
-    return ivar ? object_getIvar(obj, ivar) : nil;
-}
-
-// Read a Swift Bool ivar (1 byte) from an object. Returns NO if ivar not found.
-static BOOL GetIvarBool(id obj, const char *ivarName) {
-    if (!obj) return NO;
-    Ivar ivar = class_getInstanceVariable([obj class], ivarName);
-    if (!ivar) return NO;
-    ptrdiff_t offset = ivar_getOffset(ivar);
-    return *(BOOL *)((uint8_t *)(__bridge void *)obj + offset);
-}
-
 static id GetVideoNodeFromRichMediaNode(id richMediaNode) {
-    return richMediaNode ? GetIvarObjectQuiet(richMediaNode, "videoNode") : nil;
+    return ApolloObjectIvar(richMediaNode, "videoNode");
 }
 
 static id GetCrosspostRichMediaNodeFromOwner(id owner) {
-    id crosspostNode = GetIvarObjectQuiet(owner, "crosspostNode");
-    return crosspostNode ? GetIvarObjectQuiet(crosspostNode, "richMediaNode") : nil;
+    return ApolloObjectIvar(ApolloObjectIvar(owner, "crosspostNode"), "richMediaNode");
 }
 
 static BOOL ObjectsMatch(id lhs, id rhs) {
@@ -209,14 +195,14 @@ static UITableView *GetTableViewFromViewController(UIViewController *viewControl
 
 // Enumerate the rich media nodes (own + crosspost) of every visible cell.
 static void EnumerateVisibleRichMediaNodes(UITableView *tableView, void (^block)(id richMediaNode)) {
+    SEL nodeSelector = @selector(node);
     for (UITableViewCell *cell in [tableView visibleCells]) {
-        SEL nodeSel = NSSelectorFromString(@"node");
-        if (![cell respondsToSelector:nodeSel]) continue;
+        if (![cell respondsToSelector:nodeSelector]) continue;
 
-        id cellNode = ((id (*)(id, SEL))objc_msgSend)(cell, nodeSel);
+        id cellNode = ((id (*)(id, SEL))objc_msgSend)(cell, nodeSelector);
         if (!cellNode) continue;
 
-        id richMediaNode = GetIvarObjectQuiet(cellNode, "richMediaNode");
+        id richMediaNode = ApolloObjectIvar(cellNode, "richMediaNode");
         if (richMediaNode) block(richMediaNode);
 
         id crosspostRichMediaNode = GetCrosspostRichMediaNodeFromOwner(cellNode);
@@ -225,27 +211,10 @@ static void EnumerateVisibleRichMediaNodes(UITableView *tableView, void (^block)
 }
 
 // Single home for the version-fragile mangled Swift class names.
-static Class MediaPageViewControllerClass(void) {
-    static Class cls = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        cls = objc_getClass("_TtC6Apollo23MediaPageViewController");
-    });
-    return cls;
-}
-
-static Class PostsSearchResultsViewControllerClass(void) {
-    static Class cls = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        cls = objc_getClass("_TtC6Apollo32PostsSearchResultsViewController");
-    });
-    return cls;
-}
 
 // YES when the node's loaded view sits inside a PostsSearchResultsViewController.
 static BOOL NodeIsInSearchResultsController(id node) {
-    Class searchVCClass = PostsSearchResultsViewControllerClass();
+    Class searchVCClass = ApolloClassPostsSearchResultsViewController;
     if (!searchVCClass || ![node respondsToSelector:@selector(view)]) return NO;
 
     UIResponder *responder = ((UIView *(*)(id, SEL))objc_msgSend)(node, @selector(view));
@@ -259,8 +228,8 @@ static BOOL NodeIsInSearchResultsController(id node) {
 static BOOL IsCommentsOwnerShowingSameLinkAsMediaPage(id mediaPageVC) {
     if (!mediaPageVC || !sCommentsVCOwner) return NO;
 
-    id mediaPageLink = GetIvarObjectQuiet(mediaPageVC, "link");
-    id commentsLink = GetIvarObjectQuiet(sCommentsVCOwner, "link");
+    id mediaPageLink = ApolloObjectIvar(mediaPageVC, "link");
+    id commentsLink = ApolloObjectIvar(sCommentsVCOwner, "link");
     return ObjectsMatch(mediaPageLink, commentsLink);
 }
 
@@ -287,25 +256,11 @@ static BOOL RichMediaNodeContainsPlayer(id richMediaNode, AVPlayer *targetPlayer
 static BOOL IsPlayerOnVisibleFeedCell(UIViewController *feedVC, AVPlayer *targetPlayer) {
     if (!feedVC || !targetPlayer) return NO;
 
-    UITableView *tableView = GetTableViewFromViewController(feedVC);
-    if (!tableView) return NO;
-
-    for (UITableViewCell *cell in [tableView visibleCells]) {
-        SEL nodeSel = NSSelectorFromString(@"node");
-        if (![cell respondsToSelector:nodeSel]) continue;
-
-        id cellNode = ((id (*)(id, SEL))objc_msgSend)(cell, nodeSel);
-        if (!cellNode) continue;
-
-        if (RichMediaNodeContainsPlayer(GetIvarObjectQuiet(cellNode, "richMediaNode"), targetPlayer)) {
-            return YES;
-        }
-        if (RichMediaNodeContainsPlayer(GetCrosspostRichMediaNodeFromOwner(cellNode), targetPlayer)) {
-            return YES;
-        }
-    }
-
-    return NO;
+    __block BOOL found = NO;
+    EnumerateVisibleRichMediaNodes(GetTableViewFromViewController(feedVC), ^(id richMediaNode) {
+        if (!found && RichMediaNodeContainsPlayer(richMediaNode, targetPlayer)) found = YES;
+    });
+    return found;
 }
 
 // YES when layer's superlayer chain reaches ancestor.
@@ -343,7 +298,7 @@ static UIView *FindSubviewOfClass(UIView *root, Class cls) {
 // the reclaim passes need the layer itself, which a fallback player lacks.
 static AVPlayerLayer *GetPlayerLayerFromVideoNode(id videoNode) {
     if (!videoNode) return nil;
-    SEL playerLayerSel = NSSelectorFromString(@"playerLayer");
+    SEL playerLayerSel = @selector(playerLayer);
     if (![videoNode respondsToSelector:playerLayerSel]) return nil;
     CALayer *layer = ((CALayer *(*)(id, SEL))objc_msgSend)(videoNode, playerLayerSel);
     return [layer isKindOfClass:[AVPlayerLayer class]] ? (AVPlayerLayer *)layer : nil;
@@ -367,13 +322,9 @@ static AVPlayer *GetPlayerFromVideoNode(id videoNode) {
     if (player) return player;
 
     // Fallback: non-shareable videos — player is directly on videoNode
-    SEL playerSel = NSSelectorFromString(@"player");
-    if ([videoNode respondsToSelector:playerSel]) {
-        player = ((id (*)(id, SEL))objc_msgSend)(videoNode, playerSel);
-        if (player) return player;
-    }
-
-    return nil;
+    SEL playerSel = @selector(player);
+    if (![videoNode respondsToSelector:playerSel]) return nil;
+    return ((id (*)(id, SEL))objc_msgSend)(videoNode, playerSel);
 }
 
 // Get the AVPlayer from a MediaPageViewController's currently-displayed child
@@ -381,18 +332,15 @@ static AVPlayer *GetPlayerFromVideoNode(id videoNode) {
 // or if the child VC isn't a MediaViewerController. Used to restrict our
 // MediaPageVC hooks to video-only content.
 static AVPlayer *GetPlayerFromMediaPageVC(id mediaPageVC) {
-    static Class sMediaViewerClass = nil;
-    if (!sMediaViewerClass) {
-        sMediaViewerClass = objc_getClass("_TtC6Apollo21MediaViewerController");
-    }
-    if (!sMediaViewerClass) {
+    Class mediaViewerClass = ApolloClassMediaViewerController;
+    if (!mediaViewerClass) {
         ApolloLog(@"[VideoUnmute] GetPlayerFromMediaPageVC: MediaViewerController class not found");
         return nil;
     }
 
     NSArray *vcs = ((NSArray *(*)(id, SEL))objc_msgSend)(mediaPageVC, @selector(viewControllers));
     id mediaVC = [vcs firstObject];
-    if (![mediaVC isMemberOfClass:sMediaViewerClass]) return nil;
+    if (![mediaVC isMemberOfClass:mediaViewerClass]) return nil;
 
     // Direct player ivar (non-shareable videos)
     AVPlayer *player = GetIvarObject(mediaVC, "player");
@@ -468,7 +416,7 @@ static void SyncMuteButtonIcon(id richMediaNode, BOOL isMuted) {
     if (!muteButtonNode) return;
 
     // Skip if button state already matches — avoids redundant work during scroll
-    BOOL currentIsMuted = GetIvarBool(muteButtonNode, "isMuted");
+    BOOL currentIsMuted = ApolloReadBoolIvar(muteButtonNode, "isMuted", NO);
     if (currentIsMuted == isMuted) return;
 
     ApolloLog(@"[VideoUnmute] SyncMuteButtonIcon: %@ → %@",
@@ -503,13 +451,6 @@ static void SyncRichMediaNodeMuteButton(id richMediaNode) {
     SyncMuteButtonIcon(richMediaNode, [player isMuted]);
 }
 
-static void SyncVisibleCellMuteButtons(id cellNode) {
-    if (!cellNode) return;
-
-    SyncRichMediaNodeMuteButton(GetIvarObjectQuiet(cellNode, "richMediaNode"));
-    SyncRichMediaNodeMuteButton(GetCrosspostRichMediaNodeFromOwner(cellNode));
-}
-
 static void SyncVisibleFeedMuteButtons(UIViewController *feedVC) {
     UITableView *tableView = GetTableViewFromViewController(feedVC);
     if (!tableView) {
@@ -517,15 +458,19 @@ static void SyncVisibleFeedMuteButtons(UIViewController *feedVC) {
         return;
     }
 
-    for (UITableViewCell *cell in [tableView visibleCells]) {
-        SEL nodeSel = NSSelectorFromString(@"node");
-        if (![cell respondsToSelector:nodeSel]) continue;
+    EnumerateVisibleRichMediaNodes(tableView, ^(id richMediaNode) {
+        SyncRichMediaNodeMuteButton(richMediaNode);
+    });
+}
 
-        id cellNode = ((id (*)(id, SEL))objc_msgSend)(cell, nodeSel);
-        if (!cellNode) continue;
+static void SetVideoNodeMutedFlag(id videoNode, BOOL muted) {
+    if ([videoNode respondsToSelector:@selector(setMuted:)]) [videoNode setMuted:muted];
+}
 
-        SyncVisibleCellMuteButtons(cellNode);
-    }
+static BOOL VideoNodeIsShareable(id videoNode) {
+    SEL shareableSelector = @selector(allowPlayerLayerToBeShareable);
+    return [videoNode respondsToSelector:shareableSelector]
+        && ((BOOL (*)(id, SEL))objc_msgSend)(videoNode, shareableSelector);
 }
 
 // Core unmute logic. Replicates the native unmute flow from sub_100341894
@@ -572,10 +517,10 @@ static void UnmuteRichMediaNode(id richMediaNode, id videoNode) {
                     mode:AVAudioSessionModeDefault
                  options:0
                    error:&error];
-    if (error) ApolloLog(@"[VideoUnmute] setCategory:Playback error: %@", error);
+    if (error) ApolloLogError(@"[VideoUnmute] setCategory:Playback error: %@", error);
     error = nil;
     [session setActive:YES withOptions:0 error:&error];
-    if (error) ApolloLog(@"[VideoUnmute] setActive:YES error: %@", error);
+    if (error) ApolloLogError(@"[VideoUnmute] setActive:YES error: %@", error);
 
     if (!alreadyUnmuted) {
         // Step 2: Unmute the AVPlayer directly. For shareable videos, the
@@ -589,10 +534,7 @@ static void UnmuteRichMediaNode(id richMediaNode, id videoNode) {
         // if _player is non-nil. For shareable videos, _player is nil so only
         // _muted gets updated — but that's fine, we already unmuted the real
         // player above.
-        SEL setMutedSel = NSSelectorFromString(@"setMuted:");
-        if ([videoNode respondsToSelector:setMutedSel]) {
-            ((void (*)(id, SEL, BOOL))objc_msgSend)(videoNode, setMutedSel, NO);
-        }
+        SetVideoNodeMutedFlag(videoNode, NO);
         sIsAutoUnmuting = NO;
     }
 
@@ -725,13 +667,7 @@ static void MutePreviouslyAudibleFeedVideo(AVPlayer *incoming) {
 
     sAutoUnmutedPlayer = nil;
     [previous setMuted:YES];
-    id previousVideoNode = sFeedAudibleVideoNode;
-    if (previousVideoNode) {
-        SEL setMutedSel = NSSelectorFromString(@"setMuted:");
-        if ([previousVideoNode respondsToSelector:setMutedSel]) {
-            ((void (*)(id, SEL, BOOL))objc_msgSend)(previousVideoNode, setMutedSel, YES);
-        }
-    }
+    SetVideoNodeMutedFlag(sFeedAudibleVideoNode, YES);
     if (previousNode) SyncMuteButtonIcon(previousNode, YES);
     ApolloLog(@"[VideoUnmute] Feed audio handed to the next video - muted the previous one");
 }
@@ -751,7 +687,7 @@ static BOOL FeedVideoInAutoplayRange(id richMediaNode) {
     static ptrdiff_t sStatusOffset = -1;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        sRichMediaNodeClass = objc_getClass("_TtC6Apollo13RichMediaNode");
+        sRichMediaNodeClass = ApolloClassRichMediaNode;
         Ivar ivar = sRichMediaNodeClass
             ? class_getInstanceVariable(sRichMediaNodeClass, "videoNodeStatus") : NULL;
         if (ivar) {
@@ -795,7 +731,7 @@ static AVPlayer *FeedAudibleVideoHoldingSound(void) {
 static BOOL CellHasFeedSound(id cellNode) {
     id holder = sFeedAudibleRichMediaNode;
     if (!holder) return NO;
-    if (!ObjectsMatch(GetIvarObjectQuiet(cellNode, "richMediaNode"), holder)
+    if (!ObjectsMatch(ApolloObjectIvar(cellNode, "richMediaNode"), holder)
         && !ObjectsMatch(GetCrosspostRichMediaNodeFromOwner(cellNode), holder)) {
         return NO;
     }
@@ -845,7 +781,7 @@ static void NoteFeedVideoWaiting(AVPlayer *player, AVPlayer *holder) {
 static BOOL ApplyFeedUnmuteIfNeeded(id richMediaNode, NSString *reason) {
     if (sUnmuteFeedVideos == 0 || !richMediaNode) return NO;
     // The comments header runs on its own setting; the feed one must not reach it.
-    if (GetIvarBool(richMediaNode, "isShownInCommentsHeader")) return NO;
+    if (ApolloReadBoolIvar(richMediaNode, "isShownInCommentsHeader", NO)) return NO;
 
     id videoNode = GetVideoNodeFromRichMediaNode(richMediaNode);
     if (!videoNode) return NO;
@@ -944,13 +880,8 @@ static void ReleaseFeedAudioIfOwnedBy(id richMediaNode) {
 
     if (player && player == sAutoUnmutedPlayer) sAutoUnmutedPlayer = nil;
     if (!presentedFullscreen) {
-        if (player) [player setMuted:YES];
-        if (videoNode) {
-            SEL setMutedSel = NSSelectorFromString(@"setMuted:");
-            if ([videoNode respondsToSelector:setMutedSel]) {
-                ((void (*)(id, SEL, BOOL))objc_msgSend)(videoNode, setMutedSel, YES);
-            }
-        }
+        [player setMuted:YES];
+        SetVideoNodeMutedFlag(videoNode, YES);
         SyncMuteButtonIcon(richMediaNode, YES);
     }
 
@@ -1024,7 +955,7 @@ static void ScheduleFeedSoundHandoff(id scrollView) {
 // Apollo's midpoint check runs).
 static void HandleFeedCellVisibilityEvent(id cellNode, unsigned long long event,
                                           id scrollView, BOOL heldSound) {
-    id richMediaNode = GetIvarObjectQuiet(cellNode, "richMediaNode");
+    id richMediaNode = ApolloObjectIvar(cellNode, "richMediaNode");
     id crosspostNode = GetCrosspostRichMediaNodeFromOwner(cellNode);
 
     // ASCellNodeVisibilityEventInvisible
@@ -1083,11 +1014,8 @@ static void HandleCommentsRichMediaVisibilityEvent(id visibilityOwner,
         sAutoUnmutedPlayer = nil;  // Clear first so our setMuted: hook doesn't block
 
         if (videoNode && !presentedFullscreen) {
-            SEL setMutedSel = NSSelectorFromString(@"setMuted:");
-            if ([videoNode respondsToSelector:setMutedSel]) {
-                ((void (*)(id, SEL, BOOL))objc_msgSend)(videoNode, setMutedSel, YES);
-            }
-            if (player) [player setMuted:YES];
+            SetVideoNodeMutedFlag(videoNode, YES);
+            [player setMuted:YES];
         }
 
         sCommentsRichMediaNode = nil;
@@ -1214,12 +1142,7 @@ static void SilenceInlineVideoForFullscreen(id viewer, NSString *reason) {
 
     sAutoUnmutedPlayer = nil;
     [player setMuted:YES];
-    if (videoNode) {
-        SEL setMutedSel = NSSelectorFromString(@"setMuted:");
-        if ([videoNode respondsToSelector:setMutedSel]) {
-            ((void (*)(id, SEL, BOOL))objc_msgSend)(videoNode, setMutedSel, YES);
-        }
-    }
+    SetVideoNodeMutedFlag(videoNode, YES);
     if (richMediaNode) SyncMuteButtonIcon(richMediaNode, YES);
 
     sSilencedForViewerRichMediaNode = richMediaNode;
@@ -1234,7 +1157,7 @@ static void SilenceInlineVideoIfViewerShowsOtherVideo(id viewer, AVPlayer *fulls
     if (!audible || !fullscreenPlayer || fullscreenPlayer == audible) return;
     // The inline video's own post, in a player of the viewer's own.
     id inlineNode = InlineRichMediaNodeForAudiblePlayer(audible);
-    if (inlineNode && ObjectsMatch(GetIvarObjectQuiet(viewer, "link"), GetIvarObjectQuiet(inlineNode, "link"))) return;
+    if (inlineNode && ObjectsMatch(ApolloObjectIvar(viewer, "link"), ApolloObjectIvar(inlineNode, "link"))) return;
     SilenceInlineVideoForFullscreen(viewer, reason);
 }
 
@@ -1398,16 +1321,13 @@ static BOOL PlayerWasDeliberatelyStopped(AVPlayer *player);
     %orig;
 
     // Only fix for comments header videos
-    if (!GetIvarBool(self, "isShownInCommentsHeader") && self != sCommentsRichMediaNode) return;
+    if (!ApolloReadBoolIvar(self, "isShownInCommentsHeader", NO) && self != sCommentsRichMediaNode) return;
 
     id videoNode = GetIvarObject(self, "videoNode");
     if (!videoNode) return;
 
     // Only fix for shareable videos (non-shareable already handled by native code)
-    SEL shareableSel = NSSelectorFromString(@"allowPlayerLayerToBeShareable");
-    if (![videoNode respondsToSelector:shareableSel]) return;
-    BOOL isShareable = ((BOOL (*)(id, SEL))objc_msgSend)(videoNode, shareableSel);
-    if (!isShareable) return;
+    if (!VideoNodeIsShareable(videoNode)) return;
 
     AVPlayer *player = GetPlayerFromVideoNode(videoNode);
     if (!player) return;
@@ -1454,17 +1374,16 @@ static BOOL PlayerWasDeliberatelyStopped(AVPlayer *player);
         sSilencedForViewer = nil;
     }
 
+    id videoNodeForResume = GetIvarObject(self, "videoNode");
+    AVPlayer *playerForResume = GetPlayerFromVideoNode(videoNodeForResume);
+
     // Clear auto-unmute protection if this cell's player matches the
     // protected player. No context check (isShownInCommentsHeader) — for
     // shareable videos the same AVPlayer is shared between feed and comments
     // cells, so the user must be able to mute from either context.
-    if (sAutoUnmutedPlayer) {
-        id videoNode = GetIvarObject(self, "videoNode");
-        AVPlayer *player = GetPlayerFromVideoNode(videoNode);
-        if (player && player == sAutoUnmutedPlayer) {
-            ApolloLog(@"[VideoUnmute] User tapped mute button — clearing auto-unmute protection");
-            sAutoUnmutedPlayer = nil;
-        }
+    if (playerForResume && playerForResume == sAutoUnmutedPlayer) {
+        ApolloLog(@"[VideoUnmute] User tapped mute button — clearing auto-unmute protection");
+        sAutoUnmutedPlayer = nil;
     }
 
     // Capture player state before the tap handler runs.
@@ -1474,12 +1393,10 @@ static BOOL PlayerWasDeliberatelyStopped(AVPlayer *player);
     // mute button to unmute, the native handler (sub_100341894) unmutes the player
     // but does NOT call [player play], leaving the video frozen. Detect this state
     // so we can resume playback after %orig.
-    id videoNodeForResume = GetIvarObject(self, "videoNode");
-    AVPlayer *playerForResume = GetPlayerFromVideoNode(videoNodeForResume);
     // The tap toggles, so the pre-tap state names the direction unambiguously —
     // post-%orig state can't, because the mute dance only lands at T+100ms.
     BOOL wasMutedBeforeTap = playerForResume && [playerForResume isMuted];
-    BOOL isFeedVideo = !GetIvarBool(self, "isShownInCommentsHeader");
+    BOOL isFeedVideo = !ApolloReadBoolIvar(self, "isShownInCommentsHeader", NO);
     BOOL wasMutedAndPaused = playerForResume
         && [playerForResume isMuted]
         && [playerForResume rate] == 0.0f;
@@ -1535,10 +1452,7 @@ static BOOL PlayerWasDeliberatelyStopped(AVPlayer *player);
     // the dance settles. Feed cells never reach this: the VC gate excludes
     // them, and their native reclaim clears the shareable flag anyway.
     if (wasUnmutedAndPlaying && NodeIsInSearchResultsController(self)) {
-        SEL shareableSel = NSSelectorFromString(@"allowPlayerLayerToBeShareable");
-        BOOL nodeShareable = [videoNodeForResume respondsToSelector:shareableSel]
-            && ((BOOL (*)(id, SEL))objc_msgSend)(videoNodeForResume, shareableSel);
-        if (nodeShareable) {
+        if (VideoNodeIsShareable(videoNodeForResume)) {
             AVPlayer *player = playerForResume;
             id videoNode = videoNodeForResume;
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)),
@@ -1724,13 +1638,13 @@ static BOOL PlayerWasDeliberatelyStopped(AVPlayer *player);
     if (!sAutoUnmutedPlayer) return;
 
     // Get the "to" VC to confirm this is a present (not dismiss) transition.
-    SEL vcForKeySel = NSSelectorFromString(@"viewControllerForKey:");
+    SEL vcForKeySel = @selector(viewControllerForKey:);
     if (![transitionContext respondsToSelector:vcForKeySel]) return;
 
     id toVC = ((id (*)(id, SEL, id))objc_msgSend)(
         transitionContext, vcForKeySel, UITransitionContextToViewControllerKey);
 
-    Class mediaPageVCClass = MediaPageViewControllerClass();
+    Class mediaPageVCClass = ApolloClassMediaPageViewController;
     if (!toVC || !mediaPageVCClass || ![toVC isMemberOfClass:mediaPageVCClass]) return;
 
     // After %orig, the transition has created a PlayerLayerContainerView for
@@ -1742,21 +1656,18 @@ static BOOL PlayerWasDeliberatelyStopped(AVPlayer *player);
     // Walk the transition container's view hierarchy to find the
     // PlayerLayerContainerView by class, then check its playerLayer's player
     // against our protected player.
-    static Class sPlayerLayerContainerClass = nil;
-    if (!sPlayerLayerContainerClass) {
-        sPlayerLayerContainerClass = objc_getClass("_TtC6Apollo24PlayerLayerContainerView");
-    }
+    Class playerLayerContainerClass = ApolloClassPlayerLayerContainerView;
 
     // First try GetPlayerFromMediaPageVC (works for non-shareable videos
     // where the player ivar is set directly). Fall back to hierarchy walk
     // for shareable videos.
     AVPlayer *fullscreenPlayer = GetPlayerFromMediaPageVC(toVC);
 
-    if (!fullscreenPlayer && sPlayerLayerContainerClass) {
+    if (!fullscreenPlayer && playerLayerContainerClass) {
         // Walk the transition container view to find the PlayerLayerContainerView
         // that animateTransition: just created and added to the hierarchy.
         UIView *containerView = ((id (*)(id, SEL))objc_msgSend)(transitionContext, @selector(containerView));
-        UIView *found = FindSubviewOfClass(containerView, sPlayerLayerContainerClass);
+        UIView *found = FindSubviewOfClass(containerView, playerLayerContainerClass);
         if (found) {
             id playerLayer = GetIvarObject(found, "playerLayer");
             if ([playerLayer isKindOfClass:[AVPlayerLayer class]]) {
@@ -1834,17 +1745,13 @@ static Class sTouchHintVideoNodeClass = nil;
 
     ApolloLog(@"[VideoUnmute] Inline video exited under the fullscreen viewer — muting it without the session dance");
     [player setMuted:YES];
-    SEL setMutedSel = NSSelectorFromString(@"setMuted:");
-    if ([self respondsToSelector:setMutedSel]) {
-        ((void (*)(id, SEL, BOOL))objc_msgSend)(self, setMutedSel, YES);
-    }
+    SetVideoNodeMutedFlag(self, YES);
     // The node's ASVideoNodeDelegate is its RichMediaNode, which owns the
     // mute button whose icon the skipped handler would have flipped.
-    static Class sRichMediaNodeClass = nil;
-    if (!sRichMediaNodeClass) sRichMediaNodeClass = objc_getClass("_TtC6Apollo13RichMediaNode");
+    Class richMediaNodeClass = ApolloClassRichMediaNode;
     id delegate = [self respondsToSelector:@selector(delegate)]
         ? ((id (*)(id, SEL))objc_msgSend)(self, @selector(delegate)) : nil;
-    if (sRichMediaNodeClass && [delegate isKindOfClass:sRichMediaNodeClass]) {
+    if (richMediaNodeClass && [delegate isKindOfClass:richMediaNodeClass]) {
         SyncMuteButtonIcon(delegate, YES);
     }
 }
@@ -1901,7 +1808,7 @@ static Class sTouchHintVideoNodeClass = nil;
 - (void)setMuted:(BOOL)muted {
     // Block mute-dance re-muting on our auto-unmuted player.
     // User manual mute clears sAutoUnmutedPlayer via the button tap hook first.
-    if (muted && !sIsAutoUnmuting && sAutoUnmutedPlayer && self == sAutoUnmutedPlayer) {
+    if (muted && !sIsAutoUnmuting && self == sAutoUnmutedPlayer) {
         ApolloLog(@"[VideoUnmute] AVPlayer.setMuted:YES — BLOCKED (protecting auto-unmuted player)");
         return;
     }
@@ -2171,54 +2078,35 @@ void ApolloVideoUnmute_FixDisconnectedPlayerLayer(id postsViewController) {
         return;
     }
 
-    BOOL foundDisconnected = NO;
+    __block BOOL foundDisconnected = NO;
 
-    for (UITableViewCell *cell in [tableView visibleCells]) {
-        SEL nodeSel = NSSelectorFromString(@"node");
-        if (![cell respondsToSelector:nodeSel]) continue;
+    EnumerateVisibleRichMediaNodes(tableView, ^(id richMediaNode) {
+        id videoNode = GetVideoNodeFromRichMediaNode(richMediaNode);
+        if (!videoNode) return;
 
-        id cellNode = ((id (*)(id, SEL))objc_msgSend)(cell, nodeSel);
-        if (!cellNode) continue;
+        AVPlayerLayer *pLayer = GetPlayerLayerFromVideoNode(videoNode);
+        CALayer *vnLayer = ((CALayer *(*)(id, SEL))objc_msgSend)(videoNode, @selector(layer));
+        if (!pLayer || !vnLayer) return;
 
-        for (id richMediaNode in @[
-            GetIvarObjectQuiet(cellNode, "richMediaNode") ?: [NSNull null],
-            GetCrosspostRichMediaNodeFromOwner(cellNode) ?: [NSNull null]
-        ]) {
-            if (richMediaNode == (id)[NSNull null]) continue;
+        AVPlayer *player = [pLayer player];
+        if (!player || [player rate] == 0.0f) return;
 
-            id videoNode = GetVideoNodeFromRichMediaNode(richMediaNode);
-            if (!videoNode) continue;
+        if (!LayerIsInLayerTreeOf(pLayer, vnLayer)) {
+            ApolloLog(@"[VideoUnmute] FixDisconnectedPlayerLayer: re-parenting playerLayer %p to videoNode %p",
+                      pLayer, videoNode);
+            [pLayer removeFromSuperlayer];
+            [vnLayer addSublayer:pLayer];
 
-            SEL playerLayerSel = NSSelectorFromString(@"playerLayer");
-            if (![videoNode respondsToSelector:playerLayerSel]) continue;
-
-            CALayer *pLayer = ((id (*)(id, SEL))objc_msgSend)(videoNode, playerLayerSel);
-            CALayer *vnLayer = ((CALayer *(*)(id, SEL))objc_msgSend)(videoNode, @selector(layer));
-            if (!pLayer || !vnLayer) continue;
-
-            AVPlayer *player = [pLayer respondsToSelector:@selector(player)]
-                ? [(AVPlayerLayer *)pLayer player] : nil;
-            if (!player || [player rate] == 0.0f) continue;
-
-            BOOL inTree = LayerIsInLayerTreeOf(pLayer, vnLayer);
-
-            if (!inTree) {
-                ApolloLog(@"[VideoUnmute] FixDisconnectedPlayerLayer: re-parenting playerLayer %p to videoNode %p",
-                          pLayer, videoNode);
-                [pLayer removeFromSuperlayer];
-                [vnLayer addSublayer:pLayer];
-
-                SEL setShareableSel = NSSelectorFromString(@"setAllowPlayerLayerToBeShareable:");
-                if ([videoNode respondsToSelector:setShareableSel]) {
-                    ((void (*)(id, SEL, BOOL))objc_msgSend)(videoNode, setShareableSel, NO);
-                }
-
-                foundDisconnected = YES;
+            SEL setShareableSelector = @selector(setAllowPlayerLayerToBeShareable:);
+            if ([videoNode respondsToSelector:setShareableSelector]) {
+                ((void (*)(id, SEL, BOOL))objc_msgSend)(videoNode, setShareableSelector, NO);
             }
 
-            SyncMuteButtonIcon(richMediaNode, [player isMuted]);
+            foundDisconnected = YES;
         }
-    }
+
+        SyncMuteButtonIcon(richMediaNode, [player isMuted]);
+    });
 
     if (!foundDisconnected) {
         ApolloLog(@"[VideoUnmute] FixDisconnectedPlayerLayer: no disconnected playerLayer found");
@@ -2398,11 +2286,7 @@ static BOOL FixupSearchCellRichMediaNode(id richMediaNode, NSString *reason) {
 
     BOOL inTree = LayerIsInLayerTreeOf(pLayer, vnLayer);
 
-    BOOL shareable = NO;
-    SEL shareableSel = NSSelectorFromString(@"allowPlayerLayerToBeShareable");
-    if ([videoNode respondsToSelector:shareableSel]) {
-        shareable = ((BOOL (*)(id, SEL))objc_msgSend)(videoNode, shareableSel);
-    }
+    BOOL shareable = VideoNodeIsShareable(videoNode);
 
     ApolloLog(@"[VideoUnmute] SearchReclaim(%@): videoNode=%p player=%p rate=%.2f muted=%d inTree=%d shareable=%d",
               reason, videoNode, player, [player rate], [player isMuted], inTree, shareable);
@@ -2586,7 +2470,7 @@ static void ReclaimSearchResultsPlayerLayers(UIViewController *searchVC, NSStrin
     UINavigationController *nav = [(UIViewController *)self navigationController];
     UIViewController *presented = [nav presentedViewController];
     if (presented) {
-        Class mediaPageVCClass = MediaPageViewControllerClass();
+        Class mediaPageVCClass = ApolloClassMediaPageViewController;
         if (!mediaPageVCClass || ![presented isKindOfClass:mediaPageVCClass]) return;
         ReclaimSearchResultsPlayerLayers((UIViewController *)self, @"fullscreen dismissal");
         return;
@@ -2610,13 +2494,13 @@ static void ReclaimSearchResultsPlayerLayers(UIViewController *searchVC, NSStrin
     Class richMediaHeaderCellClass = objc_getClass("_TtC6Apollo23RichMediaHeaderCellNode");
     Class commentsHeaderCellClass = objc_getClass("_TtC6Apollo22CommentsHeaderCellNode");
     Class richMediaNodeClass = objc_getClass("_TtC6Apollo13RichMediaNode");
-    Class mediaPageVCClass = MediaPageViewControllerClass();
+    Class mediaPageVCClass = ApolloClassMediaPageViewController;
     Class mediaViewerAnimClass = objc_getClass("_TtC6Apollo30MediaViewerAnimationController");
     Class largePostCellClass = objc_getClass("_TtC6Apollo17LargePostCellNode");
 
     ApolloLog(@"[VideoUnmute] ctor: RichMediaHeaderCellNode=%p, CommentsHeaderCellNode=%p, RichMediaNode=%p, MediaPageVC=%p, MediaViewerAnimCtrl=%p",
-              (void *)richMediaHeaderCellClass, (void *)commentsHeaderCellClass, (void *)richMediaNodeClass,
-              (void *)mediaPageVCClass, (void *)mediaViewerAnimClass);
+              (__bridge void *)richMediaHeaderCellClass, (__bridge void *)commentsHeaderCellClass, (__bridge void *)richMediaNodeClass,
+              (__bridge void *)mediaPageVCClass, (__bridge void *)mediaViewerAnimClass);
 
     if (!richMediaHeaderCellClass || !commentsHeaderCellClass || !richMediaNodeClass
         || !mediaPageVCClass || !mediaViewerAnimClass) {
@@ -2656,7 +2540,7 @@ static void ReclaimSearchResultsPlayerLayers(UIViewController *searchVC, NSStrin
         ApolloLog(@"[VideoUnmute] ctor: MediaViewerController missing - a viewer's own player cannot mute the inline video");
     }
 
-    Class searchResultsVCClass = PostsSearchResultsViewControllerClass();
+    Class searchResultsVCClass = ApolloClassPostsSearchResultsViewController;
     if (searchResultsVCClass) {
         %init(SearchResultsReclaim, PostsSearchResultsViewController = searchResultsVCClass);
         ApolloLog(@"[VideoUnmute] ctor: search results playerLayer reclaim installed");

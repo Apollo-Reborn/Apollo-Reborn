@@ -110,7 +110,7 @@ static void ApolloRedgifsFreshToken(NSString *rejectedToken,
         if (token) {
             ApolloLog(@"[RedgifsToken] Minted a fresh token; retrying the rejected request(s)");
         } else {
-            ApolloLog(@"[RedgifsToken] Could not mint a fresh token (HTTP %ld, error %ld); passing the 401 through",
+            ApolloLogError(@"[RedgifsToken] Could not mint a fresh token (HTTP %ld, error %ld); passing the 401 through",
                       (long)status, (long)error.code);
         }
         ApolloRedgifsFinishMint(token);

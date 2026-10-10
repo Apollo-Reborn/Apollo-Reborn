@@ -72,6 +72,8 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
+#import "ApolloClasses.h"
 
 // Associated-object key: marks that the post-present snapshot refresh has been
 // armed for this VC (so we only schedule it once).
@@ -79,18 +81,11 @@ static char kApolloSIPFRefreshArmedKey;
 
 #pragma mark - Runtime helpers
 
-static id ApolloSIPFIvarObject(id obj, const char *name) {
-    if (!obj || !name) return nil;
-    Ivar ivar = class_getInstanceVariable(object_getClass(obj), name);
-    if (!ivar) return nil;
-    @try { return object_getIvar(obj, ivar); } @catch (__unused NSException *e) { return nil; }
-}
-
 // The preview node's measured bounds size. The concrete ASDisplayNode class isn't
 // headered here, so reach `bounds` via objc_msgSend (CGRect-returning), guarded.
 static CGSize ApolloSIPFNodeSize(id node) {
-    if (!node || ![node respondsToSelector:@selector(bounds)]) return CGSizeZero;
-    @try { CGRect b = ((CGRect (*)(id, SEL))objc_msgSend)(node, @selector(bounds)); return b.size; }
+    if (![node respondsToSelector:@selector(bounds)]) return CGSizeZero;
+    @try { return [node bounds].size; }
     @catch (__unused NSException *e) { return CGSizeZero; }
 }
 
@@ -100,7 +95,7 @@ static CGSize ApolloSIPFNodeSize(id node) {
 // size has changed since the last snapshot — exactly what happens once a comment's
 // async media finishes loading and the node measures its true height.
 static void ApolloSIPFForceRelayout(UIViewController *vc) {
-    if (![vc isViewLoaded] || !vc.viewIfLoaded.window) return;
+    if (!vc.viewIfLoaded.window) return;
     UIPresentationController *pc = vc.presentationController;
     UIView *container = pc.containerView;
     if (container) {
@@ -125,12 +120,12 @@ static void ApolloSIPFForceRelayout(UIViewController *vc) {
 // changing so `stable` resets and we keep polling. A relayout that finds nothing
 // changed is a native no-op, so the trailing confirmation passes are cheap.
 static void ApolloSIPFPollSnapshot(UIViewController *vc, int attempt, CGFloat prevNodeHeight, int stableCount) {
-    if (![vc isViewLoaded] || !vc.viewIfLoaded.window) return; // dismissed — stop
+    if (!vc.viewIfLoaded.window) return; // dismissed — stop
 
     ApolloSIPFForceRelayout(vc);
 
-    CGFloat nodeH = ApolloSIPFNodeSize(ApolloSIPFIvarObject(vc, "previewNode")).height;
-    UIImageView *snap = (UIImageView *)ApolloSIPFIvarObject(vc, "previewSnapshotImageView");
+    CGFloat nodeH = ApolloSIPFNodeSize(ApolloObjectIvar(vc, "previewNode")).height;
+    UIImageView *snap = (UIImageView *)ApolloObjectIvar(vc, "previewSnapshotImageView");
     UIImage *snapImg = [snap isKindOfClass:[UIImageView class]] ? snap.image : nil;
     CGFloat snapH = [snapImg isKindOfClass:[UIImage class]] ? snapImg.size.height : 0.0;
 
@@ -170,19 +165,18 @@ static void ApolloSIPFPollSnapshot(UIViewController *vc, int attempt, CGFloat pr
 // bounds/margins) this can't drive another layout pass, so there's no loop. A no-op
 // whenever the button already fits, leaving taller devices untouched.
 static void ApolloSIPFClampShareButtonOnScreen(UIViewController *vc) {
-    if (![vc isViewLoaded]) return;
     UIView *root = vc.viewIfLoaded;
     if (!root) return;
 
-    UIView *previewIV = (UIView *)ApolloSIPFIvarObject(vc, "previewSnapshotImageView");
-    UIView *shareBtn  = (UIView *)ApolloSIPFIvarObject(vc, "shareButton");
+    UIView *previewIV = (UIView *)ApolloObjectIvar(vc, "previewSnapshotImageView");
+    UIView *shareBtn  = (UIView *)ApolloObjectIvar(vc, "shareButton");
     if (![previewIV isKindOfClass:[UIView class]] || ![shareBtn isKindOfClass:[UIView class]]) return;
 
     // All content (preview, rows, button) is parented to the same container — the
     // preview's superview (rootView.contentView). Operate within that coordinate space.
     UIView *container = previewIV.superview;
     if (!container) return;
-    UIView *dropShadow = (UIView *)ApolloSIPFIvarObject(vc, "previewDropShadowView");
+    UIView *dropShadow = (UIView *)ApolloObjectIvar(vc, "previewDropShadowView");
 
     CGRect pf = previewIV.frame;
     if (pf.size.height < 1.0 || pf.size.width < 1.0) return;
@@ -305,7 +299,7 @@ static void ApolloSIPFClampShareButtonOnScreen(UIViewController *vc) {
 
         UIPresentationController *pc = (UIPresentationController *)self;
         id presented = [pc presentedViewController];
-        Class shareVCClass = objc_getClass("_TtC6Apollo26ShareAsImageViewController");
+        Class shareVCClass = ApolloClassShareAsImageViewController;
         if (!shareVCClass || ![presented isMemberOfClass:shareVCClass]) return;
 
         UIView *presentedView = [(UIViewController *)presented view];

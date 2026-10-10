@@ -129,6 +129,21 @@ public final class ApolloFoundationModels: NSObject {
         return availabilityStatus() == 0
     }
 
+    /// Base language codes the on-device model can write ("en", "pt", "zh",
+    /// ...). A prompt that asks for any other language throws
+    /// `unsupportedLanguageOrLocale`, so the summary prompts only name a
+    /// language from this list. Empty when the OS can't say (pre-iOS 26);
+    /// callers read that as "unknown", not "none".
+    @objc public func supportedLanguageCodes() -> [String] {
+        #if canImport(FoundationModels)
+        if #available(iOS 26.0, *) {
+            let codes = SystemLanguageModel.default.supportedLanguages.compactMap { $0.languageCode?.identifier }
+            return Array(Set(codes)).sorted()
+        }
+        #endif
+        return []
+    }
+
     /// Prepare the exact instructed session that a subsequent summarize call
     /// will use. Sessions are consumed once and discarded so unrelated Reddit
     /// threads never accumulate transcript context.

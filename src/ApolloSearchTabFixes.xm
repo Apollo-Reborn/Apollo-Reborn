@@ -62,6 +62,7 @@
 #import "ApolloDuoSplitView.h"
 #import "ApolloDuoSearchLandingViewController.h"
 #import "ApolloDuoSearchRecents.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloGoogleSearchTab.h"
 #import "ApolloState.h"
 #import "ApolloToast.h"
@@ -122,14 +123,8 @@ static NSString *const kApolloRandomNSFWTitle = @"Random NSFW Subreddit";
 // ApolloTableViewController, whose `tableView` ivar is ObjC-visible; fall back to a subview
 // scan if the ivar ever moves.
 static UITableView *ApolloSearchTabTableView(UIViewController *vc) {
-    for (Class cls = object_getClass(vc); cls; cls = class_getSuperclass(cls)) {
-        Ivar iv = class_getInstanceVariable(cls, "tableView");
-        if (iv) {
-            id tv = object_getIvar(vc, iv);
-            if ([tv isKindOfClass:[UITableView class]]) return (UITableView *)tv;
-            break;
-        }
-    }
+    id tv = ApolloObjectIvar(vc, "tableView");
+    if ([tv isKindOfClass:[UITableView class]]) return (UITableView *)tv;
     for (UIView *v in vc.viewIfLoaded.subviews) {
         if ([v isKindOfClass:[UITableView class]]) return (UITableView *)v;
     }
@@ -140,13 +135,8 @@ static UISearchBar *ApolloSearchTabSearchBar(UIViewController *vc) {
     UIView *titleView = vc.navigationItem.titleView;
     if ([titleView isKindOfClass:[UISearchBar class]]) return (UISearchBar *)titleView;
 
-    for (Class cls = object_getClass(vc); cls; cls = class_getSuperclass(cls)) {
-        Ivar ivar = class_getInstanceVariable(cls, "searchBar");
-        if (!ivar) continue;
-        id value = object_getIvar(vc, ivar);
-        return [value isKindOfClass:[UISearchBar class]] ? value : nil;
-    }
-    return nil;
+    id value = ApolloObjectIvar(vc, "searchBar");
+    return [value isKindOfClass:[UISearchBar class]] ? value : nil;
 }
 
 static UIRefreshControl *ApolloSearchTabRefreshControl(UIViewController *vc) {
@@ -188,8 +178,8 @@ static void ApolloSearchTabUpdateRefreshAvailability(UIViewController *vc) {
 
 static void *ApolloSearchTabTrendingStorage(UIViewController *vc) {
     if (!vc) return NULL;
-    Ivar ivar = class_getInstanceVariable(vc.class, "trendingSubreddits");
-    return ivar ? (uint8_t *)(__bridge void *)vc + ivar_getOffset(ivar) : NULL;
+    ptrdiff_t offset = ApolloIvarOffset(object_getClass(vc), "trendingSubreddits");
+    return offset >= 0 ? (uint8_t *)(__bridge void *)vc + offset : NULL;
 }
 
 static NSArray<NSString *> *ApolloSearchTabCopyTrending(UIViewController *vc) {
@@ -260,16 +250,9 @@ static void ApolloSearchTabSyncRandomNSFWSection(UIViewController *vc) {
 }
 
 static BOOL ApolloSearchTabNativeSearching(UIViewController *vc) {
-    for (Class cls = object_getClass(vc); cls; cls = class_getSuperclass(cls)) {
-        Ivar ivar = class_getInstanceVariable(cls, "searching");
-        if (!ivar) continue;
-        uint8_t value = 0;
-        memcpy(&value,
-               (uint8_t *)(__bridge void *)vc + ivar_getOffset(ivar),
-               sizeof(value));
-        return (value & 1) != 0;
-    }
-    return !ApolloSearchTabIsDefaultState(vc);
+    ptrdiff_t offset = ApolloIvarOffset(object_getClass(vc), "searching");
+    if (offset < 0) return !ApolloSearchTabIsDefaultState(vc);
+    return (*((const uint8_t *)(__bridge const void *)vc + offset) & 1) != 0;
 }
 
 // Apollo's native text-change batch inserts/deletes exactly one section-3 row.
@@ -625,7 +608,7 @@ static void ApolloSearchTabScheduleDuoUpdate(UIViewController *vc) {
                                      OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
             if (error) {
-                ApolloLog(@"[SearchTabFixes] trending refresh failed: %@",
+                ApolloLogError(@"[SearchTabFixes] trending refresh failed: %@",
                           error.localizedDescription);
                 ApolloShowToastWithStyle(
                     @"Couldn't Refresh Trending Subreddits",
@@ -798,7 +781,7 @@ static void ApolloSearchTabScheduleDuoUpdate(UIViewController *vc) {
     UINavigationController *nav = (UINavigationController *)page;
     UIViewController *root = nav.viewControllers.firstObject;
     if (nav.viewControllers.count != 1 ||
-        ![root isKindOfClass:NSClassFromString(@"_TtC6Apollo20SearchViewController")]) {
+        ![root isKindOfClass:objc_getClass("_TtC6Apollo20SearchViewController")]) {
         return %orig(tabs, page);
     }
     if (tabs.presentedViewController || nav.presentedViewController ||
