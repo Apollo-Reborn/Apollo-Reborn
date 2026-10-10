@@ -1,5 +1,6 @@
 #import "ApolloSettingsShortcutsViewController.h"
 #import "ApolloSettingsRouter.h"
+#import "settings/ApolloSetupAssistant.h"
 #import "ApolloSiriSettingsViewController.h"
 
 #import <objc/message.h>
@@ -63,6 +64,7 @@ static void ApolloSettingsRouterEnsureRegistry(void) {
             };
 
         add(@"reborn", @"Apollo Reborn", @"Settings", ApolloSettingsInsetGrouped([CustomAPIViewController class]));
+        add(@"setup-assistant", @"Setup Assistant", @"Apollo Reborn → Setup", ^UIViewController *{ return [ApolloSetupAssistantViewController new]; });
         if (NSClassFromString(@"ApolloContentBridge")) {
             add(@"siri-spotlight", @"Siri & Spotlight", @"Apollo Reborn", ApolloSettingsInsetGrouped([ApolloSiriSettingsViewController class]));
         }

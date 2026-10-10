@@ -1,6 +1,8 @@
 #import "ApolloProfilePicturesPreview.h"
 #import "ApolloSettingsShortcutsViewController.h"
 #import "settings/CustomAPIViewController.h"
+#import "settings/ApolloSetupAssistant.h"
+#import "ApolloSignInSplash.h"
 #import "settings/ApolloSiriSettingsViewController.h"
 #import "ApolloCommon.h"
 #import "ApolloAppIcon.h"
@@ -1224,6 +1226,11 @@ typedef NS_ENUM(NSInteger, Tag) {
 }
 
 - (ApolloSettingsSection *)buildSetupSection {
+    ApolloSettingsRow *assistant =
+        [ApolloSettingsRow disclosureRowWithID:@"setup.assistant" title:@"Setup Assistant" detail:nil
+            push:^UIViewController * { return [ApolloSetupAssistantViewController new]; }];
+    assistant.iconSystemName = @"wand.and.stars";
+    assistant.iconTileColor = UIColor.systemPurpleColor;
     ApolloSettingsRow *apiKeys =
         [self hubDisclosureRowWithID:@"setup.apiKeys"
                                title:@"Accounts & API Keys"
@@ -1235,7 +1242,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     apiKeys.iconTileColor = [UIColor systemGrayColor];
     return [ApolloSettingsSection sectionWithTitle:@"Setup"
                                             footer:@"Your Reddit sign-in credentials, plus optional Imgur, Giphy and Image Chest keys for uploads and GIFs, and a Kagi Session Link for searching Reddit with Kagi."
-                                              rows:@[ apiKeys ]];
+                                              rows:@[ assistant, apiKeys ]];
 }
 
 - (ApolloSettingsSection *)buildFeaturesSection {
@@ -5075,6 +5082,39 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
               [self buildAPIKeysSignInSection],
               [self buildAPIKeysExperimentalSection],
               [self buildAPIKeysExtrasSection] ];
+}
+@end
+
+@implementation ApolloSetupAPIKeyViewController
+- (NSString *)apollo_screenTitle { return @"Reddit API Key"; }
+- (NSArray<ApolloSettingsSection *> *)buildForm {
+    ApolloSettingsSection *source = [self buildAPIKeysDefaultSection];
+    NSSet *ids = [NSSet setWithArray:@[@"api.redditKey", @"api.redditSecret", @"api.redirectURI"]];
+    NSMutableArray *fields = [NSMutableArray array];
+    for (ApolloSettingsRow *row in source.rows) {
+        if ([ids containsObject:row.rowID]) [fields addObject:row];
+    }
+    __weak typeof(self) weakSelf = self;
+    ApolloSettingsRow *signIn = [ApolloSettingsRow buttonRowWithID:@"setup.apiSignIn" title:@"Sign In with Reddit"
+        action:^{
+            [weakSelf.view endEditing:YES];
+            if (!sRedditClientId.length) {
+                [weakSelf showAlertWithTitle:@"Reddit API Key Required" message:@"Enter your Reddit API key above before signing in."];
+                return;
+            }
+            if (!ApolloStartAPIKeySignIn()) {
+                [weakSelf showAlertWithTitle:@"Unable to Start Sign-In" message:@"Return to setup and try again once Apollo has finished loading."];
+            }
+        }];
+    ApolloSettingsRow *help = [ApolloSettingsRow buttonRowWithID:@"setup.apiHelp" title:@"Help with Reddit Sign-In"
+        action:^{ [weakSelf pushTroubleshootingViewController]; }];
+    return @[
+        [ApolloSettingsSection sectionWithTitle:@"Reddit Credentials"
+            footer:@"Enter the client ID from your Reddit app as the API key. Installed-app clients do not need a secret. Leave Redirect URI empty to use the Apollo default. Credentials are saved as you edit; your feature preset is applied only when you finish setup."
+            rows:fields],
+        [ApolloSettingsSection sectionWithTitle:nil footer:@"After signing in, return to Setup Assistant to choose your preferences. Optional upload and GIF keys can be added later."
+            rows:@[signIn, help]],
+    ];
 }
 @end
 
