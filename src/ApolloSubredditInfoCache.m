@@ -2,6 +2,7 @@
 
 #import "ApolloAccountCredentials.h"   // ApolloActiveAccountUsername() — userIsSubscriber stamping
 #import "ApolloCommon.h"               // ApolloLog
+#import "ApolloNativeSubredditIcons.h"
 #import "ApolloState.h"
 #import "ApolloWebJSON.h"              // ApolloWebJSONOptionalReadBackoff, ApolloWebJSONHasUsableSession
 #import "ApolloWebSessionStore.h"      // ApolloActiveWebSessionUsername
@@ -10,11 +11,33 @@ NSString * const ApolloSubredditInfoUpdatedNotification = @"ApolloSubredditInfoU
 NSString * const ApolloSubredditNameKey = @"subredditName";
 
 static NSTimeInterval const ApolloSubredditInfoCacheTTL = 7.0 * 24.0 * 60.0 * 60.0;
+static NSInteger const ApolloSubredditAssetSelectionVersion = 1;
 static NSUInteger const ApolloSubredditInfoDiskCacheMaxEntries = 800;
 // Cap stored about text: an empty public_description falls back to the full
 // sidebar markdown, and measuring/drawing thousands of chars makes scrolling
 // near the header laggy. We only ever show a few lines anyway.
 static NSUInteger const ApolloSubredditAboutTextMaxLength = 500;
+// /api/info accepts up to 100 names per request.
+static NSUInteger const ApolloSubredditNativeIconBatchSize = 100;
+// Lets launch traffic (feeds, avatars, account load) settle first.
+static NSTimeInterval const ApolloSubredditNativeIconRefreshDelay = 30.0;
+
+void ApolloSubredditPrepareNativeIcons(void) {
+    NSUInteger applied = ApolloNativeSubredditIconApplyPendingRefresh([NSUserDefaults standardUserDefaults]);
+    if (applied > 0) ApolloLog(@"[SubredditHeaders] updated %lu native subreddit icons", (unsigned long)applied);
+
+    __block id observer = [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification
+                                                                            object:nil
+                                                                             queue:NSOperationQueue.mainQueue
+                                                                        usingBlock:^(__unused NSNotification *note) {
+        [[NSNotificationCenter defaultCenter] removeObserver:observer];
+        observer = nil;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(ApolloSubredditNativeIconRefreshDelay * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [[ApolloSubredditInfoCache sharedCache] refreshNativeSubredditIconsIfDue];
+        });
+    }];
+}
 
 NSString *ApolloSubredditFormattedMemberCount(NSInteger subscriberCount) {
     if (subscriberCount < 0) return @"";
@@ -97,15 +120,17 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSMutableArray<void (^)(ApolloSubredditInfo *)> *> *infoCompletions;
 // Negative cache for permanent misses (touched only on `queue`).
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSDate *> *notFoundDates;
-// Keys with a non-forced request in flight when a forced one arrived: the
-// in-flight response may be HTTP-cache-stale, so one forced fetch reruns after
-// it finishes instead of being silently swallowed by the coalescer.
+// Keys with a non-forced request in flight when a forced one arrived: that
+// request may have left before the change the caller is refreshing for (a Join
+// flips user_is_subscriber), so one forced fetch reruns after it finishes
+// instead of being silently swallowed by the coalescer.
 @property(nonatomic, strong) NSMutableSet<NSString *> *pendingForcedKeys;
 @property(nonatomic, strong) NSURLSession *session;
 @property(nonatomic) dispatch_queue_t queue;
 @property(nonatomic) dispatch_queue_t ioQueue;
 @property(nonatomic) BOOL diskSaveScheduled;
 @property(nonatomic) NSUInteger diskSaveGeneration;
+@property(nonatomic) BOOL nativeIconRefreshRunning; // touched only on `queue`
 - (void)publishInfoSnapshotLocked;
 - (void)scheduleDiskCacheSaveLocked;
 - (void)startFetchForKey:(NSString *)key cached:(ApolloSubredditInfo *)cached forced:(BOOL)forced attempt:(NSInteger)attempt;
@@ -136,7 +161,8 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
         _pendingForcedKeys = [NSMutableSet set];
 
         NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
-        configuration.requestCachePolicy = NSURLRequestReturnCacheDataElseLoad;
+        // Expired metadata must reach Reddit instead of renewing stale HTTP data.
+        configuration.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
         configuration.timeoutIntervalForRequest = 15.0;
         configuration.HTTPMaximumConnectionsPerHost = 4;
         _session = [NSURLSession sessionWithConfiguration:configuration];
@@ -201,6 +227,7 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
 }
 
 - (BOOL)isFreshInfo:(ApolloSubredditInfo *)info {
+    if (info.assetSelectionVersion != ApolloSubredditAssetSelectionVersion) return NO;
     if (!info.fetchedAt) return NO;
     return fabs([info.fetchedAt timeIntervalSinceNow]) < ApolloSubredditInfoCacheTTL;
 }
@@ -213,6 +240,7 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
         @"iconURL": info.iconURL.absoluteString ?: @"",
         @"bannerURL": info.bannerURL.absoluteString ?: @"",
         @"fetchedAt": @([info.fetchedAt timeIntervalSince1970]),
+        @"assetSelectionVersion": @(info.assetSelectionVersion),
     } mutableCopy];
     if (info.subscriberCount >= 0) {
         dict[@"subscriberCount"] = @(info.subscriberCount);
@@ -263,6 +291,8 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
                                                     bannerURL:bannerURL
                                               subscriberCount:subscriberCount
                                                     fetchedAt:fetchedAt];
+    id assetVersion = dict[@"assetSelectionVersion"];
+    info.assetSelectionVersion = [assetVersion isKindOfClass:NSNumber.class] ? [assetVersion integerValue] : 0;
     info.commentMediaInfoAvailable = [dict[@"commentMediaInfoAvailable"] boolValue];
     info.allowsImageComments = [dict[@"allowsImageComments"] boolValue];
     info.allowsGifComments = [dict[@"allowsGifComments"] boolValue];
@@ -279,7 +309,11 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
 - (void)pruneDiskInfoLocked {
     NSMutableArray<NSString *> *staleKeys = [NSMutableArray array];
     for (NSString *key in self.diskInfo) {
-        if (![self isFreshInfo:self.diskInfo[key]]) [staleKeys addObject:key];
+        // Keep entries awaiting migration so failed refreshes preserve their cached identity.
+        NSDate *fetchedAt = self.diskInfo[key].fetchedAt;
+        if (!fetchedAt || fabs([fetchedAt timeIntervalSinceNow]) >= ApolloSubredditInfoCacheTTL) {
+            [staleKeys addObject:key];
+        }
     }
     for (NSString *key in staleKeys) [self.diskInfo removeObjectForKey:key];
 
@@ -362,14 +396,11 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
     return [subredditName stringByAddingPercentEncodingWithAllowedCharacters:allowed] ?: subredditName;
 }
 
-- (NSURLRequest *)requestForSubreddit:(NSString *)subredditName {
-    NSString *escaped = [self escapedSubredditForPath:subredditName];
+// `path` carries the .json suffix and query; oauth.reddit.com accepts both.
+- (NSMutableURLRequest *)requestForRedditPath:(NSString *)path {
     NSString *token = ApolloActiveAccountRedditBearerToken();
-    NSString *urlString = token.length > 0
-        ? [NSString stringWithFormat:@"https://oauth.reddit.com/r/%@/about.json?raw_json=1", escaped]
-        : [NSString stringWithFormat:@"https://www.reddit.com/r/%@/about.json?raw_json=1", escaped];
-
-    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]];
+    NSString *host = token.length > 0 ? @"https://oauth.reddit.com" : @"https://www.reddit.com";
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:[host stringByAppendingString:path]]];
     request.HTTPMethod = @"GET";
     request.timeoutInterval = 15.0;
     if (token.length > 0) {
@@ -378,6 +409,18 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
     NSString *userAgent = sUserAgent.length > 0 ? sUserAgent : @"ApolloSubredditHeader/1.0";
     [request setValue:userAgent forHTTPHeaderField:@"User-Agent"];
     return request;
+}
+
+// With no bearer (an API-Key-Free account) the chokepoint signs the request
+// with the web session cookie; returns that session's username, else nil.
+- (NSString *)webSessionUsernameForRequest:(NSURLRequest *)request {
+    BOOL unauthenticated = [request valueForHTTPHeaderField:@"Authorization"].length == 0;
+    return unauthenticated && ApolloWebJSONHasUsableSession() ? ApolloActiveWebSessionUsername() : nil;
+}
+
+- (NSURLRequest *)requestForSubreddit:(NSString *)subredditName {
+    NSString *escaped = [self escapedSubredditForPath:subredditName];
+    return [self requestForRedditPath:[NSString stringWithFormat:@"/r/%@/about.json?raw_json=1", escaped]];
 }
 
 - (ApolloSubredditInfo *)infoFromResponseData:(NSData *)data fallbackSubredditName:(NSString *)fallbackSubredditName {
@@ -399,11 +442,12 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
         subredditName;
     NSString *aboutText = [self cleanAboutTextFromValue:dataDict[@"public_description"]] ?:
         [self cleanAboutTextFromValue:dataDict[@"description"]];
-    NSURL *iconURL = [self URLFromString:dataDict[@"icon_img"]] ?:
-        [self URLFromString:dataDict[@"community_icon"]];
-    NSURL *bannerURL = [self URLFromString:dataDict[@"banner_img"]] ?:
-        [self URLFromString:dataDict[@"mobile_banner_image"]] ?:
-        [self URLFromString:dataDict[@"banner_background_image"]];
+    // Legacy fields can retain old artwork after moderators update modern Reddit.
+    NSURL *iconURL = [self URLFromString:dataDict[@"community_icon"]] ?:
+        [self URLFromString:dataDict[@"icon_img"]];
+    NSURL *bannerURL = [self URLFromString:dataDict[@"mobile_banner_image"]] ?:
+        [self URLFromString:dataDict[@"banner_background_image"]] ?:
+        [self URLFromString:dataDict[@"banner_img"]];
     NSInteger subscriberCount = -1;
     id subscriberValue = dataDict[@"subscribers"];
     if ([subscriberValue respondsToSelector:@selector(integerValue)]) {
@@ -417,6 +461,7 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
                                                     bannerURL:bannerURL
                                               subscriberCount:subscriberCount
                                                     fetchedAt:[NSDate date]];
+    info.assetSelectionVersion = ApolloSubredditAssetSelectionVersion;
 
     // Only present on an authenticated fetch; leaving it nil otherwise is what
     // lets callers tell "not subscribed" apart from "nobody asked reddit as
@@ -478,7 +523,7 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
         [self.infoCompletions removeObjectForKey:key];
 
         // A forced request that arrived while a non-forced fetch was already
-        // in flight reruns now with the HTTP cache bypassed.
+        // in flight reruns now, so its response postdates the caller's change.
         BOOL rerunForced = [self.pendingForcedKeys containsObject:key];
         [self.pendingForcedKeys removeObject:key];
         if (rerunForced) {
@@ -504,9 +549,7 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
 - (void)startFetchForKey:(NSString *)key cached:(ApolloSubredditInfo *)cached forced:(BOOL)forced attempt:(NSInteger)attempt {
     NSMutableURLRequest *request = [[self requestForSubreddit:key] mutableCopy];
     if (forced) {
-        // The session policy is ReturnCacheDataElseLoad; without this a
-        // "refetch" (post-Join subscriber sync, pull-to-refresh) happily
-        // serves days-old HTTP-cached about.json.
+        // Explicit refreshes also ask intermediary caches to revalidate.
         request.cachePolicy = NSURLRequestReloadIgnoringLocalAndRemoteCacheData;
     }
 
@@ -514,8 +557,7 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
     // with the web session cookie. While Reddit has that session rate-limited,
     // fall back to the cached entry (or nothing) instead of adding to it; the
     // subreddit's own posts are waiting on the same window to reset.
-    NSString *webSessionUsername = ([request valueForHTTPHeaderField:@"Authorization"].length == 0 &&
-                                    ApolloWebJSONHasUsableSession()) ? ApolloActiveWebSessionUsername() : nil;
+    NSString *webSessionUsername = [self webSessionUsernameForRequest:request];
     NSTimeInterval budgetWait = ApolloWebJSONOptionalReadBackoff(webSessionUsername);
     if (budgetWait > 0) {
         ApolloLog(@"[SubredditHeaders] Info fetch r/%@ held for %.0fs while Reddit rate-limits u/%@",
@@ -615,7 +657,7 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
         if (completion) [self.infoCompletions[key] addObject:[completion copy]];
         if (hadRequest) {
             // Don't silently swallow a forced refresh in the coalescer — the
-            // in-flight non-forced request may serve HTTP-cache-stale data.
+            // in-flight non-forced request may predate the caller's change.
             if (forceRefresh) [self.pendingForcedKeys addObject:key];
             return;
         }
@@ -652,6 +694,71 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
     }
     BOOL forceRefresh = cached != nil && !cached.userFlairInfoAvailable;
     [self enqueueRequestForSubreddit:subredditName forceRefresh:forceRefresh completion:completion];
+}
+
+// MARK: - Native icon tracker refresh
+
+// Runs on `queue`, one /api/info request per batch of names, sequentially.
+- (void)fetchNativeIconsForNames:(NSArray<NSString *> *)names
+                       fromIndex:(NSUInteger)start
+                           found:(NSMutableDictionary<NSString *, NSString *> *)found {
+    void (^finish)(BOOL) = ^(BOOL complete) {
+        ApolloNativeSubredditIconRecordRefresh([NSUserDefaults standardUserDefaults], found, complete, [NSDate date]);
+        self.nativeIconRefreshRunning = NO;
+        ApolloLog(@"[SubredditHeaders] Native icon lookup %@: %lu of %lu subreddits have icons, applied next launch",
+                  complete ? @"finished" : @"stopped early", (unsigned long)found.count, (unsigned long)names.count);
+    };
+    if (start >= names.count) {
+        finish(YES);
+        return;
+    }
+
+    NSUInteger count = MIN(ApolloSubredditNativeIconBatchSize, names.count - start);
+    NSMutableArray<NSString *> *escaped = [NSMutableArray arrayWithCapacity:count];
+    for (NSString *name in [names subarrayWithRange:NSMakeRange(start, count)]) {
+        [escaped addObject:[self escapedSubredditForPath:name]];
+    }
+    NSString *path = [NSString stringWithFormat:@"/api/info.json?raw_json=1&sr_name=%@",
+                      [escaped componentsJoinedByString:@","]];
+    NSURLRequest *request = [self requestForRedditPath:path];
+    // Optional work: never spend a rate-limited web session on it.
+    if (ApolloWebJSONOptionalReadBackoff([self webSessionUsernameForRequest:request]) > 0) {
+        finish(NO);
+        return;
+    }
+
+    __weak typeof(self) weakSelf = self;
+    NSURLSessionDataTask *task = [self.session dataTaskWithRequest:request
+                                                 completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        NSInteger statusCode = [response isKindOfClass:NSHTTPURLResponse.class] ? ((NSHTTPURLResponse *)response).statusCode : 0;
+        dispatch_async(strongSelf.queue, ^{
+            if (error || statusCode < 200 || statusCode >= 300) {
+                ApolloLog(@"[SubredditHeaders] Native icon lookup failed (HTTP %ld, %@)",
+                          (long)statusCode, error.localizedDescription ?: @"no error");
+                finish(NO);
+                return;
+            }
+            [found addEntriesFromDictionary:ApolloNativeSubredditIconURLsFromInfoResponse(data)];
+            [strongSelf fetchNativeIconsForNames:names fromIndex:start + count found:found];
+        });
+    }];
+    [task resume];
+}
+
+- (void)refreshNativeSubredditIconsIfDue {
+    dispatch_async(self.queue, ^{
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        if (self.nativeIconRefreshRunning || !ApolloNativeSubredditIconRefreshIsDue(defaults, [NSDate date])) return;
+        NSArray<NSString *> *names = ApolloNativeSubredditIconNames([defaults dataForKey:@"SubredditIconData"]);
+        if (names.count == 0) {
+            ApolloNativeSubredditIconRecordRefresh(defaults, @{}, YES, [NSDate date]);
+            return;
+        }
+        self.nativeIconRefreshRunning = YES;
+        [self fetchNativeIconsForNames:names fromIndex:0 found:[NSMutableDictionary dictionary]];
+    });
 }
 
 - (void)clearAllCaches {
