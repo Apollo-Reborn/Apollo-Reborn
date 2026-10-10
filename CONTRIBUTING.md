@@ -12,13 +12,18 @@ git submodule update --init --recursive
 make package
 ```
 
-**Required SDK.** `Makefile` pins `TARGET := iphone:clang:26.0:14.0` so the tweak keeps supporting iOS 14 users even though newer Xcode releases raised their SDK's own minimum deployment target above that. This means an iOS 26.0 SDK must exist at `$THEOS/sdks/iPhoneOS26.0.sdk` — Theos checks `$THEOS/sdks` in addition to the active Xcode's own SDKs directory, so this works without modifying Xcode.app. If it's missing, `make package` will fail to find the SDK; get one via (in order of preference):
+**Required SDK.** Device `make package` defaults to `iphone:clang:26.0:14.0`, preserving iOS 14 support even when newer SDKs are installed. CI selects Xcode 26.0.1, which includes this SDK. On a Mac with newer Xcode, install a genuine 26.0 SDK under Theos:
 
-1. Copy it out of a locally installed Xcode 26.x: `cp -R "/Applications/Xcode_26.x.x.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk" "$THEOS/sdks/iPhoneOS26.0.sdk"`
-2. [theos/sdks](https://github.com/theos/sdks) — best-vetted, but only goes up to iOS 16.5, so it cannot be used for now
-3. [xybp888/iOS-SDKs](https://github.com/xybp888/iOS-SDKs) — contains iOS 26 SDKs, community maintained
+```bash
+cp -R "/Applications/Xcode_26.x.x.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk" \
+      "$THEOS/sdks/iPhoneOS26.0.sdk"
+```
 
-This only applies to device builds — `scripts/run-in-sim.sh` deliberately doesn't use this trick (see [AGENTS.md](AGENTS.md) under "Required SDK" for why pairing an old Simulator SDK with a newer clang doesn't work the same way). See that same section for the full explanation.
+Prefer extracting your own Apple-issued SDK. If unavailable, check [theos/sdks](https://github.com/theos/sdks), then [xybp888/iOS-SDKs](https://github.com/xybp888/iOS-SDKs), for the required version. Verify `SDKSettings.json` → `Version`; renaming an older SDK does not upgrade it. Theos matches the folder name `iPhoneOS<version>.sdk`. A downloaded Simulator runtime is not a device SDK.
+
+A developer-only newer-SDK build requires an explicit compatible deployment target, for example `make package APOLLO_DEVICE_SDK=27.1 APOLLO_DEVICE_DEPLOY=15.0`. SDK 27.1 requires iOS 15 or newer; this artifact does **not** support iOS 14. The Makefile rejects alternate SDK pins without an explicit iOS 15-or-newer floor; check the selected SDK for any higher minimum. Keep the default 26.0/14.0 combination for releases.
+
+Explicit command-line `TARGET` remains authoritative. The simulator script supplies `TARGET=simulator:clang:latest:15.0`, independent of device defaults. See [AGENTS.md](AGENTS.md) for the SDK rationale.
 
 ## Testing in the iOS Simulator
 
@@ -38,7 +43,7 @@ Requirements: Xcode with an iOS Simulator runtime installed, and the same `apoll
 
 How it works, briefly: Apollo's App Store binary is built for device iOS, so the script rewrites each Mach-O's platform tag to iOS-Simulator and re-signs it ad-hoc (the arm64 code is identical on an Apple Silicon Mac). The tweak itself is built against the simulator SDK with Logos's *internal* generator — pure ObjC-runtime swizzling with no CydiaSubstrate dependency — and with `APOLLO_SIM_BUILD=1`, which skips the device-only FFmpegKit libraries. It's then injected with `DYLD_INSERT_LIBRARIES`.
 
-**Liquid Glass.** By default the simulator shows the standard (pre-iOS-26) Apollo UI, because the base IPA is linked against an older SDK. Pass `--glass` to apply the iOS 26 Liquid Glass patch — the floating glass tab bar, capsule nav buttons, and the in-app icon picker. It reuses `patch.sh --liquid-glass` (the same patcher the device builds use) to produce a cached glass base. Toggling `--glass` / `--no-glass` re-prepares the app.
+**Liquid Glass.** By default the simulator shows the standard (pre-iOS-26) Apollo UI, because the base IPA is linked against an older SDK. Pass `--glass` to apply the Liquid Glass patch (guest `LC_BUILD_VERSION` sdk **27.1** — iOS 26 chrome plus iPhone Duo full-bleed). It reuses `patch.sh --liquid-glass`. A cached `.sim` shell at sdk 19.0 will be regenerated. Toggling `--glass` / `--no-glass` re-prepares the app.
 
 **Custom bundle id.** If your installed device build is rebranded, run the simulator under the same id so behavior matches: `BUNDLE_ID=com.example.MyBuild scripts/run-in-sim.sh`. The script rebrands the cached app (app + every extension) to that id and caches it; switching ids triggers one re-prepare. You can also override `SIM_DEVICE_TYPE`, `SIM_RUNTIME`, and `SIM_NAME`.
 
@@ -63,7 +68,7 @@ python3.11 -m venv ~/.idb-venv && ~/.idb-venv/bin/pip install fb-idb
 IDB=~/.idb-venv/bin/idb scripts/run-in-sim.sh --drive   # writes ./.sim/uitree.json and ./.sim/screenshot.png
 ```
 
-**Xcode 27 / Device Hub.** Simulator.app was replaced by Device Hub (`com.apple.dt.Devices`); the script opens whichever is present. `--drive`'s screenshot is taken via `simctl io screenshot` rather than idb — idb_companion's screenshot RPC returns "No Image available to encode" against Xcode 27's iOS-27 sims. `idb ui describe-all` (the accessibility tree) still works fine. idb's HID commands (`idb ui tap`/`text`/swipe) are currently broken under Xcode 27: idb_companion 1.1.8 hardcodes `SimulatorKit.framework` at the pre-27 path (`Contents/Developer/Library/PrivateFrameworks/`), which Xcode 27 moved to `Contents/SharedFrameworks/`, and Xcode.app's bundle is write-protected so it can't be symlinked back. Until idb_companion ships a fix, drive taps manually in Device Hub.
+**Xcode 27 / Device Hub.** Simulator.app was replaced by Device Hub (`com.apple.dt.Devices`); the script opens Device Hub only; it does not automatically fall back to Simulator.app if Device Hub is unavailable. `--drive`'s screenshot is taken via `simctl io screenshot` rather than idb — idb_companion's screenshot RPC returns "No Image available to encode" against Xcode 27's iOS-27 sims. `idb ui describe-all` (the accessibility tree) still works fine. idb's HID commands (`idb ui tap`/`text`/swipe) are currently broken under Xcode 27: idb_companion 1.1.8 hardcodes `SimulatorKit.framework` at the pre-27 path (`Contents/Developer/Library/PrivateFrameworks/`), which Xcode 27 moved to `Contents/SharedFrameworks/`, and Xcode.app's bundle is write-protected so it can't be symlinked back. Until idb_companion ships a fix, drive taps manually in Device Hub.
 
 **What the simulator can't test:** push notifications (so Live Activities push-to-start needs a real device), the FFmpeg-based v.redd.it audio remux (compiled out of sim builds), and any other genuinely device-only behavior. Validate those on a device IPA. Everything else — settings, navigation, Liquid Glass, layout, media playback UI — works in the simulator, which runs the same iOS version family as a modern device.
 

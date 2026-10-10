@@ -217,14 +217,16 @@ static const void *kApolloSFDisplayStyledKey = &kApolloSFDisplayStyledKey;
     // (see -tableView:willDisplayFooterView:forSection:).
     BOOL _footerHeightCheckPending;
     // The height each plain-string footer's own view asked for, keyed by
-    // "table width|footer text" and served from
+    // "table geometry|footer text" and served from
     // -tableView:heightForFooterInSection:. See "section footer heights".
     NSMutableDictionary<NSString *, NSNumber *> *_footerMeasuredHeights;
     // How often each footer's measurement has changed, keyed by
-    // "label point size|width|text" — the bound on the adopting pass.
+    // "label point size|geometry|text" — the bound on the adopting pass.
     NSMutableDictionary<NSString *, NSNumber *> *_footerMeasureChanges;
     // A check is parked on the running navigation transition's completion.
     BOOL _footerHeightCheckDeferred;
+    NSString *_lastSectionGeometry;
+    BOOL _sectionGeometryNeedsUpdate;
 }
 
 - (NSArray<ApolloSettingsSection *> *)buildForm {
@@ -239,6 +241,18 @@ static const void *kApolloSFDisplayStyledKey = &kApolloSFDisplayStyledKey;
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 52.0;
     [self rebuildForm];
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    UITableView *table = self.tableView;
+    // Duo can change column width by moving the safe area while the table's
+    // bounds stay full-screen. Cached row/footer heights must follow both.
+    NSString *geometry = [self apollo_sf_footerHeightKeyForText:@"" inTableView:table];
+    if (!geometry || [geometry isEqualToString:_lastSectionGeometry]) return;
+    _sectionGeometryNeedsUpdate = _lastSectionGeometry != nil;
+    _lastSectionGeometry = geometry;
+    [self apollo_sf_scheduleFooterHeightCheck];
 }
 
 - (void)refreshFormAfterRowMove {
@@ -730,7 +744,7 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
 //
 // So: once a footer's view has been displayed, take the height that view asks
 // for (on the next runloop turn — by then the label has its final font),
-// remember it by table width and text, and answer heightForFooterInSection:
+// remember it by table geometry and text, and answer heightForFooterInSection:
 // with it from then on. Whatever the table rebuilds later, that footer keeps
 // the measured height whether it is on screen or not, and one updates pass is
 // enough for the table to adopt a new measurement. The footers that are not on
@@ -744,15 +758,18 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
 - (CGFloat)apollo_sf_fittedHeightForFooterView:(UIView *)view inTableView:(UITableView *)tableView {
     if (![view isKindOfClass:[UITableViewHeaderFooterView class]]) return 0.0;
     if (((UITableViewHeaderFooterView *)view).textLabel.text.length == 0) return 0.0;
-    CGFloat width = CGRectGetWidth(tableView.bounds);
+    CGFloat width = CGRectGetWidth(view.bounds);
     if (width <= 0.0) return 0.0;
     return [view sizeThatFits:CGSizeMake(width, 0.0)].height;
 }
 
 - (NSString *)apollo_sf_footerHeightKeyForText:(NSString *)text inTableView:(UITableView *)tableView {
     CGFloat width = CGRectGetWidth(tableView.bounds);
-    if (text.length == 0 || width <= 0.0) return nil;
-    return [NSString stringWithFormat:@"%.0f|%@", width, text];
+    if (width <= 0.0) return nil;
+    UIEdgeInsets safe = tableView.safeAreaInsets;
+    UIEdgeInsets margins = tableView.layoutMargins;
+    return [NSString stringWithFormat:@"%.1f|%.1f|%.1f|%.1f|%.1f|%@",
+            width, safe.left, safe.right, margins.left, margins.right, text];
 }
 
 // Measures the plain footers that are not on screen, so the pass that adopts
@@ -906,6 +923,8 @@ static const NSUInteger kApolloSFMaxFooterMeasureChanges = 4;
 
     NSInteger sections = MIN(tableView.numberOfSections, (NSInteger)_visibleSections.count);
     BOOL needsPass = [self apollo_sf_measureFootersAheadInTableView:tableView sections:sections];
+    needsPass |= _sectionGeometryNeedsUpdate;
+    _sectionGeometryNeedsUpdate = NO;
     for (NSInteger section = 0; section < sections; section++) {
         UITableViewHeaderFooterView *footer = [tableView footerViewForSection:section];
         CGFloat fitted = [self apollo_sf_fittedHeightForFooterView:footer inTableView:tableView];
@@ -938,9 +957,21 @@ static const NSUInteger kApolloSFMaxFooterMeasureChanges = 4;
                   (long)section, height, fitted);
     }
     if (!needsPass) return;
+    // Adopting footer measurements must not move the reader. UITableView may
+    // compensate its offset when estimates below the viewport become exact,
+    // which otherwise makes a newly pushed settings page snap upward.
+    __block CGPoint offset = tableView.contentOffset;
+    CGFloat distanceFromTop = offset.y + tableView.adjustedContentInset.top;
     [UIView performWithoutAnimation:^{
         [tableView beginUpdates];
         [tableView endUpdates];
+        [tableView layoutIfNeeded];
+        if (!tableView.dragging && !tableView.decelerating) {
+            CGFloat minimum = -tableView.adjustedContentInset.top;
+            CGFloat maximum = MAX(minimum, tableView.contentSize.height - tableView.bounds.size.height + tableView.adjustedContentInset.bottom);
+            offset.y = MIN(maximum, MAX(minimum, distanceFromTop + minimum));
+            [tableView setContentOffset:offset animated:NO];
+        }
     }];
 }
 

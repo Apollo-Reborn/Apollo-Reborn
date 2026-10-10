@@ -2,15 +2,20 @@
 #import "ApolloSettingsRouter.h"
 #import "ApolloCommon.h"
 #import "UserDefaultConstants.h"
+#import "ApolloDuoRail.h"
 
 NSArray<NSString *> *ApolloSettingsShortcutCatalog(void) {
     // Fixed discovery order mirrors Settings and the Reborn hub. Included
     // shortcuts use their separately persisted user order instead.
-    return @[@"reborn", @"accounts-api-keys", @"posts-feeds", @"comments", @"media",
+    NSArray<NSString *> *catalog = @[@"reborn", @"accounts-api-keys", @"posts-feeds", @"comments", @"media",
         @"subreddits", @"user-profiles", @"interface", @"rich-link-previews", @"apollo-ai",
         @"theme-manager", @"open-in-app", @"picture-in-picture", @"translation", @"saved-categories", @"tag-filters",
         @"automatic-backups", @"crash-reports", @"feature-requests", @"bug-reports",
         @"buy-coffee", @"general", @"pixel-pals", @"appearance", @"app-icon", @"filters", @"gestures"];
+    if (!ApolloDuoDeviceDetected()) return catalog;
+    NSMutableArray<NSString *> *available = [catalog mutableCopy];
+    [available removeObject:@"pixel-pals"];
+    return available;
 }
 
 NSArray<NSString *> *ApolloSettingsShortcutIDs(void) {

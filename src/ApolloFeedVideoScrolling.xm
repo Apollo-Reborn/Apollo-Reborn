@@ -114,13 +114,11 @@ static const int32_t kApolloInlineVideoTimeObserverTimescale = 30;
 
 #if APOLLO_SIM_BUILD
 static void ApolloVideoTimingRecord(NSString *step, CFTimeInterval ms, id node);
-#define APOLLO_VIDEO_TIMED(step, node, call) do { \
-    CFTimeInterval _t0 = CACurrentMediaTime(); \
-    call; \
-    ApolloVideoTimingRecord(step, (CACurrentMediaTime() - _t0) * 1000.0, node); \
-} while (0)
+#define APOLLO_VIDEO_TIMING_BEGIN CFTimeInterval _apolloTimingStart = CACurrentMediaTime()
+#define APOLLO_VIDEO_TIMING_END(step, node) ApolloVideoTimingRecord(step, (CACurrentMediaTime() - _apolloTimingStart) * 1000.0, node)
 #else
-#define APOLLO_VIDEO_TIMED(step, node, call) do { call; } while (0)
+#define APOLLO_VIDEO_TIMING_BEGIN
+#define APOLLO_VIDEO_TIMING_END(step, node)
 #endif
 
 // The timescale to install. Simulator builds can override it from the launch
@@ -304,9 +302,9 @@ static BOOL ApolloFeedCellHasInlineVideo(id cell) {
         && ApolloFeedVideoPrewarmPlayer(self, asset, keys)) {
         return;
     }
-    APOLLO_VIDEO_TIMED(@"ASVideoNode.prepareToPlayAsset", self,
-        %orig;
-    );
+    APOLLO_VIDEO_TIMING_BEGIN;
+    %orig;
+    APOLLO_VIDEO_TIMING_END(@"ASVideoNode.prepareToPlayAsset", self);
 }
 
 %end
@@ -480,15 +478,15 @@ static void ApolloLogRangeTuningOnce(void) {
 
 - (void)play {
     ApolloInlineVideoNotePlay(self);
-    APOLLO_VIDEO_TIMED(@"ASVideoNode.play", self,
-        %orig;
-    );
+    APOLLO_VIDEO_TIMING_BEGIN;
+    %orig;
+    APOLLO_VIDEO_TIMING_END(@"ASVideoNode.play", self);
 }
 
 - (void)pause {
-    APOLLO_VIDEO_TIMED(@"ASVideoNode.pause", self,
-        %orig;
-    );
+    APOLLO_VIDEO_TIMING_BEGIN;
+    %orig;
+    APOLLO_VIDEO_TIMING_END(@"ASVideoNode.pause", self);
 }
 
 - (id)constructPlayerNode {
@@ -499,21 +497,21 @@ static void ApolloLogRangeTuningOnce(void) {
 }
 
 - (void)didEnterPreloadState {
-    APOLLO_VIDEO_TIMED(@"ASVideoNode.didEnterPreloadState", self,
-        %orig;
-    );
+    APOLLO_VIDEO_TIMING_BEGIN;
+    %orig;
+    APOLLO_VIDEO_TIMING_END(@"ASVideoNode.didEnterPreloadState", self);
 }
 
 - (void)didExitPreloadState {
-    APOLLO_VIDEO_TIMED(@"ASVideoNode.didExitPreloadState", self,
-        %orig;
-    );
+    APOLLO_VIDEO_TIMING_BEGIN;
+    %orig;
+    APOLLO_VIDEO_TIMING_END(@"ASVideoNode.didExitPreloadState", self);
 }
 
 - (void)didEnterVisibleState {
-    APOLLO_VIDEO_TIMED(@"ASVideoNode.didEnterVisibleState", self,
-        %orig;
-    );
+    APOLLO_VIDEO_TIMING_BEGIN;
+    %orig;
+    APOLLO_VIDEO_TIMING_END(@"ASVideoNode.didEnterVisibleState", self);
 }
 
 %end
@@ -521,15 +519,15 @@ static void ApolloLogRangeTuningOnce(void) {
 %hook RichMediaNodeTiming
 
 - (void)didEnterPreloadState {
-    APOLLO_VIDEO_TIMED(@"RichMediaNode.didEnterPreloadState", self,
-        %orig;
-    );
+    APOLLO_VIDEO_TIMING_BEGIN;
+    %orig;
+    APOLLO_VIDEO_TIMING_END(@"RichMediaNode.didEnterPreloadState", self);
 }
 
 - (void)didExitPreloadState {
-    APOLLO_VIDEO_TIMED(@"RichMediaNode.didExitPreloadState", self,
-        %orig;
-    );
+    APOLLO_VIDEO_TIMING_BEGIN;
+    %orig;
+    APOLLO_VIDEO_TIMING_END(@"RichMediaNode.didExitPreloadState", self);
 }
 
 %end
@@ -541,21 +539,21 @@ static void ApolloLogRangeTuningOnce(void) {
     NSString *step = ApolloFeedCellHasInlineVideo(self)
         ? @"LargePostCellNode(video).didEnterVisibleState"
         : @"LargePostCellNode(other).didEnterVisibleState";
-    APOLLO_VIDEO_TIMED(step, self,
-        %orig;
-    );
+    APOLLO_VIDEO_TIMING_BEGIN;
+    %orig;
+    APOLLO_VIDEO_TIMING_END(step, self);
 }
 
 - (void)didEnterDisplayState {
-    APOLLO_VIDEO_TIMED(@"LargePostCellNode.didEnterDisplayState", self,
-        %orig;
-    );
+    APOLLO_VIDEO_TIMING_BEGIN;
+    %orig;
+    APOLLO_VIDEO_TIMING_END(@"LargePostCellNode.didEnterDisplayState", self);
 }
 
 - (void)didEnterPreloadState {
-    APOLLO_VIDEO_TIMED(@"LargePostCellNode.didEnterPreloadState", self,
-        %orig;
-    );
+    APOLLO_VIDEO_TIMING_BEGIN;
+    %orig;
+    APOLLO_VIDEO_TIMING_END(@"LargePostCellNode.didEnterPreloadState", self);
     dispatch_async(dispatch_get_main_queue(), ^{ ApolloLogRangeTuningOnce(); });
 }
 

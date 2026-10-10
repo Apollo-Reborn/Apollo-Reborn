@@ -140,6 +140,7 @@ jobs:
           path: theos
           submodules: recursive
 
+      # This Xcode supplies the Makefile's pinned iOS 26.0 release SDK.
       - name: Select Xcode 26.0.1
         run: sudo xcode-select -s /Applications/Xcode_26.0.1.app
 

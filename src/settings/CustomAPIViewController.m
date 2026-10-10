@@ -32,6 +32,8 @@
 #import "ApolloState.h"
 #import "ApolloScrollToTop.h"
 #import "ApolloTabBarHideStyle.h"
+#import "ApolloDuoRail.h"
+#import "ApolloDuoCompatibility.h"
 #import "ApolloTagFilters.h"
 #import "ApolloBadgeBookScraper.h"   // ApolloBadgeBookInvalidate() — Clear Tweak Caches
 #import "ApolloUserProfileCache.h"
@@ -130,8 +132,10 @@ static UIButton *ApolloSettingsMenuButton(NSString *menuTitle,
             ? UIMenuElementStateOn : UIMenuElementStateOff;
         [actions addObject:action];
     }];
+    UIMenuOptions options = 0;
+    if (@available(iOS 15.0, *)) options = UIMenuOptionsSingleSelection;
     button.menu = [UIMenu menuWithTitle:menuTitle image:nil identifier:nil
-                                options:UIMenuOptionsSingleSelection children:actions];
+                                options:options children:actions];
     button.showsMenuAsPrimaryAction = YES;
     button.accessibilityLabel = currentTitle;
     [button sizeToFit];
@@ -476,9 +480,7 @@ static CGFloat ApolloFeedShortcutsPreviewSideBySideCenterOffset(ApolloFeedShortc
     self.shortcutItemViewsByIndex = [itemViewsByIndex copy];
 
     if (usesShortcutLayout) {
-        UIColor *separatorColor = ApolloThemeSeparatorColor()
-            ?: self.hostTableView.separatorColor
-            ?: UIColor.separatorColor;
+        UIColor *separatorColor = UIColor.separatorColor;
         self.shortcutSeparators = ApolloFeedShortcutInstallLayout(self,
                                                                    shortcutItems,
                                                                    contentViews,
@@ -516,6 +518,16 @@ static CGFloat ApolloFeedShortcutsPreviewSideBySideCenterOffset(ApolloFeedShortc
 @interface CustomAPIViewController (ApolloFeedShortcutsPreview)
 - (void)apollo_refreshFeedShortcutsPreviewAnimated:(BOOL)animated;
 @end
+
+static BOOL ApolloInterfaceSupportsPhoneTabBarControls(void) {
+    return ApolloDuoCurrentMode() == ApolloDuoModePhone && !ApolloDuoRailHasVisibleSideBar();
+}
+
+static BOOL ApolloInterfaceSupportsBarScrollSettings(void) {
+    // Duo preferences stay configurable in every pose, even when the bottom
+    // tab bar is currently replaced by the always-visible side rail.
+    return ApolloDuoUsesAdaptiveBars() || ApolloInterfaceSupportsPhoneTabBarControls();
+}
 
 @interface CustomAPIViewController ()
 @property (nonatomic) BOOL resolvingRestoreFolder;
@@ -660,9 +672,9 @@ typedef NS_ENUM(NSInteger, Tag) {
     NSInteger sectionCount = self.tableView.numberOfSections;
     for (NSInteger section = 0; section < sectionCount; section++) {
         UIView *footerView = [self.tableView footerViewForSection:section];
-        if (![footerView isKindOfClass:[UITextView class]]) continue;
+        if (![footerView isKindOfClass:[ApolloSettingsLinkFooterView class]]) continue;
 
-        UITextView *textView = (UITextView *)footerView;
+        UITextView *textView = ((ApolloSettingsLinkFooterView *)footerView).linkTextView;
         textView.tintColor = accentColor;
         textView.linkTextAttributes = @{NSForegroundColorAttributeName: accentColor};
         textView.attributedText = [self footerAttributedTextForSection:section];
@@ -2102,12 +2114,15 @@ typedef NS_ENUM(NSInteger, Tag) {
 
     ApolloSettingsRow *hideBarsOnScroll =
         [ApolloSettingsRow switchRowWithID:@"interface.hideBarsOnScroll"
-                                     title:@"Hide Bars on Scroll"
+                                     title:ApolloDuoUsesAdaptiveBars() ? @"Hide Tab Bar on Scroll" : @"Hide Bars on Scroll"
                                       isOn:^BOOL { return ApolloTabBarHideBarsEnabled(); }
                                   onToggle:^(UISwitch *sender) {
             ApolloTabBarHideBarsSetEnabled(sender.isOn);
             [weakSelf visibilityDidChange];
         }];
+    hideBarsOnScroll.visible = ^BOOL {
+        return ApolloInterfaceSupportsBarScrollSettings();
+    };
 
     ApolloSettingsRow *hideStyle =
         [ApolloSettingsRow customRowWithID:@"interface.hideStyle"
@@ -2127,10 +2142,12 @@ typedef NS_ENUM(NSInteger, Tag) {
             return cell;
         } onSelect:nil];
     hideStyle.visible = ^BOOL {
-        return ApolloSupportsNativeTabBarScrollBehavior() && ApolloTabBarHideBarsEnabled();
+        return ApolloInterfaceSupportsBarScrollSettings() &&
+            ApolloSupportsNativeTabBarScrollBehavior() && ApolloTabBarHideBarsEnabled();
     };
 
-    // Keep the remembered choice while Hide Bars is off; only its row hides.
+    // On Duo the header has an independent preference in every pose. Phones
+    // keep their existing dependency on Hide Bars, including the stored choice.
     ApolloSettingsRow *hideTopBarToo =
         [ApolloSettingsRow switchRowWithID:@"interface.hideTopBarToo"
                                      title:@"Hide Header on Scroll"
@@ -2143,7 +2160,9 @@ typedef NS_ENUM(NSInteger, Tag) {
                 postNotificationName:ApolloTabBarScrollBehaviorChangedNotification object:nil];
         }];
     hideTopBarToo.visible = ^BOOL {
-        return ApolloSupportsNativeTabBarScrollBehavior() && ApolloTabBarHideBarsEnabled();
+        return ApolloDuoUsesAdaptiveBars() ||
+            (ApolloInterfaceSupportsPhoneTabBarControls() &&
+             ApolloSupportsNativeTabBarScrollBehavior() && ApolloTabBarHideBarsEnabled());
     };
 
     // A single picker keeps the gesture models mutually exclusive and explicit.
@@ -2166,7 +2185,8 @@ typedef NS_ENUM(NSInteger, Tag) {
             return cell;
         } onSelect:nil];
     tabBarScrollBehavior.visible = ^BOOL {
-        return ApolloSupportsNativeTabBarScrollBehavior() && ApolloTabBarHideBarsEnabled();
+        return ApolloInterfaceSupportsBarScrollSettings() &&
+            ApolloSupportsNativeTabBarScrollBehavior() && ApolloTabBarHideBarsEnabled();
     };
 
     // Temporary iPad stopgap (#387): only show it where the option can work.
@@ -2194,11 +2214,21 @@ typedef NS_ENUM(NSInteger, Tag) {
                                      title:@"Swipe Tab Bar to Navigate"
                                       isOn:^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyTabBarSwipeNavigation]; }
                                   onToggle:^(UISwitch *sender) { [weakSelf tabBarSwipeNavigationSwitchToggled:sender]; }];
-    tabBarSwipeNavigation.visible = ^BOOL { return IsLiquidGlass(); };
+    tabBarSwipeNavigation.visible = ^BOOL {
+        return IsLiquidGlass() && ApolloInterfaceSupportsBarScrollSettings();
+    };
 
-    NSString *footer = IsLiquidGlass()
-        ? @"Swipe across the tab bar to navigate between screens."
-        : nil;
+    NSString *footer = ApolloSupportsNativeTabBarScrollBehavior()
+        ? @"After the tab bar reappears, Two-Gesture hides it on the second downward gesture; Classic hides it on the first."
+        : @"Hide Bars on Scroll uses the classic on/off behavior on this version of iOS.";
+    if (!ApolloInterfaceSupportsBarScrollSettings()) {
+        footer = nil;
+    } else if (IsLiquidGlass()) {
+        footer = [footer stringByAppendingString:@"\n\nSwipe Tab Bar to Navigate disables the native drag-to-switch-tab gesture."];
+    }
+    if (ApolloDuoUsesAdaptiveBars()) {
+        footer = [footer stringByAppendingString:@"\n\nOn iPhone Duo, Hide Tab Bar on Scroll, Hide Style, Scroll Behavior, and Swipe Tab Bar to Navigate apply only while open in portrait. The side rail always stays visible. Hide Header on Scroll works independently in every pose."];
+    }
     return [ApolloSettingsSection sectionWithTitle:@"Tab Bar"
                                             footer:footer
                                               rows:@[ profileTabAvatar, iconOnlyTabBar, hideUsernameTab,
@@ -2352,7 +2382,9 @@ typedef NS_ENUM(NSInteger, Tag) {
             [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:UDKeyCenterTitleBetweenButtons];
             ApolloNavigationTitlesRefresh();
         }];
-    centerBetween.visible = ^BOOL { return IsLiquidGlass() && !sCollapseNavigationActions; };
+    centerBetween.visible = ^BOOL {
+        return IsLiquidGlass() && !sCollapseNavigationActions && ApolloInterfaceSupportsPhoneTabBarControls();
+    };
 
     NSArray<NSString *> *trueBlackTitles = @[ @"Off", @"Dark Mode Only", @"Light Mode Only", @"Always" ];
     ApolloSettingsRow *trueBlackKeyboard =
@@ -3812,20 +3844,27 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     return text;
 }
 
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
+    // UIKit installs this title on a returned UITableViewHeaderFooterView,
+    // even when that view already has our link-bearing text content.
+    if ([self footerAttributedTextForSection:section]) return nil;
+    return [super tableView:tableView titleForFooterInSection:section];
+}
+
 - (UIView *)tableView:(UITableView *)tableView viewForFooterInSection:(NSInteger)section {
     NSAttributedString *text = [self footerAttributedTextForSection:section];
     if (!text) return nil;
 
-    UITextView *textView = [[ApolloFooterLinkTextView alloc] init];
-    textView.editable = NO;
-    textView.scrollEnabled = NO;
-    textView.backgroundColor = [UIColor clearColor];
-    textView.textContainerInset = UIEdgeInsetsMake(8, 16, 8, 16);
+    static NSString *const reuseID = @"ApolloSettingsLinkFooter";
+    ApolloSettingsLinkFooterView *footer =
+        (ApolloSettingsLinkFooterView *)[tableView dequeueReusableHeaderFooterViewWithIdentifier:reuseID];
+    if (!footer) footer = [[ApolloSettingsLinkFooterView alloc] initWithReuseIdentifier:reuseID];
+    UITextView *textView = footer.linkTextView;
     textView.tintColor = [self apollo_themeAccentColor];
     textView.linkTextAttributes = @{NSForegroundColorAttributeName: [self apollo_themeAccentColor]};
     textView.attributedText = text;
 
-    return textView;
+    return footer;
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section {
@@ -3840,22 +3879,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
         return plainFooter.length > 0 ? [super tableView:tableView heightForFooterInSection:section] : 12.0;
     }
 
-    CGFloat tableWidth = tableView.bounds.size.width;
-    if (tableWidth <= 0) tableWidth = [UIScreen mainScreen].bounds.size.width;
-
-    // Account for insetGrouped horizontal insets — footer is narrower than the table view
-    UIEdgeInsets margins = tableView.layoutMargins;
-    CGFloat footerWidth = tableWidth - margins.left - margins.right;
-    if (footerWidth <= 0) footerWidth = tableWidth - 40.0;
-
-    UITextView *measureView = [[UITextView alloc] initWithFrame:CGRectMake(0, 0, footerWidth, CGFLOAT_MAX)];
-    measureView.editable = NO;
-    measureView.scrollEnabled = NO;
-    measureView.textContainerInset = UIEdgeInsetsMake(8, 16, 8, 16);
-    measureView.attributedText = text;
-
-    CGSize size = [measureView sizeThatFits:CGSizeMake(footerWidth, CGFLOAT_MAX)];
-    return ceil(size.height);
+    return UITableViewAutomaticDimension;
 }
 
 #pragma mark - Row Actions
@@ -5111,6 +5135,14 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
 - (NSString *)apollo_screenTitle { return @"Subreddits"; }
 - (void)viewDidLoad {
     [super viewDidLoad];
+    // Own the gap above this untitled first section. UIKit's implicit grouped
+    // top spacing depends on the navigation bar's scroll observation and can
+    // collapse after a child page is popped, visibly moving the whole form.
+    // A real table header keeps the gap stable before and after navigation.
+    UIView *topSpacing = [[UIView alloc] initWithFrame:CGRectMake(0.0, 0.0, 1.0, 16.0)];
+    topSpacing.userInteractionEnabled = NO;
+    topSpacing.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    self.tableView.tableHeaderView = topSpacing;
     // The quick account switcher leaves this controller on screen, so it does
     // not get another viewWillAppear. Also refresh when a loading account's
     // identity resolves and the sorting control becomes available again.
@@ -5147,6 +5179,7 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
 @property (nonatomic, strong) UIView *previewCardView;
 @property (nonatomic, strong) UIView *scrollBoundaryView;
 @property (nonatomic, strong) NSLayoutConstraint *previewContentHeightConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *previewHostTrailingConstraint;
 @property (nonatomic, strong) ApolloFeedShortcutsPreviewView *currentPreviewView;
 @property (nonatomic, strong) UIViewPropertyAnimator *previewAnimator;
 @property (nonatomic) NSUInteger previewTransitionGeneration;
@@ -5261,10 +5294,13 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
     NSLayoutConstraint *contentHeight =
         [previewCard.heightAnchor constraintEqualToConstant:1.0];
     self.previewContentHeightConstraint = contentHeight;
+    NSLayoutConstraint *previewTrailing =
+        [previewHost.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor];
+    self.previewHostTrailingConstraint = previewTrailing;
     [NSLayoutConstraint activateConstraints:@[
         [previewHost.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
-        [previewHost.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [previewHost.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [previewHost.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor],
+        previewTrailing,
 
         [titleLabel.topAnchor constraintEqualToAnchor:previewHost.topAnchor constant:15.0],
         [titleLabel.leadingAnchor constraintEqualToAnchor:previewHost.layoutMarginsGuide.leadingAnchor constant:16.0],
@@ -5288,6 +5324,26 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
     ]];
 
     [self apollo_applyPreviewTheme];
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    UITabBarController *tabs = self.tabBarController;
+    UITabBar *tabBar = tabs.tabBar;
+    CGFloat trailingInset = 0.0;
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone
+        && tabs.isViewLoaded && tabBar.window && !tabBar.hidden) {
+        CGRect railFrame = [self.view convertRect:tabBar.bounds fromView:tabBar];
+        if (CGRectGetWidth(railFrame) < 100.0
+            && CGRectGetHeight(railFrame) > 400.0
+            && CGRectGetMidX(railFrame) > CGRectGetMidX(self.view.bounds)) {
+            trailingInset = MAX(0.0, CGRectGetWidth(self.view.bounds) - CGRectGetMinX(railFrame));
+        }
+    }
+    CGFloat wantedConstant = -trailingInset;
+    if (fabs(self.previewHostTrailingConstraint.constant - wantedConstant) > 0.5) {
+        self.previewHostTrailingConstraint.constant = wantedConstant;
+    }
 }
 
 - (void)viewWillAppear:(BOOL)animated {

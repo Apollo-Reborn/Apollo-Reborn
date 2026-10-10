@@ -1,3 +1,5 @@
+#import "ApolloDuoSplitView.h"
+#import "ApolloDuoRail.h"
 #import <PhotosUI/PhotosUI.h>
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
@@ -514,7 +516,24 @@ static UIImage *ApolloSubredditSizedActionIcon(UIImage *image) {
 }
 
 - (ApolloIdentityHeaderLayout)apollo_identityForWidth:(CGFloat)width {
-    return ApolloIdentityHeaderLayoutMakeWithBanner(width, sSubredditShowBanner ? ApolloSubredditBannerHeight : 0.0);
+    CGRect column = ApolloDuoSplitContentFrame(self.hostViewController, self);
+    if (CGRectIsNull(column) && ApolloDuoRailHasVisibleSideBar() && self.hostViewController.view.window) {
+        // UITableView sizes its header to the readable width on the cover.
+        // Identity artwork still centers over the whole screen, including rail.
+        column = [self convertRect:self.hostViewController.view.bounds fromView:self.hostViewController.view];
+    }
+    CGFloat leading = CGRectIsNull(column) ? 0.0 : MAX(0.0, CGRectGetMinX(column));
+    CGFloat alignmentWidth = CGRectIsNull(column) ? width : CGRectGetWidth(column);
+    CGFloat bannerHeight = sSubredditShowBanner ? ApolloSubredditBannerHeight : 0.0;
+    ApolloIdentityHeaderLayout layout = ApolloIdentityHeaderLayoutMakeWithBanner(alignmentWidth, bannerHeight);
+    // Crop the artwork in the same visible column as the identity controls.
+    layout.bannerFrame.origin.x = leading;
+    layout.bannerFrame.size.width = alignmentWidth;
+    layout.avatarFrame.origin.x += leading;
+    layout.nameFrame.origin.x += leading;
+    layout.subnameFrame.origin.x += leading;
+    layout.bodyX += leading;
+    return layout;
 }
 
 // Y of the action cluster: right below the name/subname stack and above the
@@ -1645,6 +1664,17 @@ static UIView *ApolloSubredditFindSubviewOfClass(UIView *root, Class cls) {
     return nil;
 }
 
+static void ApolloSubredditBindNavigationOwner(UIViewController *controller) {
+    ApolloSubredditWeakControllerBox *box =
+        objc_getAssociatedObject(controller.navigationItem, kApolloSubredditNavigationOwnerKey);
+    if (!box) {
+        box = [ApolloSubredditWeakControllerBox new];
+        objc_setAssociatedObject(controller.navigationItem, kApolloSubredditNavigationOwnerKey,
+                                 box, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    box.viewController = controller;
+}
+
 // Apollo's UINavigationItem has no public owner back-reference. Installation
 // records one weakly so bar-button mutations can invalidate only the title
 // they affect instead of walking every window and forcing synchronous layout.
@@ -2196,6 +2226,7 @@ static void ApolloSubredditInstallAmbient(UIViewController *viewController, UITa
     } else if (tableView.backgroundView != ambient) {
         tableView.backgroundView = ambient;
     }
+    ambient.contentViewController = viewController;
     ambient.frame = tableView.bounds;
     header.bannerImageView.alpha = ApolloSubredditFadedBannerAlpha;
     ApolloSubredditSyncAmbient(header);
@@ -2647,14 +2678,7 @@ static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewControlle
 
     header.hostViewController = viewController;
     header.subredditName = subredditName;
-    ApolloSubredditWeakControllerBox *navigationOwner =
-        objc_getAssociatedObject(viewController.navigationItem, kApolloSubredditNavigationOwnerKey);
-    if (!navigationOwner) {
-        navigationOwner = [[ApolloSubredditWeakControllerBox alloc] init];
-        objc_setAssociatedObject(viewController.navigationItem, kApolloSubredditNavigationOwnerKey,
-                                 navigationOwner, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    navigationOwner.viewController = viewController;
+    ApolloSubredditBindNavigationOwner(viewController);
     __weak UIViewController *weakViewController = viewController;
     header.heightInvalidationBlock = ^{
         UIViewController *strongViewController = weakViewController;
@@ -2886,7 +2910,14 @@ static void ApolloSubredditRefreshViewControllersInTree(UIViewController *viewCo
             NSString *normalizedName = ApolloNormalizedSubredditName(subredditName).lowercaseString;
             matchesScope = normalizedName.length > 0 && [subredditNames containsObject:normalizedName];
         }
-        if (matchesScope) ApolloSubredditInstallOrUpdateHeader(viewController);
+        if (matchesScope) {
+            ApolloSubredditInstallOrUpdateHeader(viewController);
+            // Visibility changes (especially Flair beside Join) can leave the
+            // header's total size unchanged. Resizing the wrapper alone then
+            // does not run the layout that applies the current preferences.
+            ApolloSubredditHeaderView *header = objc_getAssociatedObject(viewController, kApolloSubredditHeaderViewKey);
+            [header setNeedsLayout];
+        }
     }
 
     for (UIViewController *child in viewController.childViewControllers) {
@@ -3104,10 +3135,26 @@ static void ApolloSubredditSettleBlockedTableToTop(UITableView *tableView) {
 
 %end
 
+%hook UINavigationItem
+
+- (void)setTitle:(NSString *)title {
+    BOOL changed = ![self.title isEqualToString:title];
+    %orig(title);
+    if (!changed) return;
+    ApolloSubredditWeakControllerBox *owner =
+        objc_getAssociatedObject(self, kApolloSubredditNavigationOwnerKey);
+    // The quick-switcher reuses the feed without another VC layout/appearance
+    // callback. Refresh at the title change for both typed and tapped choices.
+    ApolloSubredditScheduleRepairPass(owner.viewController, @"feed title changed");
+}
+
+%end
+
 %hook _TtC6Apollo19PostsViewController
 
 - (void)viewDidLoad {
     %orig;
+    ApolloSubredditBindNavigationOwner((UIViewController *)self);
     ApolloSubredditWatchFeedTable((UIViewController *)self);
     ApolloSubredditScheduleInstallIfNeeded((UIViewController *)self);
 }
@@ -3118,6 +3165,7 @@ static void ApolloSubredditSettleBlockedTableToTop(UITableView *tableView) {
 }
 
 - (void)viewWillAppear:(BOOL)animated {
+    ApolloSubredditBindNavigationOwner((UIViewController *)self);
     // Apollo retains popped controllers for swipe-forward navigation. Teardown
     // blocks late offscreen repairs, but the same controller becomes eligible
     // again when it reappears. Clear before %orig so nested layout callbacks
@@ -3147,7 +3195,17 @@ static void ApolloSubredditSettleBlockedTableToTop(UITableView *tableView) {
 // split-view / chrome-height changes silently never ran.
 - (void)viewSafeAreaInsetsDidChange {
     %orig;
-    ApolloSubredditScheduleInstallIfNeeded((UIViewController *)self);
+    ApolloSubredditHeaderView *header = objc_getAssociatedObject(self, kApolloSubredditHeaderViewKey);
+    if (header) {
+        // Duo keeps the table full-width beneath the sidebar, so its bounds
+        // can stay identical while the visible alignment band changes. The
+        // structural install check misses that change. Remeasure after UIKit
+        // settles the safe area, including any new description wrapping.
+        [header setNeedsLayout];
+        ApolloSubredditScheduleRepairPass((UIViewController *)self, @"safe area changed");
+    } else {
+        ApolloSubredditScheduleInstallIfNeeded((UIViewController *)self);
+    }
 }
 
 - (void)redditAccountChangedWithNotification:(id)notification {
@@ -3222,6 +3280,17 @@ BOOL ApolloSubredditTitleShouldTruncate(UIViewController *viewController) {
 
 %ctor {
     sPostsViewControllerClass = objc_getClass("_TtC6Apollo19PostsViewController");
+
+    // Apollo rethemes its rows directly, but our immersive backing surface
+    // retains the previous theme's dynamic provider. Refresh that surface
+    // after native theme observers finish, including retained tab stacks.
+    for (NSString *name in @[@"com.christianselig.ApolloSpecificThemeChanged",
+                              @"com.christianselig.CommentsColorThemeChanged"]) {
+        [[NSNotificationCenter defaultCenter] addObserverForName:name object:nil
+            queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {
+                ApolloSubredditRefreshVisibleControllers();
+            }];
+    }
 
     [[NSNotificationCenter defaultCenter] addObserverForName:ApolloSubredditHeaderOwnershipChangedNotification
                                                       object:nil
