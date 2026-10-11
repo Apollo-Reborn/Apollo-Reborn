@@ -53,13 +53,23 @@ BOOL ApolloAPSEnvironmentIsDevelopment(void);
 // still surface to the user. Safe to call with nil.
 BOOL ApolloErrorIsMissingPushEntitlement(NSError *error);
 
+// Why Apollo's Notifications settings can't work on this install.
+typedef NS_ENUM(NSInteger, ApolloNotificationsUnavailableReason) {
+    // Free-account sideload: no `aps-environment` entitlement, so APNs can
+    // never deliver (Bark is the only route).
+    ApolloNotificationsUnavailableReasonNoPushEntitlement,
+    // Push-capable signing, but no self-hosted notification backend is set.
+    // The legacy push hosts are gone, so every request the screen waits on
+    // would otherwise go nowhere (issue #828: endless spinner).
+    ApolloNotificationsUnavailableReasonNoBackend,
+};
+
 // Builds the opaque, non-interactive informational view shown in place of
-// Apollo's Notifications settings on a build that can never receive push (a
-// free-account sideload, no `aps-environment` entitlement). It explains why
-// notifications are unavailable and swallows touches so the disabled controls
-// underneath can't be tapped. Pinning it into the view hierarchy is the
-// caller's responsibility.
-UIView *ApolloMakeNotificationsUnavailableView(void);
+// Apollo's Notifications settings when notifications can't work (see
+// ApolloNotificationsUnavailableReason). It explains why and swallows touches
+// so the disabled controls underneath can't be tapped. Pinning it into the
+// view hierarchy is the caller's responsibility.
+UIView *ApolloMakeNotificationsUnavailableView(ApolloNotificationsUnavailableReason reason);
 
 #ifdef __cplusplus
 }
