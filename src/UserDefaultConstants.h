@@ -70,6 +70,10 @@ static NSString *const UDKeyRandomSubredditsSource = @"RandomSubredditsSource";
 static NSString *const UDKeyRandNsfwSubredditsSource = @"RandNsfwSubredditsSource";
 static NSString *const UDKeyTrendingSubredditsSource = @"TrendingSubredditsSource";
 static NSString *const UDKeyTrendingSubredditsLimit = @"TrendingSubredditsLimit";
+// Search landing history display count. Default 5; empty means unlimited, 0 hides.
+static NSString *const UDKeyRecentlyVisitedSubredditsLimit = @"RecentlyVisitedSubredditsLimit";
+// Search landing sections, ordered by stable identifiers. Default trending/random/recent.
+static NSString *const UDKeySearchTabSectionOrder = @"SearchTabSectionOrder";
 // Master toggle for subreddit list polish/enhancements. Default YES. Feed
 // Shortcuts is independent; Modern Subreddit Dividers remains a sub-option.
 static NSString *const UDKeySubredditListEnhancements = @"SubredditListEnhancements";

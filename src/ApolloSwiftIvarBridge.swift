@@ -64,3 +64,24 @@ public func ApolloSwiftAssignOptionalStringArray(
     }
     storage.assumingMemoryBound(to: Optional<[String]>.self).pointee = value
 }
+
+// The Search landing reads Apollo's live trending model without treating a Swift
+// Array as an Objective-C ivar. The caller consumes this retained NSArray.
+@_cdecl("ApolloSwiftCopyOptionalStringArray")
+public func ApolloSwiftCopyOptionalStringArray(_ storage: UnsafeRawPointer?) -> UnsafeMutableRawPointer? {
+    guard let storage,
+          let value = storage.assumingMemoryBound(to: Optional<[String]>.self).pointee else { return nil }
+    return Unmanaged.passRetained(value as NSArray).toOpaque()
+}
+
+// PostsViewController.links is a non-optional Array<RDKLink>. Arrays of class
+// references share Array<AnyObject>'s element representation; Swift handles its
+// native/bridged storage and empty-array sentinel. Reading .first is O(1) and
+// never bridges/copies the entire feed. The caller consumes the retained object
+// and validates its RDKLink class before reading subreddit.
+@_cdecl("ApolloSwiftCopyFirstObjectArrayElement")
+public func ApolloSwiftCopyFirstObjectArrayElement(_ storage: UnsafeRawPointer?) -> UnsafeMutableRawPointer? {
+    guard Thread.isMainThread, let storage,
+          let first = storage.assumingMemoryBound(to: Array<AnyObject>.self).pointee.first else { return nil }
+    return Unmanaged.passRetained(first).toOpaque()
+}

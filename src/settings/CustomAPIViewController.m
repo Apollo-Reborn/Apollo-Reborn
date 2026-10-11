@@ -1,5 +1,6 @@
 #import "ApolloProfilePicturesPreview.h"
 #import "ApolloSettingsShortcutsViewController.h"
+#import "ApolloSearchLandingPreferences.h"
 #import "settings/CustomAPIViewController.h"
 #import "settings/ApolloSiriSettingsViewController.h"
 #import "ApolloCommon.h"
@@ -538,6 +539,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     TagRandomSubredditsSource,
     TagRandNsfwSubredditsSource,
     TagTrendingLimit,
+    TagRecentlyVisitedLimit,
     TagReadPostMaxCount,
     TagNotificationBackendURL,
     TagNotificationBackendRegistrationToken,
@@ -3062,7 +3064,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     return sSubredditHeaderImmersive ? @"Immersive" : @"Compact";
 }
 
-- (ApolloSettingsSection *)buildSubredditsSourcesSection {
+- (NSArray<ApolloSettingsSection *> *)buildSubredditsSearchSections {
     __weak typeof(self) weakSelf = self;
 
     ApolloSettingsRow *trendingLimit =
@@ -3077,6 +3079,32 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                 ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
         }
                                   onSelect:nil];
+
+    ApolloSettingsRow *recentlyVisitedLimit =
+        [ApolloSettingsRow customRowWithID:@"sub.recentlyVisitedLimit"
+                                      cell:^UITableViewCell *(__unused UITableView *tableView, __unused ApolloSettingsRow *row) {
+            return [weakSelf textFieldCellWithIdentifier:@"Cell_Sub_RecentLimit"
+                                                   label:@"Recently Visited Limit"
+                                             placeholder:@"(unlimited)"
+                                                    text:sRecentlyVisitedSubredditsLimit
+                                                     tag:TagRecentlyVisitedLimit
+                                               numerical:YES]
+                ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+        }
+                                  onSelect:nil];
+
+    NSDictionary<NSString *, NSString *> *sectionTitles = @{
+        ApolloSearchLandingSectionTrending: @"Trending Subreddits",
+        ApolloSearchLandingSectionRandom: @"Random Subreddit",
+        ApolloSearchLandingSectionRecent: @"Recently Visited",
+    };
+    NSMutableArray<ApolloSettingsRow *> *searchRows = [NSMutableArray array];
+    for (NSString *token in ApolloSearchLandingSectionOrder()) {
+        [searchRows addObject:[ApolloSettingsRow valueRowWithID:token
+                                                        title:sectionTitles[token]
+                                                       detail:nil
+                                                     onSelect:nil]];
+    }
 
     ApolloSettingsRow *trendingSource =
         [ApolloSettingsRow customRowWithID:@"sub.trendingSource"
@@ -3107,6 +3135,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                      title:@"Show RandNSFW in Search"
                                       isOn:^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowRandNsfw]; }
                                   onToggle:^(UISwitch *sender) { [weakSelf randNsfwSwitchToggled:sender]; }];
+    [searchRows addObject:randNSFW];
 
     ApolloSettingsRow *randNSFWSource =
         [ApolloSettingsRow customRowWithID:@"sub.randNSFWSource"
@@ -3120,10 +3149,17 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
         }
                                   onSelect:nil];
 
-    return [ApolloSettingsSection sectionWithTitle:@"Search Tab Sources"
-                                            footer:nil
-                                              rows:@[ trendingLimit, trendingSource, randomSource,
-                                                      randNSFW, randNSFWSource ]];
+    return @[
+        [ApolloSettingsSection sectionWithTitle:@"Search Tab"
+                                         footer:nil
+                                           rows:searchRows],
+        [ApolloSettingsSection sectionWithTitle:@"Section Limits"
+                                         footer:@"Recently Visited clears on restart or account change."
+                                           rows:@[ trendingLimit, recentlyVisitedLimit ]],
+        [ApolloSettingsSection sectionWithTitle:@"Subreddit Sources"
+                                         footer:nil
+                                           rows:@[ trendingSource, randomSource, randNSFWSource ]],
+    ];
 }
 
 - (ApolloSettingsSection *)buildNotificationBackendSection {
@@ -3756,7 +3792,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
             attributes:@{NSFontAttributeName: ApolloSettingsFont(UIFontTextStyleFootnote, self.traitCollection), NSForegroundColorAttributeName: [self apollo_themeAccentColor], NSLinkAttributeName: [NSURL URLWithString:@"https://github.com/Apollo-Reborn/Apollo-Reborn?tab=readme-ov-file#dont-have-an-api-key"]}]];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"). The Reddit API Key/Secret/Redirect URI above are the default, used by any signed-in account that doesn't have its own key — set a different key per account from the account switcher."
             attributes:plainAttrs]];
-    } else if ([sectionTitle isEqualToString:@"Search Tab Sources"]) {
+    } else if ([sectionTitle isEqualToString:@"Subreddit Sources"]) {
         text = [[NSMutableAttributedString alloc]
             initWithString:@"Configure custom subreddit sources by providing a URL to a plaintext file with line-separated subreddit names (without /r/). "
             attributes:plainAttrs];
@@ -4379,6 +4415,12 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
         textField.text = [textField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
         sTrendingSubredditsLimit = textField.text;
         [[NSUserDefaults standardUserDefaults] setValue:sTrendingSubredditsLimit forKey:UDKeyTrendingSubredditsLimit];
+        [[NSNotificationCenter defaultCenter] postNotificationName:ApolloSearchLandingSettingsDidChangeNotification object:nil];
+    } else if (textField.tag == TagRecentlyVisitedLimit) {
+        textField.text = [textField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        sRecentlyVisitedSubredditsLimit = textField.text;
+        [[NSUserDefaults standardUserDefaults] setValue:sRecentlyVisitedSubredditsLimit forKey:UDKeyRecentlyVisitedSubredditsLimit];
+        [[NSNotificationCenter defaultCenter] postNotificationName:ApolloSearchLandingSettingsDidChangeNotification object:nil];
     } else if (textField.tag == TagReadPostMaxCount) {
         textField.text = [textField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
         sReadPostMaxCount = [textField.text integerValue];
@@ -5111,6 +5153,9 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
 - (NSString *)apollo_screenTitle { return @"Subreddits"; }
 - (void)viewDidLoad {
     [super viewDidLoad];
+    // Native handles keep Search section order editable on this page.
+    self.tableView.allowsSelectionDuringEditing = YES;
+    [self setEditing:YES animated:NO];
     // The quick account switcher leaves this controller on screen, so it does
     // not get another viewWillAppear. Also refresh when a loading account's
     // identity resolves and the sorting control becomes available again.
@@ -5124,9 +5169,54 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
     [self refreshFavoritesSwitches];
 }
 - (NSArray<ApolloSettingsSection *> *)buildForm {
-    return @[ [self buildSubredditsMainSection],
-              [self buildSubredditsLayoutSection],
-              [self buildSubredditsSourcesSection] ];
+    return [@[ [self buildSubredditsMainSection],
+               [self buildSubredditsLayoutSection] ]
+        arrayByAddingObjectsFromArray:[self buildSubredditsSearchSections]];
+}
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [super tableView:tableView cellForRowAtIndexPath:indexPath];
+    // UIKit normally substitutes editing accessories while handles are shown.
+    // Preserve the existing switches, menu buttons and disclosure indicators.
+    cell.editingAccessoryView = cell.accessoryView;
+    cell.editingAccessoryType = cell.accessoryType;
+    return cell;
+}
+- (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
+    return [ApolloSearchLandingSectionOrder() containsObject:[self rowAtIndexPath:indexPath].rowID];
+}
+- (UITableViewCellEditingStyle)tableView:(UITableView *)tableView editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath {
+    return UITableViewCellEditingStyleNone;
+}
+- (BOOL)tableView:(UITableView *)tableView shouldIndentWhileEditingRowAtIndexPath:(NSIndexPath *)indexPath {
+    return NO;
+}
+- (BOOL)tableView:(UITableView *)tableView canMoveRowAtIndexPath:(NSIndexPath *)indexPath {
+    return [self tableView:tableView canEditRowAtIndexPath:indexPath];
+}
+- (NSIndexPath *)tableView:(UITableView *)tableView
+    targetIndexPathForMoveFromRowAtIndexPath:(NSIndexPath *)source
+                       toProposedIndexPath:(NSIndexPath *)proposed {
+    NSArray<NSString *> *order = ApolloSearchLandingSectionOrder();
+    if (![order containsObject:[self rowAtIndexPath:source].rowID]) return source;
+    if ([order containsObject:[self rowAtIndexPath:proposed].rowID]) return proposed;
+    NSIndexPath *first = [self indexPathForRowID:order.firstObject];
+    NSIndexPath *last = [self indexPathForRowID:order.lastObject];
+    if (!first || !last) return source;
+    // Resolve the allowed range from row identities, including when preceding
+    // settings are hidden. Neither the toggle nor another section can move.
+    return [proposed compare:first] == NSOrderedAscending ? first : last;
+}
+- (void)tableView:(UITableView *)tableView moveRowAtIndexPath:(NSIndexPath *)source toIndexPath:(NSIndexPath *)destination {
+    NSMutableArray<NSString *> *order = [ApolloSearchLandingSectionOrder() mutableCopy];
+    NSString *token = [self rowAtIndexPath:source].rowID;
+    NSString *target = [self rowAtIndexPath:destination].rowID;
+    NSUInteger targetIndex = [order indexOfObject:target];
+    if (![order containsObject:token] || targetIndex == NSNotFound) return;
+    [order removeObject:token];
+    [order insertObject:token atIndex:targetIndex];
+    ApolloSearchLandingSetSectionOrder(order);
+    // UIKit owns the drop animation; only reconcile the form's row snapshot.
+    [self noteRowMovedFromIndexPath:source toIndexPath:destination];
 }
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];

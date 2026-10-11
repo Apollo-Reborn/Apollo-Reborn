@@ -1968,8 +1968,11 @@ static BOOL ApolloCachedScrollWantsNativeMinimize(
 }
 
 static BOOL ApolloTabBarScrollViewParticipates(UIScrollView *scrollView) {
+    // Search's landing uses a plain scroll view in place of Apollo's table.
+    // Keep its hide/reveal gestures eligible without admitting nested scrollers.
     return [scrollView isKindOfClass:UITableView.class] ||
-           [scrollView isKindOfClass:UICollectionView.class];
+           [scrollView isKindOfClass:UICollectionView.class] ||
+           [scrollView.accessibilityIdentifier isEqualToString:@"ApolloSearchLanding.Scroll"];
 }
 
 static void ApolloBeginTwoGestureRearm(ApolloTabBarScrollRuntimeState *scrollState) {

@@ -34,6 +34,7 @@ extern NSString *sRandomSubredditsSource;
 extern NSString *sRandNsfwSubredditsSource;
 extern NSString *sTrendingSubredditsSource;
 extern NSString *sTrendingSubredditsLimit;
+extern NSString *sRecentlyVisitedSubredditsLimit;
 
 extern BOOL sBlockAnnouncements;
 extern BOOL sAutomaticBackupsEnabled;
