@@ -125,6 +125,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloGIFSaveActivity.xm \
     $(SRC_DIR)/ApolloShareMediaHandoff.xm \
     $(SRC_DIR)/ApolloMediaDownloadActions.xm \
+    $(SRC_DIR)/ApolloImageActions.m \
     $(SRC_DIR)/ApolloLinkedAlbumPostControls.xm \
     $(SRC_DIR)/ApolloFeedAlbumMenus.xm \
     $(SRC_DIR)/ApolloGalleryMenu.xm \
