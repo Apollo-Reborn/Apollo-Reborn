@@ -1391,6 +1391,21 @@ static NSArray<NSString *> *ApolloRedditGalleryAssetIDsFromSubmitPairs(NSArray<N
     return nil;
 }
 
+// Keyless uploads can use Reddit regardless of the selected host.
+// Staging URLs need native media submission to become public.
+static BOOL ApolloRedditSubmitHasStagedMediaURL(NSDictionary<NSString *, NSArray<NSString *> *> *formValues) {
+    for (NSString *value in formValues[@"url"]) {
+        NSURLComponents *components = [NSURLComponents componentsWithString:value];
+        NSString *host = components.host.lowercaseString;
+        if (![components.scheme.lowercaseString isEqualToString:@"https"] ||
+            components.user.length > 0 || components.password.length > 0 ||
+            components.path.length <= 1) continue;
+        if ([host isEqualToString:@"reddit-uploaded-media.s3-accelerate.amazonaws.com"] ||
+            [host isEqualToString:@"reddit-uploaded-video.s3-accelerate.amazonaws.com"]) return YES;
+    }
+    return NO;
+}
+
 NSURLRequest *ApolloRedditMaybeRewriteSubmitRequest(NSURLRequest *request) {
     if (!ApolloIsRedditLegacySubmitRequest(request)) return nil;
 
@@ -1421,24 +1436,7 @@ NSURLRequest *ApolloRedditMaybeRewriteSubmitRequest(NSURLRequest *request) {
     else if (!hostedMediaForm) preflightSkipReason = @"not-hosted-media-form";
     ApolloMediaPostBodyLogSubmitDecision(@"preflight", formValues, composerBodyText, hostedMediaForm, preflightSkipReason);
 
-    if (sImageUploadProvider == ImageUploadProviderImgChest) {
-        // #552: fix the imgur.com/a/<id> -> imgchest.com/p/<id> album link, and
-        // inject composer body text in the same rebuild if applicable.
-        NSURLRequest *imgChestRequest = ApolloImgChestRewriteSubmitRequest(request, pairs, shouldInjectComposerBodyText ? composerBodyText : nil);
-        if (imgChestRequest) {
-            ApolloLog(@"[MediaPostBody] Rewrote ImgChest submit (album url fix + body=%@)", shouldInjectComposerBodyText ? @"yes" : @"no");
-        }
-        return imgChestRequest;
-    }
-
-    // Reddit gallery submit (provider-independent): if the submit's url maps to
-    // a recorded synthetic Reddit gallery album, rewrite it to
-    // /api/submit_gallery_post. This runs above the provider split because
-    // keyless Web JSON uploads are claimed for Reddit regardless of the Media
-    // Upload Host (see ApolloShouldUseCookieRedditUpload) — the synthetic
-    // imgur.com/a/<id> link doesn't exist on Imgur — and a map hit is proof of
-    // a Reddit-hosted multi-image post either way. (The synthesizer never
-    // records a gallery containing video, so the video guard is belt-and-braces.)
+    // Recorded Reddit galleries must bypass other upload providers.
     {
         NSString *galleryAlbumID = nil;
         NSArray<NSString *> *galleryAssetIDs = ApolloRedditGalleryAssetIDsFromSubmitPairs(pairs, &galleryAlbumID);
@@ -1451,7 +1449,18 @@ NSURLRequest *ApolloRedditMaybeRewriteSubmitRequest(NSURLRequest *request) {
         }
     }
 
-    if (sImageUploadProvider != ImageUploadProviderReddit) {
+    BOOL hasStagedRedditMediaURL = ApolloRedditSubmitHasStagedMediaURL(formValues);
+    if (sImageUploadProvider == ImageUploadProviderImgChest && !hasStagedRedditMediaURL) {
+        // #552: fix the imgur.com/a/<id> -> imgchest.com/p/<id> album link, and
+        // inject composer body text in the same rebuild if applicable.
+        NSURLRequest *imgChestRequest = ApolloImgChestRewriteSubmitRequest(request, pairs, shouldInjectComposerBodyText ? composerBodyText : nil);
+        if (imgChestRequest) {
+            ApolloLog(@"[MediaPostBody] Rewrote ImgChest submit (album url fix + body=%@)", shouldInjectComposerBodyText ? @"yes" : @"no");
+        }
+        return imgChestRequest;
+    }
+
+    if (sImageUploadProvider != ImageUploadProviderReddit && !hasStagedRedditMediaURL) {
         if (!shouldInjectComposerBodyText) return nil;
         NSURLRequest *bodyRequest = ApolloSubmitRequestByInjectingMediaBodyText(request, pairs, composerBodyText);
         if (bodyRequest) {
