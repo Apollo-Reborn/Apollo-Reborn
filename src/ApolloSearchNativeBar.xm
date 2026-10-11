@@ -49,6 +49,9 @@
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloSearchNativeBar.h"
+#import "ApolloDuoSplitView.h"
+#import "ApolloDuoRail.h"
+#import "ApolloDuoCompatibility.h"
 #import "ApolloFindInCommentsGlass.h"
 #import "ApolloClasses.h"
 
@@ -911,9 +914,115 @@ static void NSBRestoreHeaderForTable(UIScrollView *sv) {
 
 // MARK: - Attach / policy
 
+static char kNSBDuoSearchPlacementKey;
+static char kNSBDuoSearchPlacementScheduledKey;
+static char kNSBDuoLeadingControlsKey;
+static char kNSBDuoTrailingControlsKey;
+static char kNSBDuoControlsSupplementBackKey;
+
+NSArray<UIBarButtonItem *> *ApolloNativeFeedSearchDuoTrailingItems(UINavigationItem *item,
+                                                                NSArray<UIBarButtonItem *> *items) {
+    NSArray *trailing = objc_getAssociatedObject(item, &kNSBDuoTrailingControlsKey);
+    if (!trailing) return items;
+    // Apollo rebuilds its trailing actions when comments appear or their sort
+    // changes. Keep the registered host control in that same update instead
+    // of removing it and adding it back on the next layout pass.
+    NSMutableArray *result = [trailing mutableCopy];
+    for (UIBarButtonItem *candidate in items) {
+        if (![candidate.accessibilityIdentifier isEqualToString:@"ApolloDuoFeedControl"])
+            [result addObject:candidate];
+    }
+    return result;
+}
+
+static void NSBUpdateDuoControls(UIViewController *vc) {
+    // Keep the host's List/Split/Layout controls in the native navigation
+    // arrays, independent of the search field beneath the title.
+    if (@available(iOS 27.0, *)) {
+        UINavigationItem *item = vc.navigationItem;
+        NSMutableArray *left = [NSMutableArray array];
+        NSMutableArray *right = [NSMutableArray array];
+        for (UIBarButtonItem *candidate in item.leftBarButtonItems) {
+            if (![candidate.accessibilityIdentifier isEqualToString:@"ApolloDuoFeedControl"])
+                [left addObject:candidate];
+        }
+        for (UIBarButtonItem *candidate in item.rightBarButtonItems) {
+            if (![candidate.accessibilityIdentifier isEqualToString:@"ApolloDuoFeedControl"])
+                [right addObject:candidate];
+        }
+        NSArray *leading = objc_getAssociatedObject(vc, &kNSBDuoLeadingControlsKey) ?: @[];
+        [left addObjectsFromArray:leading];
+        NSArray *rightControls = ApolloNativeFeedSearchDuoTrailingItems(item, right);
+        NSNumber *supplementBack = objc_getAssociatedObject(item, &kNSBDuoControlsSupplementBackKey);
+        if (leading.count) {
+            if (!supplementBack) objc_setAssociatedObject(item, &kNSBDuoControlsSupplementBackKey,
+                @(item.leftItemsSupplementBackButton), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            if (!item.leftItemsSupplementBackButton) item.leftItemsSupplementBackButton = YES;
+        } else if (supplementBack) {
+            if (item.leftItemsSupplementBackButton != supplementBack.boolValue)
+                item.leftItemsSupplementBackButton = supplementBack.boolValue;
+            objc_setAssociatedObject(item, &kNSBDuoControlsSupplementBackKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        if (![(item.leftBarButtonItems ?: @[]) isEqualToArray:left]) item.leftBarButtonItems = left;
+        if (![(item.rightBarButtonItems ?: @[]) isEqualToArray:rightControls]) item.rightBarButtonItems = rightControls;
+    }
+}
+
+void ApolloNativeFeedSearchSetDuoControls(UIViewController *vc, UIBarButtonItem *list,
+                                        UIBarButtonItem *split, UIBarButtonItem *layout) {
+    if (!vc) return;
+    NSMutableArray *leading = [NSMutableArray array];
+    if (list) [leading addObject:list];
+    if (split) [leading addObject:split];
+    NSArray *trailing = layout ? @[layout] : @[];
+    for (UIBarButtonItem *control in [leading arrayByAddingObjectsFromArray:trailing])
+        control.accessibilityIdentifier = @"ApolloDuoFeedControl";
+    objc_setAssociatedObject(vc, &kNSBDuoLeadingControlsKey, [leading copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(vc.navigationItem, &kNSBDuoTrailingControlsKey, trailing, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NSBUpdateDuoControls(vc);
+}
+
+static void NSBUpdateSearchPlacement(UIViewController *vc) {
+    if (@available(iOS 16.0, *)) {
+        UINavigationItem *item = vc.navigationItem;
+        // Every Duo pose keeps the field beneath the title. The live rail
+        // also identifies closed landscape, whose bounds classify as Phone.
+        BOOL stacked = ApolloDuoSplitIsUnfolded();
+        if (@available(iOS 27.0, *)) {
+            stacked |= ApolloDuoCurrentMode() != ApolloDuoModePhone || ApolloDuoRailHasVisibleSideBar();
+        }
+        NSNumber *original = objc_getAssociatedObject(item, &kNSBDuoSearchPlacementKey);
+        if (stacked && !original) {
+            original = @(item.preferredSearchBarPlacement);
+            objc_setAssociatedObject(item, &kNSBDuoSearchPlacementKey, original, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        if (!stacked && !original) return;
+        UINavigationItemSearchBarPlacement placement = stacked
+            ? UINavigationItemSearchBarPlacementStacked : (UINavigationItemSearchBarPlacement)original.integerValue;
+        if (item.preferredSearchBarPlacement != placement) item.preferredSearchBarPlacement = placement;
+        NSBUpdateDuoControls(vc);
+        if (!stacked) objc_setAssociatedObject(item, &kNSBDuoSearchPlacementKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
+static void NSBScheduleSearchPlacement(UIViewController *vc) {
+    if ([objc_getAssociatedObject(vc, &kNSBDuoSearchPlacementScheduledKey) boolValue]) return;
+    objc_setAssociatedObject(vc, &kNSBDuoSearchPlacementScheduledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak UIViewController *weakVC = vc;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *strongVC = weakVC;
+        if (!strongVC) return;
+        objc_setAssociatedObject(strongVC, &kNSBDuoSearchPlacementScheduledKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        NSBUpdateSearchPlacement(strongVC);
+    });
+}
+
 static void NSBAttachNativeSearch(UIViewController *vc) {
     UINavigationItem *navItem = vc.navigationItem;
-    if (navItem.searchController != nil) return; // ours (or someone's) — never fight it
+    if (navItem.searchController != nil) {
+        NSBScheduleSearchPlacement(vc);
+        return;
+    }
 
     // The comments screen gets the comments bridge (ApolloFindInCommentsGlass.xm
     // drives Apollo's in-thread match pipeline); feeds get the results bridge.
@@ -954,6 +1063,8 @@ static void NSBAttachNativeSearch(UIViewController *vc) {
             navItem.preferredSearchBarPlacement = UINavigationItemSearchBarPlacementStacked;
         }
     }
+
+    NSBUpdateSearchPlacement(vc);
 
     // Attach laid-out-visible; the scroll-away policy flips it after the first
     // appearance (plain YES here parks the bar off-screen — no large title).
@@ -1086,7 +1197,8 @@ static BOOL NSBHasSettledFeedGeometry(UIViewController *vc, UIScrollView *table)
     ApolloNativeSearchRestingState *state = NSBRestingStateForVC(vc);
     UINavigationController *nav = vc.navigationController;
     return state.visible && nav.topViewController == vc && nav.visibleViewController == vc &&
-           !ApolloNavTransitionInFlight() && !nav.transitionCoordinator && !vc.transitionCoordinator;
+           !ApolloNavTransitionInFlight() && !ApolloDuoSplitIsResizing() &&
+           !nav.transitionCoordinator && !vc.transitionCoordinator;
 }
 
 static void NSBInvalidateRestingSearch(UIViewController *vc) {

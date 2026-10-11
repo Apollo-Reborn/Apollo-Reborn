@@ -19,3 +19,12 @@ void ApolloNativeFeedSearchRestoreCancelledNavigation(UIViewController *vc);
 // status-bar tap's jump). The bar is revealed once the list lands at its rest;
 // a collapsed bar reached by the user's own scrolling is left alone otherwise.
 void ApolloNativeFeedSearchWillScrollToTop(UIScrollView *scrollView);
+
+// Host-owned Duo controls use UIKit's native navigation layout above Search.
+// Pass nil controls to remove this host's items when changing owner or folding.
+void ApolloNativeFeedSearchSetDuoControls(UIViewController *vc, UIBarButtonItem *list,
+                                        UIBarButtonItem *split, UIBarButtonItem *layout);
+
+// Preserve registered trailing controls when Apollo replaces its action items.
+NSArray<UIBarButtonItem *> *ApolloNativeFeedSearchDuoTrailingItems(UINavigationItem *item,
+                                                                NSArray<UIBarButtonItem *> *items);

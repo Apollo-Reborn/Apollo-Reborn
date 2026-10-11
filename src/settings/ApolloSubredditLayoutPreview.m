@@ -1,6 +1,7 @@
 #import "settings/ApolloSubredditLayoutPreview.h"
 
 #import "ApolloCommon.h"
+#import "ApolloDuoRail.h"
 #import "ApolloImmersiveHeaderBackground.h"
 #import "ApolloSubredditHeaderPreview.h"
 #import "ApolloSubredditHighlights.h"
@@ -541,7 +542,10 @@ static ApolloNativePreviewMetrics ApolloNativePreviewMetricsMake(CGFloat width,
             ApolloPinnedPostsPreviewMessage, font, MAX(1.0, width - 24.0));
         return MAX(52.0, textHeight + 16.0);
     }
-    CGFloat renderWidth = ApolloSubredditPreviewRenderWidth(hostView, width);
+    // Keep actual-size cards on Duo in every pose; other devices retain the
+    // same scaled preview as upstream. Measurement and rendering must agree.
+    CGFloat renderWidth = ApolloDuoDeviceDetected()
+        ? width : ApolloSubredditPreviewRenderWidth(hostView, width);
     CGFloat scale = width / MAX(1.0, renderWidth);
     return ceil([ApolloHLPreviewFactory expandedCarouselHeight] * scale);
 }
@@ -557,7 +561,8 @@ static ApolloNativePreviewMetrics ApolloNativePreviewMetricsMake(CGFloat width,
         return;
     }
 
-    CGFloat renderWidth = ApolloSubredditPreviewRenderWidth(self, width);
+    CGFloat renderWidth = ApolloDuoDeviceDetected()
+        ? width : ApolloSubredditPreviewRenderWidth(self, width);
     BOOL needsRebuild = !self.productionCarouselView || self.renderedMode != self.highlightsMode;
     if (needsRebuild) {
         [self.productionCarouselView removeFromSuperview];

@@ -346,6 +346,9 @@ static NSString *const UDKeyLiquidGlassEnabled = @"LiquidGlassEnabled";
 // dragging to switch tabs (an either/or; needs a relaunch to apply). Opt-in;
 // default OFF via registerDefaults. See ApolloLiquidGlass.xm.
 static NSString *const UDKeyTabBarSwipeNavigation = @"TabBarSwipeNavigation";
+// Experimental large post cards on Duo's opened landscape display:
+// 0 = Original (default), 2 = Focused feed; value 1 is retired.
+static NSString *const UDKeyDuoLandscapeFeedLayout = @"DuoLandscapeFeedLayout";
 // When ON, press-and-hold anywhere on a post info row (score, comments,
 // timestamp, 🌐 translation marker…) shows the glass-slider magnifier loupe: the
 // row is zoomed in a Liquid Glass card, sliding moves the selection pill

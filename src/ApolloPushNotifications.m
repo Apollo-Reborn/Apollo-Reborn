@@ -145,7 +145,9 @@ UIView *ApolloMakeNotificationsUnavailableView(void) {
     // Keep the block from floating too low when the safe area is tall.
     centerY.priority = UILayoutPriorityDefaultHigh;
     [NSLayoutConstraint activateConstraints:@[
-        [stack.centerXAnchor constraintEqualToAnchor:container.centerXAnchor],
+        // In a split layout the root can extend beneath the sidebar. Center
+        // the explanation in its usable pane, just like the edge constraints.
+        [stack.centerXAnchor constraintEqualToAnchor:safe.centerXAnchor],
         centerY,
         width,
         [stack.leadingAnchor constraintGreaterThanOrEqualToAnchor:safe.leadingAnchor constant:32.0],

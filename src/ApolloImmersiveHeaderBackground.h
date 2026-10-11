@@ -7,6 +7,8 @@
 
 @property(nonatomic, assign) CGFloat contentTranslation;
 @property(nonatomic, assign) BOOL usesProfileHero;
+// Optional owner for artwork confined to a split detail column. Previews omit it.
+@property(nonatomic, weak) UIViewController *contentViewController;
 // Unscrolled height of the sharp artwork after viewport/region clipping.
 @property(nonatomic, readonly) CGFloat sharpArtworkHeight;
 

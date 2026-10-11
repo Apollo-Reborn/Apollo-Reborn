@@ -5,6 +5,7 @@
 
 #import "ApolloCommon.h"
 #import "ApolloState.h"
+#import "ApolloDuoRail.h"
 #import "settings/ApolloSettingsForm.h"
 #import "settings/ApolloSettingsRouter.h"
 #import "settings/ApolloSettingsSearchNativeIndex.h"
@@ -115,14 +116,23 @@ static void ApolloSearchScanTable(UITableView *table,
     }
 }
 
+static NSString *ApolloSearchCanonicalRowTitle(NSString *title) {
+    NSString *trimmed = [title stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] ?: @"";
+    // The crawl snapshot names this row "Passcode". Native Settings includes
+    // the device's biometric sensor in its label; all three open the same page.
+    if ([trimmed caseInsensitiveCompare:@"Touch ID & Passcode"] == NSOrderedSame ||
+        [trimmed caseInsensitiveCompare:@"Face ID & Passcode"] == NSOrderedSame) return @"Passcode";
+    return trimmed;
+}
+
 // Find a row by its user-visible title, in display space. Trimmed,
 // case-insensitive compare — labels sometimes carry stray whitespace.
 static NSIndexPath *ApolloSearchFindRowTitled(UITableView *table, NSString *title) {
     __block NSIndexPath *found = nil;
-    NSString *wanted = [title stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSString *wanted = ApolloSearchCanonicalRowTitle(title);
     ApolloSearchScanTable(table, ^(NSIndexPath *indexPath, NSString *rowTitle, __unused NSString *header, __unused BOOL disclosure, __unused UIImage *icon) {
         if (found) return;
-        NSString *trimmed = [rowTitle stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        NSString *trimmed = ApolloSearchCanonicalRowTitle(rowTitle);
         if ([trimmed compare:wanted options:NSCaseInsensitiveSearch] == NSOrderedSame) found = indexPath;
     });
     return found;
@@ -222,6 +232,7 @@ static NSArray<ApolloSettingsSearchEntry *> *ApolloSettingsSearchBuildIndex(UITr
     // note). Navigation is label-matched at selection time, so a moved row
     // degrades to "lands on its screen", never a wrong tap.
     for (NSArray *row in ApolloSettingsSearchNativeRows()) {
+        if (ApolloDuoDeviceDetected() && [row[0] isEqualToString:@"Pixel Pals"]) continue;
         // Reborn replaces this dead Apollo row with its Translation disclosure
         // in General → Other. Keeping the snapshot entry would return a result
         // that can no longer be found or flashed after navigation.
