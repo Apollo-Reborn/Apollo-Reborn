@@ -95,7 +95,9 @@ static UILabel *ApolloUnavailableLabel(NSString *text, UIFont *font, UIColor *co
     return label;
 }
 
-UIView *ApolloMakeNotificationsUnavailableView(void) {
+UIView *ApolloMakeNotificationsUnavailableView(ApolloNotificationsUnavailableReason reason) {
+    BOOL noBackend = (reason == ApolloNotificationsUnavailableReasonNoBackend);
+
     UIView *container = [[UIView alloc] initWithFrame:CGRectZero];
     // Opaque so it fully hides the stock controls, and interactive so it
     // swallows every touch meant for the disabled page underneath.
@@ -105,7 +107,7 @@ UIView *ApolloMakeNotificationsUnavailableView(void) {
     UIImageSymbolConfiguration *iconConfig =
         [UIImageSymbolConfiguration configurationWithPointSize:52.0 weight:UIImageSymbolWeightRegular];
     UIImageView *icon = [[UIImageView alloc] initWithImage:
-        [UIImage systemImageNamed:@"bell.slash" withConfiguration:iconConfig]];
+        [UIImage systemImageNamed:(noBackend ? @"server.rack" : @"bell.slash") withConfiguration:iconConfig]];
     icon.tintColor = [UIColor secondaryLabelColor];
     icon.contentMode = UIViewContentModeScaleAspectFit;
 
@@ -120,13 +122,20 @@ UIView *ApolloMakeNotificationsUnavailableView(void) {
         title.font = [UIFont fontWithDescriptor:boldDescriptor size:0.0];
     }
 
+    NSString *bodyText = noBackend
+        ? @"Apollo's original notification servers shut down with the Reddit API changes. Push alerts, watchers, and inbox notifications need a self-hosted notification backend, and none is set up on this install."
+        : @"This copy of Apollo was signed with a free Apple ID, which Apple doesn't grant the push notification entitlement. Push alerts, watchers, and inbox notifications can't be delivered to this build.";
+    NSString *footnoteText = noBackend
+        ? @"Add your backend's URL in Apollo Reborn settings > Advanced > Notification Backend, then come back here to turn notifications on."
+        : @"To get notifications on this build anyway, install the free Bark app from the App Store, copy its push URL, and enable Bark Delivery in Apollo Reborn settings > Advanced > Notification Backend alongside your backend URL. Or install a build signed with a paid Apple Developer account.";
+
     UILabel *body = ApolloUnavailableLabel(
-        @"This copy of Apollo was signed with a free Apple ID, which Apple doesn't grant the push notification entitlement. Push alerts, watchers, and inbox notifications can't be delivered to this build.",
+        bodyText,
         [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline],
         [UIColor secondaryLabelColor]);
 
     UILabel *footnote = ApolloUnavailableLabel(
-        @"To get notifications on this build anyway, install the free Bark app from the App Store, copy its push URL (Server > right-click the key), and enable Bark Delivery in Settings > General > Custom API alongside your notification backend. Or install a build signed with a paid Apple Developer account.",
+        footnoteText,
         [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote],
         [UIColor secondaryLabelColor]);
 
