@@ -480,7 +480,9 @@ static CGFloat ApolloFeedShortcutsPreviewSideBySideCenterOffset(ApolloFeedShortc
     self.shortcutItemViewsByIndex = [itemViewsByIndex copy];
 
     if (usesShortcutLayout) {
-        UIColor *separatorColor = UIColor.separatorColor;
+        UIColor *separatorColor = ApolloThemeSeparatorColor()
+            ?: self.hostTableView.separatorColor
+            ?: UIColor.separatorColor;
         self.shortcutSeparators = ApolloFeedShortcutInstallLayout(self,
                                                                    shortcutItems,
                                                                    contentViews,
@@ -2218,16 +2220,14 @@ typedef NS_ENUM(NSInteger, Tag) {
         return IsLiquidGlass() && ApolloInterfaceSupportsBarScrollSettings();
     };
 
-    NSString *footer = ApolloSupportsNativeTabBarScrollBehavior()
-        ? @"After the tab bar reappears, Two-Gesture hides it on the second downward gesture; Classic hides it on the first."
-        : @"Hide Bars on Scroll uses the classic on/off behavior on this version of iOS.";
-    if (!ApolloInterfaceSupportsBarScrollSettings()) {
-        footer = nil;
-    } else if (IsLiquidGlass()) {
-        footer = [footer stringByAppendingString:@"\n\nSwipe Tab Bar to Navigate disables the native drag-to-switch-tab gesture."];
-    }
+    NSString *footer = IsLiquidGlass()
+        ? @"Swipe across the tab bar to navigate between screens."
+        : nil;
     if (ApolloDuoUsesAdaptiveBars()) {
-        footer = [footer stringByAppendingString:@"\n\nOn iPhone Duo, Hide Tab Bar on Scroll, Hide Style, Scroll Behavior, and Swipe Tab Bar to Navigate apply only while open in portrait. The side rail always stays visible. Hide Header on Scroll works independently in every pose."];
+        NSString *duoFooter = @"On iPhone Duo, Hide Tab Bar on Scroll, Hide Style, Scroll Behavior, and Swipe Tab Bar to Navigate apply only while open in portrait. The side rail always stays visible. Hide Header on Scroll works independently in every pose.";
+        footer = footer.length > 0
+            ? [footer stringByAppendingFormat:@"\n\n%@", duoFooter]
+            : duoFooter;
     }
     return [ApolloSettingsSection sectionWithTitle:@"Tab Bar"
                                             footer:footer
