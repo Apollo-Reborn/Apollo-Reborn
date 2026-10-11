@@ -23,6 +23,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
+#import "ApolloImageUploadHost.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloFloatingTabs.h"
 #import "ApolloGoogleSearch.h"
@@ -1060,11 +1061,58 @@ static void ApolloSimDebugDisplayGuardTest(NSString *payload) {
     });
 }
 
+// "uploadalbumtest": exercises the installed NSURLSession album responder and
+// comment RTJSON adapter using recorded fixtures. No media or comment is sent
+// to Reddit/Imgur. The S3 key intentionally differs from the lease asset_id.
+static void ApolloSimDebugUploadAlbumTest(void) {
+    NSArray<NSString *> *ids = @[@"simfixtureasset1", @"simfixtureasset2"];
+    NSArray<NSString *> *keys = @[@"simfixturekey1.jpg", @"simfixturekey2.jpg"];
+    for (NSUInteger i = 0; i < ids.count; i++) {
+        NSURL *url = [NSURL URLWithString:[@"https://reddit-uploaded-media.s3-accelerate.amazonaws.com/" stringByAppendingString:keys[i]]];
+        ApolloRegisterRedditUploadedMedia(url, ids[i], @"image/jpeg", nil);
+    }
+    for (NSUInteger count = 1; count <= ids.count; count++) {
+        NSMutableURLRequest *album = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"https://imgur-apiv3.p.rapidapi.com/3/album"]];
+        album.HTTPMethod = @"POST";
+        album.HTTPBody = [[@"deletehashes=" stringByAppendingString:[[keys subarrayWithRange:NSMakeRange(0, count)] componentsJoinedByString:@","]] dataUsingEncoding:NSUTF8StringEncoding];
+        NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:album completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+            NSDictionary *root = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+            NSDictionary *payload = [root[@"data"] isKindOfClass:NSDictionary.class] ? root[@"data"] : nil;
+            NSString *albumID = [payload[@"id"] isKindOfClass:NSString.class] ? payload[@"id"] : nil;
+            BOOL passed = !error && [response isKindOfClass:NSHTTPURLResponse.class] &&
+                [(NSHTTPURLResponse *)response statusCode] == 200 && [payload[@"images_count"] unsignedIntegerValue] == count && albumID.length > 0;
+            if (passed) {
+                NSString *text = [NSString stringWithFormat:@"Before [Album](https://imgur.com/a/%@/) after", albumID];
+                NSString *resolved = ApolloImageUploadResolveAlbumText(text);
+                passed = ![resolved containsString:@"imgur.com"];
+                for (NSUInteger i = 0; i < count; i++) passed &= [resolved containsString:keys[i]];
+                NSMutableURLRequest *comment = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"https://oauth.reddit.com/api/comment"]];
+                comment.HTTPMethod = @"POST";
+                NSCharacterSet *unreserved = [NSCharacterSet characterSetWithCharactersInString:@"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"];
+                comment.HTTPBody = [[@"thing_id=t3_fixture&text=" stringByAppendingString:[text stringByAddingPercentEncodingWithAllowedCharacters:unreserved]] dataUsingEncoding:NSUTF8StringEncoding];
+                NSURLRequest *rewritten = ApolloRedditMaybeRewriteCommentRequest(comment);
+                NSString *body = [[NSString alloc] initWithData:rewritten.HTTPBody encoding:NSUTF8StringEncoding];
+                NSString *decoded = body.stringByRemovingPercentEncoding;
+                passed &= [decoded containsString:@"richtext_json="] && ![decoded containsString:albumID];
+                for (NSUInteger i = 0; i < count; i++) passed &= [decoded containsString:ids[i]];
+            }
+            ApolloLog(@"[SimDebugTap] uploadalbumtest: %lu image(s) %@", (unsigned long)count, passed ? @"PASS" : @"FAIL");
+            NSString *path = [NSString stringWithFormat:@"/tmp/apollo-upload-album-%lu-result.txt", (unsigned long)count];
+            [(passed ? @"PASS" : @"FAIL") writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        }];
+        [task resume];
+    }
+}
+
 static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *observer,
                                           CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     dispatch_async(dispatch_get_main_queue(), ^{
         NSString *contents = [NSString stringWithContentsOfFile:ApolloSimTapFile()
                                                        encoding:NSUTF8StringEncoding error:nil];
+        if ([contents hasPrefix:@"uploadalbumtest"]) {
+            ApolloSimDebugUploadAlbumTest();
+            return;
+        }
         if ([contents hasPrefix:@"bitmapassert"]) {
             ApolloSimDebugBitmapAssert();
             return;
