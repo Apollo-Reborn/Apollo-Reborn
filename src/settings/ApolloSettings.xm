@@ -27,6 +27,10 @@
 @interface SettingsAboutViewController : UIViewController
 @end
 
+@interface SettingsPortraitLockViewController : UIViewController
+@property (nonatomic, strong) UITableView *tableView;
+@end
+
 // When YES, the Settings VC didSelect hook will skip PR #294's "Buy Us a Coffee"
 // reroute for section 0 row 0 and fall through to Apollo's native Tip Jar tap
 // handler. Used by the About VC Tip Jar row to reuse Apollo's native
@@ -711,12 +715,32 @@ static void ApolloPresentFeatureRequestsChooser(UIViewController *aboutVC,
 %end
 %end
 
+%hook SettingsPortraitLockViewController
+
+- (void)viewDidLoad {
+    // Supply the style before Eureka creates its default grouped table.
+    SettingsPortraitLockViewController *controller = (SettingsPortraitLockViewController *)self;
+    if (!controller.tableView) {
+        UITableView *tableView = [[UITableView alloc] initWithFrame:controller.view.bounds
+                                                            style:UITableViewStyleInsetGrouped];
+        tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        tableView.cellLayoutMarginsFollowReadableWidth = NO;
+        [controller.view addSubview:tableView];
+        controller.tableView = tableView;
+        ApolloLog(@"[Settings] Portrait Lock using inset-grouped sections");
+    }
+    %orig;
+}
+
+%end
+
 %ctor {
     if (@available(iOS 26.0, *)) {
         %init(ApolloSettingsGestureHeaders, ApolloSettingsGesturesViewController = objc_getClass("Apollo.SettingsGesturesViewController"));
     }
     %init(SettingsViewController=objc_getClass("_TtC6Apollo22SettingsViewController"),
-          SettingsAboutViewController=objc_getClass("_TtC6Apollo27SettingsAboutViewController"));
+          SettingsAboutViewController=objc_getClass("_TtC6Apollo27SettingsAboutViewController"),
+          SettingsPortraitLockViewController=objc_getClass("_TtC6Apollo34SettingsPortraitLockViewController"));
 
     if (objc_getClass("_TtC6Apollo26ApolloSafariViewController")) {
         %init(ApolloSafariBrowserLogging);
