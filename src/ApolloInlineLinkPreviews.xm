@@ -4710,15 +4710,19 @@ static void ApolloLPRecoverMissingCardImages(ASDisplayNode *hostNode) {
     }
 }
 
-// V25: one background refetch per URL per launch for cached previews that are
-// the residue of a blocked fetch (bot-wall title, or slug-title + favicon with
-// no description — reuters/wsj-style 401s used to cache these for their whole
-// 7-day TTL, pinning the host to a compact favicon card). The stale card still
-// renders this pass; when the refetch lands something better, the DidCache
-// notification + node invalidation re-render it in place.
-static BOOL ApolloLPMarkWeakCacheRefetchAttempted(NSURL *url) {
-    NSString *key = url.absoluteString;
-    if (key.length == 0) return NO;
+// One refetch per URL and reason per launch for a cached preview this node
+// wants replaced: the V25 background heal of a blocked fetch's residue
+// (bot-wall title, or slug-title + favicon with no description —
+// reuters/wsj-style 401s used to cache these for their whole 7-day TTL,
+// pinning the host to a compact favicon card), and the first-pass refetch of
+// a cached entry that isn't the settled card for its URL kind (the stale
+// rules in layoutSpecThatFits:). Every refetch that stores something
+// re-measures the node, and the same rules judge that store, so without the
+// cap a URL whose fresh answer still reads as stale is fetched on every
+// layout pass (issue #1415). The fetcher keeps its own cap for its callers.
+static BOOL ApolloLPMarkCachedRefetchAttempted(NSURL *url, NSString *reason) {
+    if (url.absoluteString.length == 0) return NO;
+    NSString *key = [NSString stringWithFormat:@"%@|%@", url.absoluteString, reason ?: @""];
     static NSMutableSet<NSString *> *attempted;
     static dispatch_once_t once;
     dispatch_once(&once, ^{ attempted = [NSMutableSet set]; });
@@ -4729,10 +4733,12 @@ static BOOL ApolloLPMarkWeakCacheRefetchAttempted(NSURL *url) {
     }
 }
 
+// The stale card still renders this pass; when the refetch lands something
+// better, the DidCache notification + node invalidation re-render it in place.
 static void ApolloLPKickWeakCachedPreviewRefetch(NSURL *url, ApolloLinkPreview *cached) {
     NSString *weakReason = [ApolloLinkPreviewFetcher refetchReasonForCachedPreview:cached url:url];
     if (!weakReason) return;
-    if (!ApolloLPMarkWeakCacheRefetchAttempted(url)) return;
+    if (!ApolloLPMarkCachedRefetchAttempted(url, weakReason)) return;
     ApolloLog(@"[LinkPreviews] healing weak cached preview host=%@ reason=%@", ApolloLPHost(url), weakReason);
     [ApolloLinkPreviewFetcher requestPreviewForURL:url completion:^(ApolloLinkPreview *preview) {
         if (!preview || ![preview hasUsefulMetadata]) return;
@@ -4858,29 +4864,36 @@ static void ApolloLPKickWeakCachedPreviewRefetch(NSURL *url, ApolloLinkPreview *
     ApolloLPInstallContextMenuForNode((ASDisplayNode *)self, url);
 
     ApolloLinkPreview *cached = [[ApolloLinkPreviewCache sharedCache] cachedPreviewForURL:url];
-    // Match the fetcher's staleness rule: a bsky-post preview without
-    // postText renders its flattened desc as the body, so refetch it rather
-    // than reuse it forever (the render gate alone accepts handle-only).
-    if (cached && ApolloLPIsBlueskyPostURL(url) &&
-        (!ApolloLPIsBlueskyPostPreview(url, cached) || cached.postText.length == 0)) {
-        cached = nil;
-    }
-    if (cached && (ApolloLPIsRedditUserProfileURL(url) || ApolloLPIsRedditSubredditURL(url))) {
+    // A cached entry that isn't the settled card for its URL kind — a bsky.app
+    // post URL without a Bluesky post card (an older flattened-desc entry, or
+    // the page's generic HTML), a reddit user/subreddit URL without its card,
+    // without metadata, or with a stale suspension verdict — is fetched fresh
+    // once per launch: this pass renders the placeholder, like a cold URL.
+    // After that the cached entry renders as it is (ApolloLPMarkCachedRefetchAttempted).
+    NSString *staleReason = nil;
+    BOOL staleRedditUserSuspension = NO;
+    if (cached && ApolloLPIsBlueskyPostURL(url) && !ApolloLPIsBlueskyPostPreview(url, cached)) {
+        staleReason = @"stale-bluesky";
+    } else if (cached && (ApolloLPIsRedditUserProfileURL(url) || ApolloLPIsRedditSubredditURL(url))) {
         BOOL staleRedditUser = ApolloLPIsRedditUserProfileURL(url)
             && ![cached.previewKind isEqualToString:@"reddit-user-profile"];
         BOOL staleRedditSubreddit = ApolloLPIsRedditSubredditURL(url)
             && ![cached.previewKind isEqualToString:@"reddit-subreddit"];
-        BOOL staleRedditUserSuspension = ApolloLPIsRedditUserProfileURL(url)
+        staleRedditUserSuspension = ApolloLPIsRedditUserProfileURL(url)
             && ApolloLPRedditUserPreviewNeedsSuspensionRefetch(url, cached);
-        if (![cached hasUsefulMetadata] || staleRedditUser || staleRedditSubreddit || staleRedditUserSuspension) {
-            if (staleRedditUserSuspension) {
-                NSString *username = ApolloLPNormalizedRedditUsername(ApolloLPRedditUsernameFromProfileURL(url));
-                if (username.length > 0) {
-                    [[ApolloLinkPreviewCache sharedCache] removePreviewsForRedditUsername:username];
-                }
+        if (![cached hasUsefulMetadata]) staleReason = @"no-metadata";
+        else if (staleRedditUserSuspension) staleReason = @"stale-reddit-user-suspension";
+        else if (staleRedditUser) staleReason = @"stale-reddit-user";
+        else if (staleRedditSubreddit) staleReason = @"stale-reddit-subreddit";
+    }
+    if (staleReason && ApolloLPMarkCachedRefetchAttempted(url, staleReason)) {
+        if (staleRedditUserSuspension) {
+            NSString *username = ApolloLPNormalizedRedditUsername(ApolloLPRedditUsernameFromProfileURL(url));
+            if (username.length > 0) {
+                [[ApolloLinkPreviewCache sharedCache] removePreviewsForRedditUsername:username];
             }
-            cached = nil;
         }
+        cached = nil;
     }
     if (cached && [cached hasUsefulMetadata]) {
         ApolloLPKickWeakCachedPreviewRefetch(url, cached);
