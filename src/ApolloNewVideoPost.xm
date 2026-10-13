@@ -7,33 +7,42 @@
 #import "ApolloNewVideoPost.h"
 #import "Tweak.h"
 
-// MARK: - New video post: play the video once Reddit finishes processing it
+// MARK: - New video post: open it from the Posted! banner already playing
 //
 // Reddit creates a native video post as soon as /api/submit accepts the
 // upload, and only then transcodes it on v.redd.it. Until that finishes the
-// post reads is_video=true, post_hint=hosted:video, but media=null (measured:
-// the media appeared 3.3 s after the post for a 6 s clip; longer videos take
-// longer), so RDKLink.mediaVideo is nil and Apollo draws the poster from
-// `preview` as a still image.
+// post reads is_video=true, post_hint=hosted:video, but media=null (measured
+// on real posts: the video arrived 3.3 s after the submit for a 6 s clip and
+// 8-10 s after for a 40 s 1080p clip), so RDKLink.mediaVideo is nil and Apollo
+// draws the poster from `preview` as a still image.
 //
-// The "Posted! Tap to view." banner (PostSubmitWatcher.postSubmitted ->
-// tap closure sub_100749f64 -> sub_10074740c) pushes a CommentsViewController
-// built from the link ID and subreddit alone, so the screen fetches the post
-// at that moment, almost always inside that window. Nothing rebuilds the
-// header afterwards, which is why the same post played when opened again.
+// Apollo closes the composer when the upload finishes and submits in the
+// background; PostSubmitWatcher.postSubmitted shows "Posted! Tap to view." as
+// soon as the submit returns, and its tap closure (sub_100749f64 ->
+// sub_10074740c) pushes a CommentsViewController built from the link ID and
+// subreddit alone, which fetches the post right then, almost always inside
+// that window. Nothing rebuilds the header afterwards, which is why the same
+// post played when opened again later.
 //
-// Pull-to-refresh doesn't fix an open screen either: the media row's list
-// object is the constant "header-image-token", so the ListAdapter keeps the
-// old RichMediaHeaderCellNode, and RichMediaNode only creates its video node
-// when it is built. A ModelObjectUpdated broadcast alone hands the new link
-// to CommentsMediaHeaderSectionController (sub_1006dbcf8 -> sub_1006dc438),
-// but that only re-colors the existing media node (sub_10057b3a0).
+// Fix, part 1: ApolloImageUploadHost hands a video submit's success to
+// ApolloNewVideoPostDeliverWhenPlayable, which holds it (and with it the
+// banner; the composer is already gone, so nothing on screen waits) until
+// Reddit has attached the video, checking through Apollo's own client
+// (api/info, which works for API-key and API-key-free accounts alike), for at
+// most kApolloNewVideoPostHoldLimit. Tapping the banner then opens a post that
+// already plays.
 //
-// Fix: ApolloImageUploadHost records each video post it submits. When a
-// comments screen for one of them appears without the video, the post is
-// polled through Apollo's own client (api/info, which works for API-key and
-// API-key-free accounts alike) until RDKLink.mediaVideo shows up. Then each
-// such screen gets the playable link the way Apollo spreads any model change
+// Part 2, for videos Reddit takes longer than that on (or the post opened some
+// other way first): when a comments screen for a recently submitted video post
+// appears without the video, the post is polled until RDKLink.mediaVideo shows
+// up, then the screen gets the playable link and its media row is rebuilt.
+// Pull-to-refresh can't do that: the media row's list object is the constant
+// "header-image-token", so the ListAdapter keeps the old RichMediaHeaderCellNode,
+// and RichMediaNode only creates its video node when it is built. A
+// ModelObjectUpdated broadcast alone hands the new link to
+// CommentsMediaHeaderSectionController (sub_1006dbcf8 -> sub_1006dc438), but
+// that only re-colors the existing media node (sub_10057b3a0). So the screen
+// gets the playable link the way Apollo spreads any model change
 // (ModelObjectUpdated with newModel: the screen, both header section
 // controllers and any feed cell sharing the stale link swap to it), and its
 // media row is reloaded so the section controller builds a new
@@ -48,6 +57,11 @@
 @property (readonly, copy, nonatomic) NSString *identifier;
 @end
 
+// How long the Posted! banner may wait for Reddit to attach the video. Normal
+// clips finish well inside this; longer ones fall back to part 2.
+static NSTimeInterval const kApolloNewVideoPostHoldLimit = 20.0;
+static NSTimeInterval const kApolloNewVideoPostHoldFirstCheck = 1.0;
+static NSTimeInterval const kApolloNewVideoPostHoldInterval = 1.5;
 // A post submitted longer ago than this has long finished processing.
 static NSTimeInterval const kApolloNewVideoPostPendingLifetime = 15.0 * 60.0;
 // Upper bound for one poll run; Reddit accepts videos up to 15 minutes long.
@@ -255,17 +269,13 @@ static void ApolloNewVideoPostStartSettling(NSString *bareID) {
     ApolloNewVideoPostSettle(bareID, [NSDate date], 0, nil);
 }
 
-static void ApolloNewVideoPostPoll(NSString *bareID, NSDate *pollStart, NSUInteger attempt) {
-    // Nobody is looking at the post any more: stop. Opening it again restarts.
-    if (ApolloNewVideoPostCommentsControllers(bareID).count == 0) {
-        [sApolloNewVideoPostPolling removeObject:bareID];
-        ApolloLog(@"[NewVideoPost] Stopped waiting for t3_%@: its comments are closed", bareID);
-        return;
-    }
+// Fetches the post through Apollo's own client (api/info; Web JSON routes it
+// for API-key-free accounts) and calls back on the main queue with its RDKLink,
+// or nil when there's no client or the request failed.
+static void ApolloNewVideoPostFetchLink(NSString *bareID, void (^completion)(id link, NSError *error)) {
     id client = [ApolloClassRDKClient sharedClient];
     if (!client) {
-        [sApolloNewVideoPostPolling removeObject:bareID];
-        ApolloLog(@"[NewVideoPost] Stopped waiting for t3_%@: no Reddit client", bareID);
+        completion(nil, nil);
         return;
     }
     NSString *fullName = [@"t3_" stringByAppendingString:bareID];
@@ -276,32 +286,53 @@ static void ApolloNewVideoPostPoll(NSString *bareID, NSDate *pollStart, NSUInteg
                 if (![thing respondsToSelector:@selector(identifier)]) continue;
                 if ([ApolloNewVideoPostBareID([(RDKLink *)thing identifier]) isEqualToString:bareID]) link = thing;
             }
-            if (ApolloNewVideoPostLinkHasVideo(link)) {
-                [sApolloNewVideoPostPolling removeObject:bareID];
-                if (!sApolloNewVideoPostReadyLinks) sApolloNewVideoPostReadyLinks = [NSMutableDictionary new];
-                sApolloNewVideoPostReadyLinks[bareID] = link;
-                NSDate *submittedAt = sApolloNewVideoPostSubmittedAt[bareID];
-                ApolloLog(@"[NewVideoPost] t3_%@ has its video now (check %lu, %.1fs after posting)", bareID,
-                          (unsigned long)(attempt + 1), submittedAt ? -[submittedAt timeIntervalSinceNow] : -1.0);
-                ApolloNewVideoPostStartSettling(bareID);
-                return;
-            }
-            NSTimeInterval elapsed = -[pollStart timeIntervalSinceNow];
-            if (attempt == 0 || error) {
-                ApolloLog(@"[NewVideoPost] t3_%@ is still processing (check %lu, link=%@, error=%@)", bareID,
-                          (unsigned long)(attempt + 1), link ? @"yes" : @"no", error.localizedDescription ?: @"none");
-            }
-            if (elapsed >= kApolloNewVideoPostWatchLimit) {
-                [sApolloNewVideoPostPolling removeObject:bareID];
-                ApolloLog(@"[NewVideoPost] Gave up waiting for t3_%@'s video after %.0fs", bareID, elapsed);
-                return;
-            }
-            NSTimeInterval delay = kApolloNewVideoPostPollDelays[MIN(attempt, kApolloNewVideoPostPollDelayCount - 1)];
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                ApolloNewVideoPostPoll(bareID, pollStart, attempt + 1);
-            });
+            completion(link, error);
         });
     }];
+}
+
+static void ApolloNewVideoPostNoteReady(NSString *bareID, id link) {
+    if (!sApolloNewVideoPostReadyLinks) sApolloNewVideoPostReadyLinks = [NSMutableDictionary new];
+    sApolloNewVideoPostReadyLinks[bareID] = link;
+}
+
+static void ApolloNewVideoPostPoll(NSString *bareID, NSDate *pollStart, NSUInteger attempt) {
+    // Nobody is looking at the post any more: stop. Opening it again restarts.
+    if (ApolloNewVideoPostCommentsControllers(bareID).count == 0) {
+        [sApolloNewVideoPostPolling removeObject:bareID];
+        ApolloLog(@"[NewVideoPost] Stopped waiting for t3_%@: its comments are closed", bareID);
+        return;
+    }
+    if (![ApolloClassRDKClient sharedClient]) {
+        [sApolloNewVideoPostPolling removeObject:bareID];
+        ApolloLog(@"[NewVideoPost] Stopped waiting for t3_%@: no Reddit client", bareID);
+        return;
+    }
+    ApolloNewVideoPostFetchLink(bareID, ^(id link, NSError *error) {
+        if (ApolloNewVideoPostLinkHasVideo(link)) {
+            [sApolloNewVideoPostPolling removeObject:bareID];
+            ApolloNewVideoPostNoteReady(bareID, link);
+            NSDate *submittedAt = sApolloNewVideoPostSubmittedAt[bareID];
+            ApolloLog(@"[NewVideoPost] t3_%@ has its video now (check %lu, %.1fs after posting)", bareID,
+                      (unsigned long)(attempt + 1), submittedAt ? -[submittedAt timeIntervalSinceNow] : -1.0);
+            ApolloNewVideoPostStartSettling(bareID);
+            return;
+        }
+        NSTimeInterval elapsed = -[pollStart timeIntervalSinceNow];
+        if (attempt == 0 || error) {
+            ApolloLog(@"[NewVideoPost] t3_%@ is still processing (check %lu, link=%@, error=%@)", bareID,
+                      (unsigned long)(attempt + 1), link ? @"yes" : @"no", error.localizedDescription ?: @"none");
+        }
+        if (elapsed >= kApolloNewVideoPostWatchLimit) {
+            [sApolloNewVideoPostPolling removeObject:bareID];
+            ApolloLog(@"[NewVideoPost] Gave up waiting for t3_%@'s video after %.0fs", bareID, elapsed);
+            return;
+        }
+        NSTimeInterval delay = kApolloNewVideoPostPollDelays[MIN(attempt, kApolloNewVideoPostPollDelayCount - 1)];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            ApolloNewVideoPostPoll(bareID, pollStart, attempt + 1);
+        });
+    });
 }
 
 static void ApolloNewVideoPostCommentsAppeared(UIViewController *controller) {
@@ -328,20 +359,70 @@ static void ApolloNewVideoPostCommentsAppeared(UIViewController *controller) {
     ApolloNewVideoPostPoll(bareID, [NSDate date], 0);
 }
 
-void ApolloNewVideoPostNoteSubmitted(NSString *linkID) {
-    NSString *bareID = ApolloNewVideoPostBareID(linkID);
-    if (!bareID) return;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (!sApolloNewVideoPostSubmittedAt) sApolloNewVideoPostSubmittedAt = [NSMutableDictionary new];
-        for (NSString *key in sApolloNewVideoPostSubmittedAt.allKeys) {
-            if (-[sApolloNewVideoPostSubmittedAt[key] timeIntervalSinceNow] > kApolloNewVideoPostPendingLifetime) {
-                [sApolloNewVideoPostSubmittedAt removeObjectForKey:key];
-                [sApolloNewVideoPostReadyLinks removeObjectForKey:key];
-            }
+static void ApolloNewVideoPostNoteSubmitted(NSString *bareID) {
+    if (!sApolloNewVideoPostSubmittedAt) sApolloNewVideoPostSubmittedAt = [NSMutableDictionary new];
+    for (NSString *key in sApolloNewVideoPostSubmittedAt.allKeys) {
+        if (-[sApolloNewVideoPostSubmittedAt[key] timeIntervalSinceNow] > kApolloNewVideoPostPendingLifetime) {
+            [sApolloNewVideoPostSubmittedAt removeObjectForKey:key];
+            [sApolloNewVideoPostReadyLinks removeObjectForKey:key];
         }
-        sApolloNewVideoPostSubmittedAt[bareID] = [NSDate date];
-        [sApolloNewVideoPostReadyLinks removeObjectForKey:bareID];
-        ApolloLog(@"[NewVideoPost] Noted video post t3_%@; its comments switch to the video once Reddit finishes processing it", bareID);
+    }
+    sApolloNewVideoPostSubmittedAt[bareID] = [NSDate date];
+    [sApolloNewVideoPostReadyLinks removeObjectForKey:bareID];
+}
+
+// One check of the hold: deliver as soon as the post has its video, or once
+// the next check would land past the limit.
+static void ApolloNewVideoPostHoldCheck(NSString *bareID, NSDate *holdStart, void (^deliver)(BOOL playable)) {
+    ApolloNewVideoPostFetchLink(bareID, ^(id link, NSError *error) {
+        NSTimeInterval elapsed = -[holdStart timeIntervalSinceNow];
+        if (ApolloNewVideoPostLinkHasVideo(link)) {
+            ApolloNewVideoPostNoteReady(bareID, link);
+            ApolloLog(@"[NewVideoPost] t3_%@ has its video %.1fs after the submit; showing Posted! now", bareID, elapsed);
+            deliver(YES);
+            return;
+        }
+        if (elapsed + kApolloNewVideoPostHoldInterval > kApolloNewVideoPostHoldLimit) {
+            ApolloLog(@"[NewVideoPost] t3_%@ is still processing after %.0fs (link=%@, error=%@); showing Posted! now, its comments switch to the video once it's ready",
+                      bareID, elapsed, link ? @"yes" : @"no", error.localizedDescription ?: @"none");
+            deliver(NO);
+            return;
+        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kApolloNewVideoPostHoldInterval * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            ApolloNewVideoPostHoldCheck(bareID, holdStart, deliver);
+        });
+    });
+}
+
+void ApolloNewVideoPostDeliverWhenPlayable(NSString *linkID, dispatch_block_t deliver) {
+    NSString *bareID = ApolloNewVideoPostBareID(linkID);
+    // Callers are the submit response transform: always hand the response on,
+    // on a background queue like the transform's other completions.
+    __block BOOL delivered = NO;
+    void (^finish)(BOOL) = ^(__unused BOOL playable) {
+        if (delivered || !deliver) return;
+        delivered = YES;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), deliver);
+    };
+    if (!bareID) {
+        finish(NO);
+        return;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ApolloNewVideoPostNoteSubmitted(bareID);
+        if (![ApolloClassRDKClient sharedClient]) {
+            ApolloLog(@"[NewVideoPost] No Reddit client to check t3_%@; showing Posted! right away", bareID);
+            finish(NO);
+            return;
+        }
+        ApolloLog(@"[NewVideoPost] Holding Posted! for video post t3_%@ until Reddit attaches the video (up to %.0fs)",
+                  bareID, kApolloNewVideoPostHoldLimit);
+        NSDate *holdStart = [NSDate date];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kApolloNewVideoPostHoldFirstCheck * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            ApolloNewVideoPostHoldCheck(bareID, holdStart, finish);
+        });
     });
 }
 
@@ -368,6 +449,6 @@ void ApolloNewVideoPostNoteSubmitted(NSString *linkID) {
         class_getInstanceVariable(mediaCellClass, "richMediaNode") &&
         class_getInstanceVariable(richMediaClass, "videoNode") &&
         class_getInstanceVariable(richMediaClass, "link");
-    ApolloLog(@"[NewVideoPost] hook installed (a just-posted video's comments switch to the video once Reddit finishes processing it)%@",
+    ApolloLog(@"[NewVideoPost] hook installed (Posted! waits for a just-posted video to finish processing; comments opened sooner switch to it)%@",
               found ? @"" : @", but a comments class or ivar is MISSING");
 }
