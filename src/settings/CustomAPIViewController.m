@@ -3427,7 +3427,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                 cell.detailTextLabel.numberOfLines = 0;
             }
             cell.textLabel.text = @"Bug Reports";
-            cell.detailTextLabel.text = @"Report a problem and optionally attach Reborn logs";
+            cell.detailTextLabel.text = @"Report a problem. Your Reborn debug log is attached automatically";
             cell.imageView.image = ApolloEmojiSettingsIcon(@"\U0001F41B", [UIColor systemRedColor], 29.0);
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
             cell.selectionStyle = UITableViewCellSelectionStyleDefault;
@@ -4082,6 +4082,33 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
 
 #pragma mark - Export Logs
 
+// A .log file rather than a raw string, so it can be saved to Files and
+// attached to a GitHub bug report or the web report form, both of which need
+// a log file (GitHub caps issue text at 64K characters, far below a session
+// log). One fixed folder, emptied per export, so repeated exports don't
+// accumulate in tmp. Returns nil if the file couldn't be written.
+static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
+    NSFileManager *fileManager = NSFileManager.defaultManager;
+    NSURL *folder = [[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES]
+                        URLByAppendingPathComponent:@"ApolloRebornLogExport" isDirectory:YES];
+    [fileManager removeItemAtURL:folder error:nil];
+    NSError *error = nil;
+    if (![fileManager createDirectoryAtURL:folder withIntermediateDirectories:YES attributes:nil error:&error]) {
+        ApolloLogError(@"[ExportLogs] couldn't create the export folder: %@", error.localizedDescription);
+        return nil;
+    }
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    formatter.dateFormat = @"yyyy-MM-dd-HHmmss";
+    NSString *filename = [NSString stringWithFormat:@"apollo-reborn-%@.log", [formatter stringFromDate:[NSDate date]]];
+    NSURL *fileURL = [folder URLByAppendingPathComponent:filename isDirectory:NO];
+    if (![logs writeToURL:fileURL atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
+        ApolloLogError(@"[ExportLogs] couldn't write the log file: %@", error.localizedDescription);
+        return nil;
+    }
+    return fileURL;
+}
+
 - (void)exportLogs {
     UIAlertController *spinner = [UIAlertController alertControllerWithTitle:@"Collecting logs…"
                                                                     message:@"\n"
@@ -4098,9 +4125,12 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
     [self presentViewController:spinner animated:YES completion:^{
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             NSString *logs = ApolloCollectLogs();
+            NSURL *logFile = ApolloWriteExportedLogFile(logs);
             dispatch_async(dispatch_get_main_queue(), ^{
                 [spinner dismissViewControllerAnimated:YES completion:^{
-                    UIActivityViewController *activityVC = [[UIActivityViewController alloc] initWithActivityItems:@[logs] applicationActivities:nil];
+                    // Fall back to sharing the text if the file write failed.
+                    NSArray *items = logFile ? @[ logFile ] : @[ logs ];
+                    UIActivityViewController *activityVC = [[UIActivityViewController alloc] initWithActivityItems:items applicationActivities:nil];
 
                     UIPopoverPresentationController *popover = activityVC.popoverPresentationController;
                     if (popover) {
