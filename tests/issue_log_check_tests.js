@@ -73,6 +73,8 @@ const DETECTION_CASES = [
     ['pasted cross-launch dated lines', [1, 2, 3, 4, 5].map((i) => `[10-14 18:30:0${i}.123] [KeychainTrace] read ${i}`).join('\n'), true],
     ['two quoted log lines are not a log', exportedLogExcerpt(2), false],
     ['n/a', 'N/A', false],
+    ['the form\'s "Yes, it\'s attached below" answer alone', "### Did you attach a debug log or crash log?\n\nYes, it's attached below", false],
+    ['a "No, I couldn\'t get one" answer with a reason', "### Did you attach a debug log or crash log?\n\nNo, I couldn't get one (I said why below)\n\nIt crashes on launch so I can't reach Settings", false],
     ['no response', '_No response_', false],
     ['screenshot only', SCREENSHOT, false],
     ['screen recording only', VIDEO, false],
@@ -175,17 +177,18 @@ function harness({ body, author = 'reporter', association = 'NONE', userType = '
 const flaggedComment = (body) => ({ body, user: { login: 'github-actions[bot]', type: 'Bot' } });
 
 async function flowTests() {
-    await test('a new report without a log is labelled, commented on once and closed as not planned', async () => {
+    await test('a new report without a log is labelled and commented on once, and stays open', async () => {
         const h = harness({ body: formBody('N/A'), repoHasLabel: false });
         await h.fire('issues', 'opened');
         requireEqual(h.calls, [
             ['createLabel', check.LABEL],
             ['addLabels', [check.LABEL]],
             ['createComment'],
-            ['update', 'closed', 'not_planned'],
         ], 'calls');
+        requireEqual(h.store.issue.state, 'open', 'state');
         requireThat(h.store.comments[0].body.startsWith(check.MARKER), 'comment carries the marker');
         requireThat(h.store.comments[0].body.includes('Export Debug Logs'), 'comment says how to export a log');
+        requireThat(!/closed|reopen/i.test(h.store.comments[0].body), 'comment does not talk about closing');
     });
 
     await test('a new report with a log is left alone', async () => {
@@ -218,7 +221,7 @@ async function flowTests() {
     await test('a past contributor still needs a log', async () => {
         const h = harness({ body: formBody('N/A'), association: 'CONTRIBUTOR' });
         await h.fire('issues', 'opened');
-        requireThat(h.store.issue.state === 'closed', 'closed');
+        requireEqual(h.store.issue.labels.map((l) => l.name), [check.LABEL], 'labels');
     });
 
     await test('Question form issues (no log field) are exempt', async () => {
@@ -233,61 +236,60 @@ async function flowTests() {
         requireEqual(h.calls, [], 'calls');
     });
 
-    await test('editing a log into a closed flagged issue reopens it and updates the comment in place', async () => {
+    await test('editing a log into a flagged issue clears the label and updates the comment in place', async () => {
         const h = harness({
             body: formBody(LOG_FILE),
             labels: ['bug', check.LABEL],
-            state: 'closed',
             comments: [{ body: 'first!', user: { login: 'someone', type: 'User' } }, flaggedComment(`${check.MARKER}\nold text`)],
         });
         await h.fire('issues', 'edited');
-        requireEqual(h.calls, [['removeLabel', check.LABEL], ['update', 'open', null], ['updateComment', 901]], 'calls');
+        requireEqual(h.calls, [['removeLabel', check.LABEL], ['updateComment', 901]], 'calls');
         requireEqual(h.store.comments.length, 2, 'no extra comment');
-        requireThat(h.store.comments[1].body.includes('open again'), 'comment updated');
+        requireThat(h.store.comments[1].body.includes('Thanks for adding the log'), 'comment updated');
         requireEqual(h.store.issue.labels.map((l) => l.name), ['bug'], 'labels');
     });
 
-    await test("the author's comment with a log reopens it", async () => {
-        const h = harness({ body: formBody('N/A'), labels: [check.LABEL], state: 'closed', comments: [flaggedComment(`${check.MARKER}\nold`)] });
+    await test("the author's comment with a log clears the label", async () => {
+        const h = harness({ body: formBody('N/A'), labels: [check.LABEL], comments: [flaggedComment(`${check.MARKER}\nold`)] });
         await h.fire('issue_comment', 'created', { body: `here you go ${LOG_FILE}`, user: { login: 'reporter', type: 'User' } });
-        requireEqual(h.store.issue.state, 'open', 'state');
         requireEqual(h.store.issue.labels, [], 'labels');
+        requireEqual(h.store.issue.state, 'open', 'state');
     });
 
     await test("a log comment still counts when a later edit's run is the one that executes", async () => {
         const h = harness({
             body: formBody('N/A'),
             labels: [check.LABEL],
-            state: 'closed',
             comments: [flaggedComment(`${check.MARKER}\nold`), { body: LOG_FILE, user: { login: 'reporter', type: 'User' } }],
         });
         await h.fire('issues', 'edited');
-        requireEqual(h.store.issue.state, 'open', 'state');
+        requireEqual(h.store.issue.labels, [], 'labels');
     });
 
-    await test("someone else's comment with a log doesn't reopen it", async () => {
-        const h = harness({ body: formBody('N/A'), labels: [check.LABEL], state: 'closed' });
+    await test("someone else's comment with a log doesn't clear the label", async () => {
+        const h = harness({ body: formBody('N/A'), labels: [check.LABEL] });
         await h.fire('issue_comment', 'created', { body: LOG_FILE, user: { login: 'bystander', type: 'User' } });
         requireEqual(h.calls, [], 'calls');
     });
 
-    await test('an edit without a log keeps a flagged issue closed', async () => {
-        const h = harness({ body: formBody('still N/A'), labels: [check.LABEL], state: 'closed' });
+    await test('an edit without a log keeps the label', async () => {
+        const h = harness({ body: formBody('still N/A'), labels: [check.LABEL] });
         await h.fire('issues', 'edited');
         requireEqual(h.calls, [], 'calls');
     });
 
-    await test('edits never close an issue (old issues, maintainer reopens)', async () => {
+    await test('edits and comments never flag an issue (old issues stay untouched)', async () => {
         const h = harness({ body: formBody('N/A') });
         await h.fire('issues', 'edited');
         await h.fire('issue_comment', 'created', { body: 'any update?', user: { login: 'reporter', type: 'User' } });
         requireEqual(h.calls, [], 'calls');
     });
 
-    await test('a flagged issue a maintainer reopened is released (not re-closed) once the log arrives', async () => {
-        const h = harness({ body: formBody(LOG_FILE), labels: [check.LABEL], state: 'open', comments: [flaggedComment(`${check.MARKER}\nold`)] });
+    await test('the check never reopens or closes: a flagged issue a maintainer closed stays closed when the log arrives', async () => {
+        const h = harness({ body: formBody(LOG_FILE), labels: [check.LABEL], state: 'closed', comments: [flaggedComment(`${check.MARKER}\nold`)] });
         await h.fire('issues', 'edited');
         requireEqual(h.calls, [['removeLabel', check.LABEL], ['updateComment', 900]], 'calls');
+        requireEqual(h.store.issue.state, 'closed', 'state');
     });
 }
 

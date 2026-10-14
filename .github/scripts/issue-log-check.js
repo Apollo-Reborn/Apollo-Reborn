@@ -2,11 +2,12 @@
 //
 // The Bug Report and Login & API Key Help forms require a debug log or crash
 // log, but a required field can still be filled with "n/a". A new issue from
-// one of those forms that has no log attached is labelled `needs-log`, gets
-// one comment explaining how to export a log, and is closed. As soon as its
+// one of those forms that has no log attached is labelled `needs-log` and gets
+// one comment explaining how to export a log; it stays open. As soon as its
 // author edits a log into the issue or posts one in a comment, the label is
-// removed, the issue reopens and the comment is updated. Edits never close an
-// issue, so old issues and issues a maintainer reopened are left alone.
+// removed and the comment is updated. The check never closes or reopens an
+// issue, and only a newly opened issue gets flagged, so old issues are left
+// alone.
 //
 // Exempt: issues created by a bot (report.apolloreborn.app files issues
 // through its GitHub App and enforces the log itself; its anonymous reporters
@@ -43,7 +44,7 @@ const LOG_LINE = /^\s*\[(?:\d{2}-\d{2} )?\d{2}:\d{2}:\d{2}\.\d{3}\] \S/gm;
 const MIN_PASTED_LOG_LINES = 5;
 
 const MISSING_LOG_COMMENT = `${MARKER}
-Thanks for the report! Bug reports need a debug log or crash log so we can see what actually happened, and this one doesn't have one yet, so it's closed for now. It reopens automatically as soon as you add one.
+Thanks for the report! Bug reports need a debug log or crash log so we can see what actually happened, and this one doesn't have one yet. Please add one so we can look into it.
 
 **To add a log:** reproduce the bug, then (before closing Apollo) go to **Settings → Apollo Reborn → Advanced → Export Debug Logs**, save the file, and drag it into an edit of this issue or into a new comment here.
 
@@ -52,7 +53,7 @@ Thanks for the report! Bug reports need a debug log or crash log so we can see w
 Next time, the easiest way is **Settings → Apollo Reborn → Bug Reports** in the app: it attaches the log for you and doesn't need a GitHub account. Feature ideas go on [request.apolloreborn.app](https://request.apolloreborn.app/).`;
 
 const LOG_RECEIVED_COMMENT = `${MARKER}
-Thanks for adding the log! This issue is open again.`;
+Thanks for adding the log!`;
 
 function hasLog(text) {
     if (!text) return false;
@@ -85,7 +86,7 @@ async function ensureLabel(github, owner, repo) {
                 repo,
                 name: LABEL,
                 color: 'd93f0b',
-                description: 'Closed until a debug log or crash log is attached',
+                description: 'Waiting for a debug log or crash log',
             });
         } catch (createError) {
             // 422: another run created it first.
@@ -144,20 +145,11 @@ async function run({ github, context, core }) {
         await github.rest.issues.addLabels({ owner, repo, issue_number: issueNumber, labels: [LABEL] });
         await upsertComment(github, owner, repo, issueNumber, MISSING_LOG_COMMENT,
             await listComments(github, owner, repo, issueNumber));
-        if (issue.state !== 'closed') {
-            await github.rest.issues.update({
-                owner,
-                repo,
-                issue_number: issueNumber,
-                state: 'closed',
-                state_reason: 'not_planned',
-            });
-        }
-        core.info(`#${issueNumber}: no log, labelled ${LABEL} and closed`);
+        core.info(`#${issueNumber}: no log, labelled ${LABEL}`);
         return;
     }
 
-    // Everything else only ever releases an issue this check closed. Look at
+    // Everything else only ever clears a flag this check set. Look at
     // the issue and ALL of its author's comments, not just this event's: a
     // queued run can be superseded by a newer one (the concurrency group
     // keeps only the latest pending run), so a log posted in a comment right
@@ -176,11 +168,8 @@ async function run({ github, context, core }) {
     } catch (error) {
         if (error.status !== 404) throw error;
     }
-    if (issue.state === 'closed') {
-        await github.rest.issues.update({ owner, repo, issue_number: issueNumber, state: 'open' });
-    }
     await upsertComment(github, owner, repo, issueNumber, LOG_RECEIVED_COMMENT, comments);
-    core.info(`#${issueNumber}: log added, reopened`);
+    core.info(`#${issueNumber}: log added, ${LABEL} removed`);
 }
 
 module.exports = {

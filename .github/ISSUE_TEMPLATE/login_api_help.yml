@@ -13,7 +13,7 @@ body:
         - Existing [login issues](https://github.com/Apollo-Reborn/Apollo-Reborn/issues?q=is%3Aissue+label%3Aquestion+login) — note that Reddit has been revoking API keys, which is **not** something the tweak can fix.
         - Make sure you are running at least version 3.1.0 of Apollo Reborn if you are using a custom redirect URI.
 
-        **Sign-in reports need a debug log** (it shows where the sign-in failed). Requests filed without one are closed automatically and reopen as soon as one is added.
+        **Sign-in reports need a debug log** (it shows where the sign-in failed). Requests filed without one get flagged until a log is added.
 
   - type: checkboxes
     id: preflight
@@ -23,8 +23,6 @@ body:
         - label: I searched existing issues and read the README section first.
           required: true
         - label: I'm running the latest version of Apollo Reborn.
-          required: true
-        - label: I attached a debug log below.
           required: true
 
   - type: dropdown
@@ -50,13 +48,24 @@ body:
     validations:
       required: true
 
+  - type: dropdown
+    id: log-attached
+    attributes:
+      label: Did you attach a debug log?
+      description: Sign-in problems are very hard to diagnose without one, so please add it if you can. If you really can't, choose No and say why in the box below.
+      options:
+        - "Yes, it's attached below"
+        - "No, I couldn't get one (I said why below)"
+    validations:
+      required: true
+
   # Same label as bug_report.yml: .github/scripts/issue-log-check.js keys on it.
   - type: textarea
     id: logs
     attributes:
       label: Debug log or crash log
       description: |
-        **Required.** Try signing in once more, then (before closing Apollo) go to **Settings → Apollo Reborn → Advanced → Export Debug Logs** and save the `.log` file, e.g. with Save to Files. Drag the file into this box, or use the attach-files link under it.
+        Try signing in once more, then (before closing Apollo) go to **Settings → Apollo Reborn → Advanced → Export Debug Logs** and save the `.log` file, e.g. with Save to Files. Drag the file into this box, or use the attach-files link under it. If you can't get a log, say why here instead.
 
         Logs never include passwords or API keys, but like everything here they're public.
       placeholder: Attach your apollo-reborn-….log file here.
