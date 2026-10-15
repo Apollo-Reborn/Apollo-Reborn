@@ -62,6 +62,7 @@ NSInteger sProfileAvatarStyle = 1; // Circle until preferences load.
 BOOL sShowSubredditHeaders = NO;
 BOOL sSubredditHeaderImmersive = YES;   // effective default when Reborn header is enabled
 BOOL sSubredditShowBanner = YES;
+BOOL sSubredditShowIcon = YES;
 BOOL sSubredditShowJoinButton = YES;
 BOOL sSubredditShowUserFlairButton = NO;
 BOOL sSubredditShowSidebarButton = NO;

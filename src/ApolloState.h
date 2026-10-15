@@ -162,6 +162,7 @@ extern BOOL sShowSubredditHeaders;
 // Native    = !sShowSubredditHeaders
 extern BOOL sSubredditHeaderImmersive;
 extern BOOL sSubredditShowBanner;
+extern BOOL sSubredditShowIcon;
 extern BOOL sSubredditShowJoinButton;
 extern BOOL sSubredditShowUserFlairButton;
 extern BOOL sSubredditShowSidebarButton;

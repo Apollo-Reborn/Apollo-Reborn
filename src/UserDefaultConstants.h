@@ -291,6 +291,8 @@ static NSString *const UDKeyShowSubredditHeaders = @"ShowSubredditHeaders";
 // flat) — mirrors UDKeyProfileHeaderImmersive's semantics for subreddits.
 static NSString *const UDKeySubredditHeaderImmersive = @"SubredditHeaderImmersive";
 static NSString *const UDKeySubredditShowBanner = @"SubredditShowBanner";
+// Show the community icon in Compact and Immersive headers (default YES).
+static NSString *const UDKeySubredditShowIcon = @"SubredditShowIcon";
 static NSString *const UDKeySubredditShowJoinButton = @"SubredditShowJoinButton";
 // Show direct actions beside Join in Apollo Reborn's subreddit header.
 // Both default to NO; User Flair is also hidden when the subreddit disallows it.

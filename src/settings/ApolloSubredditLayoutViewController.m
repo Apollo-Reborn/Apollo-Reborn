@@ -468,6 +468,7 @@ static NSInteger const ApolloCommunityHighlightsPreviewViewTag = 8102;
 - (void)apollo_configureLayoutPreview:(ApolloSubredditHeaderPreviewView *)preview {
     [preview configureWithDensityMode:[self currentDensityMode]
                                banner:sSubredditShowBanner
+                                 icon:sSubredditShowIcon
                           joinButton:sSubredditShowJoinButton
                      userFlairButton:sSubredditShowUserFlairButton
                        sidebarButton:sSubredditShowSidebarButton
@@ -568,6 +569,18 @@ static NSInteger const ApolloCommunityHighlightsPreviewViewTag = 8102;
         }];
     banner.visible = ^BOOL { return sShowSubredditHeaders; };
 
+    ApolloSettingsRow *icon =
+        [ApolloSettingsRow switchRowWithID:@"showIcon"
+                                     title:@"Subreddit Icon"
+                                      isOn:^BOOL { return sSubredditShowIcon; }
+                                  onToggle:^(UISwitch *sender) {
+            sSubredditShowIcon = sender.isOn;
+            [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeySubredditShowIcon];
+            [weakSelf apollo_refreshLayoutPreviewAnimated:YES];
+            [weakSelf apollo_persistAndApply];
+        }];
+    icon.visible = ^BOOL { return sShowSubredditHeaders; };
+
     ApolloSettingsRow *joinButton =
         [ApolloSettingsRow switchRowWithID:@"showJoinButton"
                                      title:@"Join Button"
@@ -645,7 +658,7 @@ static NSInteger const ApolloCommunityHighlightsPreviewViewTag = 8102;
     ApolloSettingsSection *headerSection =
         [ApolloSettingsSection sectionWithTitle:@"Layout"
                                          footer:nil
-                                           rows:@[ density, banner, joinButton, userFlairButton, sidebarButton,
+                                           rows:@[ density, banner, icon, joinButton, userFlairButton, sidebarButton,
                                                    displayName, subtitle, description ]];
 
     ApolloSettingsRow *highlights =
