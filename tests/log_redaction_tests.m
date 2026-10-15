@@ -50,8 +50,15 @@ int main(void) {
         // --- URLs: non-Reddit keep the host (+ a known media extension), Reddit
         // keeps its route minus the title slug; queries/fragments always go.
         CheckScrub(@"GET https://i.imgur.com/AbC123.gifv", @"GET https://i.imgur.com/….gifv");
-        CheckScrub(@"https://v.redd.it/abc/DASH_720.mp4?source=fallback", @"https://v.redd.it/….mp4?…");
-        CheckScrub(@"https://i.redd.it/xyz987.jpg", @"https://i.redd.it/….jpg");
+        // Reddit's own media keeps its path (a media ID says no more than a
+        // post ID), minus the signed query; snoovatars are a person, so they don't.
+        CheckScrub(@"https://v.redd.it/abc/DASH_720.mp4?source=fallback", @"https://v.redd.it/abc/DASH_720.mp4?…");
+        CheckScrub(@"https://i.redd.it/xyz987.jpg", @"https://i.redd.it/xyz987.jpg");
+        CheckScrub(@"https://preview.redd.it/abc123.png?width=640&format=png&s=9f2a1b",
+                   @"https://preview.redd.it/abc123.png?…");
+        CheckScrub(@"https://i.redd.it/snoovatar/avatars/nftv2_bmZ0X2VpcDE1.png", @"https://i.redd.it/….png");
+        // redditmedia.com style paths carry a profile-subreddit ID: host only.
+        CheckScrub(@"https://styles.redditmedia.com/t5_3k30p/styles/profileIcon_uj01.png", @"https://styles.redditmedia.com/….png");
         CheckScrub(@"opened https://www.reddit.com/r/pics/comments/1abcd2/my_cats_first_birthday/hk3j2/ ok",
                    @"opened https://www.reddit.com/r/pics/comments/1abcd2/…/hk3j2/ ok");
         CheckScrub(@"https://oauth.reddit.com/api/v1/me?raw_json=1", @"https://oauth.reddit.com/api/v1/me?…");

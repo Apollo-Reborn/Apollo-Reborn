@@ -202,14 +202,23 @@ static NSString *ARLRRedactPaths(NSString *s, NSString *homeDirectory) {
     });
 }
 
-// Reddit page and API hosts keep their path (routes, subreddit names and
-// post IDs are what make these lines useful); media and every other host
-// keep only the host, because the path IS the content (an image, a video, an
-// article, someone's social profile).
-static BOOL ARLRHostKeepsPath(NSString *host) {
+// Reddit's page/API hosts and its own media hosts (i.redd.it, v.redd.it,
+// preview.redd.it, ...) keep their path: routes, subreddit names and post IDs
+// are what make these lines useful, and a post's media ID says no more than
+// its t3_ ID, which exports keep. Two exceptions keep only the host:
+// snoovatar paths (a person's avatar) and every other host, where the path IS
+// the content (an article, someone's social profile; redditmedia.com style
+// paths carry a user's profile-subreddit ID).
+static BOOL ARLRHostKeepsPath(NSString *host, NSString *path) {
     NSString *lower = host.lowercaseString;
-    return [lower isEqualToString:@"reddit.com"] || [lower hasSuffix:@".reddit.com"] ||
-           [lower isEqualToString:@"redd.it"];
+    if ([lower isEqualToString:@"reddit.com"] || [lower hasSuffix:@".reddit.com"] ||
+        [lower isEqualToString:@"redd.it"]) {
+        return YES;
+    }
+    if ([lower hasSuffix:@".redd.it"]) {
+        return [path rangeOfString:@"/snoovatar/" options:NSCaseInsensitiveSearch].location == NSNotFound;
+    }
+    return NO;
 }
 
 static NSSet<NSString *> *ARLRKnownExtensions(void) {
@@ -256,7 +265,7 @@ static NSString *ARLRRedactURLs(NSString *s) {
 
         NSMutableString *out = [NSMutableString stringWithFormat:@"%@://%@", scheme, host];
         if (path.length > 0) {
-            if (ARLRHostKeepsPath(hostOnly)) {
+            if (ARLRHostKeepsPath(hostOnly, path)) {
                 [out appendString:ARLRReplace(path, slug, nil, ^NSString *(NSTextCheckingResult *sm, NSString *ssrc) {
                     return [ARLRGroup(sm, ssrc, 1) stringByAppendingString:@"…"];
                 })];

@@ -1514,7 +1514,10 @@ NSURLRequest *ApolloRedditMaybeRewriteSubmitRequest(NSURLRequest *request) {
     if (hasUploadedURLField && uploadedURLAssetID.length == 0) {
         ApolloLog(@"[RedditUpload] Uploaded media submit detected but asset map was missing (host=%@)", uploadedURLHost ?: @"(missing)");
     } else if (rewriteAsVideo) {
-        ApolloLog(@"[RedditUpload] Preparing native video submit (assetID=%@, host=%@, websocket=%@, poster=%@, posterHost=%@)", uploadedURLAssetID ?: @"(missing)", uploadedURLHost ?: @"(missing)", [videoInfo[@"webSocketURL"] isKindOfClass:[NSString class]] ? @"yes" : @"no", videoPosterURL.length > 0 ? @"yes" : @"no", videoPosterHost ?: @"(missing)");
+        // Asset IDs of the user's own uploads are fingerprinted throughout this
+        // file: the ID is the media's i.redd.it/v.redd.it path, which finds the
+        // post and its author.
+        ApolloLog(@"[RedditUpload] Preparing native video submit (asset #%@, host=%@, websocket=%@, poster=%@, posterHost=%@)", ApolloLogFingerprint(uploadedURLAssetID), uploadedURLHost ?: @"(missing)", [videoInfo[@"webSocketURL"] isKindOfClass:[NSString class]] ? @"yes" : @"no", videoPosterURL.length > 0 ? @"yes" : @"no", videoPosterHost ?: @"(missing)");
     }
 
     for (NSString *pair in pairs) {
@@ -1618,7 +1621,7 @@ NSURLRequest *ApolloRedditMaybeRewriteSubmitRequest(NSURLRequest *request) {
         else if (!rewriteAsSelfText && composerInlineMediaCount > 0 && composerRichTextJSONString.length == 0) bodyMode = @"richtext-failed-plain";
         else bodyMode = @"plain-text";
     }
-    ApolloLog(@"[RedditUpload] Rewrote /api/submit to %@ (assetID=%@, body=%@, bodyMode=%@, richtext=%@, inlineMedia=%lu, %lu bytes)", submitKindDescription, assetID ?: uploadedURLAssetID ?: @"(missing)", injectedBody ? @"yes" : @"no", bodyMode, finalRichTextJSONString.length > 0 ? @"yes" : @"no", (unsigned long)(finalRichTextJSONString.length > 0 ? composerInlineMediaCount : 0), (unsigned long)newBody.length);
+    ApolloLog(@"[RedditUpload] Rewrote /api/submit to %@ (asset #%@, body=%@, bodyMode=%@, richtext=%@, inlineMedia=%lu, %lu bytes)", submitKindDescription, ApolloLogFingerprint(assetID ?: uploadedURLAssetID), injectedBody ? @"yes" : @"no", bodyMode, finalRichTextJSONString.length > 0 ? @"yes" : @"no", (unsigned long)(finalRichTextJSONString.length > 0 ? composerInlineMediaCount : 0), (unsigned long)newBody.length);
     return modifiedRequest;
 }
 
@@ -2131,8 +2134,8 @@ static void ApolloRedditLogVideoPostVerification(NSDictionary *postData, NSDicti
     NSString *urlHost = ApolloHostForRedditMediaURL(urlString);
     NSDictionary *media = [postData[@"media"] isKindOfClass:[NSDictionary class]] ? postData[@"media"] : nil;
     NSDictionary *secureMedia = [postData[@"secure_media"] isKindOfClass:[NSDictionary class]] ? postData[@"secure_media"] : nil;
-    ApolloLog(@"[RedditUpload] Video post verification source=%@ assetID=%@ is_video=%@ post_hint=%@ domain=%@ urlHost=%@ media.reddit_video=%@ secure_media.reddit_video=%@",
-        source ?: @"(unknown)", context[@"assetID"] ?: @"(missing)", isVideo ? @"yes" : @"no", postHint ?: @"(missing)", domain ?: @"(missing)", urlHost ?: @"(missing)",
+    ApolloLog(@"[RedditUpload] Video post verification source=%@ asset #%@ is_video=%@ post_hint=%@ domain=%@ urlHost=%@ media.reddit_video=%@ secure_media.reddit_video=%@",
+        source ?: @"(unknown)", ApolloLogFingerprint(context[@"assetID"]), isVideo ? @"yes" : @"no", postHint ?: @"(missing)", domain ?: @"(missing)", urlHost ?: @"(missing)",
         ApolloRedditMediaDictionaryHasVideo(media) ? @"yes" : @"no", ApolloRedditMediaDictionaryHasVideo(secureMedia) ? @"yes" : @"no");
 }
 
@@ -2437,7 +2440,7 @@ void ApolloRedditTransformSubmitResponseAsync(NSData *originalData, NSURLRequest
     NSMutableDictionary *resolutionContext = [context mutableCopy];
     if (links[@"userSubmittedPage"]) resolutionContext[@"userSubmittedPage"] = links[@"userSubmittedPage"];
 
-    ApolloLog(@"[RedditUpload] Resolving linkID for /api/submit (assetID=%@, sr=%@, websocket=%@, submittedPage=%@)", context[@"assetID"] ?: @"(missing)", context[@"subreddit"] ?: @"(missing)", links[@"webSocketURL"] ? @"yes" : @"no", links[@"userSubmittedPage"] ? @"yes" : @"no");
+    ApolloLog(@"[RedditUpload] Resolving linkID for /api/submit (asset #%@, sr=%@, websocket=%@, submittedPage=%@)", ApolloLogFingerprint(context[@"assetID"]), context[@"subreddit"] ?: @"(missing)", links[@"webSocketURL"] ? @"yes" : @"no", links[@"userSubmittedPage"] ? @"yes" : @"no");
 
     ApolloRedditResolveSubmittedLinkID(links[@"webSocketURL"], resolutionContext, ^(NSString *linkID, NSString *postURL) {
         if (linkID.length == 0) {
@@ -3159,7 +3162,7 @@ static void ApolloCompleteRedditNativeMediaUpload(NSData *mediaData, NSURL *medi
             if (ApolloRedditNativeUploadAttemptIsCancelled(attempt, @"synthetic-upload-response")) return;
             NSDictionary *info = ApolloRedditUploadInfoForAssetID(assetID);
             NSString *posterURL = [info[@"posterURL"] isKindOfClass:[NSString class]] ? info[@"posterURL"] : nil;
-            ApolloLog(@"[RedditUpload] Completed Reddit native %@ upload (assetID=%@, websocket=%@, poster=%@)", isVideo ? @"video" : @"image", assetID, webSocketURL.length > 0 ? @"yes" : @"no", isVideo ? (posterURL.length > 0 ? @"yes" : @"no") : @"n/a");
+            ApolloLog(@"[RedditUpload] Completed Reddit native %@ upload (asset #%@, websocket=%@, poster=%@)", isVideo ? @"video" : @"image", ApolloLogFingerprint(assetID), webSocketURL.length > 0 ? @"yes" : @"no", isVideo ? (posterURL.length > 0 ? @"yes" : @"no") : @"n/a");
             // Manage Uploads (issue #414): remember the upload so a delete of
             // this entry can be acknowledged (Reddit has no delete API) and
             // its list thumbnail can resolve to the real media URL.
@@ -3171,7 +3174,7 @@ static void ApolloCompleteRedditNativeMediaUpload(NSData *mediaData, NSURL *medi
 
         if (isVideo) {
             if (videoPosterData.length == 0) {
-                ApolloLog(@"[RedditUpload] Video upload missing poster data for assetID=%@", assetID);
+                ApolloLog(@"[RedditUpload] Video upload missing poster data for asset #%@", ApolloLogFingerprint(assetID));
                 completionHandler(nil, nil, [NSError errorWithDomain:@"ApolloRedditMediaUpload" code:52
                     userInfo:@{NSLocalizedDescriptionKey: @"Selected video poster image was missing"}]);
                 return;
@@ -3180,12 +3183,12 @@ static void ApolloCompleteRedditNativeMediaUpload(NSData *mediaData, NSURL *medi
             if (ApolloRedditNativeUploadAttemptIsCancelled(attempt, @"before-poster-upload")) return;
 
             NSString *posterFilename = [NSString stringWithFormat:@"apollo-video-poster-%@.jpg", [NSUUID UUID].UUIDString];
-            ApolloLog(@"[RedditUpload] Uploading video poster image for assetID=%@ (%lu bytes)", assetID, (unsigned long)videoPosterData.length);
+            ApolloLog(@"[RedditUpload] Uploading video poster image for asset #%@ (%lu bytes)", ApolloLogFingerprint(assetID), (unsigned long)videoPosterData.length);
             attempt.stage = @"poster-upload";
             attempt.posterOperation = ApolloUploadMediaDataToRedditCancellable(videoPosterData, posterFilename, @"image/jpeg", resolvedUploadBearer, userAgent, nil, ^(NSURL *posterURL, NSString *posterAssetID, NSString *posterWebSocketURL, NSError *posterError) {
                 if (ApolloRedditNativeUploadAttemptIsCancelled(attempt, @"poster-upload-completion")) return;
                 if (posterError || !posterURL) {
-                    ApolloLogError(@"[RedditUpload] Video poster upload failed for assetID=%@: %@", assetID, posterError.localizedDescription ?: @"missing poster URL");
+                    ApolloLogError(@"[RedditUpload] Video poster upload failed for asset #%@: %@", ApolloLogFingerprint(assetID), posterError.localizedDescription ?: @"missing poster URL");
                     if (videoContext) ApolloMediaComposerCompleteVideoUploadContext(videoContext, YES, @"poster-upload-error");
                     completionHandler(nil, nil, posterError ?: [NSError errorWithDomain:@"ApolloRedditMediaUpload" code:53
                         userInfo:@{NSLocalizedDescriptionKey: @"Reddit video poster upload did not return a URL"}]);
@@ -3197,7 +3200,7 @@ static void ApolloCompleteRedditNativeMediaUpload(NSData *mediaData, NSURL *medi
                     ApolloRecordRedditUploadedMediaInfo(posterURL, posterAssetID, @"image/jpeg", posterWebSocketURL);
                 }
                 ApolloRecordRedditUploadedVideoPosterInfo(assetID, posterURL, posterAssetID);
-                ApolloLog(@"[RedditUpload] Uploaded video poster image for assetID=%@ posterAssetID=%@ posterHost=%@", assetID, posterAssetID ?: @"(missing)", posterURL.host ?: @"(missing)");
+                ApolloLog(@"[RedditUpload] Uploaded video poster image for asset #%@ poster asset #%@ posterHost=%@", ApolloLogFingerprint(assetID), ApolloLogFingerprint(posterAssetID), posterURL.host ?: @"(missing)");
                 // Keep the video context around for retry. The Reddit S3 upload
                 // succeeded, but /api/submit may still fail (e.g. media-asset
                 // ownership mismatch, NSFW/spoiler rejection). If we deleted the
@@ -3791,7 +3794,8 @@ static void ApolloUploadsApplyThumb(UITableViewCell *cell, NSString *key, UIImag
         if (![currentKey isEqualToString:key]) return;
         UIImageView *thumbView = ApolloUploadsThumbImageViewInCell(cell);
         if (!thumbView) {
-            ApolloLog(@"[ImgChestUpload] uploads thumbnail: no image view found in laid-out cell (key=%@)", key);
+            // Host only: the key is the media URL of one of the user's own uploads.
+            ApolloLog(@"[ImgChestUpload] uploads thumbnail: no image view found in laid-out cell (host=%@)", [NSURL URLWithString:key].host ?: @"?");
             return;
         }
         thumbView.contentMode = UIViewContentModeScaleAspectFill;
@@ -3928,8 +3932,8 @@ static void ApolloUploadsApplyDetail(UITableViewCell *cell, NSString *key, NSStr
             UIImage *full = data.length > 0 ? [UIImage imageWithData:data] : nil;
             if (!full) {
                 NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
-                ApolloLogError(@"[ImgChestUpload] uploads thumbnail load failed status=%ld err=%@ url=%@",
-                          (long)http.statusCode, error.localizedDescription ?: @"nil", key);
+                ApolloLogError(@"[ImgChestUpload] uploads thumbnail load failed status=%ld err=%@ host=%@",
+                          (long)http.statusCode, error.localizedDescription ?: @"nil", [NSURL URLWithString:key].host ?: @"?");
                 return;
             }
             // Downscale to thumbnail size off-main; full uploads can be huge.

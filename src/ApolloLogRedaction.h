@@ -7,8 +7,9 @@
 //
 // What it masks:
 //   - URLs: scheme + host only. Reddit page/API URLs (reddit.com, *.reddit.com,
-//     redd.it) keep their path so routes stay readable, minus the post title
-//     slug. Every URL loses its query string and fragment.
+//     redd.it) and Reddit media (i./v./preview.redd.it, except snoovatars)
+//     keep their path so routes and post media stay readable, minus the post
+//     title slug. Every URL loses its query string and fragment.
 //   - Usernames written as u/name, /user/name or u_name, plus the signed-in
 //     accounts' names wherever they appear (bare too): other people become
 //     u/[user-3f9a] (a tag that is random per export but stable inside one, so
