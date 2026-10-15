@@ -4083,10 +4083,10 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
 #pragma mark - Export Logs
 
 // A .log file rather than a raw string, so it can be saved to Files and
-// attached to a GitHub bug report or the web report form, both of which need
-// a log file (GitHub caps issue text at 64K characters, far below a session
-// log). One fixed folder, emptied per export, so repeated exports don't
-// accumulate in tmp. Returns nil if the file couldn't be written.
+// attached to a GitHub bug report or the web report form as a file (GitHub
+// caps issue text at 64K characters, far below a session log). One fixed
+// folder, emptied per export, so repeated exports don't accumulate in tmp.
+// Returns nil if the file couldn't be written.
 static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
     NSFileManager *fileManager = NSFileManager.defaultManager;
     NSURL *folder = [[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES]

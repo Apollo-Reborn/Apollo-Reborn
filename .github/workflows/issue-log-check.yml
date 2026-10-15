@@ -1,10 +1,10 @@
 name: Bug report log check
 
-# Bug reports and sign-in help requests need a debug log or crash log. The
-# issue forms ask for one, but a required field can be filled with "n/a", so
-# this labels a new report that has no log attached `needs-log` (with a comment
-# on how to export one) and clears that as soon as the author adds a log. It
-# never closes or reopens an issue. The logic and its exemptions live in
+# Bug reports and sign-in help requests work far better with a debug log or
+# crash log. The issue forms strongly encourage one but let people continue
+# without it, so this labels a new report that has no log attached `needs-log`
+# (with a comment on how to export one) and clears that as soon as the author
+# adds a log. It never closes or reopens an issue. The logic and its exemptions live in
 # .github/scripts/issue-log-check.js; tests in tests/issue_log_check_tests.js.
 #
 # Issue and comment text is only ever handled as data inside github-script;

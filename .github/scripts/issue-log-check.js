@@ -1,9 +1,9 @@
 // Bug report log check, run by .github/workflows/issue-log-check.yml.
 //
-// The Bug Report and Login & API Key Help forms require a debug log or crash
-// log, but a required field can still be filled with "n/a". A new issue from
-// one of those forms that has no log attached is labelled `needs-log` and gets
-// one comment explaining how to export a log; it stays open. As soon as its
+// The Bug Report and Login & API Key Help forms strongly encourage a debug log
+// or crash log but let people continue without one. A new issue from one of
+// those forms that has no log attached is labelled `needs-log` and gets one
+// comment explaining how to export a log; it stays open. As soon as its
 // author edits a log into the issue or posts one in a comment, the label is
 // removed and the comment is updated. The check never closes or reopens an
 // issue, and only a newly opened issue gets flagged, so old issues are left
@@ -44,7 +44,7 @@ const LOG_LINE = /^\s*\[(?:\d{2}-\d{2} )?\d{2}:\d{2}:\d{2}\.\d{3}\] \S/gm;
 const MIN_PASTED_LOG_LINES = 5;
 
 const MISSING_LOG_COMMENT = `${MARKER}
-Thanks for the report! Bug reports need a debug log or crash log so we can see what actually happened, and this one doesn't have one yet. Please add one so we can look into it.
+Thanks for the report! There's no debug log or crash log on this one yet, and without one we may not be able to figure out what went wrong. If you can, please add one.
 
 **To add a log:** reproduce the bug, then (before closing Apollo) go to **Settings → Apollo Reborn → Advanced → Export Debug Logs**, save the file, and drag it into an edit of this issue or into a new comment here.
 
@@ -86,7 +86,7 @@ async function ensureLabel(github, owner, repo) {
                 repo,
                 name: LABEL,
                 color: 'd93f0b',
-                description: 'Waiting for a debug log or crash log',
+                description: 'No debug log or crash log attached yet',
             });
         } catch (createError) {
             // 422: another run created it first.

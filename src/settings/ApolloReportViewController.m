@@ -14,10 +14,10 @@ static NSString *const kApolloReportHost = @"report.apolloreborn.app";
 static NSString *const kApolloReportMessageHandler = @"apolloReport";
 static NSString *const kApolloReportLogFilename = @"apollo-reborn.log";
 
-// Bug reports need a log, so the plain flow attaches the session log as soon
-// as the form opens. Real logs run ~20 KB-1 MB; this cap only keeps a runaway
-// session under the form's 20 MB attachment limit, which would otherwise
-// block a report whose log can't be removed without failing the requirement.
+// A log is what makes most bug reports fixable, so the plain flow attaches the
+// session log as soon as the form opens. Real logs run ~20 KB-1 MB; this cap
+// only keeps a runaway session under the form's 20 MB attachment limit, which
+// would otherwise block sending until the log was removed.
 static const NSUInteger kApolloReportMaxLogBytes = 5 * 1024 * 1024;
 
 // Keeps the newest part of an oversized log (the bug the user just hit is at
@@ -161,7 +161,7 @@ static NSString *ApolloReportLogForAttachment(NSString *logs) {
             [NSURLQueryItem queryItemWithName:@"hasCrashReport" value:@"1"],
         ]];
     } else {
-        // Lets the form word its log requirement for the app ("tap Attach
+        // Lets the form word its missing-log prompt for the app ("tap Attach
         // Logs") and label the issue; older site deployments ignore it.
         [queryItems addObject:[NSURLQueryItem queryItemWithName:@"source" value:@"in-app"]];
     }
@@ -175,11 +175,11 @@ static NSString *ApolloReportLogForAttachment(NSString *logs) {
 }
 
 // Only reachable after the user removed the automatic log (or it couldn't be
-// attached), so the sheet says why it's needed before putting it back.
+// attached), so the sheet says why it matters before putting it back.
 - (void)attachLogsTapped:(UIBarButtonItem *)sender {
     UIAlertController *sheet =
         [UIAlertController alertControllerWithTitle:@"Attach Reborn Debug Logs?"
-                                            message:@"Bug reports need a log so we can see what went wrong. It covers this app session: feature usage, settings state, websites encountered, and Apollo AI diagnostics. Logs do not contain passwords or API keys."
+                                            message:@"A log makes it much more likely we can fix the problem. It covers this app session: feature usage, settings state, websites encountered, and Apollo AI diagnostics. Logs do not contain passwords or API keys."
                                      preferredStyle:UIAlertControllerStyleActionSheet];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Attach Logs"
                                              style:UIAlertActionStyleDefault
@@ -438,8 +438,8 @@ static NSString *ApolloReportLogForAttachment(NSString *logs) {
     self.logsAttached = NO;
     [self attachDiagnosticFilesIfReady];
     // The native copy is dropped once the page owns it, so a reload after
-    // the first attach collects a fresh log rather than leaving the
-    // (required) log off the form.
+    // the first attach collects a fresh log rather than leaving it off the
+    // form.
     if (logWasAttached && self.collectedLogs.length == 0) {
         [self collectLogs];
     } else {

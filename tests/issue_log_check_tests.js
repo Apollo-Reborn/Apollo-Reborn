@@ -23,14 +23,14 @@ function requireEqual(actual, expected, message) {
     if (a !== e) throw new Error(`${message}: expected ${e}, got ${a}`);
 }
 
-// What GitHub renders for a Bug Report form submission.
+// What GitHub renders for a Bug Report form submission (an empty optional
+// field renders as "_No response_").
 function formBody(logField, extra = '') {
     return [
         '### Pre-submission checklist',
         '',
         "- [X] I searched existing issues and this hasn't been reported yet.",
         "- [X] I'm running the latest version of Apollo Reborn.",
-        '- [X] I attached a debug log or crash log below.',
         '',
         '### Describe the bug',
         '',
@@ -39,6 +39,10 @@ function formBody(logField, extra = '') {
         check.LOG_SECTION,
         '',
         logField,
+        '',
+        '### Did you attach a debug log or crash log?',
+        '',
+        "No, continue without a log (I understand my issue may not get fixed without one)",
         '',
         '### Screenshots / screen recordings',
         '',
@@ -73,9 +77,9 @@ const DETECTION_CASES = [
     ['pasted cross-launch dated lines', [1, 2, 3, 4, 5].map((i) => `[10-14 18:30:0${i}.123] [KeychainTrace] read ${i}`).join('\n'), true],
     ['two quoted log lines are not a log', exportedLogExcerpt(2), false],
     ['n/a', 'N/A', false],
-    ['the form\'s "Yes, it\'s attached below" answer alone', "### Did you attach a debug log or crash log?\n\nYes, it's attached below", false],
-    ['a "No, I couldn\'t get one" answer with a reason', "### Did you attach a debug log or crash log?\n\nNo, I couldn't get one (I said why below)\n\nIt crashes on launch so I can't reach Settings", false],
-    ['no response', '_No response_', false],
+    ['the form\'s "Yes, it\'s attached above" answer alone', "### Did you attach a debug log or crash log?\n\nYes, it's attached above", false],
+    ['the form\'s "continue without a log" answer', "### Did you attach a debug log or crash log?\n\nNo, continue without a log (I understand my issue may not get fixed without one)", false],
+    ['empty optional field', '_No response_', false],
     ['screenshot only', SCREENSHOT, false],
     ['screen recording only', VIDEO, false],
     ['a log link on another site', 'https://pastebin.com/raw/abc123.log', false],
