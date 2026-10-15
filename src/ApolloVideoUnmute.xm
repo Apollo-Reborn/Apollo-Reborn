@@ -761,14 +761,17 @@ static void ForgetFeedVideoMutedByUser(id richMediaNode) {
 }
 
 // A waiting video would otherwise log on every frame of the scroll that keeps
-// it waiting: log it once per holder. The value is the holder's player pointer,
-// unretained, compared only.
+// it waiting: log it once per holder. Store the holder's address as inert bits,
+// not an unretained Objective-C object. -nonretainedObjectValue reconstructs an
+// object value and ARC may retain it during comparison after the holder has
+// deallocated, which is a use-after-free on a fast feed scroll.
 static const void *kFeedWaitLoggedForKey = &kFeedWaitLoggedForKey;
 
 static void NoteFeedVideoWaiting(AVPlayer *player, AVPlayer *holder) {
     NSValue *loggedFor = objc_getAssociatedObject(player, kFeedWaitLoggedForKey);
-    if (loggedFor && [loggedFor nonretainedObjectValue] == holder) return;
-    objc_setAssociatedObject(player, kFeedWaitLoggedForKey, [NSValue valueWithNonretainedObject:holder],
+    const void *holderAddress = (__bridge const void *)holder;
+    if (loggedFor && [loggedFor pointerValue] == holderAddress) return;
+    objc_setAssociatedObject(player, kFeedWaitLoggedForKey, [NSValue valueWithPointer:holderAddress],
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloLog(@"[VideoUnmute] Feed video %p is playing too - %p keeps the sound until it stops or leaves", player, holder);
 }
