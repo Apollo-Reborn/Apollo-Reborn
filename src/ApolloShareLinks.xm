@@ -289,7 +289,7 @@ static BOOL ApolloOpenInYouTubeAppIfEnabled(NSURL *normalizedURL) {
     NSURL *ytAppURL = [NSURL URLWithString:[NSString stringWithFormat:@"vnd.youtube://%@", videoID]];
     if (!ytAppURL || ![[UIApplication sharedApplication] canOpenURL:ytAppURL]) return NO;
 
-    ApolloLog(@"[ShareLinks] Opening YouTube Shorts in YouTube app: %@", videoID);
+    ApolloLog(@"[ShareLinks] Opening YouTube Shorts in YouTube app");
     [[UIApplication sharedApplication] openURL:ytAppURL options:@{} completionHandler:nil];
     return YES;
 }

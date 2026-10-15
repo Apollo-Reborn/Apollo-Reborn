@@ -671,8 +671,8 @@ static NSString *const kApolloDevvitInventoryScript = @""
 "    if (t.indexOf('-') > 0) { tags[t] = (tags[t] || 0) + 1; }"
 "  }"
 "  var sp = document.querySelector('shreddit-post');"
-"  return JSON.stringify({ t: (document.title || '').slice(0, 60),"
-"    u: location.pathname.slice(0, 70),"
+"  return JSON.stringify({ tl: (document.title || '').length,"
+"    u: location.pathname.split('/').slice(0, 5).join('/'),"
 "    pt: sp ? sp.getAttribute('post-type') : null,"
 "    tags: Object.keys(tags).slice(0, 30) });"
 "})();";
@@ -1486,13 +1486,20 @@ static const NSUInteger kApolloDevvitMaxLiveWidgets = 4;
         // a bot-challenge auto-redirect); poll fast for ~18s then give up into
         // the retry cover (after one silent reload).
         if (attempt >= kApolloDevvitPreRevealMaxAttempts) {
-            ApolloLog(@"[Devvit] %@ never produced a devvit element (last=%@)", self.fullName, result);
+            // Not the raw probe JSON: its title field is the post title (it is
+            // only read for the "humanity" interstitial check above).
+            NSString *lastTitle = [info[@"title"] isKindOfClass:[NSString class]] ? info[@"title"] : @"";
+            ApolloLog(@"[Devvit] %@ never produced a devvit element (last state=%@ title=%lu chars)",
+                      self.fullName, info[@"state"] ?: @"?", (unsigned long)lastTitle.length);
             // Dump what the page actually is (bot-block page vs stuck shell)
             // before giving up — reddit's edge intermittently serves a plain
-            // block page that never hydrates.
+            // block page that never hydrates. Shape only, never page text: the
+            // title/body are the post and its comments, and the path ends in
+            // the title slug (kept to /r/<sub>/comments/<id>).
             [self.webView evaluateJavaScript:
-                @"JSON.stringify({t:document.title.slice(0,60),u:location.pathname.slice(0,80),"
-                 "b:(document.body.innerText||'').replace(/\\s+/g,' ').slice(0,120)})"
+                @"(function(){var t=document.title||'',b=(document.body&&document.body.innerText)||'';"
+                 "return JSON.stringify({tl:t.length,bl:b.length,u:location.pathname.split('/').slice(0,5).join('/'),"
+                 "block:/blocked|verif|moment|security|captcha|robot/i.test(t+' '+b.slice(0,300))})})()"
                               completionHandler:^(id r, __unused NSError *e) {
                 ApolloLog(@"[Devvit] page state at failure: %@", r);
             }];

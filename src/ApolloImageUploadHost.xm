@@ -2417,7 +2417,10 @@ void ApolloRedditTransformSubmitResponseAsync(NSData *originalData, NSURLRequest
         NSString *commentsURL = ApolloRedditCanonicalCommentsURLForLinkID(directLinkID, context);
         NSData *synth = ApolloRedditSynthesizeSubmitSuccessResponseData(directLinkID, commentsURL, context);
         if (synth.length > 0) {
-            ApolloLog(@"[RedditUpload] Normalized media submit success response (linkID=%@, url=%@)", directLinkID, commentsURL ?: @"(missing)");
+            // Presence only: the new post's ID or permalink leads straight to
+            // the user's account.
+            ApolloLog(@"[RedditUpload] Normalized media submit success response (linkID=%@, url=%@)",
+                      directLinkID.length ? @"present" : @"(missing)", commentsURL.length ? @"present" : @"(missing)");
             ApolloMediaComposerMarkBodyTextSubmitted();
             completion(synth);
             return;
@@ -2444,7 +2447,7 @@ void ApolloRedditTransformSubmitResponseAsync(NSData *originalData, NSURLRequest
         }
         NSData *synth = ApolloRedditSynthesizeSubmitSuccessResponseData(linkID, postURL, resolutionContext);
         if (synth.length == 0) { completion(originalData); return; }
-        ApolloLog(@"[RedditUpload] Delivering synthesized /api/submit success response (linkID=%@, %lu bytes)", linkID, (unsigned long)synth.length);
+        ApolloLog(@"[RedditUpload] Delivering synthesized /api/submit success response (linkID=%@, %lu bytes)", linkID.length ? @"present" : @"(missing)", (unsigned long)synth.length);
         ApolloMediaComposerMarkBodyTextSubmitted();
         completion(synth);
     });
