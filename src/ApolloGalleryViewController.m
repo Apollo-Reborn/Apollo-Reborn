@@ -38,8 +38,8 @@ static NSString *const kApolloGalleryCellID = @"ApolloGalleryTile";
 // play, and only this many at once: every playing tile is a decoder session.
 // Twelve covers a portrait screen of GIF-shaped tiles (two columns, six rows
 // of 16:9) so a GIF subreddit moves edge to edge; a four-column landscape grid
-// can show sixteen, and there the lower index paths win, so the tiles nearest
-// the top of the screen are the ones that move.
+// can show sixteen, and there the tiles mostly on screen win, top to bottom,
+// before the slivers at the edges (see -apollo_tilesInPlaybackOrder).
 static NSInteger const kApolloGalleryMaxPlayingTiles = 12;
 // Of those, at most this many may be real .gif files animated through
 // FLAnimatedImage: unlike the hardware-decoded mp4/HLS tiles, every GIF frame
@@ -195,8 +195,11 @@ static void *kApolloGalleryTileItemStatusContext = &kApolloGalleryTileItemStatus
 @property (nonatomic, strong, nullable) AVPlayerItem *observedPlayerItem;
 @property (nonatomic, strong, nullable) ApolloGalleryImageRequest *animationRequest;
 @property (nonatomic) BOOL animatingGIF;
-// YES for a GIF or video tile that has something to play and isn't behind an
-// NSFW/spoiler blur.
+// YES while the tile waits on the host lookup for a clip Reddit attached no
+// stream to (see -apollo_startHostedVideoLookup).
+@property (nonatomic, getter=isAwaitingHostedVideo) BOOL awaitingHostedVideo;
+// YES for a GIF or video tile that has something to play (or a host it can
+// ask for it) and isn't behind an NSFW/spoiler blur.
 @property (nonatomic, readonly) BOOL canAutoplay;
 // What the tile plays through AVPlayer: the post's own stream, else Reddit's
 // mp4 rendition of its GIF. nil for a real .gif with no mp4 (see below).
@@ -349,7 +352,7 @@ static void *kApolloGalleryTileItemStatusContext = &kApolloGalleryTileItemStatus
     // see it, and it would burn a decoder on pixels nobody can make out.
     if (!item || item.shouldBlurThumbnail) return NO;
     if (item.kind != ApolloGalleryMediaKindVideo && item.kind != ApolloGalleryMediaKindGIF) return NO;
-    return self.tileStreamURL != nil || self.playsAnimatedGIF;
+    return self.tileStreamURL != nil || self.playsAnimatedGIF || item.canResolveHostedVideoForGrid;
 }
 
 - (NSURL *)tileStreamURL {
@@ -366,23 +369,54 @@ static void *kApolloGalleryTileItemStatusContext = &kApolloGalleryTileItemStatus
 }
 
 - (BOOL)isPlaying {
-    return self.player != nil || self.animatingGIF || self.animationRequest != nil;
+    return self.player != nil || self.animatingGIF || self.animationRequest != nil || self.awaitingHostedVideo;
 }
 
 - (void)startPlayback {
     if (self.isPlaying || !self.canAutoplay) return;
     // Reddit's silent transcode is exactly right for a muted tile — even for a
     // hosted post (Redgifs, Streamable) whose audio-bearing original the
-    // viewer resolves lazily; the grid never triggers that lookup.
+    // viewer resolves lazily. The grid only looks a host up when Reddit
+    // attached no stream at all, which is the norm for sports-clip links.
     NSURL *stream = self.tileStreamURL;
     if (stream) {
         [self apollo_startPlayerWithURL:stream];
-    } else {
+    } else if (self.playsAnimatedGIF) {
         [self apollo_startAnimationWithURL:self.item.imageURL];
+    } else {
+        [self apollo_startHostedVideoLookup];
     }
 }
 
+// A hosted clip with no Reddit stream (streamin, streamff, streamain, dubz, ...
+// links usually get none) has nothing to play until its host is asked, so
+// the tile asks: once per item, through the same coalesced lookup the viewer
+// uses, and only for tiles the controller has let play (on screen, at rest,
+// under the cap). The wait counts against the cap like a GIF download does.
+- (void)apollo_startHostedVideoLookup {
+    ApolloGalleryItem *item = self.item;
+    self.awaitingHostedVideo = YES;
+    __weak typeof(self) weakSelf = self;
+    [item resolveHostedVideoForGridWithCompletion:^(BOOL resolvedOriginal) {
+        typeof(self) strongSelf = weakSelf;
+        // Stopped (scrolled off, viewer opened, app backgrounded) or reused
+        // while the host answered. The item keeps the result, so this clip
+        // plays straight away the next time its tile is on screen.
+        if (!strongSelf || !strongSelf.awaitingHostedVideo || strongSelf.item != item) return;
+        strongSelf.awaitingHostedVideo = NO;
+        NSURL *stream = strongSelf.tileStreamURL;
+        if (!stream) {
+            ApolloLog(@"[Gallery] tile host lookup found nothing to play (original=%d); keeping the poster",
+                      (int)resolvedOriginal);
+            return;
+        }
+        [strongSelf apollo_startPlayerWithURL:stream];
+    }];
+}
+
 - (void)stopPlayback {
+    // A host lookup still in flight finishes for the item, not for this tile.
+    self.awaitingHostedVideo = NO;
     [self.animationRequest cancel];
     self.animationRequest = nil;
     NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
@@ -567,6 +601,9 @@ static void *kApolloGalleryTileItemStatusContext = &kApolloGalleryTileItemStatus
 // its tiles just stop moving (see didReceiveMemoryWarning).
 @property (nonatomic) BOOL tilePlaybackSuspendedForMemory;
 @property (nonatomic) NSInteger lastLoggedPlayingTileCount;
+// A deferred -apollo_refreshTilePlayback is queued (see
+// -apollo_setNeedsTilePlaybackRefresh).
+@property (nonatomic) BOOL tilePlaybackRefreshQueued;
 @end
 
 @implementation ApolloGalleryViewController
@@ -1143,9 +1180,8 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
     BOOL allowed = [self apollo_tileAutoplayAllowed];
     NSInteger playing = 0;
     NSInteger animatedGIFs = 0;
-    NSArray<NSIndexPath *> *visible =
-        [collectionView.indexPathsForVisibleItems sortedArrayUsingSelector:@selector(compare:)];
-    for (NSIndexPath *indexPath in visible) {
+    NSInteger hostLookups = 0;
+    for (NSIndexPath *indexPath in [self apollo_tilesInPlaybackOrder]) {
         ApolloGalleryTileCell *cell = (ApolloGalleryTileCell *)[collectionView cellForItemAtIndexPath:indexPath];
         if (![cell isKindOfClass:[ApolloGalleryTileCell class]]) continue;
         BOOL gif = cell.playsAnimatedGIF;
@@ -1161,13 +1197,56 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
         if (cell.isPlaying) {
             playing++;
             if (gif) animatedGIFs++;
+            if (cell.isAwaitingHostedVideo) hostLookups++;
         }
     }
     if (playing != self.lastLoggedPlayingTileCount) {
         self.lastLoggedPlayingTileCount = playing;
-        ApolloLog(@"[Gallery] autoplay: %ld tile(s) playing (%ld .gif on cpu) allowed=%d videos=%d gifs=%d",
-                  (long)playing, (long)animatedGIFs, allowed, sGalleryAutoplayVideos, sGalleryAutoplayGIFs);
+        ApolloLog(@"[Gallery] autoplay: %ld tile(s) playing (%ld .gif on cpu, %ld waiting on a host) allowed=%d videos=%d gifs=%d",
+                  (long)playing, (long)animatedGIFs, (long)hostLookups, allowed, sGalleryAutoplayVideos,
+                  sGalleryAutoplayGIFs);
     }
+}
+
+// The visible tiles in the order they claim the cap: those at least half on
+// screen first, then the slivers at the top and bottom edges, each group top
+// to bottom. Index order alone let a strip peeking out under the nav bar take
+// a slot from a whole tile further down once sports clips competed for them.
+- (NSArray<NSIndexPath *> *)apollo_tilesInPlaybackOrder {
+    UICollectionView *collectionView = self.collectionView;
+    CGRect viewport = UIEdgeInsetsInsetRect(collectionView.bounds, collectionView.adjustedContentInset);
+    NSMutableArray<NSIndexPath *> *mostlyVisible = [NSMutableArray array];
+    NSMutableArray<NSIndexPath *> *slivers = [NSMutableArray array];
+    for (NSIndexPath *indexPath in
+         [collectionView.indexPathsForVisibleItems sortedArrayUsingSelector:@selector(compare:)]) {
+        CGRect frame = [collectionView layoutAttributesForItemAtIndexPath:indexPath].frame;
+        CGRect shown = CGRectIntersection(frame, viewport);
+        BOOL mostly = !CGRectIsNull(shown) && CGRectGetHeight(shown) * 2.0 >= CGRectGetHeight(frame);
+        [(mostly ? mostlyVisible : slivers) addObject:indexPath];
+    }
+    [mostlyVisible addObjectsFromArray:slivers];
+    return mostlyVisible;
+}
+
+// A refresh run from -collectionView:willDisplayCell:... can't start the tile
+// being displayed: UIKit only adds it to indexPathsForVisibleItems after that
+// callback returns, so the LAST tile a layout pass brings on screen (the bottom
+// row after the first batch, or anything a relayout reveals) sat on its poster
+// until the next scroll settled. Run it once the pass is over instead, and
+// once per pass rather than once per arriving tile.
+- (void)apollo_setNeedsTilePlaybackRefresh {
+    if (self.tilePlaybackRefreshQueued) return;
+    self.tilePlaybackRefreshQueued = YES;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf.tilePlaybackRefreshQueued = NO;
+        // A drag that began meanwhile gets its refresh when it settles.
+        UICollectionView *collectionView = strongSelf.collectionView;
+        if (collectionView.isDragging || collectionView.isDecelerating) return;
+        [strongSelf apollo_refreshTilePlayback];
+    });
 }
 
 - (void)apollo_stopAllTilePlayback {
@@ -1598,8 +1677,9 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
     forItemAtIndexPath:(NSIndexPath *)indexPath {
     [self apollo_loadMoreIfNeededForIndex:indexPath.item];
     // Tiles arriving while the grid is at rest (first load, a reload, a
-    // rotation) start now; tiles arriving mid-scroll wait for it to settle.
-    if (!collectionView.isDragging && !collectionView.isDecelerating) [self apollo_refreshTilePlayback];
+    // rotation) start as soon as this layout pass ends; tiles arriving
+    // mid-scroll wait for it to settle.
+    if (!collectionView.isDragging && !collectionView.isDecelerating) [self apollo_setNeedsTilePlaybackRefresh];
     (void)cell;
 }
 
