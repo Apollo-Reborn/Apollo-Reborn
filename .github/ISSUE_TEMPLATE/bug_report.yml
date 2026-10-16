@@ -8,6 +8,10 @@ body:
       value: |
         Thanks for taking the time to file a bug report! Please fill out the sections below so we can reproduce and fix the issue quickly.
 
+        **Please include a debug log or crash log.** It's the most useful thing you can give us, and without one we may not be able to solve your issue. The easiest way is to report from inside the app: **Settings → Apollo Reborn → Bug Reports** attaches your log for you, and you don't need a GitHub account.
+
+        Have an idea or a feature request? Post it on [request.apolloreborn.app](https://request.apolloreborn.app/) instead (no log needed).
+
         Before submitting, please [search existing issues](https://github.com/Apollo-Reborn/Apollo-Reborn/issues?q=is%3Aissue) to avoid duplicates.
 
   - type: checkboxes
@@ -50,15 +54,36 @@ body:
     validations:
       required: true
 
+  # No `render:` on purpose: a rendered (code block) textarea can't take file
+  # attachments. The "Debug log or crash log" label is what
+  # .github/scripts/issue-log-check.js looks for, so keep the two in sync.
   - type: textarea
     id: logs
     attributes:
-      label: Crash log / console output
+      label: Debug log or crash log
       description: |
-        If you are reporting a crash, paste any crash backtraces, `ApolloLog` console output, or `.ips` crash reports. Crash reports help enormously; obtain them in iOS Settings → Privacy & Security → Analytics & Improvements → Analytics Data, then look for files starting with `Apollo-`, with the correct date and time.
-      render: text
+        Strongly recommended. Drag the file into this box, or use the attach-files link under it.
+
+        - **Debug log:** reproduce the bug, then (before closing Apollo) go to **Settings → Apollo Reborn → Advanced → Export Debug Logs** and save the `.log` file, e.g. with Save to Files. The log only covers the current app session.
+        - **Crash:** also attach the crash report: **Settings → Apollo Reborn → Privacy → Crash Reports**, open the report, then **Export Sanitized Report…**. If Apollo didn't record one, use the `Apollo-…` `.ips` file from iOS **Settings → Privacy & Security → Analytics & Improvements → Analytics Data**. GitHub doesn't accept `.ips` files, so zip it first (or paste its contents here).
+
+        Logs never include passwords or API keys, but like everything here they're public.
+      placeholder: Attach your apollo-reborn-….log file here.
     validations:
       required: false
+
+  # A log is optional, but continuing without one is a deliberate answer that
+  # comes with the warning.
+  - type: dropdown
+    id: log-attached
+    attributes:
+      label: Did you attach a debug log or crash log?
+      description: Without a log we may not be able to figure out or fix your issue.
+      options:
+        - "Yes, it's attached above"
+        - "No, continue without a log (I understand my issue may not get fixed without one)"
+    validations:
+      required: true
 
   - type: textarea
     id: screenshots
