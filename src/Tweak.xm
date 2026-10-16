@@ -2844,10 +2844,11 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
     // claimed for Reddit regardless of the Media Upload Host (see
     // ApolloShouldUseCookieRedditUpload), so their multi-image albums must be
     // synthesized into Reddit galleries too. The synthesis only succeeds when
-    // >= 2 of the album's member tokens map to RECORDED Reddit uploads, so a
+    // all of the album's member tokens map to RECORDED Reddit uploads, so a
     // genuine Imgur album (Imgur-hosted member ids) still passes through to
-    // Imgur untouched. ImgChest keeps its own album responder below.
-    NSData *redditAlbumResponseData = sImageUploadProvider != ImageUploadProviderImgChest ? ApolloRedditSyntheticImgurAlbumResponseDataForRequest(request) : nil;
+    // Imgur untouched. Claim by member ownership, since Comment Link Host /
+    // Auto can override Media Upload Host. ImgChest has its own responder below.
+    NSData *redditAlbumResponseData = completionHandler ? ApolloRedditSyntheticImgurAlbumResponseDataForRequest(request) : nil;
     if (redditAlbumResponseData.length > 0) {
         NSHTTPURLResponse *fakeHTTPResponse = [[NSHTTPURLResponse alloc] initWithURL:url
                                                                           statusCode:200
@@ -2862,9 +2863,7 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
     // ImgChest host: combine the member uploads into one multi-image ImgChest
     // post and answer the Imgur album creation with its link.
     ApolloImgChestAlbumResponder imgChestAlbumResponder = nil;
-    if (sImageUploadProvider == ImageUploadProviderImgChest) {
-        imgChestAlbumResponder = ApolloImgChestAlbumCreationResponderForRequest(request);
-    }
+    if (completionHandler) imgChestAlbumResponder = ApolloImgChestAlbumCreationResponderForRequest(request);
     if (completionHandler && imgChestAlbumResponder) {
         __block __weak NSURLSessionDataTask *proxyTask = nil;
         void (^wrappedHandler)(NSData *, NSURLResponse *, NSError *) = ^(NSData *data, NSURLResponse *response, NSError *error) {

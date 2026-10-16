@@ -24,6 +24,7 @@
 // already renders as a swipeable inline album.
 
 #import "ApolloImgChestUpload.h"
+#import "ApolloUploadAlbumCompatibility.h"
 #import "ApolloCommon.h"
 #import "ApolloState.h"
 #import <objc/runtime.h>
@@ -913,28 +914,6 @@ static BOOL ApolloImgChestIsImgurAlbumCreationRequest(NSURLRequest *request) {
         && [(request.HTTPMethod ?: @"GET") caseInsensitiveCompare:@"POST"] == NSOrderedSame;
 }
 
-// Member tokens from Apollo's album-creation body (deletehashes=a,b,c or
-// deletehashes[]=a&deletehashes[]=b, possibly percent-encoded).
-static NSArray<NSString *> *ApolloImgChestAlbumTokensFromRequest(NSURLRequest *request) {
-    NSData *body = request.HTTPBody;
-    NSString *form = body.length > 0 ? [[NSString alloc] initWithData:body encoding:NSUTF8StringEncoding] : nil;
-    if (form.length == 0) return @[];
-    NSMutableArray<NSString *> *tokens = [NSMutableArray array];
-    for (NSString *pair in [form componentsSeparatedByString:@"&"]) {
-        NSRange equals = [pair rangeOfString:@"="];
-        if (equals.location == NSNotFound) continue;
-        NSString *key = [pair substringToIndex:equals.location];
-        if (![key hasPrefix:@"deletehashes"] && ![key hasPrefix:@"ids"]) continue;
-        NSString *value = [[pair substringFromIndex:equals.location + 1] stringByRemovingPercentEncoding]
-            ?: [pair substringFromIndex:equals.location + 1];
-        for (NSString *token in [value componentsSeparatedByString:@","]) {
-            NSString *trimmed = [token stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-            if (trimmed.length > 0 && ![tokens containsObject:trimmed]) [tokens addObject:trimmed];
-        }
-    }
-    return tokens;
-}
-
 // Imgur-shaped image dictionary for a synthetic album response entry.
 static NSDictionary *ApolloImgChestSyntheticImageDictionary(NSDictionary *imageEntry) {
     NSString *link = [imageEntry[@"link"] isKindOfClass:[NSString class]] ? imageEntry[@"link"] : @"";
@@ -963,8 +942,8 @@ ApolloImgChestAlbumResponder ApolloImgChestAlbumCreationResponderForRequest(NSUR
     if (!ApolloImgChestIsImgurAlbumCreationRequest(request)) return nil;
     if (!ApolloImgChestUploadAvailable()) return nil;
 
-    NSArray<NSString *> *tokens = ApolloImgChestAlbumTokensFromRequest(request);
-    if (tokens.count < 2) return nil;
+    NSArray<NSString *> *tokens = ApolloUploadAlbumTokens(request);
+    if (tokens.count == 0) return nil;
 
     NSMutableArray<NSString *> *interimPosts = [NSMutableArray array];
     for (NSString *token in tokens) {

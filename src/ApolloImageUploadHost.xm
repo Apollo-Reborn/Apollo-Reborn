@@ -11,6 +11,7 @@
 #import "ApolloCommon.h"
 #import "ApolloRedditMediaUpload.h"
 #import "ApolloImageUploadHost.h"
+#import "ApolloUploadAlbumCompatibility.h"
 #import "ApolloImgChestUpload.h"
 #import "ApolloMarkdownToolbarGif.h"
 #import "ApolloMediaMetadata.h"
@@ -341,6 +342,9 @@ static void ApolloRecordRedditUploadedMediaAssetID(NSURL *imageURL, NSString *as
     @synchronized(ApolloRedditUploadAssetMapLock()) {
         if (!sRedditUploadAssetIDByURL) sRedditUploadAssetIDByURL = [NSMutableDictionary new];
         sRedditUploadAssetIDByURL[urlString] = assetID;
+        // Synthetic data.deletehash is the S3 URL's last component, which need
+        // not equal the lease asset_id. Apollo sends that token to createAlbum.
+        if (imageURL.lastPathComponent.length > 0) sRedditUploadAssetIDByURL[imageURL.lastPathComponent] = assetID;
         if ([imageURL.host.lowercaseString isEqualToString:@"reddit-uploaded-video.s3-accelerate.amazonaws.com"]) {
             NSString *nativeVideoURL = ApolloRedditNativeVideoURLForAssetID(assetID);
             if (nativeVideoURL.length > 0) sRedditUploadAssetIDByURL[nativeVideoURL] = assetID;
@@ -878,69 +882,10 @@ static NSString *ApolloAssetIDForRedditUploadToken(NSString *token) {
     return nil;
 }
 
-static void ApolloAppendImgurAlbumTokensFromObject(id object, NSMutableArray<NSString *> *tokens) {
-    if (!object || object == (id)[NSNull null]) return;
-    if ([object isKindOfClass:[NSString class]]) {
-        for (NSString *piece in [(NSString *)object componentsSeparatedByString:@","]) {
-            NSString *token = ApolloTrimmedString(piece);
-            if (token.length > 0) [tokens addObject:token];
-        }
-        return;
-    }
-    if ([object isKindOfClass:[NSArray class]]) {
-        for (id item in (NSArray *)object) ApolloAppendImgurAlbumTokensFromObject(item, tokens);
-        return;
-    }
-    if ([object isKindOfClass:[NSDictionary class]]) {
-        NSDictionary *dict = object;
-        for (NSString *key in @[@"deletehash", @"deletehashes", @"id", @"ids", @"link", @"url", @"media_id"]) {
-            ApolloAppendImgurAlbumTokensFromObject(dict[key], tokens);
-        }
-    }
-}
-
-static NSArray<NSString *> *ApolloImgurAlbumTokensFromRequest(NSURLRequest *request) {
-    NSData *bodyData = request.HTTPBody;
-    if (bodyData.length == 0) return @[];
-
-    NSMutableArray<NSString *> *tokens = [NSMutableArray array];
-    id json = [NSJSONSerialization JSONObjectWithData:bodyData options:0 error:nil];
-    if ([json isKindOfClass:[NSDictionary class]]) {
-        NSDictionary *dict = json;
-        for (NSString *key in @[@"deletehashes", @"ids", @"images", @"image_ids"]) {
-            ApolloAppendImgurAlbumTokensFromObject(dict[key], tokens);
-        }
-    } else if ([json isKindOfClass:[NSArray class]]) {
-        ApolloAppendImgurAlbumTokensFromObject(json, tokens);
-    }
-
-    NSString *body = [[NSString alloc] initWithData:bodyData encoding:NSUTF8StringEncoding];
-    NSDictionary *formValues = ApolloFormValuesByKeyFromBodyString(body);
-    for (NSString *key in @[@"deletehashes", @"ids", @"images", @"image_ids"]) {
-        ApolloAppendImgurAlbumTokensFromObject(formValues[key], tokens);
-    }
-
-    if (ApolloStringContainsRedditUploadedMedia(body)) {
-        NSRegularExpression *regex = ApolloRedditUploadedMediaURLRegex();
-        NSArray<NSTextCheckingResult *> *matches = [regex matchesInString:body options:0 range:NSMakeRange(0, body.length)];
-        for (NSTextCheckingResult *match in matches) {
-            [tokens addObject:[body substringWithRange:match.range]];
-        }
-    }
-    return tokens;
-}
-
 static NSArray<NSString *> *ApolloRedditGalleryAssetIDsFromImgurAlbumRequest(NSURLRequest *request) {
-    NSArray<NSString *> *tokens = ApolloImgurAlbumTokensFromRequest(request);
-    NSMutableArray<NSString *> *assetIDs = [NSMutableArray array];
-    NSMutableSet<NSString *> *seen = [NSMutableSet set];
-    for (NSString *token in tokens) {
-        NSString *assetID = ApolloAssetIDForRedditUploadToken(token);
-        if (assetID.length == 0 || [seen containsObject:assetID]) continue;
-        [assetIDs addObject:assetID];
-        [seen addObject:assetID];
-    }
-    return assetIDs;
+    return ApolloUploadAlbumResolveMembers(ApolloUploadAlbumTokens(request), ^NSString *(NSString *token) {
+        return ApolloAssetIDForRedditUploadToken(token);
+    });
 }
 
 static NSString *ApolloNewSyntheticImgurAlbumID(void) {
@@ -1043,7 +988,7 @@ static BOOL ApolloIsImgurAlbumCreationRequest(NSURLRequest *request) {
 NSData *ApolloRedditSyntheticImgurAlbumResponseDataForRequest(NSURLRequest *request) {
     if (!ApolloIsImgurAlbumCreationRequest(request)) return nil;
     NSArray<NSString *> *assetIDs = ApolloRedditGalleryAssetIDsFromImgurAlbumRequest(request);
-    if (assetIDs.count < 2) {
+    if (assetIDs.count == 0) {
         ApolloLog(@"[RedditUpload] Imgur album request did not map to a Reddit gallery (mappedItems=%lu)", (unsigned long)assetIDs.count);
         return nil;
     }
@@ -1085,6 +1030,34 @@ NSData *ApolloRedditSyntheticImgurAlbumResponseDataForRequest(NSURLRequest *requ
     };
     ApolloLog(@"[RedditUpload] Synthesized Imgur album response for Reddit gallery albumID=%@ items=%lu", albumID, (unsigned long)assetIDs.count);
     return [NSJSONSerialization dataWithJSONObject:root options:0 error:nil];
+}
+
+// Resolve the private album before it becomes a saved draft or a submitted
+// comment. Reddit has no public album for these staged assets: expand them into
+// member URLs so the existing comment RTJSON adapter can finalize each image.
+// Image Chest DOES have a public album, recorded in the upload registry.
+NSString *ApolloImageUploadResolveAlbumTextWithSelection(NSString *text, NSRange *selection) {
+    return ApolloUploadAlbumResolveText(text, ^NSString *(NSString *albumID) {
+        NSArray<NSString *> *assetIDs = ApolloRedditGalleryAssetIDsForAlbumID(albumID);
+        if (assetIDs.count > 0) {
+            NSMutableArray<NSString *> *urls = [NSMutableArray array];
+            for (NSString *assetID in assetIDs) {
+                NSDictionary *info = ApolloRedditUploadInfoForAssetID(assetID);
+                NSString *url = [info[@"stagedURL"] isKindOfClass:NSString.class] ? info[@"stagedURL"] : nil;
+                if (url.length == 0) return nil; // never insert a partial album
+                [urls addObject:url];
+            }
+            ApolloLog(@"[RedditUpload] Expanded composer album into %lu native media URL(s)", (unsigned long)urls.count);
+            return [urls componentsJoinedByString:@"\n\n"];
+        }
+        NSURL *chestURL = ApolloImgChestPostURLForAlbumID(albumID);
+        if (chestURL) ApolloLog(@"[ImgChestUpload] Resolved composer album to its Image Chest post");
+        return chestURL.absoluteString;
+    }, selection);
+}
+
+NSString *ApolloImageUploadResolveAlbumText(NSString *text) {
+    return ApolloImageUploadResolveAlbumTextWithSelection(text, NULL);
 }
 
 static NSData *ApolloRedditRichTextJSONDataForText(NSString *text);
@@ -1772,6 +1745,23 @@ NSURLRequest *ApolloRedditMaybeRewriteCommentRequest(NSURLRequest *request) {
     if (bodyData.length == 0) return nil;
     NSString *body = [[NSString alloc] initWithData:bodyData encoding:NSUTF8StringEncoding];
 
+    BOOL resolvedAlbum = NO;
+    NSMutableArray<NSString *> *albumPairs = [NSMutableArray array];
+    for (__strong NSString *pair in [body componentsSeparatedByString:@"&"]) {
+        NSRange equals = [pair rangeOfString:@"="];
+        NSString *key = ApolloFormDecodeComponent(equals.location == NSNotFound ? pair : [pair substringToIndex:equals.location]);
+        if ([key isEqualToString:@"text"] && equals.location != NSNotFound) {
+            NSString *value = ApolloFormDecodeComponent([pair substringFromIndex:equals.location + 1]);
+            NSString *replacement = ApolloImageUploadResolveAlbumText(value);
+            if (![replacement isEqualToString:value]) {
+                pair = [NSString stringWithFormat:@"%@=%@", ApolloFormEncodeComponent(key), ApolloFormEncodeComponent(replacement)];
+                resolvedAlbum = YES;
+            }
+        }
+        [albumPairs addObject:pair];
+    }
+    if (resolvedAlbum) body = [albumPairs componentsJoinedByString:@"&"];
+
     // Comment Link Host: unwrap markdown embeds around link-host uploads FIRST so
     // both rewrite paths below (and the no-rewrite exits) see the plain-link body.
     NSString *linkUnwrappedBody = ApolloCommentLinkFormBodyByUnwrappingUploadedEmbeds(body);
@@ -1855,7 +1845,7 @@ NSURLRequest *ApolloRedditMaybeRewriteCommentRequest(NSURLRequest *request) {
 
         if (giphyRichTextJSONString.length == 0) {
             ApolloLog(@"[RedditUpload] Native giphy detected but no RTJSON built (text pair missing?) — leaving %@ submit untouched", request.URL.path);
-            return linkUnwrappedBody ? ApolloRequestWithFormBody(request, body) : nil;
+            return (linkUnwrappedBody || resolvedAlbum) ? ApolloRequestWithFormBody(request, body) : nil;
         }
 
         if (!replacedRichTextJSON) {
@@ -1880,7 +1870,7 @@ NSURLRequest *ApolloRedditMaybeRewriteCommentRequest(NSURLRequest *request) {
     }
 
     if (!ApolloStringContainsRedditUploadedMedia(body)) {
-        return linkUnwrappedBody ? ApolloRequestWithFormBody(request, body) : nil;
+        return (linkUnwrappedBody || resolvedAlbum) ? ApolloRequestWithFormBody(request, body) : nil;
     }
 
     NSArray<NSString *> *pairs = [body componentsSeparatedByString:@"&"];
@@ -1950,7 +1940,7 @@ NSURLRequest *ApolloRedditMaybeRewriteCommentRequest(NSURLRequest *request) {
 
     // The rewritten pairs were built from the (possibly link-unwrapped) body, so a
     // link-host unwrap alone still warrants delivering the modified request.
-    if (!changed && !linkUnwrappedBody) return nil;
+    if (!changed && !linkUnwrappedBody && !resolvedAlbum) return nil;
     return ApolloRequestWithFormBody(request, [rewrittenPairs componentsJoinedByString:@"&"]);
 }
 
