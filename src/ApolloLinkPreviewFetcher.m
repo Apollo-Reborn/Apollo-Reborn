@@ -1331,7 +1331,8 @@ static NSString *ApolloLinkPreviewBrowserUserAgent(void) {
             }
 
             preview.imageURL = ApolloLinkPreviewURLFromString(imageString, url);
-            ApolloLog(@"[LinkPreviews] Bluesky preview fetched handle=%@ image=%@", handle ?: actor, preview.imageURL.absoluteString.length > 0 ? @"YES" : @"NO");
+            // Not the handle: a Bluesky handle is a person (and has no u/ for the export scrub to catch).
+            ApolloLog(@"[LinkPreviews] Bluesky preview fetched handle=%@ image=%@", (handle ?: actor).length > 0 ? @"YES" : @"NO", preview.imageURL.absoluteString.length > 0 ? @"YES" : @"NO");
 
             if (avatarOnlyImage && preview.imageURL.absoluteString.length > 0) {
                 [self imageURLIsUsable:preview.imageURL completion:^(BOOL usable) {
@@ -1360,8 +1361,8 @@ static NSString *ApolloLinkPreviewBrowserUserAgent(void) {
     [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
         if (error || !data || httpResponse.statusCode < 200 || httpResponse.statusCode >= 300) {
-            ApolloLogError(@"[LinkPreviews] Bluesky handle resolve failed actor=%@ status=%ld err=%@",
-                      actor, (long)httpResponse.statusCode, error.localizedDescription);
+            ApolloLogError(@"[LinkPreviews] Bluesky handle resolve failed actor=%lu chars status=%ld err=%@",
+                      (unsigned long)actor.length, (long)httpResponse.statusCode, error.localizedDescription);
             completion(nil);
             return;
         }
@@ -1735,7 +1736,7 @@ static NSData *ApolloLinkPreviewHeadSliceOfData(NSData *data) {
         // still open for a browser-shaped client, so spend the one retry on it
         // before falling back to Crossref / Reddit-harvest / favicon.
         if (ApolloLinkPreviewIsBlockedPage(preview.title, html)) {
-            ApolloLog(@"[LinkPreviews] blocked-page sniff matched %@ title=%@", url.absoluteString, preview.title);
+            ApolloLog(@"[LinkPreviews] blocked-page sniff matched %@ title=%@", ApolloLinkPreviewHost(url), ApolloLogPageTitleKind(preview.title));
             if (!browserFallback) {
                 [self fetchHTMLPreviewForURL:url allowRange:NO browserFallback:YES completion:completion];
                 return;

@@ -366,7 +366,11 @@ static ApolloThemeGalleryResolver sGalleryResolver = nil;
     // than take down Apollo. Belt-and-braces @try in case validation misses it.
     if (![NSPropertyListSerialization propertyList:themes
                                   isValidForFormat:NSPropertyListBinaryFormat_v1_0]) {
-        ApolloLog(@"ThemeStore: REFUSING to persist non-plist themes array (would crash). themes=%@", themes);
+        // Count and classes only: the array holds theme names and AI prompts.
+        NSMutableSet<NSString *> *classes = [NSMutableSet set];
+        for (id theme in themes) [classes addObject:NSStringFromClass([theme class])];
+        ApolloLog(@"ThemeStore: REFUSING to persist non-plist themes array (would crash). %lu theme(s), classes=%@",
+                  (unsigned long)themes.count, [classes.allObjects componentsJoinedByString:@","]);
         return;
     }
     @try {

@@ -529,7 +529,9 @@ static ApolloActionMenuSlotState *ApolloActionMenuSlotsForController(id controll
     state.context = context;
     objc_setAssociatedObject(controller, kApolloActionMenuSlotStateKey, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (matched.count > 0) {
-        ApolloLog(@"[ActionMenu] %lu spec(s) matched '%@': %@", (unsigned long)matched.count, menuTitle,
+        // No menuTitle: like the catalogue line below, a sheet title can carry
+        // a username, subreddit, post title or link.
+        ApolloLog(@"[ActionMenu] %lu spec(s) matched (context %@): %@", (unsigned long)matched.count, context ?: @"(none)",
                   [matched valueForKey:@"identifier"]);
     }
     {

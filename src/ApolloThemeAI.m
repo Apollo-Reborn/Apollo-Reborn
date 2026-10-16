@@ -285,8 +285,8 @@ static void ATBRequestSeedRGBs(NSString *modelPrompt,
             return;
         }
         NSArray<NSNumber *> *rgbs = ATBParseSeedRGBs(text);
-        ApolloLog(@"ThemeAI: attempt %lu parsed %lu seed(s) from reply '%@'",
-                  (unsigned long)attempt, (unsigned long)rgbs.count, text);
+        ApolloLog(@"ThemeAI: attempt %lu parsed %lu seed(s) from a %lu-char reply",
+                  (unsigned long)attempt, (unsigned long)rgbs.count, (unsigned long)text.length);
         if (rgbs.count) {
             completion(rgbs, text ?: @"", nil);
         } else if (attempt == 0) {
@@ -312,11 +312,12 @@ void ApolloThemeAIGenerateThemeSet(NSString *prompt, ApolloThemeAICompletion com
         if (completion) completion(nil, ATBError(4, ApolloThemeAIUnavailableMessage()));
         return;
     }
-    ApolloLog(@"ThemeAI: generating seeds for prompt='%@'", cleanPrompt);
+    // The prompt is the user's own words; exported logs get only its length.
+    ApolloLog(@"ThemeAI: generating seeds for a %lu-char prompt", (unsigned long)cleanPrompt.length);
     BOOL allowMonochrome = ATBPromptWantsMonochrome(cleanPrompt);
     ATBRequestSeedRGBs(ATBGenerationPrompt(cleanPrompt), 0, ^(NSArray<NSNumber *> *rgbs, NSString *rawOutput, NSError *error) {
         if (error) {
-            ApolloLog(@"ThemeAI: generation FAILED: %@", error);
+            ApolloLog(@"ThemeAI: generation FAILED: %@ %ld (%@)", error.domain, (long)error.code, error.localizedDescription);
             if (completion) completion(nil, error);
             return;
         }
@@ -343,11 +344,11 @@ void ApolloThemeAIRefineThemeSet(NSDictionary *themeSet, NSString *selectedInten
     }
     BOOL allowMonochrome = [themeSet[@"allowMonochrome"] boolValue] || ATBPromptWantsMonochrome(cleanInstruction);
     ApolloThemeAISeeds fallback = { .accent = accent, .primary = primary, .secondary = secondary };
-    ApolloLog(@"ThemeAI: refining seeds %@ with instruction='%@'", currentSeeds, cleanInstruction);
+    ApolloLog(@"ThemeAI: refining seeds %@ with a %lu-char instruction", currentSeeds, (unsigned long)cleanInstruction.length);
     ATBRequestSeedRGBs(ATBRefinePrompt(originalPrompt, currentSeeds, cleanInstruction), 0,
                        ^(NSArray<NSNumber *> *rgbs, NSString *rawOutput, NSError *error) {
         if (error) {
-            ApolloLog(@"ThemeAI: refine FAILED: %@", error);
+            ApolloLog(@"ThemeAI: refine FAILED: %@ %ld (%@)", error.domain, (long)error.code, error.localizedDescription);
             if (completion) completion(nil, error);
             return;
         }

@@ -191,7 +191,7 @@
                                          footer:@"The technical report is built from an allowlist: only the fields above are copied from the crash data."
                                            rows:@[ notIncluded ]],
         [ApolloSettingsSection sectionWithTitle:@"Optional"
-                                         footer:@"Debug logs add diagnostics from the current app session. They can include feature usage, settings state, and websites encountered — broader than the crash report — so they are off unless you turn them on. You can remove any attachment from the form before sending."
+                                         footer:@"Debug logs add diagnostics from the current app session. They can include feature usage, settings state, and the names of websites encountered — broader than the crash report — so they are off unless you turn them on. Usernames, links and tokens are masked first. You can remove any attachment from the form before sending."
                                            rows:@[ includeLogs ]],
         [ApolloSettingsSection sectionWithTitle:nil
                                          footer:@"Continuing opens the Apollo Reborn bug report form with the sanitized report attached. Nothing is sent until you submit the form."

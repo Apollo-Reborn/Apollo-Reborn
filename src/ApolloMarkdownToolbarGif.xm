@@ -1290,9 +1290,13 @@ static void ApolloMarkdownGifApplyMediaGating(UIViewController *composeControlle
     }];
 }
 
+// Controls only (toolbar buttons: "Bold", "Link", ...). A plain label's
+// accessibility label is its text, and under the composer that can be the
+// parent comment or a username; this line is exported.
 static NSString *ApolloMarkdownGifSampleLabels(NSArray<UIView *> *views, NSUInteger maxCount) {
     NSMutableArray<NSString *> *labels = [NSMutableArray array];
     for (UIView *view in views) {
+        if (![view isKindOfClass:[UIControl class]]) continue;
         NSString *label = ApolloMarkdownGifAccessibilityLabelForView(view);
         if (label.length == 0) continue;
         [labels addObject:label];

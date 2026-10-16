@@ -973,12 +973,12 @@ static NSTimeInterval const kApolloBBWebFetchWatchdog = 90.0;
         // Still on the interstitial — log what we're actually looking at so a
         // stuck challenge is diagnosable from user logs.
         ApolloLog(@"[BadgeBook][web] u/%@ waiting on profile (poll#%d ready=%@ title=%@ len=%@)",
-                  self.username, self.polls, j[@"ready"], j[@"title"], j[@"len"]);
+                  self.username, self.polls, j[@"ready"], ApolloLogPageTitleKind(j[@"title"]), j[@"len"]);
     }
     if (self.polls >= kApolloBBMaxPolls) {
         self.result.trophiesResolved = self.sawPage;
         ApolloLog(@"[BadgeBook][web] u/%@ trophy phase timed out (sawPage=%d title=%@)",
-                  self.username, self.sawPage, j[@"title"]);
+                  self.username, self.sawPage, ApolloLogPageTitleKind(j[@"title"]));
         [self advanceToAchievements];
         return;
     }
@@ -1016,11 +1016,11 @@ static NSTimeInterval const kApolloBBWebFetchWatchdog = 90.0;
         }
     } else if (self.polls == 4 || self.polls == 9) {
         ApolloLog(@"[BadgeBook][web] u/%@ waiting on achievements (poll#%d ready=%@ title=%@ len=%@)",
-                  self.username, self.polls, j[@"ready"], j[@"title"], j[@"len"]);
+                  self.username, self.polls, j[@"ready"], ApolloLogPageTitleKind(j[@"title"]), j[@"len"]);
     }
     if (self.polls >= kApolloBBMaxPolls) {
         ApolloLog(@"[BadgeBook][web] u/%@ achievements phase timed out (sawPage=%d title=%@)",
-                  self.username, self.sawPage, j[@"title"]);
+                  self.username, self.sawPage, ApolloLogPageTitleKind(j[@"title"]));
         [self finish];
         return;
     }
@@ -1239,7 +1239,7 @@ void ApolloBadgeBookFetch(NSString *rawUsername, void (^completion)(ApolloUserBa
                 } else {
                     if (ApolloBBIsOfflineErrorCode(errorCode)) sawOfflineError = YES;
                     ApolloLog(@"[BadgeBook][perf] u/%@ trophy page direct GET failed (%.2fs http=%ld err=%ld %ldKB title=%@)",
-                              username, elapsed, (long)status, (long)errorCode, bytes / 1024, failTitle);
+                              username, elapsed, (long)status, (long)errorCode, bytes / 1024, ApolloLogPageTitleKind(failTitle));
                 }
                 if (--directPending == 0) maybeFallback();
             });
@@ -1266,7 +1266,7 @@ void ApolloBadgeBookFetch(NSString *rawUsername, void (^completion)(ApolloUserBa
                         if (status == 404) userGone = YES;
                         if (ApolloBBIsOfflineErrorCode(errorCode)) sawOfflineError = YES;
                         ApolloLog(@"[BadgeBook][perf] u/%@ achievements page direct GET failed (%.2fs http=%ld err=%ld %ldKB title=%@)",
-                                  username, elapsed, (long)status, (long)errorCode, bytes / 1024, failTitle);
+                                  username, elapsed, (long)status, (long)errorCode, bytes / 1024, ApolloLogPageTitleKind(failTitle));
                     }
                     if (--directPending == 0) maybeFallback();
                 });

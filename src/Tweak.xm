@@ -1094,7 +1094,10 @@ static void ApolloLogAccountSnapshot(NSString *reason) {
 
     ApolloLoginDiag(@"[AccountSnapshot] %@ | device=%@ | keychain: len=%ld status=%d accessible=%@ | defaults: len=%ld index=%ld accounts=%ld withUser=%ld | mirror: len=%ld | active=%@",
                     reason, ApolloProtectedDataString(), kcLen, (int)kcStatus, accessible ?: @"?",
-                    defaultsLen, (long)index, (long)acctCount, (long)acctWithUser, mirrorLen, active ?: @"(nil)");
+                    defaultsLen, (long)index, (long)acctCount, (long)acctWithUser, mirrorLen,
+                    // A fingerprint, not the name: this file outlives sign-outs and
+                    // account removals, so the export scrub can't know every name in it.
+                    active.length ? [@"#" stringByAppendingString:ApolloLogFingerprint(active.lowercaseString)] : @"(nil)");
     // The access-group breakdown (root-cause confirmation) — separate line to keep both legible.
     ApolloLoginDiag(@"[AccountBlobGroups] %@ | %@", reason, ApolloAccountsBlobGroupBreakdown(keychainItems, kcStatus));
 }

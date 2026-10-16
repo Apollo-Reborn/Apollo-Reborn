@@ -4,6 +4,7 @@
 // Foundation-only on the build host: the harness supplies the identity lookups
 // and the prefetch, and logs go to NSLog.
 #define ApolloLog(fmt, ...) NSLog((fmt), ##__VA_ARGS__)
+#import "ApolloLogRedaction.h" // ApolloLogOwnThing() (Foundation-only, built into the harness)
 NSString *ApolloActiveWebSessionUsername(void);
 NSString *ApolloActiveAccountUsername(void);
 #else
@@ -386,7 +387,8 @@ void ApolloWebJSONNoteSelfTextEditContext(id client, NSString *body, NSString *l
         os_unfair_lock_lock(&sApolloWebJSONLastWriteLock);
         write.prefetchedData = data;
         os_unfair_lock_unlock(&sApolloWebJSONLastWriteLock);
-        ApolloLog(@"[WebJSON] info.json prefetch for edited %@ %@", linkFullName, data ? @"landed" : @"failed");
+        // The user's own post/comment: kind + fingerprint (its ID names the author).
+        ApolloLog(@"[WebJSON] info.json prefetch for edited %@ %@", ApolloLogOwnThing(linkFullName), data ? @"landed" : @"failed");
     });
 }
 
@@ -886,7 +888,7 @@ id ApolloWebJSONFixupWriteResponseObject(NSURLResponse *response, id responseObj
             changed = YES;
             ApolloLog(@"[WebJSON] Filled missing %@ on modern %@ thing %@ via %@ (%lu keys present)",
                       [filledKeys componentsJoinedByString:@"+"], path,
-                      name ?: [NSString stringWithFormat:@"(id %@)", td[@"id"] ?: @"?"],
+                      ApolloLogOwnThing(name ?: ([td[@"id"] isKindOfClass:[NSString class]] ? td[@"id"] : nil)),
                       source, (unsigned long)td.count);
             continue;
         }
@@ -926,7 +928,7 @@ id ApolloWebJSONFixupWriteResponseObject(NSURLResponse *response, id responseObj
             source = isEdit ? @"local synthesis (no captured edit)" : @"local synthesis";
         }
         if (![modern isKindOfClass:[NSDictionary class]]) {
-            ApolloLog(@"[WebJSON] %@ thing %@ unrepairable (nothing captured and synthesis failed)", path, fullname);
+            ApolloLog(@"[WebJSON] %@ thing %@ unrepairable (nothing captured and synthesis failed)", path, ApolloLogOwnThing(fullname));
             continue;
         }
 
@@ -934,7 +936,7 @@ id ApolloWebJSONFixupWriteResponseObject(NSURLResponse *response, id responseObj
                        : ([fullname hasPrefix:@"t1_"] ? @"t1" : @"t3");
         newThings[i] = @{ @"kind": kind, @"data": modern };
         changed = YES;
-        ApolloLog(@"[WebJSON] Rebuilt %@ response thing %@ via %@ for correct in-place render", path, fullname, source);
+        ApolloLog(@"[WebJSON] Rebuilt %@ response thing %@ via %@ for correct in-place render", path, ApolloLogOwnThing(fullname), source);
     }
     if (!changed) return responseObject;
 

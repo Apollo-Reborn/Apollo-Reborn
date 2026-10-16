@@ -13,6 +13,7 @@ xcrun --sdk macosx clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
     -framework Foundation -DAPOLLO_WEBJSON_WRITE_REPAIR_TESTING \
     -I "$test_repo_root/src" \
     "$test_repo_root/src/ApolloWebJSONWriteRepair.m" \
+    "$test_repo_root/src/ApolloLogRedaction.m" \
     "$test_repo_root/tests/web_json_write_repair_tests.m" \
     -o "$test_binary"
 

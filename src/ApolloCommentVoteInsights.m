@@ -444,13 +444,13 @@ void ApolloFetchCommentVoteInsight(NSString *fullName, NSString *author,
 
     ApolloCommentVoteInsight *cached = ApolloCommentInsightsFreshCachedInsight(cacheKey);
     if (cached) {
-        ApolloLog(@"[CommentInsights][perf] %@ served from memory cache", commentID);
+        ApolloLog(@"[CommentInsights][perf] %@ served from memory cache", ApolloLogOwnThing(commentID));
         dispatch_async(dispatch_get_main_queue(), ^{ completion(cached, nil); });
         return;
     }
     NSError *cachedError = ApolloCommentInsightsFreshCachedError(cacheKey);
     if (cachedError) {
-        ApolloLog(@"[CommentInsights][perf] %@ served recent failure", commentID);
+        ApolloLog(@"[CommentInsights][perf] %@ served recent failure", ApolloLogOwnThing(commentID));
         dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, cachedError); });
         return;
     }
@@ -480,7 +480,7 @@ void ApolloFetchCommentVoteInsight(NSString *fullName, NSString *author,
         return;
     }
     if (!shouldStart) {
-        ApolloLog(@"[CommentInsights][perf] %@ joined in-flight request", commentID);
+        ApolloLog(@"[CommentInsights][perf] %@ joined in-flight request", ApolloLogOwnThing(commentID));
         return;
     }
 
@@ -503,7 +503,7 @@ void ApolloFetchCommentVoteInsight(NSString *fullName, NSString *author,
     [request setValue:kApolloCommentInsightsDesktopUA forHTTPHeaderField:@"User-Agent"];
 
     CFAbsoluteTime startedAt = CFAbsoluteTimeGetCurrent();
-    ApolloLog(@"[CommentInsights] fetching %@ for signed-in author", commentID);
+    ApolloLog(@"[CommentInsights] fetching %@ for signed-in author", ApolloLogOwnThing(commentID));
     [[ApolloCommentInsightsDirectSession() dataTaskWithRequest:request
         completionHandler:^(NSData *data, NSURLResponse *response, NSError *networkError) {
         double elapsed = CFAbsoluteTimeGetCurrent() - startedAt;
@@ -562,15 +562,15 @@ void ApolloFetchCommentVoteInsight(NSString *fullName, NSString *author,
         }
         if (insight) {
             ApolloLog(@"[CommentInsights][perf] %@ %.2fs %ldKB ratio=%.1f%% upvotes=%lld",
-                      commentID, elapsed, (long)data.length / 1024,
+                      ApolloLogOwnThing(commentID), elapsed, (long)data.length / 1024,
                       insight.upvotePercent, insight.reportedUpvotes);
         } else {
             ApolloLogError(@"[CommentInsights] %@ failed %.2fs http=%ld err=%ld %ldKB shell=%d engagement=%d verify=%d",
-                      commentID, elapsed, (long)status, (long)error.code,
+                      ApolloLogOwnThing(commentID), elapsed, (long)status, (long)error.code,
                       (long)data.length / 1024, appShell, engagement, verification);
 #if APOLLO_SIM_BUILD
             if (status == 200 && engagement) {
-                ApolloLog(@"[CommentInsights][parser] %@ labels=%@", commentID,
+                ApolloLog(@"[CommentInsights][parser] %@ labels=%@", ApolloLogOwnThing(commentID),
                           ApolloCommentInsightsVoteLabelDiagnostics(html));
             }
 #endif
