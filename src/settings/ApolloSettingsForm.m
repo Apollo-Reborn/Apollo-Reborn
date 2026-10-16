@@ -233,12 +233,35 @@ static const void *kApolloSFDisplayStyledKey = &kApolloSFDisplayStyledKey;
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
+
+    UITapGestureRecognizer *tapGesture =
+        [[UITapGestureRecognizer alloc] initWithTarget:self
+                                                action:@selector(dismissKeyboard)];
+    tapGesture.cancelsTouchesInView = NO;
+    tapGesture.name = @"ApolloSettingsKeyboardDismissTap";
+    tapGesture.delegate = self;
+    [self.view addGestureRecognizer:tapGesture];
     // Let standard cells grow for Dynamic Type and long localized labels.
     // Returning UITableViewAutomaticDimension from the delegate below keeps
     // explicit row.height blocks authoritative while avoiding 44pt clipping.
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 52.0;
     [self rebuildForm];
+}
+
+- (void)scrollViewWillBeginDragging:(UIScrollView *)scrollView {
+    // Finish editing when the user scrolls, including on iPad.
+    [scrollView endEditing:YES];
+}
+
+- (void)dismissKeyboard {
+    [self.view endEditing:YES];
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+        shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
+    return [gestureRecognizer.name isEqualToString:@"ApolloSettingsKeyboardDismissTap"];
 }
 
 - (void)refreshFormAfterRowMove {
