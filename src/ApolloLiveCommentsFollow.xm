@@ -141,7 +141,7 @@ static BOOL LCFIsIsolatedThread(UIViewController *vc) {
 static id LCFTableNode(id vc) { return ApolloObjectIvar(vc, "tableNode"); }
 
 static UITableView *LCFTableView(UIViewController *vc) {
-    UIView *v = [LCFTableNode(vc) view];
+    UIView *v = ApolloNodeView(LCFTableNode(vc));
     return [v isKindOfClass:[UITableView class]] ? (UITableView *)v : nil;
 }
 

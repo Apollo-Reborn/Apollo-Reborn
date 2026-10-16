@@ -631,7 +631,7 @@ static void recenterCancelButton(void) {
     sFeedSearchScrolledByUser = NO;
     ++sFeedSearchDismissGen;  // a re-focus during a dismiss window cancels the pending release timer
     id tableNode = ApolloObjectIvar(self, "tableNode");
-    UIView *tv = [tableNode respondsToSelector:@selector(view)] ? [tableNode view] : nil;
+    UIView *tv = ApolloNodeView(tableNode);
     if ([tv isKindOfClass:ApolloClassASTableView]) sFeedSearchTable = (UIScrollView *)tv;
     id upper = ApolloObjectIvar(self, "upperToolbar");
     if ([upper isKindOfClass:[UIView class]]) {
@@ -663,7 +663,7 @@ static void recenterCancelButton(void) {
     if (MSHookIvar<BOOL>(self, "searchBarShouldStickToKeyboard")) return; // feed-only; skip comments search
     // Keep the offset-stabilizer refs current (runs regardless of Liquid Glass).
     id tableNode = ApolloObjectIvar(self, "tableNode");
-    UIView *tv = [tableNode respondsToSelector:@selector(view)] ? [tableNode view] : nil;
+    UIView *tv = ApolloNodeView(tableNode);
     if ([tv isKindOfClass:ApolloClassASTableView]) sFeedSearchTable = (UIScrollView *)tv;
     id upper = ApolloObjectIvar(self, "upperToolbar");
     if ([upper isKindOfClass:[UIView class]]) sFeedSearchToolbar = (UIView *)upper;
@@ -767,7 +767,7 @@ static void recenterCancelButton(void) {
         ++sFeedSearchDismissGen;
         sFeedSearchNavBar = [(UIViewController *)self navigationController].navigationBar;
         id tableNode = ApolloObjectIvar(self, "tableNode");
-        UIView *tableView = [tableNode respondsToSelector:@selector(view)] ? [tableNode view] : nil;
+        UIView *tableView = ApolloNodeView(tableNode);
         if ([tableView isKindOfClass:ApolloClassASTableView]) sFeedSearchTable = (UIScrollView *)tableView;
         if ([field isKindOfClass:[UIView class]]) sFeedSearchField = (UIView *)field;
         id upper = ApolloObjectIvar(self, "upperToolbar");

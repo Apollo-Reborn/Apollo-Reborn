@@ -83,8 +83,7 @@ void ApolloListLayoutLog(NSString *format, ...) {
 // ASTableNode for its underlying ASTableView.
 UIScrollView *ApolloListTableForController(UIViewController *controller) {
     id tableNode = ApolloObjectIvar(controller, "tableNode");
-    if (![tableNode respondsToSelector:@selector(view)]) return nil;
-    UIView *tableView = [tableNode view];
+    UIView *tableView = ApolloNodeView(tableNode);
     return [tableView isKindOfClass:[UIScrollView class]] ? (UIScrollView *)tableView : nil;
 }
 

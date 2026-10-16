@@ -361,10 +361,10 @@ static UIWindow *ApolloPixelPalWindowForView(UIView *view) {
         [(NSString *)identifier isEqualToString:@"cutoutBoundary"] &&
         ApolloPixelPalGeometry(nil, &apollo, &pill)) {
         CGFloat dy = CGRectGetMinY(pill) - CGRectGetMinY(apollo);
-        CGPoint fixed1 = CGPointMake(p1.x, p1.y + dy);
-        CGPoint fixed2 = CGPointMake(p2.x, p2.y + dy);
-        ApolloLog(@"[PixelPals] ball floor y %.3f → %.3f (x %.1f…%.1f)", p1.y, fixed1.y, p1.x, p2.x);
-        %orig(identifier, fixed1, fixed2);
+        CGPoint floor1 = CGPointMake(p1.x, p1.y + dy);
+        CGPoint floor2 = CGPointMake(p2.x, p2.y + dy);
+        ApolloLog(@"[PixelPals] ball floor y %.3f → %.3f (x %.1f…%.1f)", p1.y, floor1.y, p1.x, p2.x);
+        %orig(identifier, floor1, floor2);
         return;
     }
     %orig;

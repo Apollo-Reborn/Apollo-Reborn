@@ -838,7 +838,7 @@ static void ApolloPollScheduleAuthoritativeRefreshes(NSString *postID, NSString 
 }
 
 static UIView *ApolloPollNodeView(id node) {
-    return [node respondsToSelector:@selector(view)] ? [node view] : nil;
+    return ApolloNodeView(node);
 }
 
 // The PollOptionNode whose row contains `point` (in the poll view's coordinate

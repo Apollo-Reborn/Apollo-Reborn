@@ -4,6 +4,19 @@
 #import <Security/SecBase.h>
 #import <objc/message.h>
 
+/// The backing `UIView` of an ASDisplayNode-like object, or nil if it has none.
+///
+/// Texture's node classes have no headers here, so call sites used to message an
+/// `id` directly. That does not compile for Mac Catalyst: UIKit's umbrella there
+/// reaches AppKit (via NSToolbar+UIKitAdditions.h), so a bare `-view` on `id`
+/// resolves to NSViewController's declaration and yields `NSView *`, which is a
+/// hard error under ARC. Naming the signature at the call site keeps one
+/// definition of "ask a node for its view" for every platform.
+static inline UIView *ApolloNodeView(id node) {
+    if (![node respondsToSelector:@selector(view)]) return nil;
+    return ((UIView *(*)(id, SEL))objc_msgSend)(node, @selector(view));
+}
+
 @class CASpringAnimation;
 
 // On iOS 26, NSLog redacts strings, so use os_log: https://developer.apple.com/documentation/ios-ipados-release-notes/ios-ipados-26-release-notes#NSLog

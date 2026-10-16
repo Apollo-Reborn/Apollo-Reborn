@@ -302,7 +302,7 @@ static BOOL NSBIsNativeSearchVC(UIViewController *vc) {
 
 static UIScrollView *NSBTableForVC(UIViewController *vc) {
     id tableNode = ApolloObjectIvar(vc, "tableNode");
-    UIView *tv = [tableNode respondsToSelector:@selector(view)] ? [tableNode view] : nil;
+    UIView *tv = ApolloNodeView(tableNode);
     return [tv isKindOfClass:ApolloClassASTableView] ? (UIScrollView *)tv : nil;
 }
 
