@@ -58,7 +58,7 @@
 // and because the context reference is weak, a context that has been freed reads as nil, so a
 // new context recycled at the same address can never be handed a finished animator.
 //
-// THREE THINGS THE INTERRUPTIBLE PATH CHANGES, HANDLED HERE
+// FOUR THINGS THE INTERRUPTIBLE PATH CHANGES, HANDLED HERE
 // - UIKit only disables user interaction on the transitioning views for NON-interruptible
 //   animators. Left interactive, the finger that started the edge pan still delivers its
 //   delayed touch to the post cell under it, which lit up the cell's highlight for two
@@ -79,6 +79,18 @@
 //   Bridge the native driver's completionCurve when it is handed to UIKit, using the same
 //   UICubicTimingParameters conversion as UIKit's legacy path. UIKit still owns remaining
 //   distance, completionSpeed, reversal and completion; dragging stays linear.
+// - UIKit parks a starting transition's alongside animations (the tab bar coming back from a
+//   hidesBottomBarWhenPushed screen, for one) until the next UIView animation block opens,
+//   expecting that block to be the interruptible animator's own. Building the animator puts
+//   the incoming page back in the window, and on iOS 27 the trait update that triggers runs
+//   one of UIKit's spring blocks first. That block took the alongside animations, inside the
+//   paused tracking scope UIKit opens around every interactive transition, so they landed in
+//   a separate tracking animator that nothing resumes on the interruptible path. After a
+//   swipe back from Edit Profile the tab bar's glass stayed frozen at its first, invisible
+//   frame while the icons were already back (#1429). The parked batch is held aside while
+//   an interactive transition's animator is built and put back before UIKit starts it, so
+//   it rides this animator: it follows the finger, reverses on cancel and finishes with the
+//   swipe. Timed transitions open no tracking scope and are left as they were.
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -175,6 +187,31 @@ static void ApolloNavRestoreSearchFieldMaterial(UITextField *field, const char *
     [field _updateBackgroundMaterial];
     ApolloLog(@"[InterruptibleNav] cancelled transition dropped the search field's glass; re-applied %s (restored=%d)",
               when, (int)ApolloNavSearchFieldHasMaterialLayer(field));
+}
+
+// Where +[UIView _setAlongsideAnimations:toRunByEndOfBlock:animated:] parks a starting
+// transition's alongside animations until the next animation block opens (private UIKit API,
+// checked before use).
+@interface UIView (ApolloNavAlongsideAnimations)
++ (id)_alongsideAnimations;
++ (void)_setAlongsideAnimations:(id)animations;
+@end
+
+// Takes the parked alongside animations out of UIKit's slot, so no animation block opened
+// while the animator is built can claim them. Nil when nothing is parked.
+static id ApolloNavHoldAlongsideAnimations(void) {
+    if (![UIView respondsToSelector:@selector(_alongsideAnimations)] ||
+        ![UIView respondsToSelector:@selector(_setAlongsideAnimations:)]) {
+        static BOOL sLoggedMissingSlot;
+        if (!sLoggedMissingSlot) {
+            sLoggedMissingSlot = YES;
+            ApolloLog(@"[InterruptibleNav] UIKit has no alongside-animations slot; alongside animations are NOT held (tab bar return after a swipe back may stick)");
+        }
+        return nil;
+    }
+    id parked = [UIView _alongsideAnimations];
+    if (parked) [UIView _setAlongsideAnimations:nil];
+    return parked;
 }
 
 static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
@@ -370,7 +407,17 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
     if (!ctx) return nil;
     UIViewPropertyAnimator *animator = ApolloNavAnimatorForContext(self, ctx);
     if (animator) return animator;
+    // Starting an interactive transition, UIKit pauses the animator as soon as this returns,
+    // and that first animation block takes whatever alongside animations are parked. Keep them
+    // away from the blocks the build itself opens; only interactive transitions run inside a
+    // paused tracking scope.
+    id alongside = ctx.isInteractive ? ApolloNavHoldAlongsideAnimations() : nil;
     animator = ApolloNavBuildAnimator(self, ctx);
+    if (alongside) {
+        [UIView _setAlongsideAnimations:alongside];
+        ApolloLog(@"[InterruptibleNav] held the alongside animations for ctx %p until its animator starts",
+                  (__bridge void *)ctx);
+    }
     ApolloNavContextRef *ref = [ApolloNavContextRef new];
     ref.context = ctx;
     objc_setAssociatedObject(animator, kApolloNavAnimatorContextKey, ref, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
