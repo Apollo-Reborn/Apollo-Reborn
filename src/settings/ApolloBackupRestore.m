@@ -1,4 +1,5 @@
 #import "settings/ApolloBackupRestore.h"
+#import "settings/ApolloSetupPreset.h"
 #import "settings/ApolloAutomaticBackup.h"
 
 #import "ApolloCommon.h"
@@ -746,6 +747,8 @@ BOOL ApolloBackupRestoreRestoreFromZipURL(NSURL *zipURL, NSString **outErrorTitl
         }
         [defaults setObject:mainPrefs[key] forKey:key];
     }
+    // A restore is a complete setup, including old and mid-assistant backups.
+    [defaults setInteger:ApolloSetupStateCompleted forKey:UDKeySetupAssistantState];
     [defaults synchronize];
 
     // Sync in-memory globals with restored values.

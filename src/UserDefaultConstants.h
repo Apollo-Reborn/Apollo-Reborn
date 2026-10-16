@@ -3,6 +3,11 @@
 static NSString *const UDKeySettingsTabShortcuts = @"SettingsTabShortcuts";
 
 // UserDefaults keys
+// Not registered: absence distinguishes upgrades from fresh installs before
+// constructors write preferences. 1 pending, 2 completed/restored, 3 skipped,
+// 4 existing installation. The preset records a starting point, never a policy.
+static NSString *const UDKeySetupAssistantState = @"ApolloRebornSetupAssistantState";
+static NSString *const UDKeySetupPreset = @"ApolloRebornSetupPreset";
 // Optional iOS 27 Siri framework's preference; default OFF. The actor owns
 // state, with no duplicate BOOL mirror (Shortcuts can change it out of UI).
 static NSString *const UDKeySiriContentIndexing = @"ApolloSiriContentEnabled";

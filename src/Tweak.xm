@@ -28,6 +28,8 @@
 #import "ApolloRedgifsErrorCards.h"
 #import "Tweak.h"
 #import "settings/CustomAPIViewController.h"
+#import "settings/ApolloSetupAssistant.h"
+#import "settings/ApolloSetupPreset.h"
 #import "settings/ApolloAutomaticBackup.h"
 #import "Version.h"
 #import "UserDefaultConstants.h"
@@ -4509,12 +4511,17 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     // Mirror the selected app icon for Bark notification icon passthrough.
     ApolloBarkCaptureInitialIconSelection();
 
+    ApolloSetupAssistantStart();
+
     // Redirect user to Custom API settings if no API credentials are set — but not
     // when at least one web-session account is configured (no API key is expected
     // for those). Checked by configured-account count, not the active account, so
     // this doesn't depend on which account happens to be current right now.
-    if ([sRedditClientId length] == 0 && !(sWebJSONEnabled && ApolloWebSessionUsernames().count > 0)) {
+    if ([standardDefaults integerForKey:UDKeySetupAssistantState] == ApolloSetupStateExistingInstall &&
+        !ApolloSetupAssistantBlocksLaunchPrompts() &&
+        [sRedditClientId length] == 0 && !(sWebJSONEnabled && ApolloWebSessionUsernames().count > 0)) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (ApolloSetupAssistantBlocksLaunchPrompts()) return;
             UIWindow *mainWindow = ((UIWindowScene *)UIApplication.sharedApplication.connectedScenes.anyObject).windows.firstObject;
             UITabBarController *tabBarController = (UITabBarController *)mainWindow.rootViewController;
             // Navigate to Settings tab
@@ -4535,6 +4542,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                     object:nil
                      queue:[NSOperationQueue mainQueue]
                 usingBlock:^(NSNotification *note) {
+        if (ApolloSetupAssistantBlocksLaunchPrompts()) return;
         ApolloSendUsageHeartbeatIfNeeded();
         ApolloUpdateCheckIfNeeded();
     }];
