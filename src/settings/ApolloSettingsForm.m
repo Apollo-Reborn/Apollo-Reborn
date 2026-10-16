@@ -1,6 +1,7 @@
 #import "ApolloSettingsForm.h"
 
 #import <objc/runtime.h>
+#import <QuartzCore/QuartzCore.h>
 
 #import "ApolloCommon.h"
 
@@ -948,12 +949,24 @@ static const NSUInteger kApolloSFMaxFooterMeasureChanges = 4;
 
 #pragma mark - Shared picker
 
-void ApolloSettingsPresentPicker(UIViewController *presenter,
-                                 UIView *sourceView,
-                                 NSString *title,
-                                 NSArray<NSString *> *optionTitles,
-                                 NSInteger currentIndex,
-                                 void (^apply)(NSInteger pickedIndex)) {
+static char kApolloSettingsLivePickerApplyKey;
+
+void ApolloSettingsApplyLivePickerAction(UIAlertAction *action) {
+    if (!action) return;
+    dispatch_block_t apply = objc_getAssociatedObject(action, &kApolloSettingsLivePickerApplyKey);
+    if (!apply) return;
+    // Detach before invoking to handle re-entry; the local retains the block.
+    objc_setAssociatedObject(action, &kApolloSettingsLivePickerApplyKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    apply();
+}
+
+static void ApolloSettingsPresentPickerInternal(UIViewController *presenter,
+                                               UIView *sourceView,
+                                               NSString *title,
+                                               NSArray<NSString *> *optionTitles,
+                                               NSInteger currentIndex,
+                                               void (^apply)(NSInteger pickedIndex),
+                                               BOOL applyBeforeDismissal) {
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:title
                                                                    message:nil
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
@@ -961,15 +974,31 @@ void ApolloSettingsPresentPicker(UIViewController *presenter,
         NSString *optionTitle = (i == currentIndex)
             ? [optionTitles[(NSUInteger)i] stringByAppendingString:@" (Current)"]
             : optionTitles[(NSUInteger)i];
-        [sheet addAction:[UIAlertAction actionWithTitle:optionTitle
-                                                  style:UIAlertActionStyleDefault
-                                                handler:^(UIAlertAction *action) {
-            // Fires even when the current option is re-picked: every legacy sheet
-            // did (their handlers re-write + re-notify, and some rely on it — e.g.
-            // re-picking the current provider still marks it user-selected), so
-            // apply blocks must be idempotent.
-            if (apply) apply(i);
-        }]];
+        dispatch_block_t applyOnce = nil;
+        if (applyBeforeDismissal) {
+            __block BOOL applied = NO;
+            applyOnce = ^{
+                if (applied) return;
+                applied = YES;
+                if (apply) apply(i);
+            };
+        }
+        UIAlertAction *action = [UIAlertAction actionWithTitle:optionTitle
+                                                        style:UIAlertActionStyleDefault
+                                                      handler:^(UIAlertAction *selectedAction) {
+            if (applyOnce) {
+                // Retain the fallback directly: copied actions may lose their
+                // association. Both paths share the same once guard.
+                objc_setAssociatedObject(selectedAction, &kApolloSettingsLivePickerApplyKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+                applyOnce();
+            } else if (apply) {
+                apply(i);
+            }
+        }];
+        if (applyOnce) {
+            objc_setAssociatedObject(action, &kApolloSettingsLivePickerApplyKey, applyOnce, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        }
+        [sheet addAction:action];
     }
     [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
     // Anchor to the screen, not a reusable cell: row reloads can recycle the
@@ -978,5 +1007,24 @@ void ApolloSettingsPresentPicker(UIViewController *presenter,
     sheet.popoverPresentationController.sourceView = anchor;
     sheet.popoverPresentationController.sourceRect = sourceView ? [sourceView convertRect:sourceView.bounds toView:anchor]
         : CGRectMake(CGRectGetMidX(anchor.bounds), CGRectGetMidY(anchor.bounds), 1, 1);
+
     [presenter presentViewController:sheet animated:YES completion:nil];
+}
+
+void ApolloSettingsPresentPicker(UIViewController *presenter,
+                                 UIView *sourceView,
+                                 NSString *title,
+                                 NSArray<NSString *> *optionTitles,
+                                 NSInteger currentIndex,
+                                 void (^apply)(NSInteger pickedIndex)) {
+    ApolloSettingsPresentPickerInternal(presenter, sourceView, title, optionTitles, currentIndex, apply, NO);
+}
+
+void ApolloSettingsPresentLivePicker(UIViewController *presenter,
+                                     UIView *sourceView,
+                                     NSString *title,
+                                     NSArray<NSString *> *optionTitles,
+                                     NSInteger currentIndex,
+                                     void (^apply)(NSInteger pickedIndex)) {
+    ApolloSettingsPresentPickerInternal(presenter, sourceView, title, optionTitles, currentIndex, apply, YES);
 }

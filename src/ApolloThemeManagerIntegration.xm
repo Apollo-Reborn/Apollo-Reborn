@@ -988,6 +988,11 @@ static UIImage *CustomPickerSwatch(void) {
         if ([ApolloThemeStore shared].customThemeEnabled) ApolloThemeRuntimeDisable();
         %orig(tv, [NSIndexPath indexPathForRow:ip.row - 1 inSection:0]);
         [tv reloadData];
+
+        // Refresh the Inbox badge after selecting a stock Apollo theme.
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:ApolloInboxBadgeChangedNotification
+                          object:nil];
         return;
     }
     %orig;

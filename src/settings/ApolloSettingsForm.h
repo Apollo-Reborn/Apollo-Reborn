@@ -177,17 +177,27 @@ typedef UITableViewCell *_Nonnull (^ApolloSettingsCellBlock)(UITableView *tableV
 extern "C" {
 #endif
 
-// The shared "(Current)"-suffix action-sheet picker every settings screen used
-// to hand-roll: presents optionTitles with the current one suffixed, anchored
-// to sourceView for iPad popovers. apply() runs for ANY pick, including
-// re-picking the current option (legacy sheet semantics — some handlers rely
-// on the re-fire), so apply blocks must be idempotent.
+// Action-sheet picker with a "(Current)" suffix and an iPad popover anchor.
+// Every selection calls apply, including the current option; keep it idempotent.
 void ApolloSettingsPresentPicker(UIViewController *presenter,
                                  UIView *_Nullable sourceView,
                                  NSString *_Nullable title,
                                  NSArray<NSString *> *optionTitles,
                                  NSInteger currentIndex,
                                  void (^apply)(NSInteger pickedIndex));
+
+// Same sheet, applying once before dismissal when the UIKit hook is available.
+// Otherwise uses the public action handler. Only for synchronous, in-place
+// updates; callbacks must not push or present another controller.
+void ApolloSettingsPresentLivePicker(UIViewController *presenter,
+                                     UIView *_Nullable sourceView,
+                                     NSString *_Nullable title,
+                                     NSArray<NSString *> *optionTitles,
+                                     NSInteger currentIndex,
+                                     void (^apply)(NSInteger pickedIndex));
+
+// Internal selection hook; unmarked actions are ignored.
+void ApolloSettingsApplyLivePickerAction(UIAlertAction *_Nullable action);
 
 // Cached 29pt adaptive icon. Nil traits uses current traits; unknown symbols draw a plain tile.
 UIImage *ApolloSettingsIconTileImage(NSString *symbolName,
