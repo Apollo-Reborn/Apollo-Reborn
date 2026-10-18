@@ -99,7 +99,7 @@ static void ApolloDuoSyncCellBackground(ASCellNode *node) {
 
 static UIColor *ApolloDuoAccountFeedNodeBackground(ASCellNode *node, UIColor *requested) {
     if (!NSThread.isMainThread || !node.isNodeLoaded) return requested;
-    if (ApolloDuoSplitIsSubredditOverlayView(node.view)) return UIColor.clearColor;
+    if (ApolloDuoSplitIsGlassSubredditOverlayView(node.view)) return UIColor.clearColor;
     NSString *name = NSStringFromClass(node.class);
     if (![name hasSuffix:@"CommentCellNode"] && ![name hasSuffix:@"PostCellNode"]) return requested;
     UIView *parent = node.view.superview;

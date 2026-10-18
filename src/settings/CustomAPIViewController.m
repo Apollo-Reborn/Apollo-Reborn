@@ -34,6 +34,7 @@
 #import "ApolloTabBarHideStyle.h"
 #import "ApolloDuoRail.h"
 #import "ApolloDuoCompatibility.h"
+#import "ApolloDuoSplitView.h"
 #import "ApolloTagFilters.h"
 #import "ApolloBadgeBookScraper.h"   // ApolloBadgeBookInvalidate() — Clear Tweak Caches
 #import "ApolloUserProfileCache.h"
@@ -2891,6 +2892,27 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
             return ApolloSettingsRouteInstantiate(@"feed-shortcuts");
         }];
 
+    ApolloSettingsRow *panelStyle =
+        [ApolloSettingsRow valueRowWithID:@"sub.panelStyle"
+                                   title:@"Subreddit Panel Style"
+                                  detail:^NSString * {
+            return sDuoSubredditPanelGlassEnabled ? @"Liquid Glass" : @"Standard";
+        }
+                                onSelect:^{
+            ApolloSettingsPresentPicker(weakSelf, [weakSelf cellForRowID:@"sub.panelStyle"],
+                @"Subreddit Panel Style", @[ @"Standard", @"Liquid Glass" ],
+                sDuoSubredditPanelGlassEnabled ? 1 : 0, ^(NSInteger picked) {
+                    BOOL glassEnabled = picked == 1;
+                    if (sDuoSubredditPanelGlassEnabled == glassEnabled) return;
+                    sDuoSubredditPanelGlassEnabled = glassEnabled;
+                    [NSUserDefaults.standardUserDefaults setBool:glassEnabled
+                        forKey:UDKeyDuoSubredditPanelGlassEnabled];
+                    [weakSelf reloadRowWithID:@"sub.panelStyle"];
+                    ApolloDuoSplitScheduleUpdate();
+                });
+        }];
+    panelStyle.visible = ^BOOL { return ApolloDuoUsesAdaptiveBars(); };
+
     // Pushes the dedicated Subreddit Sections screen: the FOLLOWING section
     // for followed users, drag-to-reorder for the special sections, and a
     // live preview of the list layout (see ApolloSubredditSectionsViewController).
@@ -2929,7 +2951,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                   }];
     return [ApolloSettingsSection sectionWithTitle:@"Subreddit List"
                                             footer:nil
-                                              rows:@[ feedShortcuts, subredditSections,
+                                              rows:@[ feedShortcuts, subredditSections, panelStyle,
                                                       perAccountFavorites, sortFavoritesAlphabetically, confirmFavoriteToggle ]];
 }
 

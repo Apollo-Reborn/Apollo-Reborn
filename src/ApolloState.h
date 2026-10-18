@@ -198,6 +198,8 @@ extern BOOL sHideTopBarOnScroll;
 // Experimental Duo landscape feed layout: 0 = Original (default),
 // 2 = Focused feed; value 1 is retired. Read live by ApolloMediaHinge.
 extern NSInteger sDuoLandscapeFeedLayout;
+// Standard (default NO) or Liquid Glass for the open Duo subreddit panel.
+extern BOOL sDuoSubredditPanelGlassEnabled;
 BOOL ApolloSupportsNativeTabBarScrollBehavior(void);
 #ifdef __cplusplus
 }

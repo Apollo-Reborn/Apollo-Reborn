@@ -203,6 +203,10 @@ static void ApolloDuoSlideView(UIView *view, CGFloat from, CGFloat to, NSTimeInt
 @property(nonatomic, weak) UINavigationController *postsNavigation;
 @property(nonatomic, strong) UIView *listContainer;
 @property(nonatomic, strong) UIVisualEffectView *listGlass;
+@property(nonatomic) BOOL listUsesGlass;
+@property(nonatomic) BOOL listStyleApplied;
+- (void)updateListAppearance;
+- (void)restoreListSurfaceColors;
 @property(nonatomic, strong) UINavigationBar *listNavigationBar;
 @property(nonatomic, strong) UIControl *listDismiss;
 @property(nonatomic, strong) UIButton *listButton;
@@ -270,10 +274,7 @@ static void ApolloDuoSlideView(UIView *view, CGFloat from, CGFloat to, NSTimeInt
         [self.listDismiss addTarget:self action:@selector(dismissList) forControlEvents:UIControlEventTouchUpInside];
         self.listDismiss.hidden = YES;
         [self.view addSubview:self.listDismiss];
-        UIVisualEffect *effect;
-        if (@available(iOS 26.0, *)) effect = [UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];
-        else effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial];
-        self.listGlass = [[UIVisualEffectView alloc] initWithEffect:effect];
+        self.listGlass = [[UIVisualEffectView alloc] initWithEffect:nil];
         self.listGlass.layer.cornerRadius = 28;
         self.listGlass.clipsToBounds = YES;
         // Move a plain container so the material and list travel together.
@@ -387,6 +388,7 @@ static void ApolloDuoSlideView(UIView *view, CGFloat from, CGFloat to, NSTimeInt
         }
         self.originalListInsets = self.subredditList.topViewController.additionalSafeAreaInsets;
         [self.subredditList setNavigationBarHidden:YES animated:NO];
+        [self updateListAppearance];
     }
     if (self.accountHeader) {
         self.accountHeaderClip = [UIView new];
@@ -417,8 +419,42 @@ static void ApolloDuoSlideView(UIView *view, CGFloat from, CGFloat to, NSTimeInt
     ApolloDuoPostsStopGeometry(self.searchNavigation.viewIfLoaded);
     [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
 }
-- (void)prepareListGlass {
-    ApolloDuoSplitPrepareOverlaySurface(self.subredditList.view);
+- (void)updateListAppearance {
+    if (!self.subredditList || !self.listGlass) return;
+    BOOL changed = !self.listStyleApplied || self.listUsesGlass != sDuoSubredditPanelGlassEnabled;
+    BOOL refreshRows = self.listStyleApplied && changed;
+    self.listUsesGlass = sDuoSubredditPanelGlassEnabled;
+    if (changed) {
+        // Keep the same controller, panel geometry, and native Add/Edit items.
+        // Standard restores Apollo's own surfaces instead of clearing them for
+        // the material; it does not change the app-wide Liquid Glass setting.
+        [self restoreListSurfaceColors];
+        UIVisualEffect *effect = nil;
+        if (self.listUsesGlass) {
+            if (@available(iOS 26.0, *)) effect = [UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];
+            else effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial];
+        }
+        self.listGlass.effect = effect;
+        self.listStyleApplied = YES;
+    }
+    NSString *panelTitle = self.listUsesGlass ? @"" : @"Subreddits";
+    if (![self.listNavigationBar.topItem.title isEqualToString:panelTitle])
+        self.listNavigationBar.topItem.title = panelTitle;
+    self.listGlass.backgroundColor = self.listUsesGlass ? UIColor.clearColor
+        : (ApolloThemeSubredditListBackgroundColor() ?: UIColor.systemBackgroundColor);
+    // Re-vend only on an explicit style change, never on scroll/layout.
+    if (refreshRows) [ApolloDuoSplitFindTable(self.subredditList.view) reloadData];
+    if (self.listUsesGlass && self.listVisible)
+        ApolloDuoSplitPrepareOverlaySurface(self.subredditList.view);
+}
+- (void)restoreListSurfaceColors {
+    self.updatingListSurfaces = YES;
+    for (UIView *view in self.listBackgrounds) {
+        id color = [self.listBackgrounds objectForKey:view];
+        view.backgroundColor = color == NSNull.null ? nil : color;
+    }
+    self.updatingListSurfaces = NO;
+    self.listBackgrounds = nil;
 }
 - (void)endListEditing {
     UIViewController *root = self.subredditList.viewControllers.firstObject;
@@ -427,13 +463,7 @@ static void ApolloDuoSlideView(UIView *view, CGFloat from, CGFloat to, NSTimeInt
 - (void)restoreListBackgrounds {
     [self endListEditing];
     ApolloDuoSubsChromeSetPopupNavigationBar(self.subredditList.viewControllers.firstObject, nil);
-    self.updatingListSurfaces = YES;
-    for (UIView *view in self.listBackgrounds) {
-        id color = [self.listBackgrounds objectForKey:view];
-        view.backgroundColor = color == NSNull.null ? nil : color;
-    }
-    self.updatingListSurfaces = NO;
-    self.listBackgrounds = nil;
+    [self restoreListSurfaceColors];
     self.subredditList.viewControllers.firstObject.additionalSafeAreaInsets = self.originalListInsets;
     [self.subredditList setNavigationBarHidden:NO animated:NO];
 }
@@ -536,7 +566,7 @@ static void ApolloDuoSlideView(UIView *view, CGFloat from, CGFloat to, NSTimeInt
         [table setContentOffset:CGPointMake(-table.adjustedContentInset.left,
                                            -table.adjustedContentInset.top) animated:NO];
         [table layoutIfNeeded];
-        [self prepareListGlass];
+        [self updateListAppearance];
     }
     self.listDismiss.hidden = NO;
     self.listContainer.hidden = NO;
@@ -1009,6 +1039,10 @@ BOOL ApolloDuoSplitIsSubredditOverlayView(UIView *view) {
     return ApolloDuoSubredditOverlayHost(view) != nil;
 }
 
+BOOL ApolloDuoSplitIsGlassSubredditOverlayView(UIView *view) {
+    return ApolloDuoSubredditOverlayHost(view).listUsesGlass;
+}
+
 // Only native list surfaces belong to the drawer material. Walking every
 // descendant also erased the red removal badges and restored their old colors
 // after folding. In particular, never traverse into controls or effect views.
@@ -1042,7 +1076,7 @@ static BOOL ApolloDuoListOwnsSurface(UIView *view, ApolloDuoSplitHost *host) {
 UIColor *ApolloDuoSplitOverlayBackground(UIView *view, UIColor *color) {
     if (!NSThread.isMainThread) return color;
     ApolloDuoSplitHost *host = ApolloDuoSubredditOverlayHost(view);
-    if (!host || host.updatingListSurfaces || !ApolloDuoListOwnsSurface(view, host)) return color;
+    if (!host || !host.listUsesGlass || host.updatingListSurfaces || !ApolloDuoListOwnsSurface(view, host)) return color;
     if (!host.listBackgrounds) host.listBackgrounds = [NSMapTable weakToStrongObjectsMapTable];
     // Theme updates and reused cells may change while the drawer is hidden.
     // Preserve the latest requested native color, not the first light-mode one.
@@ -1052,7 +1086,7 @@ UIColor *ApolloDuoSplitOverlayBackground(UIView *view, UIColor *color) {
 
 void ApolloDuoSplitPrepareOverlaySurface(UIView *surface) {
     ApolloDuoSplitHost *host = ApolloDuoSubredditOverlayHost(surface);
-    if (!host || host.updatingListSurfaces) return;
+    if (!host || !host.listUsesGlass || host.updatingListSurfaces) return;
     if (!host.listBackgrounds) host.listBackgrounds = [NSMapTable weakToStrongObjectsMapTable];
     host.updatingListSurfaces = YES;
     NSMutableArray *views = [NSMutableArray arrayWithObject:surface];
@@ -1193,7 +1227,7 @@ static void ApolloDuoPostsSyncColumnsWithAnimation(ApolloDuoSplitState *state, B
     UIEdgeInsets desiredInsets = state.host.originalListInsets;
     desiredInsets.right = -inheritedRight;
     if (!UIEdgeInsetsEqualToEdgeInsets(currentInsets, desiredInsets)) listRoot.additionalSafeAreaInsets = desiredInsets;
-    if (state.host.listVisible) [state.host prepareListGlass];
+    [state.host updateListAppearance];
     // Full-width comments stay on Apollo's native feed navigation stack.
     // Only a real split (or its width-toggle preparation) needs two stacks.
     // Never migrate a page while Apollo's native push/pop owns its transition.

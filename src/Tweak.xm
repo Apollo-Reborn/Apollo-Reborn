@@ -3708,6 +3708,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeySettingsIconAppearance: @(ApolloSettingsIconAppearanceLight),
                                     UDKeyTabBarSwipeNavigation: @NO,
                                     UDKeyDuoLandscapeFeedLayout: @0,
+                                    UDKeyDuoSubredditPanelGlassEnabled: @NO,
                                     UDKeyLiquidGlassEnabled: @YES,
                                     UDKeyIconRowMagnifier: @YES,
                                     UDKeyInfoRowTapUpvote: @YES,
@@ -4021,6 +4022,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     // reload it here: UIKit and early hook constructors use that launch choice.
     sTabBarSwipeNavigation = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyTabBarSwipeNavigation];
     sDuoLandscapeFeedLayout = [standardDefaults integerForKey:UDKeyDuoLandscapeFeedLayout];
+    sDuoSubredditPanelGlassEnabled = [standardDefaults boolForKey:UDKeyDuoSubredditPanelGlassEnabled];
     // Value 1 belonged to the removed side-by-side experiment. Keep Focused
     // feed at 2 so existing selections survive this menu cleanup.
     if (sDuoLandscapeFeedLayout != 0 && sDuoLandscapeFeedLayout != 2) {

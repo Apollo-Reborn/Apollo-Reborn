@@ -349,6 +349,9 @@ static NSString *const UDKeyTabBarSwipeNavigation = @"TabBarSwipeNavigation";
 // Experimental large post cards on Duo's opened landscape display:
 // 0 = Original (default), 2 = Focused feed; value 1 is retired.
 static NSString *const UDKeyDuoLandscapeFeedLayout = @"DuoLandscapeFeedLayout";
+// Open Duo subreddit panel appearance: NO = Standard
+// (default), YES = Liquid Glass. The panel keeps the same size and navigation.
+static NSString *const UDKeyDuoSubredditPanelGlassEnabled = @"DuoSubredditPanelGlassEnabled";
 // When ON, press-and-hold anywhere on a post info row (score, comments,
 // timestamp, 🌐 translation marker…) shows the glass-slider magnifier loupe: the
 // row is zoomed in a Liquid Glass card, sliding moves the selection pill

@@ -2183,7 +2183,7 @@ static UIView *ApolloSubredditIndexModernPressOverlay(UITableView *tableView, UI
     UIView *container = cell.contentView ?: (UIView *)cell;
     UIView *overlay = objc_getAssociatedObject(cell, &kApolloSubredditModernPressOverlayKey);
     BOOL glass = NO;
-    if (@available(iOS 26.0, *)) glass = ApolloDuoSplitIsSubredditOverlayView(cell);
+    if (@available(iOS 26.0, *)) glass = ApolloDuoSplitIsGlassSubredditOverlayView(cell);
     if (!overlay || overlay.superview != container || glass != [overlay isKindOfClass:UIVisualEffectView.class]) {
         [overlay removeFromSuperview];
         overlay = glass ? [[UIVisualEffectView alloc] initWithEffect:nil] : [[UIView alloc] initWithFrame:container.bounds];
@@ -2557,7 +2557,7 @@ static void ApolloSubredditIndexApplyHeaderSurfaceForPinnedState(UIView *header,
     // Use a dynamic theme color; cached row colors can belong to the previous appearance.
     UIColor *surfaceColor = ApolloThemeSubredditListBackgroundColor()
         ?: ApolloSubredditIndexThemeListBackgroundColor(tableView, header);
-    header.backgroundColor = ApolloDuoSplitIsSubredditOverlayView(tableView) ? UIColor.clearColor
+    header.backgroundColor = ApolloDuoSplitIsGlassSubredditOverlayView(tableView) ? UIColor.clearColor
         : (ApolloSubredditIndexColorIsVisible(surfaceColor) ? surfaceColor : tableView.backgroundColor);
 }
 
