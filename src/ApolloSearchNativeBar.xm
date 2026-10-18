@@ -940,18 +940,31 @@ static void NSBUpdateDuoControls(UIViewController *vc) {
     // arrays, independent of the search field beneath the title.
     if (@available(iOS 27.0, *)) {
         UINavigationItem *item = vc.navigationItem;
+        NSArray *leading = objc_getAssociatedObject(vc, &kNSBDuoLeadingControlsKey) ?: @[];
+        BOOL hasSplitControl = NO;
+        for (UIBarButtonItem *control in leading) {
+            if ([control.identifier isEqualToString:@"ApolloReborn.duo-split"]) hasSplitControl = YES;
+        }
         NSMutableArray *left = [NSMutableArray array];
         NSMutableArray *right = [NSMutableArray array];
+        NSMutableArray *returnItems = [NSMutableArray array];
         for (UIBarButtonItem *candidate in item.leftBarButtonItems) {
-            if (![candidate.accessibilityIdentifier isEqualToString:@"ApolloDuoFeedControl"])
+            if ([candidate.accessibilityIdentifier isEqualToString:@"ApolloDuoFeedControl"]) continue;
+            // In opened landscape, keep List and Split anchored at the edge
+            // when Return appears. Native Back stays ahead of those controls.
+            // The host's registered Split item also follows rotation, without
+            // imposing this order on ordinary phones or opened portrait.
+            if (hasSplitControl && [candidate.customView.accessibilityIdentifier isEqualToString:@"apollo.scrollReturn"])
+                [returnItems addObject:candidate];
+            else
                 [left addObject:candidate];
         }
         for (UIBarButtonItem *candidate in item.rightBarButtonItems) {
             if (![candidate.accessibilityIdentifier isEqualToString:@"ApolloDuoFeedControl"])
                 [right addObject:candidate];
         }
-        NSArray *leading = objc_getAssociatedObject(vc, &kNSBDuoLeadingControlsKey) ?: @[];
         [left addObjectsFromArray:leading];
+        [left addObjectsFromArray:returnItems];
         NSArray *rightControls = ApolloNativeFeedSearchDuoTrailingItems(item, right);
         NSNumber *supplementBack = objc_getAssociatedObject(item, &kNSBDuoControlsSupplementBackKey);
         if (leading.count) {
