@@ -1,38 +1,39 @@
-#import "ApolloDuoSearchRecents.h"
+#import "ApolloSearchRecents.h"
+#import "ApolloSearchLandingPreferences.h"
 
-NSString *const ApolloDuoSearchRecentsDidChangeNotification = @"ApolloDuoSearchRecentsDidChangeNotification";
+NSString *const ApolloSearchRecentsDidChangeNotification = @"ApolloSearchRecentsDidChangeNotification";
 
-static NSMutableArray<NSString *> *sApolloDuoSearchRecents;
-static const NSUInteger kApolloDuoSearchRecentsLimit = 6;
+static NSMutableArray<NSString *> *sApolloSearchRecents;
 
-static void ApolloDuoSearchPrepareRecents(void) {
+static void ApolloSearchPrepareRecents(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        sApolloDuoSearchRecents = [NSMutableArray array];
+        sApolloSearchRecents = [NSMutableArray array];
         // Apollo uses both names for native account changes. Deliver on main
         // so snapshots, visits, and clearing all share one ordering.
         for (NSString *name in @[@"com.christianselig.RedditCurrentAccountChanged",
                                   @"com.christianselig.RedditAccountChanged"]) {
             [[NSNotificationCenter defaultCenter] addObserverForName:name object:nil
                 queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {
-                    if (sApolloDuoSearchRecents.count == 0) return;
-                    [sApolloDuoSearchRecents removeAllObjects];
+                    if (sApolloSearchRecents.count == 0) return;
+                    [sApolloSearchRecents removeAllObjects];
                     [[NSNotificationCenter defaultCenter]
-                        postNotificationName:ApolloDuoSearchRecentsDidChangeNotification object:nil];
+                        postNotificationName:ApolloSearchRecentsDidChangeNotification object:nil];
                 }];
         }
     });
 }
 
-NSArray<NSString *> *ApolloDuoSearchRecentSubreddits(void) {
+NSArray<NSString *> *ApolloSearchRecentSubreddits(void) {
     if (!NSThread.isMainThread) return @[];
-    ApolloDuoSearchPrepareRecents();
-    return [sApolloDuoSearchRecents copy];
+    ApolloSearchPrepareRecents();
+    NSUInteger count = MIN(sApolloSearchRecents.count, (NSUInteger)ApolloSearchLandingRecentlyVisitedLimit());
+    return [sApolloSearchRecents subarrayWithRange:NSMakeRange(0, count)];
 }
 
-void ApolloDuoSearchRecordVisit(NSString *subredditName) {
+void ApolloSearchRecordVisit(NSString *subredditName) {
     if (!NSThread.isMainThread || ![subredditName isKindOfClass:NSString.class]) return;
-    ApolloDuoSearchPrepareRecents();
+    ApolloSearchPrepareRecents();
 
     NSString *name = [subredditName stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
     if (name.length == 0) return;
@@ -45,15 +46,13 @@ void ApolloDuoSearchRecordVisit(NSString *subredditName) {
         @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"] invertedSet];
     if ([name rangeOfCharacterFromSet:invalid].location != NSNotFound) return;
 
-    NSUInteger previous = [sApolloDuoSearchRecents indexOfObjectPassingTest:
+    NSUInteger previous = [sApolloSearchRecents indexOfObjectPassingTest:
         ^BOOL(NSString *candidate, __unused NSUInteger index, __unused BOOL *stop) {
             return [candidate caseInsensitiveCompare:name] == NSOrderedSame;
         }];
     if (previous == 0) return;
-    if (previous != NSNotFound) [sApolloDuoSearchRecents removeObjectAtIndex:previous];
-    [sApolloDuoSearchRecents insertObject:[name copy] atIndex:0];
-    if (sApolloDuoSearchRecents.count > kApolloDuoSearchRecentsLimit)
-        [sApolloDuoSearchRecents removeLastObject];
+    if (previous != NSNotFound) [sApolloSearchRecents removeObjectAtIndex:previous];
+    [sApolloSearchRecents insertObject:[name copy] atIndex:0];
     [[NSNotificationCenter defaultCenter]
-        postNotificationName:ApolloDuoSearchRecentsDidChangeNotification object:nil];
+        postNotificationName:ApolloSearchRecentsDidChangeNotification object:nil];
 }

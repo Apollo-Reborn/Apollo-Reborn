@@ -10,6 +10,7 @@ NSString *sRandomSubredditsSource = nil;
 NSString *sRandNsfwSubredditsSource = nil;
 NSString *sTrendingSubredditsSource = nil;
 NSString *sTrendingSubredditsLimit = nil;
+NSString *sRecentlyVisitedSubredditsLimit = @"5";
 
 BOOL sBlockAnnouncements = NO;
 BOOL sAutomaticBackupsEnabled = NO;

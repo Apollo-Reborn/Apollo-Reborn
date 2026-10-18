@@ -4,7 +4,8 @@
 // at an unfold/fold boundary. UIKit owns all column frames and transitions.
 #import "ApolloDuoSplitView.h"
 #import "ApolloMediaHinge.h"
-#import "ApolloDuoSearchRecents.h"
+#import "ApolloSearchRecents.h"
+#import "ApolloSearchVisitRecording.h"
 #import "ApolloDuoAccount.h"
 #import "ApolloDuoSubsChrome.h"
 #import "ApolloThemeRuntime.h"
@@ -2806,29 +2807,6 @@ static void ApolloDuoSplitRememberSettings(UINavigationController *nav) {
     else if (nav == state.secondary && stack.count) state.lastSettings = [stack copy];
 }
 
-// Read the synchronous model identity, never the title pill: titles may be
-// localized or temporarily describe the prior page during an asynchronous load.
-// PostsType.subreddit stores its Swift String in the first two words and tag 0
-// at +0x20 (the same native layout used by SubredditHeaders/AutoHideMetaFeeds).
-static NSString *ApolloDuoNamedSubredditForPostsController(UIViewController *controller) {
-    Class postsClass = NSClassFromString(@"Apollo.PostsViewController");
-    if (!postsClass || ![controller isKindOfClass:postsClass]) return nil;
-    Ivar type = class_getInstanceVariable(controller.class, "currentPostsType");
-    if (!type) return nil;
-    ptrdiff_t offset = ivar_getOffset(type);
-    if (offset < 0 || (size_t)offset + 0x21 > class_getInstanceSize(controller.class)) return nil;
-    const uint8_t *storage = (const uint8_t *)(__bridge const void *)controller + offset;
-    if (storage[0x20] != 0) return nil;
-    uint64_t words[2] = {0, 0};
-    memcpy(words, storage, sizeof(words));
-    NSString *name = ApolloDecodeSwiftString(words[0], words[1]);
-    if (name.length == 0) return nil;
-    // Apollo encodes these built-in feeds as the same enum case. They retain
-    // their native reselect behavior; this guard is only for subreddit rows.
-    if ([@[@"all", @"popular", @"mod", @"random", @"randnsfw"] containsObject:name.lowercaseString]) return nil;
-    return name;
-}
-
 static NSIndexPath *(*sApolloDuoListWillSelectOriginal)(id, SEL, UITableView *, NSIndexPath *);
 static NSIndexPath *ApolloDuoListWillSelect(id controller, SEL selector, UITableView *table, NSIndexPath *path) {
     NSIndexPath *candidate = sApolloDuoListWillSelectOriginal
@@ -2843,7 +2821,7 @@ static NSIndexPath *ApolloDuoListWillSelect(id controller, SEL selector, UITable
     // didSelect into native section space later, so resolving a row there would
     // double-map reordered/FOLLOWING sections and could suppress the wrong row.
     NSString *target = ApolloSubredditListNameAtIndexPath(table, candidate);
-    NSString *current = ApolloDuoNamedSubredditForPostsController(state.feed.viewControllers.firstObject);
+    NSString *current = ApolloNamedSubredditForPostsController(state.feed.viewControllers.firstObject);
     if (target.length == 0 || current.length == 0
         || [target caseInsensitiveCompare:current] != NSOrderedSame) return candidate;
 
@@ -2947,9 +2925,9 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     // slug. Split replacement may lay out before window attachment and omit
     // appearance callbacks; titles/about models can also arrive later.
     NSString *visited = ApolloDuoSplitIsUnfolded() && ((UINavigationController *)self).viewIfLoaded.window
-        ? ApolloDuoNamedSubredditForPostsController(controller) : nil;
+        ? ApolloNamedSubredditForPostsController(controller) : nil;
     if (ApolloDuoSplitRoutePush(self, controller, animated)) {
-        if (visited.length) ApolloDuoSearchRecordVisit(visited);
+        if (visited.length) ApolloSearchRecordVisit(visited);
         return;
     }
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(self, NO);
@@ -2960,7 +2938,6 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
         [state.secondary setNavigationBarHidden:NO animated:NO];
     }
     %orig(controller, state.changing ? NO : animated);
-    if (visited.length) ApolloDuoSearchRecordVisit(visited);
     [state.host.viewIfLoaded setNeedsLayout];
     ApolloDuoSplitRememberSettings(self);
 }

@@ -1,12 +1,15 @@
-#import "ApolloDuoSearchLandingViewController.h"
+#import "ApolloSearchLandingViewController.h"
 #import "ApolloThemeRuntime.h"
+#import "ApolloDuoSplitView.h"
+#import "ApolloSearchLandingPreferences.h"
+#import "ApolloState.h"
 #import <objc/message.h>
 #include <math.h>
 
 // Query the physical fold before converting into this pane. The trailing rail
 // reduces usable content width, but must not move the division between halves.
 // Resolve the public 27.1 API dynamically for the device build's iOS 26 SDK.
-static CGRect ApolloDuoSearchActiveFold(UIView *view) {
+static CGRect ApolloSearchActiveFold(UIView *view) {
     if (@available(iOS 27.1, *)) {
         UIWindow *window = view.window;
         Class kindClass = NSClassFromString(@"UIViewReservedRegionKind");
@@ -26,7 +29,7 @@ static CGRect ApolloDuoSearchActiveFold(UIView *view) {
     return CGRectNull;
 }
 
-@interface ApolloDuoSearchLandingRow : UIControl
+@interface ApolloSearchLandingRow : UIControl
 @property(nonatomic, strong) UILabel *primaryLabel;
 @property(nonatomic, strong) UIImageView *symbolView;
 @property(nonatomic, strong) UIImageView *chevronView;
@@ -38,7 +41,7 @@ static CGRect ApolloDuoSearchActiveFold(UIView *view) {
 - (void)refreshTheme;
 @end
 
-@implementation ApolloDuoSearchLandingRow
+@implementation ApolloSearchLandingRow
 - (instancetype)initWithTitle:(NSString *)title image:(UIImage *)image {
     if (!(self = [super initWithFrame:CGRectZero])) return nil;
     self.translatesAutoresizingMaskIntoConstraints = NO;
@@ -96,19 +99,19 @@ static CGRect ApolloDuoSearchActiveFold(UIView *view) {
 }
 @end
 
-@interface ApolloDuoSearchLandingSection : UIView
+@interface ApolloSearchLandingSection : UIView
 @property(nonatomic, strong) UILabel *heading;
 @property(nonatomic, strong) UIView *card;
 @property(nonatomic, strong) UIStackView *rowsStack;
-@property(nonatomic, copy) NSArray<ApolloDuoSearchLandingRow *> *rows;
+@property(nonatomic, copy) NSArray<ApolloSearchLandingRow *> *rows;
 @property(nonatomic, strong) NSMutableArray<UIView *> *separators;
 @property(nonatomic, strong) UILabel *emptyLabel;
 - (instancetype)initWithTitle:(NSString *)title;
-- (void)setRows:(NSArray<ApolloDuoSearchLandingRow *> *)rows emptyText:(NSString *)emptyText;
+- (void)setRows:(NSArray<ApolloSearchLandingRow *> *)rows emptyText:(NSString *)emptyText;
 - (void)refreshTheme;
 @end
 
-@implementation ApolloDuoSearchLandingSection
+@implementation ApolloSearchLandingSection
 - (instancetype)initWithTitle:(NSString *)title {
     if (!(self = [super initWithFrame:CGRectZero])) return nil;
     self.translatesAutoresizingMaskIntoConstraints = NO;
@@ -149,12 +152,12 @@ static CGRect ApolloDuoSearchActiveFold(UIView *view) {
     return self;
 }
 
-- (void)setRows:(NSArray<ApolloDuoSearchLandingRow *> *)rows emptyText:(NSString *)emptyText {
+- (void)setRows:(NSArray<ApolloSearchLandingRow *> *)rows emptyText:(NSString *)emptyText {
     for (UIView *view in self.rowsStack.arrangedSubviews) [view removeFromSuperview];
     self.rows = rows;
     self.emptyLabel = nil;
     [self.separators removeAllObjects];
-    for (ApolloDuoSearchLandingRow *row in rows) {
+    for (ApolloSearchLandingRow *row in rows) {
         if (self.rowsStack.arrangedSubviews.count) {
             UIView *separatorContainer = [[UIView alloc] init];
             UIView *separator = [[UIView alloc] init];
@@ -201,17 +204,20 @@ static CGRect ApolloDuoSearchActiveFold(UIView *view) {
     self.card.backgroundColor = ApolloThemeCardBackgroundColor() ?: UIColor.secondarySystemGroupedBackgroundColor;
     UIColor *separatorColor = ApolloThemeSeparatorColor() ?: UIColor.separatorColor;
     for (UIView *separator in self.separators) separator.backgroundColor = separatorColor;
-    for (ApolloDuoSearchLandingRow *row in self.rows) [row refreshTheme];
+    for (ApolloSearchLandingRow *row in self.rows) [row refreshTheme];
 }
 @end
 
-@interface ApolloDuoSearchLandingViewController ()
+@interface ApolloSearchLandingViewController ()
 @property(nonatomic, strong, readwrite) UIScrollView *scrollView;
 @property(nonatomic, strong, readwrite) UIRefreshControl *refreshControl;
 @property(nonatomic, strong) UIStackView *columns;
-@property(nonatomic, strong) ApolloDuoSearchLandingSection *trendingSection;
-@property(nonatomic, strong) ApolloDuoSearchLandingSection *recentSection;
-@property(nonatomic, strong) ApolloDuoSearchLandingSection *randomSection;
+@property(nonatomic, strong) UIStackView *leadingColumn;
+@property(nonatomic, strong) UIStackView *trailingColumn;
+@property(nonatomic, copy) NSArray<NSString *> *arrangedSectionOrder;
+@property(nonatomic, strong) ApolloSearchLandingSection *trendingSection;
+@property(nonatomic, strong) ApolloSearchLandingSection *recentSection;
+@property(nonatomic, strong) ApolloSearchLandingSection *randomSection;
 @property(nonatomic, strong) UIImage *trendingIcon;
 @property(nonatomic, strong) UIImage *randomIcon;
 @property(nonatomic, strong) NSLayoutConstraint *equalColumnWidths;
@@ -225,9 +231,11 @@ static CGRect ApolloDuoSearchActiveFold(UIView *view) {
 @property(nonatomic) BOOL usesTwoColumns;
 @property(nonatomic) BOOL columnUpdatePending;
 - (void)scheduleColumnArrangement;
+- (NSArray<NSString *> *)visibleSectionOrder;
+- (void)arrangeSections:(NSArray<NSString *> *)order inTwoColumns:(BOOL)twoColumns;
 @end
 
-@implementation ApolloDuoSearchLandingViewController
+@implementation ApolloSearchLandingViewController
 @synthesize scrollView = _scrollView;
 @synthesize refreshControl = _refreshControl;
 
@@ -257,19 +265,23 @@ static CGRect ApolloDuoSearchActiveFold(UIView *view) {
     // Pin the viewport to safe area once. Automatic scroll inset adjustment
     // would count the native navigation/status/side-rail reservation twice.
     _scrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
-    _scrollView.accessibilityIdentifier = @"ApolloDuoSearchLanding.Scroll";
+    _scrollView.accessibilityIdentifier = @"ApolloSearchLanding.Scroll";
     _refreshControl = [[UIRefreshControl alloc] init];
     [_refreshControl addTarget:self action:@selector(requestRefresh:) forControlEvents:UIControlEventValueChanged];
     _scrollView.refreshControl = _refreshControl;
     [self.view addSubview:_scrollView];
 
-    self.trendingSection = [[ApolloDuoSearchLandingSection alloc] initWithTitle:NSLocalizedString(@"TRENDING SUBREDDITS", nil)];
-    self.recentSection = [[ApolloDuoSearchLandingSection alloc] initWithTitle:NSLocalizedString(@"RECENTLY VISITED", nil)];
-    self.randomSection = [[ApolloDuoSearchLandingSection alloc] initWithTitle:nil];
-    UIStackView *leftColumn = [[UIStackView alloc] initWithArrangedSubviews:@[self.trendingSection, self.randomSection]];
-    leftColumn.axis = UILayoutConstraintAxisVertical;
-    leftColumn.spacing = 24;
-    self.columns = [[UIStackView alloc] initWithArrangedSubviews:@[leftColumn, self.recentSection]];
+    self.trendingSection = [[ApolloSearchLandingSection alloc] initWithTitle:NSLocalizedString(@"TRENDING SUBREDDITS", nil)];
+    self.recentSection = [[ApolloSearchLandingSection alloc] initWithTitle:NSLocalizedString(@"RECENTLY VISITED", nil)];
+    self.randomSection = [[ApolloSearchLandingSection alloc] initWithTitle:nil];
+    self.leadingColumn = [[UIStackView alloc] init];
+    self.trailingColumn = [[UIStackView alloc] init];
+    for (UIStackView *column in @[self.leadingColumn, self.trailingColumn]) {
+        column.axis = UILayoutConstraintAxisVertical;
+        column.spacing = 24;
+    }
+    self.trailingColumn.hidden = YES;
+    self.columns = [[UIStackView alloc] initWithArrangedSubviews:@[self.leadingColumn, self.trailingColumn]];
     self.columns.translatesAutoresizingMaskIntoConstraints = NO;
     self.columns.axis = UILayoutConstraintAxisVertical;
     self.columns.spacing = 20;
@@ -280,7 +292,7 @@ static CGRect ApolloDuoSearchActiveFold(UIView *view) {
     self.contentLeading = [self.columns.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:20];
     self.contentTrailing = [self.columns.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-20];
     self.contentWidth = [self.columns.widthAnchor constraintEqualToAnchor:_scrollView.frameLayoutGuide.widthAnchor constant:-40];
-    self.equalColumnWidths = [leftColumn.widthAnchor constraintEqualToAnchor:self.recentSection.widthAnchor];
+    self.equalColumnWidths = [self.leadingColumn.widthAnchor constraintEqualToAnchor:self.trailingColumn.widthAnchor];
     [NSLayoutConstraint activateConstraints:@[
         [_scrollView.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor],
         [_scrollView.trailingAnchor constraintEqualToAnchor:safeArea.trailingAnchor],
@@ -294,10 +306,13 @@ static CGRect ApolloDuoSearchActiveFold(UIView *view) {
     [self refreshRecentSection];
     [self refreshRandomSection];
     [self refreshTheme];
+    [self arrangeSections:[self visibleSectionOrder] inTwoColumns:NO];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(searchSettingsChanged:)
+        name:ApolloSearchLandingSettingsDidChangeNotification object:nil];
     if (@available(iOS 27.1, *)) {
         Class interactionClass = NSClassFromString(@"UIHingeInteraction");
         if (interactionClass) {
-            __weak ApolloDuoSearchLandingViewController *weakSelf = self;
+            __weak ApolloSearchLandingViewController *weakSelf = self;
             void (^handler)(id, id) = ^(__unused id interaction, __unused id update) {
                 // Read reserved geometry after UIKit delivers the pose update;
                 // hinge angle itself never drives column widths.
@@ -326,12 +341,12 @@ static CGRect ApolloDuoSearchActiveFold(UIView *view) {
     if (randomChanged) [self refreshRandomSection];
 }
 
-- (NSArray<ApolloDuoSearchLandingRow *> *)rowsForNames:(NSArray<NSString *> *)names image:(UIImage *)image {
-    NSMutableArray<ApolloDuoSearchLandingRow *> *rows = [NSMutableArray arrayWithCapacity:names.count];
+- (NSArray<ApolloSearchLandingRow *> *)rowsForNames:(NSArray<NSString *> *)names image:(UIImage *)image {
+    NSMutableArray<ApolloSearchLandingRow *> *rows = [NSMutableArray arrayWithCapacity:names.count];
     for (NSString *name in names) {
-        ApolloDuoSearchLandingRow *row = [[ApolloDuoSearchLandingRow alloc] initWithTitle:name image:image];
+        ApolloSearchLandingRow *row = [[ApolloSearchLandingRow alloc] initWithTitle:name image:image];
         row.subredditName = name;
-        row.accessibilityIdentifier = [@"ApolloDuoSearchLanding.Subreddit." stringByAppendingString:name];
+        row.accessibilityIdentifier = [@"ApolloSearchLanding.Subreddit." stringByAppendingString:name];
         [row addTarget:self action:@selector(selectRow:) forControlEvents:UIControlEventTouchUpInside];
         [rows addObject:row];
     }
@@ -349,25 +364,25 @@ static CGRect ApolloDuoSearchActiveFold(UIView *view) {
 }
 
 - (void)refreshRandomSection {
-    ApolloDuoSearchLandingRow *random = [[ApolloDuoSearchLandingRow alloc]
+    ApolloSearchLandingRow *random = [[ApolloSearchLandingRow alloc]
         initWithTitle:NSLocalizedString(@"Random Subreddit", nil) image:self.randomIcon];
     random.randomSelection = YES;
-    random.accessibilityIdentifier = @"ApolloDuoSearchLanding.Random";
+    random.accessibilityIdentifier = @"ApolloSearchLanding.Random";
     [random addTarget:self action:@selector(selectRow:) forControlEvents:UIControlEventTouchUpInside];
     NSMutableArray *rows = [NSMutableArray arrayWithObject:random];
     if (self.showsRandomNSFW) {
-        ApolloDuoSearchLandingRow *nsfw = [[ApolloDuoSearchLandingRow alloc]
+        ApolloSearchLandingRow *nsfw = [[ApolloSearchLandingRow alloc]
             initWithTitle:NSLocalizedString(@"Random NSFW Subreddit", nil) image:self.randomIcon];
         nsfw.randomSelection = YES;
         nsfw.randomNSFW = YES;
-        nsfw.accessibilityIdentifier = @"ApolloDuoSearchLanding.RandomNSFW";
+        nsfw.accessibilityIdentifier = @"ApolloSearchLanding.RandomNSFW";
         [nsfw addTarget:self action:@selector(selectRow:) forControlEvents:UIControlEventTouchUpInside];
         [rows addObject:nsfw];
     }
     [self.randomSection setRows:rows emptyText:nil];
 }
 
-- (void)selectRow:(ApolloDuoSearchLandingRow *)row {
+- (void)selectRow:(ApolloSearchLandingRow *)row {
     if (row.randomSelection) {
         if (self.selectRandom) self.selectRandom(row.randomNSFW);
     } else if (self.selectSubreddit) {
@@ -390,16 +405,54 @@ static CGRect ApolloDuoSearchActiveFold(UIView *view) {
     [self.randomSection refreshTheme];
 }
 
+- (NSArray<NSString *> *)visibleSectionOrder {
+    NSMutableArray<NSString *> *order = [ApolloSearchLandingSectionOrder() mutableCopy];
+    if (sTrendingSubredditsLimit.length && sTrendingSubredditsLimit.integerValue == 0)
+        [order removeObject:ApolloSearchLandingSectionTrending];
+    if (ApolloSearchLandingRecentlyVisitedLimit() == 0) [order removeObject:ApolloSearchLandingSectionRecent];
+    return order;
+}
+
+- (void)arrangeSections:(NSArray<NSString *> *)order inTwoColumns:(BOOL)twoColumns {
+    // Move the same sections between columns. Sorting preferences and folding
+    // never recreate rows or discard the current Search scroll position.
+    for (UIStackView *column in @[self.leadingColumn, self.trailingColumn]) {
+        for (UIView *section in column.arrangedSubviews) [section removeFromSuperview];
+    }
+    NSDictionary<NSString *, UIView *> *sections = @{
+        ApolloSearchLandingSectionTrending: self.trendingSection,
+        ApolloSearchLandingSectionRandom: self.randomSection,
+        ApolloSearchLandingSectionRecent: self.recentSection
+    };
+    NSUInteger leadingCount = twoColumns ? (order.count + 1) / 2 : order.count;
+    [order enumerateObjectsUsingBlock:^(NSString *identifier, NSUInteger index, BOOL *stop) {
+        UIView *section = sections[identifier];
+        UIStackView *column = index < leadingCount ? self.leadingColumn : self.trailingColumn;
+        if (section) [column addArrangedSubview:section];
+    }];
+    self.arrangedSectionOrder = order;
+    self.trailingColumn.hidden = !twoColumns;
+}
+
+- (void)searchSettingsChanged:(NSNotification *)notification {
+    [self scheduleColumnArrangement];
+}
+
 - (void)updateColumnArrangement {
     if (!self.columns) return;
     CGRect safeFrame = self.view.safeAreaLayoutGuide.layoutFrame;
     CGFloat safeWidth = CGRectGetWidth(safeFrame);
     if (safeWidth <= 0) return;
-    BOOL twoColumns = safeWidth >= 560 && !UIContentSizeCategoryIsAccessibilityCategory(self.traitCollection.preferredContentSizeCategory);
+    NSArray<NSString *> *order = [self visibleSectionOrder];
+    // A regular phone remains a familiar single list, even in landscape. Open
+    // Duo retains its balanced columns while its narrow panes and large text
+    // sizes collapse naturally to one column.
+    BOOL twoColumns = ApolloDuoSplitIsUnfolded() && safeWidth >= 560 && order.count > 1
+        && !UIContentSizeCategoryIsAccessibilityCategory(self.traitCollection.preferredContentSizeCategory);
     CGFloat margin = twoColumns ? 24 : 20;
     CGFloat widthDifference = 0;
     CGFloat gutter = 20;
-    CGRect fold = twoColumns ? ApolloDuoSearchActiveFold(self.view) : CGRectNull;
+    CGRect fold = twoColumns ? ApolloSearchActiveFold(self.view) : CGRectNull;
     if (!CGRectIsNull(fold)) {
         CGFloat center = CGRectGetMidX(fold);
         CGFloat foldGutter = MAX(gutter, CGRectGetWidth(fold));
@@ -417,10 +470,13 @@ static CGRect ApolloDuoSearchActiveFold(UIView *view) {
     }
     // Layout callbacks only schedule this pass. Change Auto Layout inputs once
     // per arrangement/geometry change, leaving normal scrolling untouched.
-    if (!self.configuredColumns || self.usesTwoColumns != twoColumns) {
+    BOOL arrangementChanged = !self.configuredColumns || self.usesTwoColumns != twoColumns
+        || ![self.arrangedSectionOrder isEqualToArray:order];
+    if (arrangementChanged) {
         self.configuredColumns = YES;
         self.usesTwoColumns = twoColumns;
         self.equalColumnWidths.active = NO;
+        [self arrangeSections:order inTwoColumns:twoColumns];
         self.columns.axis = twoColumns ? UILayoutConstraintAxisHorizontal : UILayoutConstraintAxisVertical;
         self.columns.alignment = twoColumns ? UIStackViewAlignmentTop : UIStackViewAlignmentFill;
         self.equalColumnWidths.constant = widthDifference;
@@ -437,9 +493,9 @@ static CGRect ApolloDuoSearchActiveFold(UIView *view) {
 - (void)scheduleColumnArrangement {
     if (self.columnUpdatePending) return;
     self.columnUpdatePending = YES;
-    __weak ApolloDuoSearchLandingViewController *weakSelf = self;
+    __weak ApolloSearchLandingViewController *weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
-        ApolloDuoSearchLandingViewController *controller = weakSelf;
+        ApolloSearchLandingViewController *controller = weakSelf;
         if (!controller) return;
         controller.columnUpdatePending = NO;
         [controller updateColumnArrangement];
@@ -454,7 +510,7 @@ static CGRect ApolloDuoSearchActiveFold(UIView *view) {
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self refreshTheme];
-    [self scheduleColumnArrangement];
+    [self updateColumnArrangement];
 }
 
 - (void)viewSafeAreaInsetsDidChange {
@@ -466,6 +522,10 @@ static CGRect ApolloDuoSearchActiveFold(UIView *view) {
     [super traitCollectionDidChange:previousTraitCollection];
     if ([self.traitCollection hasDifferentColorAppearanceComparedToTraitCollection:previousTraitCollection]) [self refreshTheme];
     if (![self.traitCollection.preferredContentSizeCategory isEqualToString:previousTraitCollection.preferredContentSizeCategory]) [self scheduleColumnArrangement];
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 - (void)scrollToTopAnimated:(BOOL)animated {

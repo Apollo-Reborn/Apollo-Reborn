@@ -3,7 +3,7 @@
 NS_ASSUME_NONNULL_BEGIN
 
 // Presentation only. The host supplies native Search data and performs routes.
-@interface ApolloDuoSearchLandingViewController : UIViewController
+@interface ApolloSearchLandingViewController : UIViewController
 - (instancetype)initWithTrendingIcon:(UIImage *)trendingIcon randomIcon:(UIImage *)randomIcon;
 @property(nonatomic, strong, readonly) UIScrollView *scrollView;
 @property(nonatomic, strong, readonly) UIRefreshControl *refreshControl;

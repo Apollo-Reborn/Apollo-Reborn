@@ -3620,6 +3620,8 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyAutomaticBackupDestination: @0,
                                     UDKeyCrashCaptureEnabled: @YES,
                                     UDKeyTrendingSubredditsLimit: @"5",
+                                    UDKeyRecentlyVisitedSubredditsLimit: @"5",
+                                    UDKeySearchTabSectionOrder: @[@"trending", @"random", @"recent"],
                                     UDKeyShowRandNsfw: @NO,
                                     UDKeyRandomSubredditsSource: defaultRandomSubredditsSource,
                                     UDKeyRandNsfwSubredditsSource: @"",
@@ -4318,6 +4320,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     sRandNsfwSubredditsSource = (NSString *)[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyRandNsfwSubredditsSource];
     sTrendingSubredditsSource = (NSString *)[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyTrendingSubredditsSource];
     sTrendingSubredditsLimit = (NSString *)[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyTrendingSubredditsLimit];
+    sRecentlyVisitedSubredditsLimit = [[NSUserDefaults standardUserDefaults] stringForKey:UDKeyRecentlyVisitedSubredditsLimit] ?: @"5";
 
     // Launch hooks are cache-only and fail open until this off-main seed lands.
     // The seed also queues refreshes after loading the last-known-good values.
