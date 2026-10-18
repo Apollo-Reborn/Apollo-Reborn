@@ -672,6 +672,8 @@ static void *kApolloGalleryTileItemStatusContext = &kApolloGalleryTileItemStatus
 // empty state, so whatever drops the batch first (a filter change — the feed
 // never calls a dropped batch back) must start another one.
 @property (nonatomic) BOOL initialLoadPending;
+// An empty loaded Saved result can render while unseen pages load quietly.
+@property (nonatomic) BOOL sourceSnapshotSeeded;
 // Coalesce viewport checks outside collection-view layout/update callbacks.
 @property (nonatomic) BOOL viewportFillQueued;
 @property (nonatomic, strong) NSArray<ApolloGalleryItem *> *coverageItems;
@@ -738,6 +740,18 @@ static void *kApolloGalleryTileItemStatusContext = &kApolloGalleryTileItemStatus
         _subreddit = @"";
         _sourceDescription = [@"u/" stringByAppendingString:(username ?: @"")];
         _feed = [[ApolloGalleryFeed alloc] initWithUsername:username];
+        _prefetchRequests = [NSMutableDictionary dictionary];
+    }
+    return self;
+}
+
+- (instancetype)initWithSavedCategory:(NSString *)category {
+    self = [super initWithNibName:nil bundle:nil];
+    if (self) {
+        _subreddit = @"";
+        _sourceDescription = category.length > 0
+            ? [NSString stringWithFormat:@"Saved — %@", category] : @"Saved";
+        _feed = [[ApolloGalleryFeed alloc] initWithSavedCategory:category];
         _prefetchRequests = [NSMutableDictionary dictionary];
     }
     return self;
@@ -896,7 +910,7 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
     // Apollo's themes paint their own backgrounds; borrow the colour from the
     // screen we came from so the gallery doesn't flash system white/black.
     gallery.gridBackgroundColor = sourceViewController.view.backgroundColor ?: navigationController.view.backgroundColor;
-    ApolloGallerySeedFeedFromSource(gallery.feed, sourceViewController);
+    gallery.sourceSnapshotSeeded = ApolloGallerySeedFeedFromSource(gallery.feed, sourceViewController);
     [navigationController pushViewController:gallery animated:YES];
     return YES;
 }
@@ -965,6 +979,15 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
     ApolloGalleryViewController *gallery = [[ApolloGalleryViewController alloc] initWithUsername:name];
     if (!ApolloGalleryPush(gallery, sourceViewController)) return NO;
     ApolloLog(@"[Gallery] opened for %@", gallery.sourceDescription);
+    return YES;
+}
+
++ (BOOL)presentGalleryForSavedCategory:(NSString *)category
+                    fromViewController:(UIViewController *)sourceViewController {
+    ApolloGalleryViewController *gallery = [[self alloc] initWithSavedCategory:category];
+    if (!ApolloGalleryPush(gallery, sourceViewController)) return NO;
+    // Category names are user content; keep them out of diagnostics.
+    ApolloLog(@"[Gallery] opened Saved (%@)", category.length > 0 ? @"category" : @"all");
     return YES;
 }
 
@@ -1071,14 +1094,19 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
                    name:UIApplicationDidBecomeActiveNotification object:nil];
     [center addObserver:self selector:@selector(apollo_applicationDidEnterBackground:)
                    name:UIApplicationDidEnterBackgroundNotification object:nil];
-    if (self.feed.items.count > 0) {
+    if (self.feed.items.count > 0 || self.feed.isExhausted) {
         // Source posts and their geometry are ready before the push starts.
+        // A complete Saved snapshot can also prove there is no media. Show
+        // that empty state directly, without entering the loading state.
         // A dense grid may need more than this source page; start filling as
         // soon as the push installs the view, without delaying navigation.
         [self apollo_updateEmptyStateWithError:nil];
         [self apollo_scheduleViewportFill];
     } else {
-        [self apollo_beginInitialLoad];
+        // Saved may have no media in its loaded rows while more pages remain.
+        // Present that current empty result immediately; continue checking in
+        // the background so an unseen later media post is never lost.
+        [self apollo_beginInitialLoadShowingSpinner:!self.sourceSnapshotSeeded];
     }
 }
 
@@ -1687,13 +1715,6 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
 }
 
 - (void)apollo_installNavigationButtons {
-    UIBarButtonItem *sort = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"arrow.up.arrow.down"]
-                                                             style:UIBarButtonItemStylePlain
-                                                            target:nil
-                                                            action:nil];
-    sort.accessibilityLabel = @"Sort";
-    sort.menu = [self apollo_buildSortMenu];
-
     self.filterBarButtonItem = [[UIBarButtonItem alloc] initWithImage:[self apollo_filterButtonImage]
                                                                 style:UIBarButtonItemStylePlain
                                                                target:nil
@@ -1702,7 +1723,18 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
     self.filterBarButtonItem.menu = [self apollo_buildFilterMenu];
 
     // Rightmost first. Tile sizing lives directly on the grid via pinch.
-    self.navigationItem.rightBarButtonItems = @[sort, self.filterBarButtonItem];
+    NSMutableArray<UIBarButtonItem *> *buttons = [NSMutableArray array];
+    // Saved follows the saved/category order. Offering subreddit sorts here
+    // would suggest that Reddit can reorder this listing when it cannot.
+    if (self.feed.supportsSorting) {
+        UIBarButtonItem *sort = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"arrow.up.arrow.down"]
+            style:UIBarButtonItemStylePlain target:nil action:nil];
+        sort.accessibilityLabel = @"Sort";
+        sort.menu = [self apollo_buildSortMenu];
+        [buttons addObject:sort];
+    }
+    [buttons addObject:self.filterBarButtonItem];
+    self.navigationItem.rightBarButtonItems = buttons;
 }
 
 // A filled glyph while a filter is narrowing things down, so it's obvious at a
@@ -1868,6 +1900,7 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
 }
 
 - (void)apollo_applySort:(ApolloGallerySort)sort topWindow:(ApolloGalleryTopWindow)window {
+    if (!self.feed.supportsSorting) return;
     if (self.feed.sort == sort && (!ApolloGallerySortUsesWindow(sort) || self.feed.topWindow == window)) return;
     [self.feed setSort:sort topWindow:window];
     [self apollo_setFooterText:nil];
@@ -1930,10 +1963,18 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
 }
 
 - (void)apollo_beginInitialLoad {
+    [self apollo_beginInitialLoadShowingSpinner:YES];
+}
+
+- (void)apollo_beginInitialLoadShowingSpinner:(BOOL)showSpinner {
     self.initialLoadPending = YES;
-    self.messageLabel.hidden = YES;
     self.retryButton.hidden = YES;
-    [self.initialSpinner startAnimating];
+    if (showSpinner) {
+        self.messageLabel.hidden = YES;
+        [self.initialSpinner startAnimating];
+    } else {
+        [self apollo_updateEmptyStateWithError:nil];
+    }
 
     __weak typeof(self) weakSelf = self;
     [self.feed loadNextBatchWithCompletion:^(NSRange addedRange, NSString *errorMessage) {
@@ -1983,9 +2024,13 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
             @"Nothing matches the current filter.\n%lu items are loaded — tap the filter button to widen it.",
             (unsigned long)self.feed.allItems.count];
         self.retryButton.hidden = YES;
+    } else if (self.sourceSnapshotSeeded && self.initialLoadPending && !self.feed.isExhausted) {
+        self.messageLabel.text = [NSString stringWithFormat:@"No media found yet in %@.", self.sourceDescription];
+        self.retryButton.hidden = YES;
     } else {
-        self.messageLabel.text = [NSString stringWithFormat:@"No media found in %@ (%@).",
-                                  self.sourceDescription, self.feed.sortDisplayName];
+        self.messageLabel.text = self.feed.supportsSorting
+            ? [NSString stringWithFormat:@"No media found in %@ (%@).", self.sourceDescription, self.feed.sortDisplayName]
+            : [NSString stringWithFormat:@"No media found in %@.", self.sourceDescription];
         self.retryButton.hidden = YES;
     }
     self.messageLabel.hidden = NO;

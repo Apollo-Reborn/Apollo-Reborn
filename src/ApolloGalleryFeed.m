@@ -233,6 +233,10 @@ static BOOL ApolloGalleryURLLooksLikeImage(NSURL *url) {
 // (subreddits and multireddits put it in the path instead), and rising isn't a
 // sort Reddit accepts there.
 @property (nonatomic) BOOL sortsViaQueryParameter;
+@property (nonatomic) BOOL savedFeed;
+@property (nonatomic, copy, nullable) NSString *savedCategory;
+@property (nonatomic, copy) NSSet<NSString *> *savedCategoryPostIDs;
+@property (nonatomic, copy, nullable) NSString *savedCategoryError;
 // The account this gallery is bound to, captured at presentation time. We pin
 // the account IDENTITY, never a credential: Reddit rotates access tokens, so a
 // copied bearer would go stale under a long-lived gallery and every later page
@@ -246,7 +250,7 @@ static BOOL ApolloGalleryURLLooksLikeImage(NSURL *url) {
 // synthetic bearer is a stable placeholder the Tweak.xm chokepoint swaps for
 // the matching cookie, so it does not rotate and is safe to hold.
 @property (nonatomic, copy, nullable) NSString *boundSyntheticBearer;
-// Diagnostics only.
+// Also selects the private Saved endpoint, which must stay on this account.
 @property (nonatomic, copy, nullable) NSString *boundUsername;
 @property (nonatomic, strong) NSMutableArray<ApolloGalleryItem *> *mutableItems;
 // `mutableItems` filtered by allowedKinds, rebuilt whenever either changes.
@@ -339,11 +343,60 @@ static NSString *ApolloGalleryBearerForClient(id client) {
 }
 
 - (BOOL)supportsRisingSort {
-    return !self.sortsViaQueryParameter;
+    return self.supportsSorting && !self.sortsViaQueryParameter;
 }
 
 - (BOOL)supportsBestSort {
-    return !self.sortsViaQueryParameter;
+    return self.supportsSorting && !self.sortsViaQueryParameter;
+}
+
+- (BOOL)supportsSorting {
+    return !self.savedFeed;
+}
+
+- (instancetype)initWithSavedCategory:(NSString *)category {
+    self = [super init];
+    if (self) {
+        [self configureWithListingPath:@"" subreddit:@"" sourceDescription:@"Saved"];
+        _savedFeed = YES;
+        _savedCategory = [category copy];
+        _listingPath = [NSString stringWithFormat:@"/user/%@/saved", _boundUsername ?: @""];
+        _sort = ApolloGallerySortNew;
+        [self reloadSavedCategory];
+    }
+    return self;
+}
+
+// Apollo's categories are local fullname arrays, not Reddit Premium's
+// `category=` filter. Native Apollo filters the ordinary Saved listing by
+// case-insensitive fullname membership; the stored ID array is not a sort.
+// Using /api/info for those IDs would also resurrect stale unsaved posts.
+// Saved comments have no gallery media and are deliberately excluded.
+- (void)reloadSavedCategory {
+    self.savedCategoryPostIDs = [NSSet set];
+    self.savedCategoryError = nil;
+    if (self.savedCategory == nil) return;
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.christianselig.apollo"];
+    NSData *data = [defaults dataForKey:@"SavedItemsCategoriesDatabase"];
+    id json = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
+    NSDictionary *categories = ApolloGalleryDict(ApolloGalleryDict(json)[@"categories"]);
+    NSArray *fullnames = ApolloGalleryArray(categories[self.savedCategory]);
+    if (!fullnames) {
+        self.savedCategoryError = @"This saved category is no longer available.";
+        return;
+    }
+    NSMutableSet<NSString *> *posts = [NSMutableSet set];
+    NSCharacterSet *invalid = [[NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyz0123456789"] invertedSet];
+    for (id value in fullnames) {
+        NSString *fullname = [ApolloGalleryString(value) lowercaseString];
+        if (![fullname hasPrefix:@"t3_"] || fullname.length <= 3) continue;
+        if ([[fullname substringFromIndex:3] rangeOfCharacterFromSet:invalid].location != NSNotFound) continue;
+        [posts addObject:fullname];
+    }
+    self.savedCategoryPostIDs = posts;
+    // Comments cannot contribute gallery tiles. Empty/comment-only categories
+    // are known empty before a source snapshot or network request is needed.
+    self.exhausted = posts.count == 0;
 }
 
 - (void)configureWithListingPath:(NSString *)listingPath
@@ -429,12 +482,14 @@ static NSString *ApolloGalleryBearerForClient(id client) {
 }
 
 - (void)setSort:(ApolloGallerySort)sort {
+    if (!self.supportsSorting) return;
     if (_sort == sort) return;
     _sort = sort;
     [self reset];
 }
 
 - (void)setTopWindow:(ApolloGalleryTopWindow)topWindow {
+    if (!self.supportsSorting) return;
     if (_topWindow == topWindow) return;
     _topWindow = topWindow;
     // The window only affects listings that send `&t=` (top and controversial),
@@ -444,6 +499,7 @@ static NSString *ApolloGalleryBearerForClient(id client) {
 }
 
 - (void)setSort:(ApolloGallerySort)sort topWindow:(ApolloGalleryTopWindow)topWindow {
+    if (!self.supportsSorting) return;
     BOOL sortChanged = (_sort != sort);
     BOOL windowChanged = (_topWindow != topWindow);
     if (!sortChanged && !windowChanged) return;
@@ -465,6 +521,7 @@ static NSString *ApolloGalleryBearerForClient(id client) {
     self.loading = NO;
     self.lastErrorMessage = nil;
     self.consecutiveEmptyPages = 0;
+    if (self.savedFeed) [self reloadSavedCategory];
 }
 
 #pragma mark Sort plumbing
@@ -508,6 +565,7 @@ static NSString *ApolloGalleryBearerForClient(id client) {
 }
 
 - (NSString *)sortDisplayName {
+    if (self.savedFeed) return @"Saved";
     switch (self.sort) {
         case ApolloGallerySortNew:    return @"New";
         case ApolloGallerySortRising: return @"Rising";
@@ -582,13 +640,18 @@ static NSString *ApolloGalleryBearerForClient(id client) {
 //          rewrites onto the harvested web-session cookie for keyless accounts
 //          and leaves alone (public JSON) when nobody is signed in.
 - (NSURLRequest *)requestForCursor:(NSString *)after useOAuthHost:(BOOL)useOAuthHost {
+    // Saved is private. An anonymous fallback can select another account's web
+    // session at the rewrite layer and must never be used for this source.
+    if (self.savedFeed && (!useOAuthHost || self.boundUsername.length == 0 ||
+                           [self currentBearerToken].length == 0 || self.savedCategoryError ||
+                           (self.savedCategory != nil && self.savedCategoryPostIDs.count == 0))) return nil;
     NSString *escapedPath = [self escapedListingPath];
     NSMutableString *query = [NSMutableString stringWithFormat:@"limit=%ld&raw_json=1",
                               (long)kApolloGalleryListingLimit];
     if (self.sortsViaQueryParameter) {
         [query appendFormat:@"&sort=%@", [self sortQueryValue]];
     }
-    if (ApolloGallerySortUsesWindow(self.sort)) {
+    if (self.supportsSorting && ApolloGallerySortUsesWindow(self.sort)) {
         [query appendFormat:@"&t=%@", [self topWindowParameter]];
     }
     if (after.length > 0) {
@@ -601,7 +664,7 @@ static NSString *ApolloGalleryBearerForClient(id client) {
         urlString = useOAuthHost
             ? [NSString stringWithFormat:@"https://oauth.reddit.com/%@?%@", [self sortPathComponent], query]
             : [NSString stringWithFormat:@"https://www.reddit.com/%@.json?%@", [self sortPathComponent], query];
-    } else if (self.sortsViaQueryParameter) {
+    } else if (self.sortsViaQueryParameter || self.savedFeed) {
         // The listing path is already complete (`/user/<name>/submitted`);
         // the sort rides in the query string instead of the path.
         urlString = useOAuthHost
@@ -632,6 +695,20 @@ static NSString *ApolloGalleryBearerForClient(id client) {
 // `data` dictionary, or nil plus an error message.
 - (void)fetchPageWithCursor:(NSString *)after
                  completion:(void (^)(NSDictionary *_Nullable listing, NSString *_Nullable errorMessage))completion {
+    if (self.savedFeed) {
+        if (self.boundUsername.length == 0 || [self currentBearerToken].length == 0) {
+            completion(nil, @"Sign in to view your saved posts.");
+            return;
+        }
+        if (self.savedCategoryError) {
+            completion(nil, self.savedCategoryError);
+            return;
+        }
+        if (self.savedCategory != nil && self.savedCategoryPostIDs.count == 0) {
+            completion(@{@"children": @[], @"after": NSNull.null}, nil);
+            return;
+        }
+    }
     // Both real OAuth and per-account synthetic bearers begin at the OAuth
     // host. Web JSON recognizes the latter and rewrites it to the matching
     // user's cookie; no bearer means a signed-out public JSON request.
@@ -683,6 +760,10 @@ static NSString *ApolloGalleryBearerForClient(id client) {
                     ? [@"Bearer " stringByAppendingString:fresh] : nil;
                 BOOL credentialRotated = useOAuthHost && freshAuthorization.length > 0 &&
                     ![freshAuthorization isEqualToString:sentAuthorization ?: @""];
+                if (strongSelf.savedFeed && !credentialRotated) {
+                    completion(nil, @"Couldn't load your saved posts. Check that this account is still signed in.");
+                    return;
+                }
                 BOOL retryOnOAuthHost = credentialRotated ? YES : !useOAuthHost;
                 ApolloLog(@"[Gallery] listing %ld on %@ host; retrying on %@ host (%@)",
                           (long)status, useOAuthHost ? @"oauth" : @"www",
@@ -780,16 +861,24 @@ static NSString *ApolloGalleryBearerForClient(id client) {
                 : 0;
 
             NSString *nextCursor = ApolloGalleryString(listing[@"after"]);
+            BOOL cursorDidNotAdvance = nextCursor.length > 0 && [nextCursor isEqualToString:strongSelf.afterCursor];
             strongSelf.afterCursor = nextCursor;
 
             NSUInteger gainedThisBatch = strongSelf.filteredItems.count - startIndex;
-            BOOL noMorePages = (nextCursor.length == 0);
-            BOOL tooManyEmptyPages = (strongSelf.consecutiveEmptyPages >= kApolloGalleryEmptyPageLimit);
+            BOOL noMorePages = (nextCursor.length == 0) || cursorDidNotAdvance;
+            // Saved can contain long runs of text posts/comments. Its finite
+            // source must not truncate before later media or category matches.
+            BOOL tooManyEmptyPages = !strongSelf.savedFeed &&
+                (strongSelf.consecutiveEmptyPages >= kApolloGalleryEmptyPageLimit);
             // Publish every useful page immediately, including continuations
             // of a seeded gallery. Small tiles can expose the end of the seed
             // before another multi-page batch would have finished collecting.
             BOOL batchSatisfied = gainedThisBatch > 0;
-            BOOL outOfPageBudget = (pagesLeft <= 1);
+            // An empty grid has no cells to trigger the next look-ahead load.
+            // Keep walking Saved until matching media or the end, so a long
+            // run of comments or other categories cannot strand later photos.
+            BOOL outOfPageBudget = (pagesLeft <= 1) &&
+                !(strongSelf.savedFeed && gainedThisBatch == 0);
 
             if (noMorePages || tooManyEmptyPages) {
                 strongSelf.exhausted = YES;
@@ -816,10 +905,10 @@ static NSString *ApolloGalleryBearerForClient(id client) {
             }
 
             // No media admitted by the current filter yet; keep walking only
-            // within the existing empty-page and request-count bounds.
+            // within the source's empty-page and request-count bounds.
             [strongSelf continueBatchFromIndex:startIndex
                                     generation:generation
-                                     pagesLeft:pagesLeft - 1
+                                     pagesLeft:MAX((NSInteger)1, pagesLeft - 1)
                                     completion:completion];
         });
     }];
@@ -827,27 +916,57 @@ static NSString *ApolloGalleryBearerForClient(id client) {
 
 #pragma mark Listing -> items
 
+- (BOOL)seedFromSavedListing:(NSDictionary *)listing category:(NSString *)category {
+    if (!self.savedFeed || self.savedCategoryError ||
+        !(self.savedCategory == category || [self.savedCategory isEqualToString:category]) ||
+        self.boundUsername.length == 0 ||
+        ![self.boundUsername.lowercaseString isEqualToString:ApolloActiveAccountUsername().lowercaseString] ||
+        self.boundAccountClient != ApolloActiveAccountClient()) return NO;
+    return [self seedFromListing:listing];
+}
+
 - (BOOL)seedFromListing:(NSDictionary *)listing {
     NSAssert(NSThread.isMainThread, @"Gallery snapshots must be applied on the main thread");
     if (self.loading || self.mutableItems.count > 0 || self.afterCursor || self.exhausted) return NO;
     if (!ApolloGalleryArray(listing[@"children"])) return NO;
     [self appendItemsFromListing:listing];
     [self rebuildFilteredItems];
-    if (self.filteredItems.count == 0) {
+    if (self.filteredItems.count == 0 && !self.savedFeed) {
         [self.mutableItems removeAllObjects];
         [self.seenImageKeys removeAllObjects];
         return NO;
     }
     self.afterCursor = ApolloGalleryString(listing[@"after"]);
     self.exhausted = self.afterCursor.length == 0;
+    if (self.savedFeed && self.savedCategory != nil) {
+        // A category can be complete before the surrounding Saved listing.
+        // Every member must be represented by a captured post; merely seeing
+        // no matching media in the first page is not evidence of emptiness.
+        NSMutableSet<NSString *> *loadedPostIDs = [NSMutableSet set];
+        for (id child in ApolloGalleryArray(listing[@"children"])) {
+            NSDictionary *thing = ApolloGalleryDict(child);
+            if (![ApolloGalleryString(thing[@"kind"]) isEqualToString:@"t3"]) continue;
+            NSString *fullname = [ApolloGalleryString(ApolloGalleryDict(thing[@"data"])[@"name"]) lowercaseString];
+            if (fullname) [loadedPostIDs addObject:fullname];
+        }
+        if ([self.savedCategoryPostIDs isSubsetOfSet:loadedPostIDs]) {
+            self.afterCursor = nil;
+            self.exhausted = YES;
+        }
+    }
     self.lastErrorMessage = nil;
     return YES;
 }
 
 - (void)appendItemsFromListing:(NSDictionary *)listing {
     for (id child in ApolloGalleryArray(listing[@"children"]) ?: @[]) {
-        NSDictionary *post = ApolloGalleryDict(ApolloGalleryDict(child)[@"data"]);
+        NSDictionary *thing = ApolloGalleryDict(child);
+        NSString *kind = ApolloGalleryString(thing[@"kind"]);
+        if (kind && ![kind isEqualToString:@"t3"]) continue;
+        NSDictionary *post = ApolloGalleryDict(thing[@"data"]);
         if (!post) continue;
+        if (self.savedCategory != nil &&
+            ![self.savedCategoryPostIDs containsObject:[ApolloGalleryString(post[@"name"]) lowercaseString] ?: @""]) continue;
         for (ApolloGalleryItem *item in [self itemsFromPost:post]) {
             // Key on the stream for playables: two posts of the same video can
             // carry differently-signed poster URLs, and every v.redd.it poster

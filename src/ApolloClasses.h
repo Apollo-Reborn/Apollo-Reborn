@@ -105,6 +105,7 @@ extern Class ApolloClassRedditListTableViewCell;
 extern Class ApolloClassRedditListViewController;
 extern Class ApolloClassRichMediaNode;
 extern Class ApolloClassSaveMediaActivity;
+extern Class ApolloClassSavedPostsCommentsViewController;
 extern Class ApolloClassSearchViewController;
 extern Class ApolloClassSettingsViewController;
 extern Class ApolloClassShareAsImageViewController;
