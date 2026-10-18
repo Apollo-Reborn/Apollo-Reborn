@@ -42,6 +42,7 @@ Class ApolloClassCAFilter;
 Class ApolloClassCommentCellNode;
 Class ApolloClassCommentsHeaderCellNode;
 Class ApolloClassCommentsHeaderSectionController;
+Class ApolloClassRichMediaHeaderCellNode;
 Class ApolloClassCommentsViewController;
 Class ApolloClassCompactPostCellNode;
 Class ApolloClassComposePostViewController;
@@ -172,6 +173,7 @@ __attribute__((constructor)) static void ApolloClassesResolve(void) {
     ApolloClassCommentCellNode = objc_getClass("_TtC6Apollo15CommentCellNode");
     ApolloClassCommentsHeaderCellNode = objc_getClass("_TtC6Apollo22CommentsHeaderCellNode");
     ApolloClassCommentsHeaderSectionController = objc_getClass("_TtC6Apollo31CommentsHeaderSectionController");
+    ApolloClassRichMediaHeaderCellNode = objc_getClass("_TtC6Apollo23RichMediaHeaderCellNode");
     ApolloClassCommentsViewController = objc_getClass("_TtC6Apollo22CommentsViewController");
     ApolloClassCompactPostCellNode = objc_getClass("_TtC6Apollo19CompactPostCellNode");
     ApolloClassComposePostViewController = objc_getClass("_TtC6Apollo25ComposePostViewController");
