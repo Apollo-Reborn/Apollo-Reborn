@@ -67,12 +67,21 @@ static ApolloGalleryMediaKind const ApolloGalleryMediaKindAll =
 // External video page (currently Redgifs / Streamable / supported sports
 // hosts). Reddit commonly supplies a convenient but silent re-encoded preview
 // for these posts; Gallery keeps that preview as a fallback, then resolves the
-// host's original audio-bearing MP4 only when the item is opened.
+// host's original audio-bearing MP4 only when the item is opened. Sports-clip
+// posts usually come with no preview at all, so for those the grid looks the
+// host up itself once the tile is on screen (see
+// -resolveHostedVideoForGridWithCompletion:), or the tile could never play.
 @property (nonatomic, readonly, copy, nullable) NSURL *hostedVideoPageURL;
 // YES until the one lazy host lookup has completed. The lookup is coalesced per
 // item, so repeated playback/layout passes never duplicate API requests.
 @property (nonatomic, readonly) BOOL needsHostedVideoResolution;
 @property (nonatomic, readonly, getter=isHostedVideoResolving) BOOL hostedVideoResolving;
+// YES when a grid tile may still look this item's host up for itself: the
+// lookup hasn't run (or is running), the grid's own attempt hasn't already
+// failed, and the host needs no API token (sports clips, Streamable). Redgifs
+// mints a token per lookup, so a screen of tiles would mint a dozen at once;
+// it stays a viewer-only lookup.
+@property (nonatomic, readonly) BOOL canResolveHostedVideoForGrid;
 // Runtime in seconds; 0 when Reddit didn't report one.
 @property (nonatomic) NSTimeInterval duration;
 // Smaller preview used by the grid; falls back to imageURL when Reddit gave
@@ -110,6 +119,11 @@ static ApolloGalleryMediaKind const ApolloGalleryMediaKindAll =
 // Reddit's silent preview. On failure videoURL remains/restores the Reddit
 // fallback. Completion is delivered on the main queue.
 - (void)resolveHostedVideoWithCompletion:(nullable void (^)(BOOL resolvedOriginal))completion;
+// The same lookup on behalf of a grid tile that has nothing else to play. It
+// joins (or starts) the item's one coalesced lookup. A failure that only the
+// grid saw is not final: the grid stops asking, but opening the item still
+// makes the viewer's own attempt, so a dropped request can't strand the clip.
+- (void)resolveHostedVideoForGridWithCompletion:(nullable void (^)(BOOL resolvedOriginal))completion;
 
 @end
 

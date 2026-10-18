@@ -518,6 +518,9 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
 @property (nonatomic, strong) UICollectionView *collectionView;
 @property (nonatomic, strong) UICollectionViewFlowLayout *layout;
 @property (nonatomic) NSInteger currentIndex;
+// Hosted items whose lookup this viewer is already waiting on, so repeated
+// playback syncs register one completion per item, not one per sync.
+@property (nonatomic, strong) NSMutableSet<ApolloGalleryItem *> *hostedLookupsAwaited;
 // Applied in -viewDidLayoutSubviews once the collection view has a real size;
 // setting the offset before that lands on the wrong page.
 @property (nonatomic) BOOL hasAppliedInitialIndex;
@@ -1541,10 +1544,17 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
 // paging collection view keeps alive) gets paused, so audio can't stack up.
 - (void)apollo_syncPlayback {
     ApolloGalleryItem *currentItem = [self apollo_currentItem];
-    if (currentItem.needsHostedVideoResolution && !currentItem.isHostedVideoResolving) {
+    // Join a lookup that is already running too: the grid starts one for an
+    // on-screen tile with nothing else to play, and the tap that opened this
+    // viewer often lands while it is still in flight. Skipping it would leave
+    // this page on its poster, since nothing else tells it when that lands.
+    if (currentItem.needsHostedVideoResolution && ![self.hostedLookupsAwaited containsObject:currentItem]) {
+        if (!self.hostedLookupsAwaited) self.hostedLookupsAwaited = [NSMutableSet set];
+        [self.hostedLookupsAwaited addObject:currentItem];
         __weak typeof(self) weakSelf = self;
         [currentItem resolveHostedVideoWithCompletion:^(BOOL resolvedOriginal) {
             typeof(self) strongSelf = weakSelf;
+            [strongSelf.hostedLookupsAwaited removeObject:currentItem];
             if (!strongSelf || [strongSelf apollo_currentItem] != currentItem) return;
             ApolloGalleryViewerCell *currentCell = [strongSelf apollo_currentCell];
             [currentCell replaceVideoURL:currentItem.videoURL andPlay:YES];
@@ -1563,7 +1573,15 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
         ApolloGalleryViewerCell *viewerCell = (ApolloGalleryViewerCell *)cell;
         NSIndexPath *indexPath = [self.collectionView indexPathForCell:cell];
         if (indexPath.item == self.currentIndex) {
-            [viewerCell playIfPossible];
+            // A page configured while its host lookup was still running holds
+            // no stream, and if the reader paged away before the lookup landed,
+            // its completion skipped this page. Pick up what it produced.
+            if (!viewerCell.videoURL && currentItem.playsAsVideo && !currentItem.needsHostedVideoResolution &&
+                currentItem.videoURL) {
+                [viewerCell replaceVideoURL:currentItem.videoURL andPlay:YES];
+            } else {
+                [viewerCell playIfPossible];
+            }
         } else {
             [viewerCell pausePlayback];
         }

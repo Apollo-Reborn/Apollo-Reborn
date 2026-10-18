@@ -10,8 +10,10 @@
 //
 
 import Foundation
+#if canImport(UIKit)
 import SwiftUI
 import UIKit
+#endif
 
 // SafariActivity.url is a non-optional Swift URL stored inline. Its layout
 // changes with Foundation; never read its first word as an NSURL in ObjC.
@@ -67,7 +69,7 @@ public func ApolloSwiftAssignOptionalStringArray(
     storage.assumingMemoryBound(to: Optional<[String]>.self).pointee = value
 }
 
-// Balanced Search reads Apollo's live trending model without treating a Swift
+// The Search landing reads Apollo's live trending model without treating a Swift
 // Array as an Objective-C ivar. The caller consumes this retained NSArray.
 @_cdecl("ApolloSwiftCopyOptionalStringArray")
 public func ApolloSwiftCopyOptionalStringArray(_ storage: UnsafeRawPointer?) -> UnsafeMutableRawPointer? {
@@ -88,6 +90,7 @@ public func ApolloSwiftCopyFirstObjectArrayElement(_ storage: UnsafeRawPointer?)
     return Unmanaged.passRetained(first).toOpaque()
 }
 
+#if canImport(UIKit)
 // Apollo's native menu hosts a SwiftUI type that the tweak cannot name. A
 // protocol conformance on the generic hosting controller provides access to
 // its public sizing API without casting that unknown content to AnyView.
@@ -115,3 +118,5 @@ public func ApolloSwiftEnableHostingPreferredContentSize(_ controller: UnsafeRaw
     hosting.apolloEnablePreferredSizeReporting()
     return true
 }
+
+#endif

@@ -533,6 +533,14 @@ static UIImage *ApolloSubredditSizedActionIcon(UIImage *image) {
     layout.nameFrame.origin.x += leading;
     layout.subnameFrame.origin.x += leading;
     layout.bodyX += leading;
+    if (!sSubredditShowIcon) {
+        CGFloat nameY = CGRectGetMaxY(layout.bannerFrame) + 14.0;
+        CGFloat shift = nameY - CGRectGetMinY(layout.nameFrame);
+        layout.avatarFrame = CGRectZero;
+        layout.nameFrame.origin.y += shift;
+        layout.subnameFrame.origin.y += shift;
+        layout.bodyY += shift;
+    }
     return layout;
 }
 
@@ -547,7 +555,7 @@ static UIImage *ApolloSubredditSizedActionIcon(UIImage *image) {
     }
     if (displayNameShown) return CGRectGetMaxY(identity.nameFrame) + 10.0;
     if (subtitleShown) return CGRectGetMaxY([self apollo_subtitleFrameForLayout:identity]) + 10.0;
-    return CGRectGetMaxY(identity.avatarFrame) + 8.0;
+    return CGRectGetMinY(identity.nameFrame);
 }
 
 - (BOOL)apollo_userFlairButtonShown {
@@ -715,7 +723,7 @@ static UIImage *ApolloSubredditSizedActionIcon(UIImage *image) {
         }
     }
     self.bannerImageView.hidden = !sSubredditShowBanner;
-    self.iconImageView.hidden = NO;
+    self.iconImageView.hidden = !sSubredditShowIcon;
     self.displayNameLabel.hidden = ![self apollo_displayNameShown];
     self.nameLabel.hidden = ![self apollo_subtitleShown];
     self.aboutLabel.hidden = !sSubredditShowDescription || self.aboutLabel.text.length == 0;
@@ -2592,7 +2600,9 @@ static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewControlle
                 repairedInner = YES;
             }
             if (child && child.hidden && child != header.aboutLabel && child != header.nameLabel) {
-                if (child == header.bannerImageView || child == header.iconImageView || child == header.displayNameLabel) {
+                if ((child == header.bannerImageView && sSubredditShowBanner) ||
+                    (child == header.iconImageView && sSubredditShowIcon) ||
+                    (child == header.displayNameLabel && [header apollo_displayNameShown])) {
                     child.hidden = NO;
                     repairedInner = YES;
                 }

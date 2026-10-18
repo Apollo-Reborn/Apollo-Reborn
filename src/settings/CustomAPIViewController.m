@@ -5199,18 +5199,9 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
 - (NSString *)apollo_screenTitle { return @"Subreddits"; }
 - (void)viewDidLoad {
     [super viewDidLoad];
-    // Keep native handles available beside the three Search sections without
-    // making the rest of this settings page behave like an edit-only list.
+    // Native handles keep Search section order editable on this page.
     self.tableView.allowsSelectionDuringEditing = YES;
     [self setEditing:YES animated:NO];
-    // Own the gap above this untitled first section. UIKit's implicit grouped
-    // top spacing depends on the navigation bar's scroll observation and can
-    // collapse after a child page is popped, visibly moving the whole form.
-    // A real table header keeps the gap stable before and after navigation.
-    UIView *topSpacing = [[UIView alloc] initWithFrame:CGRectMake(0.0, 0.0, 1.0, 16.0)];
-    topSpacing.userInteractionEnabled = NO;
-    topSpacing.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    self.tableView.tableHeaderView = topSpacing;
     // The quick account switcher leaves this controller on screen, so it does
     // not get another viewWillAppear. Also refresh when a loading account's
     // identity resolves and the sorting control becomes available again.

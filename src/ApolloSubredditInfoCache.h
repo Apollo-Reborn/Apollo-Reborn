@@ -7,6 +7,10 @@ extern NSString * const ApolloSubredditInfoUpdatedNotification;
 extern NSString * const ApolloSubredditNameKey;
 
 FOUNDATION_EXPORT NSString *ApolloSubredditFormattedMemberCount(NSInteger subscriberCount);
+// Call from %ctor, before Apollo's SubredditIconTracker loads: writes icons
+// found by the last lookup into its saved data, then schedules the weekly
+// lookup after launch (see ApolloNativeSubredditIcons.h).
+FOUNDATION_EXPORT void ApolloSubredditPrepareNativeIcons(void);
 
 @interface ApolloSubredditInfo : NSObject
 
@@ -17,6 +21,8 @@ FOUNDATION_EXPORT NSString *ApolloSubredditFormattedMemberCount(NSInteger subscr
 @property(nonatomic, strong) NSURL *bannerURL;
 @property(nonatomic) NSInteger subscriberCount;
 @property(nonatomic, strong) NSDate *fetchedAt;
+// Older versions require a refresh but remain usable offline.
+@property(nonatomic) NSInteger assetSelectionVersion;
 
 // Comment media permissions, derived from `allowed_media_in_comments` on the
 // subreddit's about.json. `commentMediaInfoAvailable` is NO for entries fetched
@@ -72,6 +78,9 @@ FOUNDATION_EXPORT NSString *ApolloSubredditFormattedMemberCount(NSInteger subscr
 // yet carry can_assign_user_flair.
 - (void)requestUserFlairInfoForSubreddit:(NSString *)subredditName completion:(void (^)(ApolloSubredditInfo *info))completion;
 - (void)clearAllCaches;
+// Looks up current icons for Apollo's native icon tracker when a week has
+// passed; results apply at the next launch.
+- (void)refreshNativeSubredditIconsIfDue;
 
 @end
 

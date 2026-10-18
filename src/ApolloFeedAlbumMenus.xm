@@ -103,8 +103,11 @@ static ApolloFeedAlbumMenuContext *ApolloFeedAlbumContext(UIContextMenuInteracti
         id thumbnail = ApolloObjectIvar(cell, "thumbnailNode");
         context.sourceView = ApolloFeedAlbumNodeView(thumbnail);
         if (!ApolloFeedAlbumContainsPoint(context.sourceView, source, location)) return nil;
-        context.thumbnail = thumbnail;
-        context.previewImage = ApolloSendObject(ApolloObjectIvar(thumbnail, "thumbnailNode"), @selector(image));
+        // The cell's thumbnailNode is a wrapper; Apollo's tap handler sends
+        // -image to its sender, so commit with the inner image node.
+        id imageNode = ApolloObjectIvar(thumbnail, "thumbnailNode");
+        context.thumbnail = imageNode;
+        context.previewImage = ApolloSendObject(imageNode, @selector(image));
     } else {
         id rich = ApolloObjectIvar(cell, "richMediaNode");
         id album = ApolloObjectIvar(rich, "albumThumbnailsNode");
@@ -332,7 +335,9 @@ static UIMenu *ApolloFeedAlbumMenu(ApolloFeedAlbumMenuContext *context) {
         else {
             id target = context.compact ? context.cell : context.richMedia;
             SEL selector = context.compact ? @selector(thumbnailTappedWithSender:) : @selector(albumThumbnailButtonTappedWithSender:);
-            if ([target respondsToSelector:selector]) ((void (*)(id, SEL, id))objc_msgSend)(target, selector, context.thumbnail);
+            id sender = context.thumbnail;
+            if (![target respondsToSelector:selector] || ![sender respondsToSelector:@selector(image)]) return;
+            ((void (*)(id, SEL, id))objc_msgSend)(target, selector, sender);
         }
     }];
 }
