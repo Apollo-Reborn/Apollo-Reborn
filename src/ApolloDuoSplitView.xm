@@ -744,12 +744,28 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
     [self scheduleSplitSafeAreaSync];
     if (self.subredditList) {
         CGFloat width = MIN(360, self.view.bounds.size.width - 96);
+        BOOL portrait = self.view.bounds.size.width <= self.view.bounds.size.height;
+        CGFloat bottom = CGRectGetMaxY(self.view.bounds) - 12;
+        if (portrait) {
+            // The floating bottom tab bar overlays this full-height host.
+            // Reserve its native layout frame, not the animated glass platter,
+            // so the drawer stays clear without resizing as the bar minimizes.
+            bottom -= self.view.safeAreaInsets.bottom;
+            UITabBar *tabBar = self.tabBarController.tabBar;
+            if (tabBar.window && tabBar.window == self.view.window) {
+                CGRect barFrame = [tabBar convertRect:tabBar.bounds toView:self.view];
+                if (!CGRectIsEmpty(barFrame) && CGRectGetWidth(barFrame) > CGRectGetHeight(barFrame)
+                    && CGRectGetMidY(barFrame) > CGRectGetMidY(self.view.bounds)) {
+                    bottom = MIN(bottom, CGRectGetMinY(barFrame) - 12);
+                }
+            }
+        }
+        CGFloat height = MAX(0, bottom - 12);
         self.listDismiss.frame = self.view.bounds;
         // Bounds/center stay independent of the presentation transform.
-        self.listContainer.bounds = CGRectMake(0, 0, width, self.view.bounds.size.height - 24);
-        self.listContainer.center = CGPointMake(12 + width / 2, self.view.bounds.size.height / 2);
+        self.listContainer.bounds = CGRectMake(0, 0, width, height);
+        self.listContainer.center = CGPointMake(12 + width / 2, 12 + height / 2);
         self.listGlass.frame = self.listContainer.bounds;
-        BOOL portrait = self.view.bounds.size.width <= self.view.bounds.size.height;
         // The drawer covers/intercepts its underlying controls. Keep the
         // navigation items installed so opening it never reflows the bar.
         self.listButton.hidden = NO;
