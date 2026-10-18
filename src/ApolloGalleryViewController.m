@@ -1,9 +1,14 @@
 // ApolloGalleryViewController.m — see ApolloGalleryViewController.h.
 
 #import "ApolloGalleryViewController.h"
+#import "ApolloGalleryPinchIntroduction.h"
 #import "ApolloGalleryFeed.h"
+#import "ApolloGalleryGridGeometry.h"
+#import "ApolloGallerySource.h"
+#import "ApolloAccountCredentials.h"
 #import "ApolloGalleryImageLoader.h"
 #import "ApolloGalleryImageViewer.h"
+#import "ApolloGalleryMediaActions.h"
 #import "ApolloCommon.h"
 #import "ApolloTagFilters.h"
 #import "ApolloThemeRuntime.h"
@@ -12,27 +17,18 @@
 #import "UserDefaultConstants.h"
 
 #import <AVFoundation/AVFoundation.h>
+#import <QuartzCore/QuartzCore.h>
 #import <objc/message.h>
+#import <objc/runtime.h>
 #import "ApolloClasses.h"
 
-// Target tile width. The column count is derived from it so the grid widens
-// sensibly on iPad and in landscape instead of stretching two huge columns.
-static CGFloat const kApolloGalleryTileWidths[] = {128.0, 185.0, 260.0, 360.0};
-static NSString *const kApolloGalleryTileSizeKey = @"ApolloGalleryTileSize";
-static NSInteger const kApolloGalleryMinColumns = 1;
-// An enum, not a `static const NSInteger`: the waterfall layout sizes a
-// fixed-length C array with it, which needs a compile-time constant.
-enum { kApolloGalleryMaxColumns = 12, kApolloGalleryTileSizeCount = 4 };
-static CGFloat const kApolloGalleryTileSpacing = 3.0;
-// Aspect clamp: a 1:8 panorama would otherwise produce a tile taller than the
-// screen, and a very wide one collapses to a sliver.
-static CGFloat const kApolloGalleryMinAspect = 0.5;   // height/width
-static CGFloat const kApolloGalleryMaxAspect = 2.2;
-static CGFloat const kApolloGalleryDefaultAspect = 1.25;
 // Rows from the bottom at which the next batch starts loading.
 static NSInteger const kApolloGalleryLoadAheadRows = 3;
 
 static NSString *const kApolloGalleryCellID = @"ApolloGalleryTile";
+static char kApolloGalleryContextMenuActions;
+static char kApolloGalleryContextMenuSourceItem;
+static char kApolloGalleryPreparedController;
 
 // Grid autoplay ("Play Videos / GIFs in Gallery View"). Only tiles on screen
 // play, and only this many at once: every playing tile is a decoder session.
@@ -67,6 +63,11 @@ static double const kApolloGalleryTilePeakBitRate = 1500000.0;
 @property (nonatomic, strong) NSMutableArray<UICollectionViewLayoutAttributes *> *attributesCache;
 @property (nonatomic) CGFloat contentHeight;
 @property (nonatomic) CGFloat lastPreparedWidth;
+@property (nonatomic) NSInteger destinationColumnCount;
+@property (nonatomic) CGFloat transitionProgress;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSArray<UICollectionViewLayoutAttributes *> *> *columnAttributes;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSNumber *> *columnContentHeights;
+@property (nonatomic) NSInteger preparedItemCount;
 @end
 
 @implementation ApolloGalleryWaterfallLayout
@@ -77,25 +78,26 @@ static double const kApolloGalleryTilePeakBitRate = 1500000.0;
         _columnCount = kApolloGalleryMinColumns;
         _spacing = kApolloGalleryTileSpacing;
         _attributesCache = [NSMutableArray array];
+        _columnAttributes = [NSMutableDictionary dictionary];
+        _columnContentHeights = [NSMutableDictionary dictionary];
+        _preparedItemCount = -1;
     }
     return self;
 }
 
-- (void)prepareLayout {
-    [super prepareLayout];
-    UICollectionView *collectionView = self.collectionView;
-    if (!collectionView) return;
-
-    CGFloat width = collectionView.bounds.size.width;
-    if (width <= 0.0) return;
-
-    [self.attributesCache removeAllObjects];
-    self.contentHeight = 0.0;
-    self.lastPreparedWidth = width;
-
+- (NSArray<UICollectionViewLayoutAttributes *> *)apollo_attributesForColumns:(NSInteger)columnCount
+                                                                            width:(CGFloat)width
+                                                                    contentHeight:(CGFloat *)contentHeight {
+    NSArray<UICollectionViewLayoutAttributes *> *cached = self.columnAttributes[@(columnCount)];
+    if (cached) {
+        *contentHeight = self.columnContentHeights[@(columnCount)].doubleValue;
+        return cached;
+    }
+    NSMutableArray<UICollectionViewLayoutAttributes *> *result = [NSMutableArray array];
+    CGFloat heightOfContent = 0.0;
     // Clamped here too, not just at the call site: columnHeights below is a
     // fixed-size C array.
-    NSInteger columns = MAX(1, MIN(self.columnCount, (NSInteger)kApolloGalleryMaxColumns));
+    NSInteger columns = MAX(1, MIN(columnCount, (NSInteger)kApolloGalleryMaxColumns));
     CGFloat totalSpacing = self.spacing * (columns - 1);
     CGFloat columnWidth = floor((width - totalSpacing) / columns);
 
@@ -103,10 +105,10 @@ static double const kApolloGalleryTilePeakBitRate = 1500000.0;
     for (NSInteger i = 0; i < columns && i < kApolloGalleryMaxColumns; i++) columnHeights[i] = 0.0;
 
     id<ApolloGalleryWaterfallLayoutDelegate> delegate =
-        (id<ApolloGalleryWaterfallLayoutDelegate>)collectionView.delegate;
+        (id<ApolloGalleryWaterfallLayoutDelegate>)self.collectionView.delegate;
     BOOL canAskDelegate = [delegate respondsToSelector:@selector(galleryLayout:aspectRatioForItemAtIndex:)];
 
-    NSInteger count = [collectionView numberOfItemsInSection:0];
+    NSInteger count = [self.collectionView numberOfItemsInSection:0];
     for (NSInteger item = 0; item < count; item++) {
         // Shortest column wins; ties go to the leftmost so the first row fills
         // left-to-right in listing order.
@@ -126,12 +128,65 @@ static double const kApolloGalleryTilePeakBitRate = 1500000.0;
         UICollectionViewLayoutAttributes *attributes =
             [UICollectionViewLayoutAttributes layoutAttributesForCellWithIndexPath:[NSIndexPath indexPathForItem:item inSection:0]];
         attributes.frame = CGRectMake(x, y, columnWidth, height);
-        [self.attributesCache addObject:attributes];
+        [result addObject:attributes];
 
         columnHeights[targetColumn] = y + height + self.spacing;
-        self.contentHeight = MAX(self.contentHeight, columnHeights[targetColumn]);
+        heightOfContent = MAX(heightOfContent, columnHeights[targetColumn]);
     }
-    if (self.contentHeight > 0.0) self.contentHeight -= self.spacing;
+    if (heightOfContent > 0.0) heightOfContent -= self.spacing;
+    *contentHeight = heightOfContent;
+    self.columnAttributes[@(columnCount)] = result;
+    self.columnContentHeights[@(columnCount)] = @(heightOfContent);
+    return result;
+}
+
+- (void)invalidateLayoutWithContext:(UICollectionViewLayoutInvalidationContext *)context {
+    // reloadData and insert/delete updates can change aspect ratios even
+    // when their final item count happens to match the previous listing.
+    if (context.invalidateDataSourceCounts) {
+        [self.columnAttributes removeAllObjects];
+        [self.columnContentHeights removeAllObjects];
+    }
+    [super invalidateLayoutWithContext:context];
+}
+
+- (void)prepareLayout {
+    [super prepareLayout];
+    CGFloat width = self.collectionView.bounds.size.width;
+    if (width <= 0.0) return;
+    NSInteger count = [self.collectionView numberOfItemsInSection:0];
+    if (fabs(width - self.lastPreparedWidth) > 0.5 || count != self.preparedItemCount) {
+        [self.columnAttributes removeAllObjects];
+        [self.columnContentHeights removeAllObjects];
+    }
+    self.lastPreparedWidth = width;
+    self.preparedItemCount = count;
+    CGFloat fromHeight = 0.0;
+    NSArray<UICollectionViewLayoutAttributes *> *source =
+        [self apollo_attributesForColumns:self.columnCount width:width contentHeight:&fromHeight];
+    self.attributesCache = [source mutableCopy];
+    self.contentHeight = fromHeight;
+    CGFloat progress = MAX(0.0, MIN(1.0, self.transitionProgress));
+    if (progress <= 0.0 || self.destinationColumnCount == self.columnCount) return;
+
+    // A live pinch interpolates the actual waterfall frames, including the
+    // rows that change columns. Keeping this inside our normal layout lets
+    // pagination and image updates continue during a gesture; UIKit's
+    // UICollectionViewTransitionLayout forbids data updates while active.
+    CGFloat toHeight = 0.0;
+    NSArray<UICollectionViewLayoutAttributes *> *destination =
+        [self apollo_attributesForColumns:self.destinationColumnCount width:width contentHeight:&toHeight];
+    for (NSUInteger i = 0; i < self.attributesCache.count; i++) {
+        UICollectionViewLayoutAttributes *attributes = [source[i] copy];
+        CGRect from = attributes.frame;
+        CGRect to = destination[i].frame;
+        attributes.frame = CGRectMake(from.origin.x + (to.origin.x - from.origin.x) * progress,
+            from.origin.y + (to.origin.y - from.origin.y) * progress,
+            from.size.width + (to.size.width - from.size.width) * progress,
+            from.size.height + (to.size.height - from.size.height) * progress);
+        self.attributesCache[i] = attributes;
+    }
+    self.contentHeight = fromHeight + (toHeight - fromHeight) * progress;
 }
 
 - (CGSize)collectionViewContentSize {
@@ -147,7 +202,7 @@ static double const kApolloGalleryTilePeakBitRate = 1500000.0;
 }
 
 - (UICollectionViewLayoutAttributes *)layoutAttributesForItemAtIndexPath:(NSIndexPath *)indexPath {
-    if (indexPath.item < 0 || indexPath.item >= (NSInteger)self.attributesCache.count) return nil;
+    if (!indexPath || indexPath.item < 0 || indexPath.item >= (NSInteger)self.attributesCache.count) return nil;
     return self.attributesCache[indexPath.item];
 }
 
@@ -572,6 +627,7 @@ static void *kApolloGalleryTileItemStatusContext = &kApolloGalleryTileItemStatus
 
 @interface ApolloGalleryViewController () <UICollectionViewDataSource, UICollectionViewDelegate,
                                            UICollectionViewDataSourcePrefetching,
+                                           UIGestureRecognizerDelegate,
                                            ApolloGalleryWaterfallLayoutDelegate,
                                            ApolloGalleryImageViewerDelegate>
 @property (nonatomic, copy) NSString *subreddit;
@@ -585,15 +641,50 @@ static void *kApolloGalleryTileItemStatusContext = &kApolloGalleryTileItemStatus
 @property (nonatomic, strong) UILabel *footerLabel;
 @property (nonatomic, strong) UIRefreshControl *refreshControl;
 @property (nonatomic, weak, nullable) ApolloGalleryImageViewer *activeViewer;
+@property (nonatomic) BOOL galleryContextMenuActive;
+@property (nonatomic, strong) NSMutableSet<UIContextMenuConfiguration *> *activeGalleryContextMenus;
+@property (nonatomic) BOOL galleryReloadPendingAfterMenu;
+@property (nonatomic) BOOL pinchEnabledBeforeContextMenu;
+@property (nonatomic, weak) UINavigationBar *contextMenuNavigationBar;
+@property (nonatomic) BOOL navigationBarEnabledBeforeContextMenu;
+@property (nonatomic, weak) UIGestureRecognizer *contextMenuPopGesture;
+@property (nonatomic) BOOL popGestureEnabledBeforeContextMenu;
 @property (nonatomic, strong, nullable) UIBarButtonItem *filterBarButtonItem;
-@property (nonatomic, strong) UIBarButtonItem *largerTilesItem;
-@property (nonatomic, strong) UIBarButtonItem *smallerTilesItem;
 @property (nonatomic) NSInteger tileSizeIndex;
+@property (nonatomic, strong) UIPinchGestureRecognizer *tilePinch;
+@property (nonatomic, copy) NSArray<NSNumber *> *pinchSizeIndices;
+@property (nonatomic, copy) NSArray<NSNumber *> *pinchTileWidths;
+@property (nonatomic, strong) NSIndexPath *pinchAnchor;
+@property (nonatomic, strong) ApolloGalleryItem *pinchAnchorItem;
+@property (nonatomic) CGFloat pinchAnchorFraction;
+@property (nonatomic) CGFloat pinchViewportY;
+@property (nonatomic) CGFloat pinchStartPosition;
+@property (nonatomic) CGFloat pinchStartTileWidth;
+@property (nonatomic) NSInteger pinchStartTileSizeIndex;
+@property (nonatomic) CGFloat pinchPosition;
+@property (nonatomic) BOOL pinchingTiles;
+@property (nonatomic, strong) CADisplayLink *tileSizeSettlement;
+@property (nonatomic) CFTimeInterval tileSizeSettlementStart;
+@property (nonatomic) CGFloat tileSizeSettlementFrom;
+@property (nonatomic) CGFloat tileSizeSettlementTo;
 // YES from -apollo_beginInitialLoad until that batch reports back. Only its
 // completion stops the centre spinner and the refresh control and settles the
 // empty state, so whatever drops the batch first (a filter change — the feed
 // never calls a dropped batch back) must start another one.
 @property (nonatomic) BOOL initialLoadPending;
+// Coalesce viewport checks outside collection-view layout/update callbacks.
+@property (nonatomic) BOOL viewportFillQueued;
+@property (nonatomic, strong) NSArray<ApolloGalleryItem *> *coverageItems;
+@property (nonatomic) CGFloat coverageWidth;
+@property (nonatomic) NSInteger coverageColumns;
+@property (nonatomic) CGFloat shortestColumnBottom;
+// Menu-time preparation owns the same feed and callback before and after the
+// push. A tap never waits for this work, and never starts a competing batch.
+@property (nonatomic, copy) NSArray *preparationKey;
+@property (nonatomic) CGSize preparationViewport;
+@property (nonatomic) NSUInteger preparationBatchesRemaining;
+@property (nonatomic) NSUInteger preparationWarmedCount;
+@property (nonatomic, strong) NSMutableArray<ApolloGalleryImageRequest *> *preparationWarmRequests;
 // Outstanding look-ahead loads keyed by index path, so UIKit's cancel callback
 // can actually stop them (see collectionView:cancelPrefetchingForItemsAtIndexPaths:).
 @property (nonatomic, strong) NSMutableDictionary<NSIndexPath *, ApolloGalleryImageRequest *> *prefetchRequests;
@@ -704,6 +795,131 @@ static void ApolloGalleryApplyInheritedSort(ApolloGalleryViewController *gallery
     ApolloLog(@"[Gallery] inherited sort from source feed -> %@", gallery.feed.sortDisplayName);
 }
 
+// The menu and the eventual push must construct exactly the same endpoint.
+// In particular, Home's parser is not a substitute for a subreddit feed when
+// preparation needs to follow its continuation cursor.
+static ApolloGalleryViewController *ApolloGalleryControllerForIdentifier(NSString *identifier,
+                                                                        NSNumber *sort, NSNumber *window) {
+    ApolloGalleryViewController *gallery = nil;
+    NSString *multi = ApolloGalleryNormalizedMultiredditPath(identifier);
+    NSString *slug = [identifier stringByTrimmingCharactersInSet:
+                     [NSCharacterSet characterSetWithCharactersInString:@" \t/"]];
+    if (multi.length > 0) {
+        gallery = [[ApolloGalleryViewController alloc] initWithMultiredditPath:multi];
+    } else if ([identifier isEqualToString:@"~home"]) {
+        gallery = [[ApolloGalleryViewController alloc] initWithHomeFeed];
+    } else if ([slug.lowercaseString hasPrefix:@"u/"] || [slug.lowercaseString hasPrefix:@"user/"]) {
+        NSString *username = ApolloGalleryNormalizedUsername(slug);
+        return username.length > 0 ? [[ApolloGalleryViewController alloc] initWithUsername:username] : nil;
+    } else {
+        if ([slug.lowercaseString hasPrefix:@"r/"]) slug = [slug substringFromIndex:2];
+        if (slug.length == 0) return nil;
+        gallery = [[ApolloGalleryViewController alloc] initWithSubreddit:slug];
+    }
+    ApolloGalleryApplyInheritedSort(gallery, sort, window);
+    return gallery;
+}
+
+static NSArray *ApolloGalleryPreparationKey(NSString *identifier, UIViewController *owner,
+                                            NSNumber *sort, NSNumber *window) {
+    NSDictionary *source = ApolloGallerySourcePreparationState(owner);
+    if (!source || identifier.length == 0) return nil;
+    // The source state includes live NSFW/spoiler flags, not only link identity.
+    // Account identity is checked separately: an account switch must never
+    // adopt a feed whose continuation was fetched for the previous account.
+    return @[identifier, sort ?: NSNull.null, window ?: NSNull.null, source,
+             ApolloActiveAccountUsername() ?: @"", ApolloActiveAccountClient() ?: NSNull.null,
+             @(ApolloGalleryGridSavedTileSizeIndex(NSUserDefaults.standardUserDefaults))];
+}
+
++ (void)prepareGalleryForSubreddit:(NSString *)subreddit
+               fromViewController:(UIViewController *)sourceViewController
+               inheritedSortValue:(NSNumber *)sortValue
+          inheritedTopWindowValue:(NSNumber *)topWindowValue {
+    if (!NSThread.isMainThread || !sourceViewController.navigationController) return;
+    ApolloGalleryPrepareSource(sourceViewController);
+    NSArray *key = ApolloGalleryPreparationKey(subreddit, sourceViewController, sortValue, topWindowValue);
+    if (!key) return;
+    ApolloGalleryViewController *gallery = objc_getAssociatedObject(sourceViewController, &kApolloGalleryPreparedController);
+    if (![gallery.preparationKey isEqual:key]) {
+        gallery = ApolloGalleryControllerForIdentifier(subreddit, sortValue, topWindowValue);
+        if (!gallery || !ApolloGallerySeedFeedFromSource(gallery.feed, sourceViewController)) return;
+        gallery.preparationKey = key;
+        // Two useful pages is a ceiling, not a target. Normally one fills the
+        // dense viewport; no speculative walk through an entire subreddit.
+        gallery.preparationBatchesRemaining = 2;
+        gallery.preparationWarmRequests = [NSMutableArray array];
+        objc_setAssociatedObject(sourceViewController, &kApolloGalleryPreparedController, gallery, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        __weak UIViewController *weakOwner = sourceViewController;
+        __weak ApolloGalleryViewController *weakGallery = gallery;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            UIViewController *owner = weakOwner;
+            ApolloGalleryViewController *prepared = weakGallery;
+            if (owner && prepared && objc_getAssociatedObject(owner, &kApolloGalleryPreparedController) == prepared) {
+                objc_setAssociatedObject(owner, &kApolloGalleryPreparedController, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+        });
+    }
+    gallery.preparationViewport = sourceViewController.viewIfLoaded.bounds.size;
+    [gallery apollo_prepareViewport];
+}
+
+- (void)apollo_warmPreparedViewport {
+    NSArray<ApolloGalleryItem *> *items = self.feed.items;
+    CGSize viewport = self.preparationViewport;
+    NSInteger size = ApolloGalleryGridSavedTileSizeIndex(NSUserDefaults.standardUserDefaults);
+    NSUInteger count = ApolloGalleryGridWarmPrefixCount(items.count, viewport.width, viewport.height,
+        size, 96, ^CGSize(NSUInteger index) { return items[index].pixelSize; });
+    for (NSUInteger index = self.preparationWarmedCount; index < count; index++) {
+        ApolloGalleryItem *item = items[index];
+        ApolloGalleryImageRequest *request = [[ApolloGalleryImageLoader sharedLoader]
+            prefetchThumbnailAtURL:(item.thumbnailURL ?: item.imageURL)];
+        if (request) [self.preparationWarmRequests addObject:request];
+    }
+    self.preparationWarmedCount = MAX(self.preparationWarmedCount, count);
+}
+
+- (void)apollo_prepareViewport {
+    [self apollo_warmPreparedViewport];
+    if (self.isViewLoaded) {
+        [self apollo_scheduleViewportFill];
+        return;
+    }
+    if (self.preparationBatchesRemaining == 0 || self.feed.isLoading || self.feed.isExhausted ||
+        self.feed.lastErrorMessage.length > 0 ||
+        UIApplication.sharedApplication.applicationState == UIApplicationStateBackground) return;
+    CGSize viewport = self.preparationViewport;
+    if (viewport.width <= 0.0 || viewport.height <= 0.0) return;
+    NSArray<ApolloGalleryItem *> *items = self.feed.items;
+    NSInteger columns = ApolloGalleryGridColumnCount(viewport.width,
+        ApolloGalleryGridSavedTileSizeIndex(NSUserDefaults.standardUserDefaults));
+    CGFloat target = viewport.height + ApolloGalleryGridTileWidth(viewport.width, columns);
+    ApolloGalleryGridMeasurement coverage = ApolloGalleryGridMeasure(items.count, viewport.width, columns,
+        ^CGSize(NSUInteger index) { return items[index].pixelSize; }, target);
+    if (coverage.shortestColumnBottom + 0.5 >= target) return;
+    self.preparationBatchesRemaining--;
+    ApolloLog(@"[Gallery] preparing continuation before selection (%lu media)", (unsigned long)items.count);
+    __weak typeof(self) weakSelf = self;
+    [self.feed loadNextBatchWithCompletion:^(NSRange addedRange, NSString *errorMessage) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf apollo_warmPreparedViewport];
+        if (strongSelf.isViewLoaded) {
+            // The user selected Gallery before the request finished. Publish
+            // into that very controller, without a second request or a wait.
+            if (addedRange.length > 0) [strongSelf apollo_syncAppendedItems];
+            [strongSelf apollo_updateEmptyStateWithError:errorMessage];
+            if (errorMessage.length > 0) {
+                [strongSelf apollo_setFooterText:@"Couldn't load more"];
+                [strongSelf apollo_clearFooterAfterDelay];
+            }
+            [strongSelf apollo_scheduleViewportFill];
+        } else if (addedRange.length > 0) {
+            [strongSelf apollo_prepareViewport];
+        }
+    }];
+}
+
 static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
                               UIViewController *sourceViewController) {
     if (!gallery || !sourceViewController) return NO;
@@ -716,6 +932,7 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
     // Apollo's themes paint their own backgrounds; borrow the colour from the
     // screen we came from so the gallery doesn't flash system white/black.
     gallery.gridBackgroundColor = sourceViewController.view.backgroundColor ?: navigationController.view.backgroundColor;
+    ApolloGallerySeedFeedFromSource(gallery.feed, sourceViewController);
     [navigationController pushViewController:gallery animated:YES];
     return YES;
 }
@@ -731,45 +948,18 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
                 fromViewController:(UIViewController *)sourceViewController
                 inheritedSortValue:(NSNumber *)sortValue
            inheritedTopWindowValue:(NSNumber *)topWindowValue {
-    // GalleryMenu deliberately keeps its established call site so open PRs
-    // that defer this presentation until a Liquid Glass menu has dismissed
-    // continue to cover every feed type. A canonical multireddit path and an
-    // explicitly "u/"-prefixed username are the only non-subreddit values
-    // accepted here (a bare name with no prefix is always a subreddit slug).
-    NSString *multiredditPath = ApolloGalleryNormalizedMultiredditPath(subreddit);
-    if (multiredditPath.length > 0) {
-        return [self apollo_presentGalleryForMultiredditPath:multiredditPath
-                                          fromViewController:sourceViewController
-                                          inheritedSortValue:sortValue
-                                     inheritedTopWindowValue:topWindowValue];
-    }
-    if ([subreddit isEqualToString:@"~home"]) {
-        ApolloGalleryViewController *gallery = [[ApolloGalleryViewController alloc] initWithHomeFeed];
-        ApolloGalleryApplyInheritedSort(gallery, sortValue, topWindowValue);
-        if (!ApolloGalleryPush(gallery, sourceViewController)) return NO;
-        ApolloLog(@"[Gallery] opened for Home");
-        return YES;
-    }
-    NSString *prefixCheck = [subreddit stringByTrimmingCharactersInSet:
-                             [NSCharacterSet characterSetWithCharactersInString:@" \t/"]].lowercaseString;
-    if ([prefixCheck hasPrefix:@"u/"] || [prefixCheck hasPrefix:@"user/"]) {
-        // Profile feeds have no source sort to inherit — Apollo's profile
-        // screen doesn't expose one — so the seed deliberately stops here.
-        return [self presentGalleryForUsername:subreddit
-                            fromViewController:sourceViewController];
-    }
-
-    NSString *slug = [subreddit stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@" \t/"]];
-    if ([slug.lowercaseString hasPrefix:@"r/"]) slug = [slug substringFromIndex:2];
-    if (slug.length == 0 || !sourceViewController) {
-        ApolloLog(@"[Gallery] refusing to open: subreddit=%@ source=%@", subreddit, sourceViewController);
-        return NO;
-    }
-
-    ApolloGalleryViewController *gallery = [[ApolloGalleryViewController alloc] initWithSubreddit:slug];
-    ApolloGalleryApplyInheritedSort(gallery, sortValue, topWindowValue);
+    if (subreddit.length == 0 || !sourceViewController) return NO;
+    NSArray *key = ApolloGalleryPreparationKey(subreddit, sourceViewController, sortValue, topWindowValue);
+    ApolloGalleryViewController *prepared = objc_getAssociatedObject(sourceViewController, &kApolloGalleryPreparedController);
+    ApolloGalleryViewController *gallery = key && [prepared.preparationKey isEqual:key] &&
+        prepared.feed.lastErrorMessage.length == 0 ? prepared : nil;
+    // One visit owns the preparation. A later menu opening makes a fresh feed
+    // with the then-current source, account, sort and blur flags.
+    objc_setAssociatedObject(sourceViewController, &kApolloGalleryPreparedController, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!gallery) gallery = ApolloGalleryControllerForIdentifier(subreddit, sortValue, topWindowValue);
     if (!ApolloGalleryPush(gallery, sourceViewController)) return NO;
-    ApolloLog(@"[Gallery] opened for r/%@", slug);
+    ApolloLog(@"[Gallery] opened for %@ (%@)", gallery.sourceDescription,
+              gallery == prepared ? @"prepared viewport" : @"source snapshot");
     return YES;
 }
 
@@ -834,8 +1024,7 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
     // 27 alike, in both orientations. Do not compensate the top inset again.
     self.title = @"Gallery";
     self.view.backgroundColor = self.gridBackgroundColor ?: UIColor.systemBackgroundColor;
-    NSNumber *savedTileSize = [NSUserDefaults.standardUserDefaults objectForKey:kApolloGalleryTileSizeKey];
-    self.tileSizeIndex = savedTileSize ? MAX(0, MIN(kApolloGalleryTileSizeCount - 1, savedTileSize.integerValue)) : 1;
+    self.tileSizeIndex = ApolloGalleryGridSavedTileSizeIndex(NSUserDefaults.standardUserDefaults);
 
     self.waterfallLayout = [[ApolloGalleryWaterfallLayout alloc] init];
     self.waterfallLayout.spacing = kApolloGalleryTileSpacing;
@@ -851,6 +1040,10 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
     self.collectionView.alwaysBounceVertical = YES;
     [self.collectionView registerClass:[ApolloGalleryTileCell class] forCellWithReuseIdentifier:kApolloGalleryCellID];
     [self.view addSubview:self.collectionView];
+
+    self.tilePinch = [[UIPinchGestureRecognizer alloc] initWithTarget:self action:@selector(apollo_pinchTiles:)];
+    self.tilePinch.delegate = self;
+    [self.collectionView addGestureRecognizer:self.tilePinch];
 
     self.refreshControl = [[UIRefreshControl alloc] init];
     [self.refreshControl addTarget:self action:@selector(apollo_pullToRefresh) forControlEvents:UIControlEventValueChanged];
@@ -910,9 +1103,19 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
                    name:UIApplicationWillEnterForegroundNotification object:nil];
     [center addObserver:self selector:@selector(apollo_tilePlaybackInputsChanged:)
                    name:NSProcessInfoPowerStateDidChangeNotification object:nil];
+    [center addObserver:self selector:@selector(apollo_applicationDidBecomeActive:)
+                   name:UIApplicationDidBecomeActiveNotification object:nil];
     [center addObserver:self selector:@selector(apollo_applicationDidEnterBackground:)
                    name:UIApplicationDidEnterBackgroundNotification object:nil];
-    [self apollo_beginInitialLoad];
+    if (self.feed.items.count > 0) {
+        // Source posts and their geometry are ready before the push starts.
+        // A dense grid may need more than this source page; start filling as
+        // soon as the push installs the view, without delaying navigation.
+        [self apollo_updateEmptyStateWithError:nil];
+        [self apollo_scheduleViewportFill];
+    } else {
+        [self apollo_beginInitialLoad];
+    }
 }
 
 - (void)apollo_applyImmersiveNavigationAppearance {
@@ -935,6 +1138,7 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+    for (ApolloGalleryImageRequest *request in _preparationWarmRequests) [request cancel];
 }
 
 // The grid is the one screen on Apollo's otherwise portrait-locked phone
@@ -949,13 +1153,31 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
     if (@available(iOS 16.0, *)) {
         [self setNeedsUpdateOfSupportedInterfaceOrientations];
     }
-    // Also the return from the fullscreen viewer (presented full screen, so
-    // the grid gets this callback) and from a cancelled swipe-back.
+    [self apollo_showPinchIntroductionIfNeeded];
+    // Returning from another navigation screen or a cancelled swipe-back.
+    // The over-fullscreen viewer explicitly resumes us after its dismissal.
     [self apollo_refreshTilePlayback];
+    [self apollo_scheduleViewportFill];
+}
+
+// Only the guide's explicit acknowledgement makes this a one-time tip.
+- (void)apollo_showPinchIntroductionIfNeeded {
+    if ([ApolloGalleryPinchIntroduction hasBeenAcknowledged] ||
+        self.presentedViewController || !self.view.window) return;
+
+    ApolloGalleryPinchIntroduction *guide = [ApolloGalleryPinchIntroduction new];
+    __weak typeof(self) weakSelf = self;
+    guide.dismissalCompletion = ^{
+        [weakSelf apollo_refreshTilePlayback];
+    };
+    [self presentViewController:guide animated:YES completion:nil];
+    [self apollo_stopAllTilePlayback];
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
+    if (self.galleryContextMenuActive) [self.collectionView.contextMenuInteraction dismissMenu];
+    [self apollo_finishTilePinchAnimated:NO];
     if (@available(iOS 16.0, *)) {
         [self.navigationController setNeedsUpdateOfSupportedInterfaceOrientations];
     }
@@ -977,7 +1199,7 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
     // The captured Reddit preference can arrive after Gallery's initial cells
     // were configured, or change when the active account switches; the Tag
     // Filters settings can be edited while a Gallery sits in the nav stack.
-    [self.collectionView reloadData];
+    [self apollo_reloadGridPreservingContextMenu];
     (void)notification;
 }
 
@@ -1002,7 +1224,7 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
                                         150.0, 26.0);
 
     NSInteger columns = [self apollo_columnCountForWidth:bounds.size.width];
-    if (columns != self.waterfallLayout.columnCount) {
+    if (!self.pinchingTiles && !self.tileSizeSettlement && columns != self.waterfallLayout.columnCount) {
         self.waterfallLayout.columnCount = columns;
         [self.waterfallLayout invalidateLayout];
     }
@@ -1011,9 +1233,11 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
     // the collection view has already entered the window. Register that late
     // effect after layout so Minimize can keep it hidden behind the compact pill.
     ApolloApplyScrollEdgeEffectStyle(self.collectionView);
+    [self apollo_scheduleViewportFill];
 }
 
 - (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+    if (scrollView == self.collectionView) [self apollo_scheduleViewportFill];
     if (scrollView != self.collectionView ||
         sTabBarHideStyle != ApolloTabBarHideStyleMinimize ||
         ![[NSUserDefaults standardUserDefaults] boolForKey:UDKeyNativeHideBarsOnScroll]) return;
@@ -1033,15 +1257,11 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
 }
 
 - (NSInteger)apollo_columnCountForWidth:(CGFloat)width {
-    if (width <= 0.0) return kApolloGalleryMinColumns;
-    NSInteger columns = (NSInteger)floor((width + kApolloGalleryTileSpacing) /
-        (kApolloGalleryTileWidths[self.tileSizeIndex] + kApolloGalleryTileSpacing));
-    // Preserve the familiar two-column default on narrow phones. The larger
-    // sizes may intentionally become one column; small windows never force
-    // two tiles below the 128pt lower bound.
-    NSInteger minimum = self.tileSizeIndex < 2 && width >= 2 * kApolloGalleryTileWidths[0] + kApolloGalleryTileSpacing
-        ? 2 : kApolloGalleryMinColumns;
-    return MAX(minimum, MIN(kApolloGalleryMaxColumns, columns));
+    return [self apollo_columnCountForWidth:width tileSizeIndex:self.tileSizeIndex];
+}
+
+- (NSInteger)apollo_columnCountForWidth:(CGFloat)width tileSizeIndex:(NSInteger)index {
+    return ApolloGalleryGridColumnCount(width, index);
 }
 
 // Rotation reshuffles the whole waterfall — a different column count and
@@ -1089,6 +1309,7 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
 
 - (void)viewWillTransitionToSize:(CGSize)size
        withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
+    [self apollo_finishTilePinchAnimated:NO];
     [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
     CGFloat relative = 0.5;
     NSIndexPath *path = [self apollo_visibleAnchorRelativeCenter:&relative];
@@ -1162,11 +1383,14 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
 // (not under the fullscreen viewer, not popped), and no memory warning during
 // this visit. Per-kind gating is ApolloGalleryTileAutoplayEnabledForKind.
 - (BOOL)apollo_tileAutoplayAllowed {
+    if (self.pinchingTiles || self.tileSizeSettlement || self.galleryContextMenuActive) return NO;
     if (!sGalleryAutoplayVideos && !sGalleryAutoplayGIFs) return NO;
     if (self.tilePlaybackSuspendedForMemory) return NO;
     if ([NSProcessInfo processInfo].isLowPowerModeEnabled) return NO;
     if (UIApplication.sharedApplication.applicationState == UIApplicationStateBackground) return NO;
-    if (self.presentedViewController) return NO;
+    // OverFullScreen can be presented by an ancestor, and leaves our view
+    // mounted. Keep playback paused until the viewer's dismissal completes.
+    if (self.activeViewer || self.presentedViewController) return NO;
     return self.viewIfLoaded.window != nil;
 }
 
@@ -1265,9 +1489,23 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
     dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf apollo_refreshTilePlayback]; });
 }
 
+- (void)apollo_applicationDidBecomeActive:(NSNotification *)notification {
+    (void)notification;
+    [self apollo_scheduleViewportFill];
+    [self apollo_refreshTilePlayback];
+}
+
 - (void)apollo_applicationDidEnterBackground:(NSNotification *)notification {
     (void)notification;
+    if (self.galleryContextMenuActive) [self.collectionView.contextMenuInteraction dismissMenu];
+    [self apollo_finishTilePinchAnimated:NO];
     [self apollo_stopAllTilePlayback];
+}
+
+- (void)scrollViewWillBeginDragging:(UIScrollView *)scrollView {
+    // Once a new one-finger drag starts, scrolling owns the offset. The brief
+    // size settle may finish, but must not keep pulling back to its anchor.
+    if (scrollView == self.collectionView && !self.pinchingTiles) self.pinchAnchor = nil;
 }
 
 // Start only once the grid has settled: a fling brings dozens of tiles past
@@ -1287,34 +1525,202 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
     [self apollo_refreshTilePlayback];
 }
 
-#pragma mark Sort
+#pragma mark Tile sizing
 
-- (void)apollo_updateTileSizeControls {
-    self.smallerTilesItem.enabled = self.tileSizeIndex > 0;
-    self.largerTilesItem.enabled = self.tileSizeIndex < kApolloGalleryTileSizeCount - 1;
-    NSString *value = [NSString stringWithFormat:@"Size %ld of %d", (long)self.tileSizeIndex + 1, kApolloGalleryTileSizeCount];
-    self.smallerTilesItem.accessibilityValue = value;
-    self.largerTilesItem.accessibilityValue = value;
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
+    if (gestureRecognizer == self.tilePinch) {
+        return !self.galleryContextMenuActive && self.feed.items.count > 0 && self.collectionView.bounds.size.width > 0.0;
+    }
+    return YES;
 }
 
-- (void)apollo_changeTileSizeBy:(NSInteger)step {
-    NSInteger next = MAX(0, MIN(kApolloGalleryTileSizeCount - 1, self.tileSizeIndex + step));
-    if (next == self.tileSizeIndex) return;
-    CGFloat relative = 0.5;
-    NSIndexPath *anchor = [self apollo_visibleAnchorRelativeCenter:&relative];
-    self.tileSizeIndex = next;
-    [NSUserDefaults.standardUserDefaults setObject:@(next) forKey:kApolloGalleryTileSizeKey];
-    self.waterfallLayout.columnCount = [self apollo_columnCountForWidth:self.collectionView.bounds.size.width];
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+        shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
+    // A pinch can begin while a finger is already scrolling. Permit only
+    // that pairing; the pinch still cancels a tile's pending selection.
+    return (gestureRecognizer == self.tilePinch && other == self.collectionView.panGestureRecognizer) ||
+           (other == self.tilePinch && gestureRecognizer == self.collectionView.panGestureRecognizer);
+}
+
+- (void)apollo_restorePinchAnchor {
+    NSIndexPath *anchor = self.pinchAnchor;
+    if (!anchor || anchor.item >= self.feed.items.count ||
+        self.feed.items[anchor.item] != self.pinchAnchorItem) return;
+    UICollectionViewLayoutAttributes *attributes =
+        [self.waterfallLayout layoutAttributesForItemAtIndexPath:anchor];
+    if (!attributes) return;
+    // Preserve the point inside the tile, not just its center: a tall image
+    // should stay beneath the fingers as it grows. Columns can move sideways
+    // in a waterfall, so anchoring is vertical (the grid never scrolls in x).
+    CGFloat target = CGRectGetMinY(attributes.frame) + attributes.frame.size.height * self.pinchAnchorFraction
+                     - self.pinchViewportY;
+    UIEdgeInsets insets = self.collectionView.adjustedContentInset;
+    CGFloat maximum = self.waterfallLayout.collectionViewContentSize.height
+                      - self.collectionView.bounds.size.height + insets.bottom;
+    target = MAX(-insets.top, MIN(target, MAX(-insets.top, maximum)));
+    [self.collectionView setContentOffset:CGPointMake(0.0, target) animated:NO];
+}
+
+- (void)apollo_applyPinchPosition {
+    NSInteger lower = (NSInteger)floor(self.pinchPosition);
+    NSInteger upper = MIN(lower + 1, (NSInteger)self.pinchSizeIndices.count - 1);
+    CGFloat width = self.collectionView.bounds.size.width;
+    self.waterfallLayout.columnCount = [self apollo_columnCountForWidth:width
+        tileSizeIndex:self.pinchSizeIndices[lower].integerValue];
+    self.waterfallLayout.destinationColumnCount = [self apollo_columnCountForWidth:width
+        tileSizeIndex:self.pinchSizeIndices[upper].integerValue];
+    self.waterfallLayout.transitionProgress = self.pinchPosition - lower;
     [self.waterfallLayout invalidateLayout];
     [self.collectionView layoutIfNeeded];
-    if (anchor) [self apollo_scrollToAnchorItem:anchor relativeCenter:relative forSize:self.collectionView.bounds.size];
-    else [self.collectionView setContentOffset:CGPointMake(0, -self.collectionView.adjustedContentInset.top) animated:NO];
-    [self apollo_updateTileSizeControls];
-    [self apollo_refreshTilePlayback];
+    [self apollo_restorePinchAnchor];
 }
 
-- (void)apollo_largerTiles { [self apollo_changeTileSizeBy:1]; }
-- (void)apollo_smallerTiles { [self apollo_changeTileSizeBy:-1]; }
+- (CGFloat)apollo_tileWidthAtPinchPosition:(CGFloat)position {
+    NSInteger lower = MAX(0, MIN((NSInteger)self.pinchTileWidths.count - 1, (NSInteger)floor(position)));
+    NSInteger upper = MIN(lower + 1, (NSInteger)self.pinchTileWidths.count - 1);
+    CGFloat fromWidth = self.pinchTileWidths[lower].doubleValue;
+    CGFloat toWidth = self.pinchTileWidths[upper].doubleValue;
+    return fromWidth + (toWidth - fromWidth) * (position - lower);
+}
+
+- (CGFloat)apollo_pinchPositionForTileWidth:(CGFloat)width {
+    if (width <= self.pinchTileWidths.firstObject.doubleValue) return 0.0;
+    for (NSUInteger upper = 1; upper < self.pinchTileWidths.count; upper++) {
+        CGFloat toWidth = self.pinchTileWidths[upper].doubleValue;
+        if (width <= toWidth) {
+            CGFloat fromWidth = self.pinchTileWidths[upper - 1].doubleValue;
+            return upper - 1.0 + (width - fromWidth) / MAX(toWidth - fromWidth, 1.0);
+        }
+    }
+    return self.pinchTileWidths.count - 1.0;
+}
+
+- (void)apollo_finishTilePinchAnimated:(BOOL)animated {
+    if (!self.pinchingTiles && !self.tileSizeSettlement) return;
+    CGFloat destination = self.tileSizeSettlement ? self.tileSizeSettlementTo : round(self.pinchPosition);
+    [self apollo_settleTilePinchToPosition:destination animated:animated];
+}
+
+- (void)apollo_settleTilePinchToPosition:(CGFloat)destination animated:(BOOL)animated {
+    [self.tileSizeSettlement invalidate];
+    self.tileSizeSettlement = nil;
+    NSInteger position = MAX(0, MIN((NSInteger)self.pinchSizeIndices.count - 1, (NSInteger)destination));
+    // Different saved widths can share one column count in portrait and
+    // diverge in landscape. A cancelled/no-net-change pinch must preserve
+    // the original width choice instead of canonicalizing it to the first.
+    NSInteger chosenIndex = self.pinchSizeIndices[position].integerValue;
+    CGFloat width = self.collectionView.bounds.size.width;
+    self.tileSizeIndex = [self apollo_columnCountForWidth:width tileSizeIndex:chosenIndex] ==
+                        [self apollo_columnCountForWidth:width tileSizeIndex:self.pinchStartTileSizeIndex]
+        ? self.pinchStartTileSizeIndex : self.pinchSizeIndices[position].integerValue;
+    [NSUserDefaults.standardUserDefaults setObject:@(self.tileSizeIndex) forKey:kApolloGalleryTileSizeKey];
+    self.pinchingTiles = NO;
+    self.collectionView.panGestureRecognizer.enabled = YES;
+    if (animated && !UIAccessibilityIsReduceMotionEnabled() && fabs(position - self.pinchPosition) > 0.001) {
+        // Keep layout/model geometry equal to the visible geometry on every
+        // frame. UIView's layer animation puts the model at the endpoint
+        // immediately; grabbing it with a second pinch would then jump ahead.
+        self.tileSizeSettlementFrom = self.pinchPosition;
+        self.tileSizeSettlementTo = position;
+        self.tileSizeSettlementStart = CACurrentMediaTime();
+        self.tileSizeSettlement = [CADisplayLink displayLinkWithTarget:self selector:@selector(apollo_tickTileSizeSettlement:)];
+        [self.tileSizeSettlement addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+    } else {
+        self.pinchPosition = position;
+        [UIView performWithoutAnimation:^{ [self apollo_applyPinchPosition]; }];
+        [self apollo_refreshTilePlayback];
+        [self apollo_scheduleViewportFill];
+    }
+}
+
+- (void)apollo_tickTileSizeSettlement:(CADisplayLink *)displayLink {
+    CGFloat elapsed = MAX(0.0, MIN(1.0, (displayLink.timestamp - self.tileSizeSettlementStart) / 0.34));
+    // Ease into the remaining distance instead of accelerating abruptly as
+    // the fingers lift. The settled frame remains interruptible throughout.
+    CGFloat progress = elapsed * elapsed * (3.0 - 2.0 * elapsed);
+    self.pinchPosition = self.tileSizeSettlementFrom +
+                         (self.tileSizeSettlementTo - self.tileSizeSettlementFrom) * progress;
+    [UIView performWithoutAnimation:^{ [self apollo_applyPinchPosition]; }];
+    if (elapsed >= 1.0) {
+        [displayLink invalidate];
+        self.tileSizeSettlement = nil;
+        [self apollo_refreshTilePlayback];
+        [self apollo_scheduleViewportFill];
+    }
+}
+
+- (void)apollo_pinchTiles:(UIPinchGestureRecognizer *)gesture {
+    if (gesture.state == UIGestureRecognizerStateBegan) {
+        BOOL continuingSettlement = self.tileSizeSettlement != nil;
+        self.pinchingTiles = YES;
+        [self.tileSizeSettlement invalidate];
+        self.tileSizeSettlement = nil;
+        self.pinchStartTileSizeIndex = self.tileSizeIndex;
+        [self.collectionView setContentOffset:self.collectionView.contentOffset animated:NO];
+        if (continuingSettlement) {
+            self.pinchStartPosition = self.pinchPosition;
+        } else {
+            CGFloat width = self.collectionView.bounds.size.width;
+            NSMutableArray<NSNumber *> *indices = [NSMutableArray array];
+            NSMutableArray<NSNumber *> *tileWidths = [NSMutableArray array];
+            NSInteger previousColumns = -1;
+            NSInteger currentColumns = [self apollo_columnCountForWidth:width];
+            for (NSInteger i = 0; i < kApolloGalleryTileSizeCount; i++) {
+                NSInteger columns = [self apollo_columnCountForWidth:width tileSizeIndex:i];
+                if (columns == previousColumns) continue;
+                if (columns == currentColumns) self.pinchStartPosition = indices.count;
+                [indices addObject:@(i)];
+                [tileWidths addObject:@(floor((width - kApolloGalleryTileSpacing * (columns - 1)) / columns))];
+                previousColumns = columns;
+            }
+            self.pinchSizeIndices = indices;
+            self.pinchTileWidths = tileWidths;
+            self.pinchPosition = self.pinchStartPosition;
+        }
+        self.pinchStartTileWidth = [self apollo_tileWidthAtPinchPosition:self.pinchStartPosition];
+        // The custom anchor already follows a moving pinch midpoint. Stop
+        // the scroll recognizer from applying that same translation again.
+        self.collectionView.panGestureRecognizer.enabled = NO;
+        CGPoint point = [gesture locationInView:self.collectionView];
+        self.pinchViewportY = point.y - self.collectionView.contentOffset.y;
+        self.pinchAnchor = [self.collectionView indexPathForItemAtPoint:point];
+        if (!self.pinchAnchor) {
+            CGFloat nearest = CGFLOAT_MAX;
+            for (NSIndexPath *path in self.collectionView.indexPathsForVisibleItems) {
+                CGRect frame = [self.waterfallLayout layoutAttributesForItemAtIndexPath:path].frame;
+                CGFloat distance = hypot(CGRectGetMidX(frame) - point.x, CGRectGetMidY(frame) - point.y);
+                if (distance < nearest) { nearest = distance; self.pinchAnchor = path; }
+            }
+        }
+        self.pinchAnchorItem = self.pinchAnchor && self.pinchAnchor.item < self.feed.items.count
+            ? self.feed.items[self.pinchAnchor.item] : nil;
+        CGRect frame = [self.waterfallLayout layoutAttributesForItemAtIndexPath:self.pinchAnchor].frame;
+        self.pinchAnchorFraction = MAX(0.0, MIN(1.0, (point.y - CGRectGetMinY(frame)) / MAX(frame.size.height, 1.0)));
+        [self apollo_stopAllTilePlayback];
+    }
+    if (!self.pinchingTiles) return;
+    if (gesture.state == UIGestureRecognizerStateBegan || gesture.state == UIGestureRecognizerStateChanged ||
+        gesture.state == UIGestureRecognizerStateEnded) {
+        // Deliberately damp finger travel: 60% sensitivity in log-scale space
+        // keeps reciprocal spread/pinch distances symmetric. A 20% spread
+        // grows a tile by about 12%, giving finer control over column changes
+        // than direct 1:1 scaling. This adjusts live tracking, not its settle
+        // duration, and still starts from the visible width on a re-grab.
+        static CGFloat const sensitivity = 0.6;
+        CGFloat effectiveScale = pow(MAX(gesture.scale, 0.01), sensitivity);
+        CGFloat tileWidth = self.pinchStartTileWidth * effectiveScale;
+        self.pinchPosition = [self apollo_pinchPositionForTileWidth:tileWidth];
+        if (gesture.numberOfTouches >= 2) {
+            self.pinchViewportY = [gesture locationInView:self.collectionView].y - self.collectionView.contentOffset.y;
+        }
+        [self apollo_applyPinchPosition];
+    }
+    if (gesture.state == UIGestureRecognizerStateCancelled || gesture.state == UIGestureRecognizerStateFailed) {
+        [self apollo_settleTilePinchToPosition:round(self.pinchStartPosition) animated:YES];
+    } else if (gesture.state == UIGestureRecognizerStateEnded) {
+        [self apollo_finishTilePinchAnimated:YES];
+    }
+}
 
 - (void)apollo_installNavigationButtons {
     UIBarButtonItem *sort = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"arrow.up.arrow.down"]
@@ -1331,17 +1737,8 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
     self.filterBarButtonItem.accessibilityLabel = @"Filter media";
     self.filterBarButtonItem.menu = [self apollo_buildFilterMenu];
 
-    self.largerTilesItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"plus.magnifyingglass"]
-        style:UIBarButtonItemStylePlain target:self action:@selector(apollo_largerTiles)];
-    self.largerTilesItem.accessibilityLabel = @"Larger gallery tiles";
-    self.largerTilesItem.accessibilityIdentifier = @"ApolloGalleryLargerTiles";
-    self.smallerTilesItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"minus.magnifyingglass"]
-        style:UIBarButtonItemStylePlain target:self action:@selector(apollo_smallerTiles)];
-    self.smallerTilesItem.accessibilityLabel = @"Smaller gallery tiles";
-    self.smallerTilesItem.accessibilityIdentifier = @"ApolloGallerySmallerTiles";
-    // Rightmost first. The zoom pair changes post size without changing sort.
-    self.navigationItem.rightBarButtonItems = @[sort, self.filterBarButtonItem, self.largerTilesItem, self.smallerTilesItem];
-    [self apollo_updateTileSizeControls];
+    // Rightmost first. Tile sizing lives directly on the grid via pinch.
+    self.navigationItem.rightBarButtonItems = @[sort, self.filterBarButtonItem];
 }
 
 // A filled glyph while a filter is narrowing things down, so it's obvious at a
@@ -1411,7 +1808,7 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
     self.filterBarButtonItem.image = [self apollo_filterButtonImage];
     self.filterBarButtonItem.menu = [self apollo_buildFilterMenu];
     [self apollo_setFooterText:nil];
-    [self.collectionView reloadData];
+    [self apollo_reloadGridPreservingContextMenu];
     [self.collectionView setContentOffset:CGPointMake(0.0, -self.collectionView.adjustedContentInset.top) animated:NO];
     ApolloLog(@"[Gallery] filter -> photo:%d gif:%d video:%d (%lu of %lu shown)",
               (updated & ApolloGalleryMediaKindPhoto) != 0,
@@ -1510,13 +1907,63 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
     if (self.feed.sort == sort && (!ApolloGallerySortUsesWindow(sort) || self.feed.topWindow == window)) return;
     [self.feed setSort:sort topWindow:window];
     [self apollo_setFooterText:nil];
-    [self.collectionView reloadData];
+    [self apollo_reloadGridPreservingContextMenu];
     [self.collectionView setContentOffset:CGPointMake(0.0, -self.collectionView.adjustedContentInset.top) animated:NO];
     self.navigationItem.rightBarButtonItems.firstObject.menu = [self apollo_buildSortMenu];
     [self apollo_beginInitialLoad];
 }
 
 #pragma mark Loading
+
+- (BOOL)apollo_gridCoversContentY:(CGFloat)targetY {
+    NSArray<ApolloGalleryItem *> *items = self.feed.items;
+    CGFloat width = self.collectionView.bounds.size.width;
+    NSInteger columns = self.waterfallLayout.columnCount;
+    // The feed replaces its immutable projection on append/filter/reset.
+    // Measure once per data or size change, never walk the listing on every
+    // scroll event (which becomes noticeable after thousands of posts).
+    if (items != self.coverageItems || width != self.coverageWidth || columns != self.coverageColumns) {
+        self.coverageItems = items;
+        self.coverageWidth = width;
+        self.coverageColumns = columns;
+        self.shortestColumnBottom = ApolloGalleryGridCoverage(items.count, width, columns,
+            ^CGSize(NSUInteger index) { return items[index].pixelSize; });
+    }
+    return self.shortestColumnBottom + 0.5 >= targetY;
+}
+
+- (void)apollo_scheduleViewportFill {
+    if (self.viewportFillQueued) return;
+    self.viewportFillQueued = YES;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf.viewportFillQueued = NO;
+        [strongSelf apollo_fillViewportIfNeeded];
+    });
+}
+
+- (void)apollo_fillViewportIfNeeded {
+    if (!self.collectionView.window || self.navigationController.topViewController != self ||
+        self.activeViewer || self.galleryContextMenuActive || self.galleryReloadPendingAfterMenu ||
+        self.pinchingTiles || self.tileSizeSettlement || self.initialLoadPending ||
+        self.feed.isLoading || self.feed.isExhausted || self.feed.lastErrorMessage.length > 0 ||
+        UIApplication.sharedApplication.applicationState == UIApplicationStateBackground) return;
+    NSInteger total = (NSInteger)self.feed.items.count;
+    if (total == 0 || self.collectionView.bounds.size.width <= 0.0) return;
+
+    // The last visible index is not a screen-coverage measurement in a
+    // waterfall. Fill every column through the bottom, plus one row ahead.
+    CGFloat width = self.collectionView.bounds.size.width;
+    NSInteger columns = self.waterfallLayout.columnCount;
+    CGFloat rowAhead = ApolloGalleryGridTileWidth(width, columns);
+    CGFloat visibleBottom = MAX(0.0, CGRectGetMaxY(self.collectionView.bounds) -
+                                    self.collectionView.adjustedContentInset.bottom);
+    if (![self apollo_gridCoversContentY:visibleBottom + rowAhead]) {
+        [self apollo_loadMoreIfNeededForIndex:total - 1];
+    }
+}
 
 - (void)apollo_beginInitialLoad {
     self.initialLoadPending = YES;
@@ -1531,11 +1978,12 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
         strongSelf.initialLoadPending = NO;
         [strongSelf.initialSpinner stopAnimating];
         [strongSelf.refreshControl endRefreshing];
-        [strongSelf.collectionView reloadData];
+        [strongSelf apollo_reloadGridPreservingContextMenu];
         [strongSelf apollo_updateEmptyStateWithError:errorMessage];
         // Built before the first fetch, so its "N loaded" subtitles were all
         // zero until now.
         strongSelf.filterBarButtonItem.menu = [strongSelf apollo_buildFilterMenu];
+        [strongSelf apollo_scheduleViewportFill];
         (void)addedRange;
     }];
 }
@@ -1546,7 +1994,7 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
     // calls back to clear its "Loading more…" pill; a sort change clears it
     // the same way.
     [self apollo_setFooterText:nil];
-    [self.collectionView reloadData];
+    [self apollo_reloadGridPreservingContextMenu];
     [self apollo_beginInitialLoad];
 }
 
@@ -1603,12 +2051,16 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
 }
 
 - (void)apollo_loadMoreIfNeededForIndex:(NSInteger)index {
-    if (self.feed.isLoading || self.feed.isExhausted) return;
+    if (self.feed.isLoading || self.feed.isExhausted || self.activeViewer || self.galleryContextMenuActive) return;
     NSInteger total = (NSInteger)self.feed.items.count;
     NSInteger slack = self.waterfallLayout.columnCount * kApolloGalleryLoadAheadRows;
     if (index < total - slack) return;
 
-    [self apollo_setFooterText:@"Loading more…"];
+    // Ordinary look-ahead is silent when the screen is already filled. Show
+    // the loading state only when the user has reached uncached listing data.
+    CGFloat visibleBottom = MAX(0.0, CGRectGetMaxY(self.collectionView.bounds) -
+                                    self.collectionView.adjustedContentInset.bottom);
+    if (![self apollo_gridCoversContentY:visibleBottom]) [self apollo_setFooterText:@"Loading more…"];
     __weak typeof(self) weakSelf = self;
     [self.feed loadNextBatchWithCompletion:^(NSRange addedRange, NSString *errorMessage) {
         typeof(self) strongSelf = weakSelf;
@@ -1630,6 +2082,7 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
         } else {
             [strongSelf apollo_setFooterText:nil];
         }
+        if (addedRange.length > 0) [strongSelf apollo_scheduleViewportFill];
     }];
 }
 
@@ -1640,6 +2093,7 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
 // The count can only have GROWN here — shrinks happen solely in
 // apollo_toggleKind, which reloads wholesale.
 - (void)apollo_syncAppendedItems {
+    if (self.galleryReloadPendingAfterMenu) return;
     NSInteger known = [self.collectionView numberOfItemsInSection:0];
     NSInteger total = (NSInteger)self.feed.items.count;
     if (total <= known) return;
@@ -1649,14 +2103,167 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
     }
     // The waterfall layout rebuilds every frame in -prepareLayout, so it always
     // agrees with the data source after an append.
-    [self.collectionView performBatchUpdates:^{
-        [self.collectionView insertItemsAtIndexPaths:indexPaths];
-    } completion:nil];
+    // Publish a useful page immediately, including tiles below a short seed.
+    // A staged insertion fade would add another delay after the network.
+    [UIView performWithoutAnimation:^{
+        [self.collectionView performBatchUpdates:^{
+            [self.collectionView insertItemsAtIndexPaths:indexPaths];
+        } completion:^(BOOL finished) {
+            [self apollo_scheduleViewportFill];
+        }];
+    }];
     // The open viewer reads the same feed; let it pick the new pages up.
     [self.activeViewer feedDidAppendItems];
 }
 
 #pragma mark Collection view
+
+#pragma mark Grid context menus
+
+- (UIContextMenuConfiguration *)apollo_contextMenuForItemAtIndexPath:(NSIndexPath *)indexPath {
+    if (self.pinchingTiles || self.galleryContextMenuActive || indexPath.item >= self.feed.items.count) return nil;
+    ApolloGalleryTileCell *cell = (ApolloGalleryTileCell *)[self.collectionView cellForItemAtIndexPath:indexPath];
+    ApolloGalleryItem *item = self.feed.items[indexPath.item];
+    if (![cell isKindOfClass:ApolloGalleryTileCell.class] || cell.item != item || !cell.window) return nil;
+
+    // The action session owns the item, never an index into a mutable feed.
+    // Use the stable grid as the share-popover source: a dismissed menu may
+    // trigger a pending reload and recycle its original cell before sharing.
+    ApolloGalleryMediaActions *actions = [[ApolloGalleryMediaActions alloc] initWithItem:item
+        presenter:self sourceView:self.collectionView];
+    UIContextMenuConfiguration *configuration = [UIContextMenuConfiguration
+        configurationWithIdentifier:NSUUID.UUID.UUIDString previewProvider:nil
+        actionProvider:^UIMenu *(NSArray<UIMenuElement *> *suggestedActions) {
+            (void)suggestedActions;
+            return [actions menu];
+        }];
+    objc_setAssociatedObject(configuration, &kApolloGalleryContextMenuActions, actions, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // Actions intentionally snapshot the model. Retain the original identity
+    // separately only for locating the still-visible tile's native preview.
+    objc_setAssociatedObject(configuration, &kApolloGalleryContextMenuSourceItem, item, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return configuration;
+}
+
+- (UIContextMenuConfiguration *)collectionView:(UICollectionView *)collectionView
+    contextMenuConfigurationForItemAtIndexPath:(NSIndexPath *)indexPath point:(CGPoint)point {
+    (void)collectionView;
+    (void)point;
+    return [self apollo_contextMenuForItemAtIndexPath:indexPath];
+}
+
+- (UIContextMenuConfiguration *)collectionView:(UICollectionView *)collectionView
+    contextMenuConfigurationForItemsAtIndexPaths:(NSArray<NSIndexPath *> *)indexPaths point:(CGPoint)point {
+    (void)collectionView;
+    (void)point;
+    return indexPaths.count == 1 ? [self apollo_contextMenuForItemAtIndexPath:indexPaths.firstObject] : nil;
+}
+
+- (UITargetedPreview *)apollo_previewForContextMenu:(UIContextMenuConfiguration *)configuration {
+    ApolloGalleryItem *sourceItem = objc_getAssociatedObject(configuration, &kApolloGalleryContextMenuSourceItem);
+    if (!sourceItem) return nil;
+    for (ApolloGalleryTileCell *cell in self.collectionView.visibleCells) {
+        if (![cell isKindOfClass:ApolloGalleryTileCell.class] || cell.item != sourceItem || !cell.window) continue;
+        // Preview the real content hierarchy, including its NSFW/spoiler
+        // cover and badges. No full-size image provider can bypass the blur.
+        UIPreviewParameters *parameters = [UIPreviewParameters new];
+        parameters.backgroundColor = cell.contentView.backgroundColor ?: self.view.backgroundColor;
+        parameters.visiblePath = [UIBezierPath bezierPathWithRoundedRect:cell.contentView.bounds
+            cornerRadius:cell.contentView.layer.cornerRadius];
+        return [[UITargetedPreview alloc] initWithView:cell.contentView parameters:parameters];
+    }
+    return nil;
+}
+
+- (UITargetedPreview *)collectionView:(UICollectionView *)collectionView
+    previewForHighlightingContextMenuWithConfiguration:(UIContextMenuConfiguration *)configuration {
+    (void)collectionView;
+    return [self apollo_previewForContextMenu:configuration];
+}
+
+- (UITargetedPreview *)collectionView:(UICollectionView *)collectionView
+    previewForDismissingContextMenuWithConfiguration:(UIContextMenuConfiguration *)configuration {
+    (void)collectionView;
+    return [self apollo_previewForContextMenu:configuration];
+}
+
+- (UITargetedPreview *)collectionView:(UICollectionView *)collectionView
+    contextMenuConfiguration:(UIContextMenuConfiguration *)configuration highlightPreviewForItemAtIndexPath:(NSIndexPath *)indexPath {
+    (void)collectionView;
+    (void)indexPath;
+    return [self apollo_previewForContextMenu:configuration];
+}
+
+- (UITargetedPreview *)collectionView:(UICollectionView *)collectionView
+    contextMenuConfiguration:(UIContextMenuConfiguration *)configuration dismissalPreviewForItemAtIndexPath:(NSIndexPath *)indexPath {
+    (void)collectionView;
+    (void)indexPath;
+    return [self apollo_previewForContextMenu:configuration];
+}
+
+- (void)collectionView:(UICollectionView *)collectionView
+    willDisplayContextMenuWithConfiguration:(UIContextMenuConfiguration *)configuration
+    animator:(id<UIContextMenuInteractionAnimating>)animator {
+    (void)collectionView;
+    (void)animator;
+    if (!objc_getAssociatedObject(configuration, &kApolloGalleryContextMenuActions)) return;
+    if (!self.activeGalleryContextMenus) self.activeGalleryContextMenus = [NSMutableSet set];
+    [self.activeGalleryContextMenus addObject:configuration];
+    if (self.galleryContextMenuActive) return;
+    self.galleryContextMenuActive = YES;
+    [self apollo_finishTilePinchAnimated:NO];
+    [self apollo_stopAllTilePlayback];
+    self.pinchEnabledBeforeContextMenu = self.tilePinch.enabled;
+    self.tilePinch.enabled = NO;
+    self.contextMenuNavigationBar = self.navigationController.navigationBar;
+    self.navigationBarEnabledBeforeContextMenu = self.contextMenuNavigationBar.userInteractionEnabled;
+    self.contextMenuNavigationBar.userInteractionEnabled = NO;
+    self.contextMenuPopGesture = self.navigationController.interactivePopGestureRecognizer;
+    self.popGestureEnabledBeforeContextMenu = self.contextMenuPopGesture.enabled;
+    self.contextMenuPopGesture.enabled = NO;
+}
+
+- (void)collectionView:(UICollectionView *)collectionView
+    willEndContextMenuInteractionWithConfiguration:(UIContextMenuConfiguration *)configuration
+    animator:(id<UIContextMenuInteractionAnimating>)animator {
+    (void)collectionView;
+    // Keep every gate closed until UIKit has finished moving the preview
+    // back into place. An action may then route away or present a share sheet.
+    void (^finished)(void) = ^{
+        ApolloGalleryMediaActions *actions = objc_getAssociatedObject(configuration, &kApolloGalleryContextMenuActions);
+        [self.activeGalleryContextMenus removeObject:configuration];
+        if (self.galleryContextMenuActive && self.activeGalleryContextMenus.count == 0) {
+            self.galleryContextMenuActive = NO;
+            self.tilePinch.enabled = self.pinchEnabledBeforeContextMenu;
+            self.contextMenuNavigationBar.userInteractionEnabled = self.navigationBarEnabledBeforeContextMenu;
+            self.contextMenuPopGesture.enabled = self.popGestureEnabledBeforeContextMenu;
+            self.contextMenuNavigationBar = nil;
+            self.contextMenuPopGesture = nil;
+            if (self.galleryReloadPendingAfterMenu) {
+                self.galleryReloadPendingAfterMenu = NO;
+                [self.collectionView reloadData];
+            }
+            [self apollo_setNeedsTilePlaybackRefresh];
+            [self apollo_scheduleViewportFill];
+        }
+        [actions menuDidEnd];
+    };
+    if (animator) [animator addCompletion:finished];
+    else dispatch_async(dispatch_get_main_queue(), finished);
+}
+
+- (void)apollo_reloadGridPreservingContextMenu {
+    if (self.galleryContextMenuActive) {
+        // Do not recycle a cell while UIKit is showing its live preview.
+        // The feed may change immediately; the menu's actions still refer to
+        // their captured item and the grid catches up after dismissal.
+        self.galleryReloadPendingAfterMenu = YES;
+        [self.collectionView.contextMenuInteraction dismissMenu];
+        return;
+    }
+    [self.collectionView reloadData];
+}
+
+#pragma mark Collection data source
 
 - (NSInteger)collectionView:(UICollectionView *)collectionView numberOfItemsInSection:(NSInteger)section {
     return (NSInteger)self.feed.items.count;
@@ -1692,12 +2299,16 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
 
 - (void)collectionView:(UICollectionView *)collectionView didSelectItemAtIndexPath:(NSIndexPath *)indexPath {
     [collectionView deselectItemAtIndexPath:indexPath animated:NO];
+    if (self.galleryContextMenuActive) return;
     if (indexPath.item >= (NSInteger)self.feed.items.count) return;
 
     ApolloGalleryImageViewer *viewer = [[ApolloGalleryImageViewer alloc] initWithFeed:self.feed
                                                                         initialIndex:indexPath.item];
     viewer.galleryDelegate = self;
     self.activeViewer = viewer;
+    // OverFullScreen retains this view, so viewWillDisappear does not pause
+    // the grid for us. Only the fullscreen page should keep playing.
+    [self apollo_stopAllTilePlayback];
     [self presentViewController:viewer animated:YES completion:nil];
 }
 
@@ -1727,26 +2338,30 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
 - (CGFloat)galleryLayout:(UICollectionViewLayout *)layout aspectRatioForItemAtIndex:(NSInteger)index {
     NSArray<ApolloGalleryItem *> *items = self.feed.items;
     if (index < 0 || index >= (NSInteger)items.count) return kApolloGalleryDefaultAspect;
-    CGSize size = items[index].pixelSize;
-    if (size.width <= 0.0 || size.height <= 0.0) return kApolloGalleryDefaultAspect;
-    return size.height / size.width;
+    return ApolloGalleryGridAspectForPixelSize(items[index].pixelSize);
 }
 
 #pragma mark ApolloGalleryImageViewerDelegate
 
 - (void)galleryViewer:(ApolloGalleryImageViewer *)viewer didAppendItemsInRange:(NSRange)addedRange {
     // The viewer paged past the end and pulled the batch itself; mirror it into
-    // the grid so the two stay in step.
-    NSInteger known = [self.collectionView numberOfItemsInSection:0];
-    NSInteger total = (NSInteger)self.feed.items.count;
-    if (total <= known) return;
-    NSMutableArray<NSIndexPath *> *indexPaths = [NSMutableArray array];
-    for (NSInteger i = known; i < total; i++) {
-        [indexPaths addObject:[NSIndexPath indexPathForItem:i inSection:0]];
+    // the grid so the two stay in step. Its final callback can arrive after
+    // dismissal, while a new grid menu is deferring a wholesale reload.
+    [self apollo_syncAppendedItems];
+    (void)viewer;
+    (void)addedRange;
+}
+
+- (void)galleryViewerDidDismiss:(ApolloGalleryImageViewer *)viewer {
+    if (self.activeViewer != viewer) return;
+    self.activeViewer = nil;
+    // A menu's Open Post may already have navigated away in the completion.
+    if (self.navigationController.topViewController != self) return;
+    if (@available(iOS 16.0, *)) {
+        [self setNeedsUpdateOfSupportedInterfaceOrientations];
     }
-    [self.collectionView performBatchUpdates:^{
-        [self.collectionView insertItemsAtIndexPaths:indexPaths];
-    } completion:nil];
+    [self apollo_refreshTilePlayback];
+    [self apollo_scheduleViewportFill];
 }
 
 - (void)galleryViewer:(ApolloGalleryImageViewer *)viewer willDismissAtIndex:(NSInteger)index {

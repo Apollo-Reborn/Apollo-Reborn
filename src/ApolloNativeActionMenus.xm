@@ -13,6 +13,10 @@
 #include <dlfcn.h>
 #import "ApolloClasses.h"
 
+// Shared with Apollo's full-screen media hold; the returned block owns the
+// generator and ends its native interaction when the captured menu finishes.
+extern "C" dispatch_block_t ApolloMediaMenuBeginPreviewFeedback(UIView *source, CGPoint point);
+
 static char kApolloNativeActionMenuControllerKey;
 static char kApolloNativeActionMenuInvokingActionKey;
 static char kApolloNativeActionMenuWrappedModeratorActionKey;
@@ -24,6 +28,7 @@ static char kApolloNativeActionMenuSourcePointKey;
 static char kApolloNativeActionMenuWrappedSourceActionKey;
 static char kApolloNativeActionMenuWindowPresenterKey;
 static char kApolloNativeActionMenuWindowRequestKey;
+static char kApolloNativeActionMenuCapturedSourcePresenterKey;
 static char kApolloNativeActionMenuSurfaceStateKey;
 static char kApolloMediaMenuPressLocationKey;
 
@@ -166,6 +171,8 @@ BOOL ApolloNativeActionMenuDeferNavigationUpdate(UIView *surface, NSString *key,
 @property (nonatomic, weak) id actionController;
 @property (nonatomic, copy) dispatch_block_t afterDismissalAction;
 @property (nonatomic, copy) dispatch_block_t didEnd;
+@property (nonatomic, copy) dispatch_block_t previewFeedbackEnd;
+@property (nonatomic, assign) BOOL notifiesCapturedCancellation;
 @property (nonatomic, strong) ApolloNativeActionMenuSurfaceLease *surfaceLease;
 // Keep the presentation window and anchor point for the menu's short lifetime.
 // A selected action may push another controller before UIKit asks for its
@@ -176,6 +183,12 @@ BOOL ApolloNativeActionMenuDeferNavigationUpdate(UIView *surface, NSString *key,
 @property (nonatomic, strong) UIView *morphStandInView;
 @property (nonatomic, strong) UIView *morphHostView;
 @property (nonatomic, strong) UITargetedPreview *morphPreview;
+// Navigation leaves the source page before the menu's return spring settles.
+// Keep its original live preview owned, but dismiss toward a separate clear
+// view so UIKit does not draw the old navigation pill over the new page.
+@property (nonatomic, assign) BOOL navigationHandoffStarted;
+@property (nonatomic, strong) UIView *navigationDismissalSource;
+@property (nonatomic, strong) UITargetedPreview *navigationDismissalPreview;
 @property (nonatomic, assign) BOOL didBeginPresentation;
 @property (nonatomic, assign) BOOL didRequestConfiguration;
 @property (nonatomic, assign) BOOL dismissing;
@@ -195,6 +208,9 @@ BOOL ApolloNativeActionMenuDeferNavigationUpdate(UIView *surface, NSString *key,
 - (id)nativeHandoffPresentationForSource:(UIView *)source;
 - (BOOL)hasFadedOutBeforePresentationFromSource:(UIView *)source;
 - (void)fadeLinkTick:(CADisplayLink *)link;
+- (UITargetedPreview *)previewForCurrentSource;
+- (UITargetedPreview *)navigationPreviewForDismissal;
+- (void)prepareForNavigationDismissal;
 - (void)captureNativePresentation;
 - (void)finishPresentation;
 @end
@@ -287,6 +303,29 @@ BOOL ApolloNativeActionMenuPerformAfterDismissal(id actionController,
     // this property at dismissal END, so even a late handler stored after
     // dismissal begins still cannot fall through the teardown window.
     presenter.afterDismissalAction = action;
+    return YES;
+}
+
+BOOL ApolloNativeActionMenuPerformWithDismissal(id actionController,
+                                                dispatch_block_t action) {
+    if (!actionController || !action) return NO;
+    ApolloNativeActionMenuPresenter *presenter =
+        ApolloNativeActionMenuPresenterForController(actionController);
+    if (!presenter.interaction || presenter.ended) return NO;
+
+    // Capture while the source page is still attached. UIKit may only ask for
+    // the reverse preview AFTER the selected action pushes a new controller;
+    // its target must remain in the window even when the source button leaves.
+    [presenter captureNativePresentation];
+    [presenter previewForCurrentSource];
+    [presenter prepareForNavigationDismissal];
+    presenter.afterDismissalAction = nil;
+    presenter.pendingPresentationAction = nil;
+    ApolloLog(@"[NativeActionMenu] Starting selected navigation alongside menu dismissal");
+    // The selected UIAction drives UIKit's normal dismissal. Do not finish or
+    // release anything here: the interaction, preview, anchor and surface lease
+    // remain owned until the real animator completion, independent of the push.
+    action();
     return YES;
 }
 
@@ -1186,12 +1225,30 @@ static UIMenu *ApolloNativeActionMenuBuildMenu(id actionController, BOOL moderat
     return [UIMenu menuWithTitle:title children:children];
 }
 
-// Use the owned glass surface for both morph directions; a blank stand-in
-// leaves two visible lenses and warped glyphs. Non-owned controls use only geometry.
+// Ordinary menu dismissals reuse the owned glass surface in both directions;
+// a blank stand-in leaves two lenses over the still-visible source page.
+// Navigation instead retires that source with a separate clear preview below.
+// Non-owned controls use only geometry.
 // All targets need a stable window-hosted view: iOS 27 AnimationKit requires a
 // superview, so UIWindow itself is invalid, even when the source page detaches.
 
 @implementation ApolloNativeActionMenuPresenter
+
+// A queued captured menu can be superseded before it owns an anchor. Its
+// pending block then releases the presenter without any UIKit end callback.
+// Notify only accepted captured requests; immediate NO remains the caller's
+// responsibility. Normal finish clears both blocks, so this cannot double-end.
+- (void)dealloc {
+    dispatch_block_t feedbackEnd = _previewFeedbackEnd;
+    dispatch_block_t didEnd = nil;
+    if (_notifiesCapturedCancellation) didEnd = _didEnd;
+    if (feedbackEnd || didEnd) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (feedbackEnd) feedbackEnd();
+            if (didEnd) didEnd();
+        });
+    }
+}
 
 // End ownership explicitly, including aborts: the anchor retains its presenter.
 
@@ -1308,12 +1365,54 @@ static id ApolloNativeActionMenuCompactMenuStyle(void) {
     return self.morphPreview;
 }
 
+- (UITargetedPreview *)navigationPreviewForDismissal {
+    if (self.navigationDismissalPreview) return self.navigationDismissalPreview;
+    if (self.ended || !self.morphHostView.window) return nil;
+    UITargetedPreview *sourcePreview = [self previewForCurrentSource];
+    if (!sourcePreview) return nil;
+    CGSize size = sourcePreview.view.bounds.size;
+    size.width = MAX(1, size.width);
+    size.height = MAX(1, size.height);
+    UIView *placeholder = [[UIView alloc] initWithFrame:(CGRect){CGPointZero, size}];
+    placeholder.backgroundColor = UIColor.clearColor;
+    placeholder.opaque = NO;
+    placeholder.userInteractionEnabled = NO;
+    placeholder.accessibilityElementsHidden = YES;
+    CGPoint center = [self.presentationWindow convertPoint:self.presentationAnchorCenter toView:self.morphHostView];
+    placeholder.center = center;
+    [self.morphHostView addSubview:placeholder];
+    self.navigationDismissalSource = placeholder;
+    UIPreviewParameters *parameters = [UIPreviewParameters new];
+    parameters.backgroundColor = UIColor.clearColor;
+    parameters.shadowPath = [UIBezierPath bezierPath];
+    UIPreviewTarget *target = [[UIPreviewTarget alloc] initWithContainer:self.morphHostView center:center];
+    self.navigationDismissalPreview = [[UITargetedPreview alloc] initWithView:placeholder parameters:parameters target:target];
+    return self.navigationDismissalPreview;
+}
+
+- (void)prepareForNavigationDismissal {
+    self.navigationHandoffStarted = YES;
+    UITargetedPreview *preview = [self navigationPreviewForDismissal];
+    // A UIAction may run after willEnd and its first preview request. Retarget
+    // that existing transition too, while keeping both previews alive until
+    // normal completion. Otherwise the upcoming delegate request uses it.
+    BOOL retargeted = NO;
+    SEL retarget = @selector(retargetDismissingMenuToPreview:);
+    if (self.dismissing && preview &&
+        ApolloSendObject(self.nativePresentation, @selector(disappearanceTransition)) &&
+        [self.nativePresentation respondsToSelector:retarget]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(self.nativePresentation, retarget, preview);
+        retargeted = YES;
+    }
+    ApolloLog(@"[NativeActionMenu] Prepared transparent navigation dismissal preview (retargeted=%d)", retargeted);
+}
+
 - (UITargetedPreview *)contextMenuInteraction:(__unused UIContextMenuInteraction *)interaction previewForHighlightingMenuWithConfiguration:(__unused UIContextMenuConfiguration *)configuration {
     return [self previewForCurrentSource];
 }
 
 - (UITargetedPreview *)contextMenuInteraction:(__unused UIContextMenuInteraction *)interaction previewForDismissingMenuWithConfiguration:(__unused UIContextMenuConfiguration *)configuration {
-    return [self previewForCurrentSource];
+    return self.navigationHandoffStarted ? [self navigationPreviewForDismissal] : [self previewForCurrentSource];
 }
 
 - (void)contextMenuInteraction:(__unused UIContextMenuInteraction *)interaction willDisplayMenuForConfiguration:(__unused UIContextMenuConfiguration *)configuration animator:(__unused id<UIContextMenuInteractionAnimating>)animator {
@@ -1383,10 +1482,15 @@ static id ApolloNativeActionMenuCompactMenuStyle(void) {
     dispatch_block_t next = self.pendingPresentationAction;
     // A chosen action keeps priority over a queued menu, as in -finishPresentation.
     if (!next || self.afterDismissalAction) return;
-    self.pendingPresentationAction = nil;
     ApolloLog(@"[NativeActionMenu] Menu faded out %.0f ms into its dismissal; opening the next one",
               (CACurrentMediaTime() - self.dismissalStartTime) * 1000.0);
-    dispatch_async(dispatch_get_main_queue(), next);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // A late selected action can arrive between the fade and this turn.
+        // It cancels this queued menu even if it already started navigation.
+        if (self.ended || self.afterDismissalAction || self.pendingPresentationAction != next) return;
+        self.pendingPresentationAction = nil;
+        next();
+    });
 }
 
 // A dismissing menu that has faded out no longer draws a lens of its own, so a
@@ -1413,6 +1517,9 @@ static id ApolloNativeActionMenuCompactMenuStyle(void) {
     if (ApolloNativeActionMenuPresenterForController(self.actionController) == self) {
         ApolloNativeActionMenuSetPresenterForController(self.actionController, nil);
     }
+    dispatch_block_t feedbackEnd = self.previewFeedbackEnd;
+    self.previewFeedbackEnd = nil;
+    if (feedbackEnd) feedbackEnd();
     dispatch_block_t didEnd = self.didEnd;
     self.didEnd = nil;
     if (didEnd) didEnd();
@@ -1424,6 +1531,9 @@ static id ApolloNativeActionMenuCompactMenuStyle(void) {
     // UIKit owns source visibility: never reset hidden/alpha or remove the real surface.
     [self.morphStandInView removeFromSuperview];
     self.morphStandInView = nil;
+    [self.navigationDismissalSource removeFromSuperview];
+    self.navigationDismissalSource = nil;
+    self.navigationDismissalPreview = nil;
     [self.morphHostView removeFromSuperview];
     self.morphHostView = nil;
     self.morphPreview = nil;
@@ -1463,7 +1573,7 @@ static id ApolloNativeActionMenuCompactMenuStyle(void) {
 
 - (id)nativeHandoffPresentationForSource:(UIView *)source {
     UIView *surface = ApolloNavigationActionsMenuSourceView(source);
-    if (!self.dismissing || !self.didBeginPresentation || !surface ||
+    if (self.navigationHandoffStarted || !self.dismissing || !self.didBeginPresentation || !surface ||
         surface != self.morphPreview.view || surface.window != self.presentationWindow ||
         !self.didRequestConfiguration || !ApolloNativeActionMenuMagicMorphEnabled()) return nil;
 
@@ -1508,6 +1618,7 @@ static id ApolloNativeActionMenuCompactMenuStyle(void) {
         active.pendingPresentationAction = ^{
             UIView *liveSource = weakSource;
             if (liveSource.window == window) [self presentFromView:liveSource completion:completion];
+            else [self finishPresentation];
         };
         if (!active.dismissing) [active.interaction dismissMenu];
         return YES;
@@ -1837,7 +1948,14 @@ BOOL ApolloNativeActionMenuPresentCaptured(UIMenu *menu, UIView *source, id cont
     presenter.menu = menu;
     presenter.actionController = controller;
     presenter.didEnd = didEnd;
-    return [presenter presentFromView:source completion:nil];
+    BOOL accepted = [presenter presentFromView:source completion:nil];
+    presenter.notifiesCapturedCancellation = accepted;
+    if (accepted) {
+        NSHashTable *holder = [NSHashTable weakObjectsHashTable];
+        [holder addObject:presenter];
+        objc_setAssociatedObject(source, &kApolloNativeActionMenuCapturedSourcePresenterKey, holder, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return accepted;
 }
 
 BOOL ApolloNativeActionMenuPresentCapturedAtPoint(UIMenu *menu, UIView *source, CGPoint point,
@@ -1849,7 +1967,21 @@ BOOL ApolloNativeActionMenuPresentCapturedAtPoint(UIMenu *menu, UIView *source, 
     presenter.didEnd = didEnd;
     presenter.sourcePoint = [NSValue valueWithCGPoint:point];
     ApolloLog(@"[NativeActionMenus] captured media menu at press (%.0f, %.0f)", point.x, point.y);
-    return [presenter presentFromView:source completion:nil];
+    BOOL accepted = [presenter presentFromView:source completion:nil];
+    presenter.notifiesCapturedCancellation = accepted;
+    if (accepted) {
+        NSHashTable *holder = [NSHashTable weakObjectsHashTable];
+        [holder addObject:presenter];
+        objc_setAssociatedObject(source, &kApolloNativeActionMenuCapturedSourcePresenterKey, holder, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return accepted;
+}
+
+void ApolloNativeActionMenuPreviewFeedback(UIView *source, CGPoint point) {
+    NSHashTable *holder = objc_getAssociatedObject(source, &kApolloNativeActionMenuCapturedSourcePresenterKey);
+    ApolloNativeActionMenuPresenter *presenter = holder.anyObject;
+    if (!presenter || presenter.ended || presenter.previewFeedbackEnd || !source.window) return;
+    presenter.previewFeedbackEnd = ApolloMediaMenuBeginPreviewFeedback(source, point);
 }
 
 static BOOL ApolloNativeActionMenuPresent(id presenter, id actionController, void (^completion)(void)) {

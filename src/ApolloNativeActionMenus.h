@@ -15,11 +15,18 @@ id _Nullable ApolloNativeActionMenuCaptureController(UIView *source, dispatch_bl
 BOOL ApolloNativeActionMenuHasAction(id controller, uint16_t kind);
 void ApolloNativeActionMenuInvokeAction(id controller, uint16_t kind);
 UIMenu *_Nullable ApolloNativeActionMenuBuildCaptured(id controller);
+// Explicit captured menus work independently of the Liquid Glass preference.
+// Accepted requests call didEnd once, including cancellation before display;
+// callers handle immediate rejection (NO) themselves.
 BOOL ApolloNativeActionMenuPresentCaptured(UIMenu *menu, UIView *source, id controller,
                                            dispatch_block_t _Nullable didEnd);
 // Gesture menus use a point in source coordinates instead of the source centre.
 BOOL ApolloNativeActionMenuPresentCapturedAtPoint(UIMenu *menu, UIView *source, CGPoint point,
                                                   id controller, dispatch_block_t _Nullable didEnd);
+// Call once after a captured presentation succeeds. Uses UIKit's native hold
+// preview pattern and keeps its feedback alive until that menu ends. Ordinary
+// UIContextMenuInteraction gestures already supply their own feedback.
+void ApolloNativeActionMenuPreviewFeedback(UIView *source, CGPoint point);
 void ApolloNativeActionMenuAnchorMediaConfiguration(UIContextMenuConfiguration *configuration, CGPoint point);
 
 // Runs `action` after the tweak-owned Liquid Glass context menu that was built
@@ -28,6 +35,14 @@ void ApolloNativeActionMenuAnchorMediaConfiguration(UIContextMenuConfiguration *
 // the action through that sheet's own dismissal completion instead.
 BOOL ApolloNativeActionMenuPerformAfterDismissal(id actionController,
                                                   dispatch_block_t action);
+
+// Run a selected menu row's navigation immediately, alongside UIKit's menu
+// dismissal. Prepare a stable window-backed preview first and retain all menu
+// resources until UIKit completes. A separate transparent dismissal preview
+// keeps the old source pill from lingering above the destination.
+// Returns NO for an ordinary Apollo sheet.
+BOOL ApolloNativeActionMenuPerformWithDismissal(id actionController,
+                                                dispatch_block_t action);
 
 // Ask Apollo's PostsViewController to build its normal overflow actions, then
 // invoke the requested native Action kind directly from a custom source view.
