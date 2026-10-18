@@ -3299,6 +3299,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                       isOn:^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyAutomaticUpdateChecks]; }
                                   onToggle:^(UISwitch *sender) {
             [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyAutomaticUpdateChecks];
+            ApolloUpdateCheckIfNeeded();
         }];
     updateChecks.iconSystemName = @"arrow.down.circle";
     updateChecks.iconTileColor = [UIColor systemBlueColor];
@@ -3834,7 +3835,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     } else if ([sectionTitle isEqualToString:@"Privacy"]) {
         text = [[NSMutableAttributedString alloc]
             initWithString:(ApolloUpdateChecksAvailable()
-                ? @"Sends one anonymous heartbeat so we can estimate active Apollo Reborn installs. No Reddit activity, account details, or feature usage is collected. Update checks read the latest release info from GitHub once a day, and the update sheet reads its release notes from there too. GitHub only sees your IP address. More details can be found in our "
+                ? @"Sends one anonymous heartbeat so we can estimate active Apollo Reborn installs. No Reddit activity, account details, or feature usage is collected. Update checks read the latest release info from GitHub every 15 minutes while Apollo is active, and the update sheet reads its release notes from there too. Later silences reminders for that version for 24 hours. GitHub only sees your IP address. More details can be found in our "
                 : @"Sends one anonymous heartbeat so we can estimate active Apollo Reborn installs. No Reddit activity, account details, or feature usage is collected. More details can be found in our ")
             attributes:plainAttrs];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"privacy policy"

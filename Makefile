@@ -88,6 +88,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloUsageHeartbeat.m \
     $(SRC_DIR)/ApolloAppIcon.m \
     $(SRC_DIR)/ApolloUpdateManifest.m \
+    $(SRC_DIR)/ApolloUpdateManifestCache.m \
     $(SRC_DIR)/ApolloUpdatePromptViewController.m \
     $(SRC_DIR)/ApolloUpdateChecker.m \
     $(SRC_DIR)/ApolloPushNotifications.m \

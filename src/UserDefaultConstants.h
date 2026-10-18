@@ -704,12 +704,14 @@ static NSString *const UDKeyBarkSelectedIconName = @"BarkSelectedIconName";
 // on-by-default). See ApolloUsageHeartbeat.{h,m}.
 static NSString *const UDKeyDisableUsageHeartbeat = @"DisableUsageHeartbeat";
 
-// In-app update check (ApolloUpdateChecker.{h,m}). Once a day it reads
+// In-app update check (ApolloUpdateChecker.{h,m}). Every 15 active minutes it reads
 // release-manifest.json from GitHub and offers to hand off to the user's
 // sideloader. Default ON; the Manual "Check for Updates" row works either way.
 static NSString *const UDKeyAutomaticUpdateChecks = @"AutomaticUpdateChecks";
 // Internal bookkeeping (not user-facing).
 static NSString *const UDKeyUpdateLastCheck = @"UpdateLastCheck";           // NSDate of the last good fetch
+static NSString *const UDKeyUpdateLastFailure = @"UpdateLastFailure";       // NSDate; short automatic retry backoff
+static NSString *const UDKeyUpdateDeferredReminder = @"UpdateDeferredReminder"; // {version, date}; Later snoozes for 24h
 static NSString *const UDKeyUpdateSkippedVersion = @"UpdateSkippedVersion"; // "3.9.0" the user chose to skip
 
 // Feed thumbnails for text posts with embedded images (off = native behavior).
