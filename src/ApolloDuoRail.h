@@ -27,6 +27,10 @@ void ApolloDuoRailSync(void);
 void ApolloDuoRailPrepareFeedContent(UIViewController *controller);
 CGFloat ApolloDuoRailFeedContentWidth(UITableView *table);
 
+/// Commit Texture node widths and row heights after a column safe-area change,
+/// retaining the top visible row. No-op when the usable width has not changed.
+void ApolloDuoRailPrepareTableForTransition(UITableView *table);
+
 /// Refresh native tab layout after Apollo replaces or retints its glyphs.
 void ApolloDuoRailRefreshGlyphs(void);
 

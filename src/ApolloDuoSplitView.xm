@@ -1626,7 +1626,17 @@ static void ApolloDuoPostsToggleSplit(ApolloDuoSplitState *state) {
     void (^commitTables)(void) = ^{
         [surface layoutIfNeeded];
         for (UINavigationController *navigation in @[state.feed, state.secondary]) {
-            UITableView *table = ApolloDuoSplitFindTable(navigation.topViewController.viewIfLoaded);
+            // The secondary keeps full-screen bounds while UIKit moves its
+            // leading safe area. Invalidate the retained native page as well
+            // as the host, so the table inherits the new column before Texture
+            // measures it instead of waiting for the next scroll callback.
+            UIView *pageView = navigation.topViewController.viewIfLoaded;
+            [navigation.view setNeedsLayout];
+            [pageView setNeedsLayout];
+            [navigation.view layoutIfNeeded];
+            [pageView layoutIfNeeded];
+            UITableView *table = ApolloDuoSplitFindTable(pageView);
+            ApolloDuoRailPrepareTableForTransition(table);
             ApolloDuoMediaPrepareTableForTransition(table);
             SEL commit = NSSelectorFromString(@"waitUntilAllUpdatesAreCommitted");
             if ([table respondsToSelector:commit]) ((void (*)(id, SEL))objc_msgSend)(table, commit);

@@ -22,6 +22,9 @@ void ApolloDuoRailRefreshGlyphs(void) {
 
 struct ApolloDuoSizeRange { CGSize min; CGSize max; };
 @interface ASTableView : UITableView
+- (void)relayoutItems;
+- (void)endUpdatesAnimated:(BOOL)animated completion:(void (^)(BOOL))completion;
+- (void)waitUntilAllUpdatesAreCommitted;
 @end
 
 @interface _TtC6Apollo22CommentsViewController : UIViewController
@@ -109,6 +112,60 @@ static UIColor *ApolloDuoAccountFeedNodeBackground(ASCellNode *node, UIColor *re
     // profile feed. All account shortcuts share the same independent cards;
     // retain their palette on Back as well as on first display.
     return ApolloThemeCardBackgroundColor() ?: requested;
+}
+
+static char kApolloDuoMeasuredWidthKey, kApolloDuoWidthRefreshPendingKey, kApolloDuoWidthRefreshingKey;
+
+void ApolloDuoRailPrepareTableForTransition(UITableView *table) {
+    if (!NSThread.isMainThread || !table.window
+        || [objc_getAssociatedObject(table, &kApolloDuoWidthRefreshingKey) boolValue]) return;
+    CGFloat width = ApolloDuoRailFeedContentWidth(table);
+    if (!isfinite(width) || width <= 0.0) return;
+    NSNumber *previous = objc_getAssociatedObject(table, &kApolloDuoMeasuredWidthKey);
+    if (previous && fabs(previous.doubleValue - width) < 0.5) return;
+    if (![table respondsToSelector:@selector(relayoutItems)]
+        || ![table respondsToSelector:@selector(endUpdatesAnimated:completion:)]
+        || ![table respondsToSelector:@selector(waitUntilAllUpdatesAreCommitted)]) return;
+
+    // A secondary table can retain full-screen bounds while its leading safe
+    // area changes. Texture's bounds-width cache therefore sees no resize.
+    // Commit the new node widths AND row heights in one native transaction;
+    // relayoutItems alone leaves UITableView's old heights until a scroll.
+    objc_setAssociatedObject(table, &kApolloDuoMeasuredWidthKey, @(width), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(table, &kApolloDuoWidthRefreshingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ASTableView *texture = (ASTableView *)table;
+    [texture waitUntilAllUpdatesAreCommitted];
+    CGFloat visibleTop = table.contentOffset.y + table.adjustedContentInset.top;
+    NSIndexPath *anchor = nil;
+    for (NSIndexPath *path in table.indexPathsForVisibleRows) {
+        if (CGRectGetMaxY([table rectForRowAtIndexPath:path]) > visibleTop) {
+            anchor = path;
+            break;
+        }
+    }
+    CGFloat anchorOffset = anchor ? CGRectGetMinY([table rectForRowAtIndexPath:anchor]) - visibleTop : 0.0;
+    [UIView performWithoutAnimation:^{
+        [texture beginUpdates];
+        [texture relayoutItems];
+        [texture endUpdatesAnimated:NO completion:nil];
+        [texture waitUntilAllUpdatesAreCommitted];
+        [table setNeedsLayout];
+        [table layoutIfNeeded];
+        // Rewrapping rows above the viewport changes their combined height.
+        // Keep the same visible comment at the same distance below the header.
+        if (anchor && !table.dragging && !table.decelerating
+            && anchor.section < table.numberOfSections
+            && anchor.row < [table numberOfRowsInSection:anchor.section]) {
+            CGFloat offset = CGRectGetMinY([table rectForRowAtIndexPath:anchor])
+                - anchorOffset - table.adjustedContentInset.top;
+            CGFloat minimum = -table.adjustedContentInset.top;
+            CGFloat maximum = MAX(minimum, table.contentSize.height - table.bounds.size.height + table.adjustedContentInset.bottom);
+            [table setContentOffset:CGPointMake(table.contentOffset.x, MIN(maximum, MAX(minimum, offset))) animated:NO];
+            [table layoutIfNeeded];
+        }
+    }];
+    objc_setAssociatedObject(table, &kApolloDuoWidthRefreshingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [DuoMeasure] committed column width %.1f (was %.1f)", width, previous.doubleValue);
 }
 
 // Apollo moves the comments jump button from scroll handling after the
@@ -221,28 +278,19 @@ static BOOL sApolloDuoClampingJumpButton;
     [table.backgroundView setNeedsLayout];
     CGFloat width = ApolloDuoRailFeedContentWidth(table);
     if (width <= 0.0) return;
-    static char measuredWidthKey, refreshPendingKey;
-    NSNumber *previous = objc_getAssociatedObject(table, &measuredWidthKey);
-    objc_setAssociatedObject(table, &measuredWidthKey, @(width), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NSNumber *previous = objc_getAssociatedObject(table, &kApolloDuoMeasuredWidthKey);
     if (previous && fabs(previous.doubleValue - width) < 0.5) return;
-    if ([objc_getAssociatedObject(table, &refreshPendingKey) boolValue]) return;
-    objc_setAssociatedObject(table, &refreshPendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    // The split sidebar changes the safe area without changing the backing
-    // table bounds. Texture's bounds-width cache therefore leaves offscreen
-    // rows measured for the old column. Remeasure existing nodes once after
-    // UIKit has applied the new insets, without reloading their content.
+    if ([objc_getAssociatedObject(table, &kApolloDuoWidthRefreshPendingKey) boolValue]) return;
+    objc_setAssociatedObject(table, &kApolloDuoWidthRefreshPendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // Coalesce safe-area notifications outside UIKit's layout callback. A
+    // split-button transition calls the same helper synchronously, making this
+    // queued pass a no-op once that destination width has already committed.
     __weak UITableView *weakTable = table;
     dispatch_async(dispatch_get_main_queue(), ^{
         UITableView *liveTable = weakTable;
         if (!liveTable) return;
-        objc_setAssociatedObject(liveTable, &refreshPendingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        if (!liveTable.window || ApolloDuoRailFeedContentWidth(liveTable) <= 0.0) return;
-        SEL relayout = NSSelectorFromString(@"relayoutItems");
-        if ([liveTable respondsToSelector:relayout]) {
-            [UIView performWithoutAnimation:^{
-                ((void (*)(id, SEL))objc_msgSend)(liveTable, relayout);
-            }];
-        }
+        objc_setAssociatedObject(liveTable, &kApolloDuoWidthRefreshPendingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ApolloDuoRailPrepareTableForTransition(liveTable);
     });
 }
 
@@ -256,7 +304,8 @@ static BOOL sApolloDuoClampingJumpButton;
         ApolloDuoSyncCellBackground(((_ASTableViewCell *)cell).node);
     }
     CGFloat width = ApolloDuoRailFeedContentWidth((UITableView *)self);
-    if (ApolloDuoSplitIsResizing() && width > 0.0
+    BOOL refreshingWidth = [objc_getAssociatedObject(self, &kApolloDuoWidthRefreshingKey) boolValue];
+    if ((ApolloDuoSplitIsResizing() || refreshingWidth) && width > 0.0
         && fabs(CGRectGetWidth(cell.contentView.bounds) - width) > 0.5) {
         // Texture's cell callback remeasures the node from contentView.bounds,
         // bypassing the data-controller constraint above. During reparenting
