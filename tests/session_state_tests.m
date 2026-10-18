@@ -1,0 +1,89 @@
+#import <Foundation/Foundation.h>
+#import "ApolloSessionState.h"
+
+static NSUInteger checks;
+static void Check(BOOL condition, NSString *message) {
+    checks++;
+    if (!condition) { NSLog(@"FAIL: %@", message); exit(1); }
+}
+
+int main(void) {
+    @autoreleasepool {
+        NSDate *now = [NSDate dateWithTimeIntervalSince1970:100000];
+        NSDictionary *valid = @{
+            ApolloSessionStateSavedAtKey: [now dateByAddingTimeInterval:-3600],
+            ApolloSessionStateAccountScopeKey:
+                @"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            ApolloSessionStateFeedURLKey: @"apollo-reborn://session/home",
+            ApolloSessionStateFeedItemKey: @"t3_feed",
+            ApolloSessionStateFeedDeltaKey: @42.5,
+            ApolloSessionStateFeedOffsetKey: @9001,
+            ApolloSessionStateDetailURLKey: @"apollo://reddit.com/r/apolloapp/comments/abc/title/",
+            ApolloSessionStateDetailItemKey: @"t1_comment",
+            ApolloSessionStateDetailDeltaKey: @12,
+            @"unrecognized": @"discard me",
+        };
+        NSDictionary *normalized = ApolloSessionStateNormalize(valid, now, 7 * 86400);
+        Check(normalized != nil, @"recent valid session accepted");
+        Check([normalized[ApolloSessionStateFeedItemKey] isEqual:@"t3_feed"], @"feed anchor retained");
+        Check([normalized[ApolloSessionStateDetailURLKey] hasPrefix:@"apollo://reddit.com/r/"],
+              @"post route retained");
+        Check(normalized[@"unrecognized"] == nil, @"unknown fields discarded");
+
+        NSMutableDictionary *unscoped = [valid mutableCopy];
+        [unscoped removeObjectForKey:ApolloSessionStateAccountScopeKey];
+        Check(ApolloSessionStateNormalize(unscoped, now, 7 * 86400) == nil,
+              @"unscoped session rejected");
+
+        NSMutableDictionary *badScope = [valid mutableCopy];
+        badScope[ApolloSessionStateAccountScopeKey] = @"not-a-valid-account-scope";
+        Check(ApolloSessionStateNormalize(badScope, now, 7 * 86400) == nil,
+              @"malformed account scope rejected");
+
+        NSMutableDictionary *expired = [valid mutableCopy];
+        expired[ApolloSessionStateSavedAtKey] = [now dateByAddingTimeInterval:-(8 * 86400)];
+        Check(ApolloSessionStateNormalize(expired, now, 7 * 86400) == nil,
+              @"expired session rejected");
+
+        NSMutableDictionary *external = [valid mutableCopy];
+        external[ApolloSessionStateFeedURLKey] = @"https://reddit.com/r/apolloapp";
+        Check(ApolloSessionStateNormalize(external, now, 7 * 86400) == nil,
+              @"external URL rejected");
+        NSMutableDictionary *lookalike = [valid mutableCopy];
+        lookalike[ApolloSessionStateFeedURLKey] = @"apollo://notreddit.com/r/apolloapp";
+        Check(ApolloSessionStateNormalize(lookalike, now, 7 * 86400) == nil,
+              @"lookalike host rejected");
+        NSMutableDictionary *traversal = [valid mutableCopy];
+        traversal[ApolloSessionStateFeedURLKey] = @"apollo://reddit.com/r/../settings";
+        Check(ApolloSessionStateNormalize(traversal, now, 7 * 86400) == nil,
+              @"path traversal rejected");
+
+        NSMutableDictionary *badDetail = [valid mutableCopy];
+        badDetail[ApolloSessionStateDetailURLKey] = @"apollo://reborn/settings";
+        normalized = ApolloSessionStateNormalize(badDetail, now, 7 * 86400);
+        Check(normalized != nil && normalized[ApolloSessionStateDetailURLKey] == nil,
+              @"invalid optional detail route discarded");
+
+        NSMutableDictionary *huge = [valid mutableCopy];
+        huge[ApolloSessionStateFeedOffsetKey] = @(INFINITY);
+        normalized = ApolloSessionStateNormalize(huge, now, 7 * 86400);
+        Check(normalized != nil && normalized[ApolloSessionStateFeedOffsetKey] == nil,
+              @"non-finite viewport discarded");
+        Check(ApolloSessionStateFeedURLIsAllowed(@"apollo://reddit.com/user/me/m/favorites"),
+              @"multireddit route accepted");
+        Check(!ApolloSessionStateFeedURLIsAllowed(@"apollo://reddit.com/settings"),
+              @"unrelated Apollo route rejected");
+        Check(!ApolloSessionStateFeedURLIsAllowed(
+                  @"apollo://reddit.com/r/apolloapp/comments/abc/title/"),
+              @"post route rejected as feed");
+        Check(ApolloSessionStateDetailURLIsAllowed(
+                  @"apollo://reddit.com/r/apolloapp/comments/abc/title/"),
+              @"post route accepted as detail");
+        Check(!ApolloSessionStateDetailURLIsAllowed(@"apollo://reddit.com/r/apolloapp"),
+              @"feed route rejected as detail");
+        Check(!ApolloSessionStateFeedURLIsAllowed(@"apollo://reddit.com/r/all?sort=new"),
+              @"query-bearing route rejected");
+
+        NSLog(@"PASS: %lu session-state checks", (unsigned long)checks);
+    }
+}
