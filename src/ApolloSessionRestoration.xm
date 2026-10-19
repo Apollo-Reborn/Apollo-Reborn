@@ -13,6 +13,7 @@
 #import "ApolloClasses.h"
 #import "ApolloCommon.h"
 #import "ApolloPerPostCommentSort.h"
+#import "ApolloSessionRestoration.h"
 #import "ApolloSessionState.h"
 #import "ApolloSwiftRuntime.h"
 
@@ -250,6 +251,18 @@ static BOOL ApolloSessionCommentsControllerMatchesPendingDetail(UIViewController
     return ApolloSessionStateDetailIdentifiersMatchSavedRoute(postID, commentID, savedURL);
 }
 
+int64_t ApolloSessionRestorationPendingCommentSortForPost(NSString *postID) {
+    NSNumber *sort = sApolloSessionPendingRestore[ApolloSessionStateDetailSortKey];
+    NSString *savedURL = sApolloSessionPendingRestore[ApolloSessionStateDetailURLKey];
+    if (!sApolloSessionDetailRouteStarted || sApolloSessionDetailViewportFinished ||
+        ![sort isKindOfClass:NSNumber.class] || sort.longLongValue < 1 ||
+        sort.longLongValue > 7 ||
+        !ApolloSessionStateDetailPostIdentifierMatchesSavedRoute(postID, savedURL)) {
+        return 0;
+    }
+    return sort.longLongValue;
+}
+
 static void ApolloSessionCaptureOptionalEnum(NSMutableDictionary *snapshot, id controller,
                                              const char *ivarName, NSString *key,
                                              int64_t minimum, int64_t maximum) {
@@ -466,6 +479,17 @@ static BOOL ApolloSessionFeedOwnsSelectedRestoreStack(void) {
 static void ApolloSessionRevalidatePendingNavigation(void) {
     if (!sApolloSessionPendingRestore || !sApolloSessionFeedController ||
         (!sApolloSessionFeedViewportStarted && !sApolloSessionFeedViewportFinished)) return;
+    UIViewController *topController = sApolloSessionFeedController.navigationController.topViewController;
+    BOOL restoredDetailOnTop = ApolloClassCommentsViewController &&
+        [topController isMemberOfClass:ApolloClassCommentsViewController] &&
+        ApolloSessionCommentsControllerMatchesPendingDetail(topController);
+    if (ApolloSessionStateShouldFinishAbandonedDetail(
+            sApolloSessionDetailRouteOpened, sApolloSessionDetailControllerSeen,
+            sApolloSessionDetailViewportFinished, restoredDetailOnTop)) {
+        ApolloLog(@"[SessionRestore] Reader left restored post before its anchor retry completed");
+        ApolloSessionFinishViewport(YES);
+        if (!sApolloSessionPendingRestore) return;
+    }
     if (!ApolloSessionFeedOwnsSelectedRestoreStack()) {
         ApolloLog(@"[SessionRestore] Newer navigation replaced the restore stack before backgrounding");
         ApolloSessionCancelFeedForRouteChange();

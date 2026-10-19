@@ -205,6 +205,20 @@ int main(void) {
               @"opened detail phase remains independent from feed cancellation");
         Check(!ApolloSessionStateShouldCancelUnstartedDetail(NO, YES),
               @"finished detail phase is not cancelled twice");
+        Check(ApolloSessionStateDetailPostIdentifierMatchesSavedRoute(
+                  @"t3_abc123", @"apollo://reddit.com/r/test/comments/abc123/title/def456"),
+              @"saved contextual route still owns its post sort");
+        Check(!ApolloSessionStateDetailPostIdentifierMatchesSavedRoute(
+                   @"t3_other", @"apollo://reddit.com/r/test/comments/abc123/title/def456"),
+              @"saved detail sort cannot leak to another post");
+        Check(ApolloSessionStateShouldFinishAbandonedDetail(YES, YES, NO, NO),
+              @"popped restored detail finishes before background persistence");
+        Check(!ApolloSessionStateShouldFinishAbandonedDetail(YES, YES, NO, YES),
+              @"visible restored detail keeps its anchor retry alive");
+        Check(!ApolloSessionStateShouldFinishAbandonedDetail(YES, NO, NO, NO),
+              @"unseen routed detail remains governed by its route deadline");
+        Check(!ApolloSessionStateShouldFinishAbandonedDetail(YES, YES, YES, NO),
+              @"finished detail is not completed twice");
         Check(ApolloSessionStateShouldCancelForAccountChange(
                   YES, @"account-a", @"account-b"),
               @"live account change cancels an active restore");

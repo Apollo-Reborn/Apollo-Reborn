@@ -149,6 +149,13 @@ BOOL ApolloSessionStateDetailIdentifiersMatchSavedRoute(NSString *postID, NSStri
     return bareComment && [bareComment isEqualToString:saved[2]];
 }
 
+BOOL ApolloSessionStateDetailPostIdentifierMatchesSavedRoute(NSString *postID,
+                                                             NSString *savedURL) {
+    NSArray<NSString *> *saved = ApolloSessionDetailRouteIdentity(savedURL);
+    NSString *barePost = ApolloSessionBareFullname(postID, @"t3_");
+    return saved && [barePost isEqualToString:saved[1]];
+}
+
 BOOL ApolloSessionStateLaunchHasExplicitDestination(NSUInteger URLContextCount,
                                                      BOOL hasNotificationResponse,
                                                      NSUInteger userActivityCount,
@@ -199,6 +206,14 @@ BOOL ApolloSessionStateShouldDeleteSnapshotAfterDetailFailure(BOOL feedFinished,
 BOOL ApolloSessionStateShouldCancelUnstartedDetail(BOOL detailRouteOpened,
                                                    BOOL detailFinished) {
     return !detailRouteOpened && !detailFinished;
+}
+
+BOOL ApolloSessionStateShouldFinishAbandonedDetail(BOOL detailRouteOpened,
+                                                   BOOL detailControllerSeen,
+                                                   BOOL detailFinished,
+                                                   BOOL restoredDetailOnTop) {
+    return detailRouteOpened && detailControllerSeen && !detailFinished &&
+           !restoredDetailOnTop;
 }
 
 BOOL ApolloSessionStateShouldCancelForAccountChange(BOOL hasPendingRestore,

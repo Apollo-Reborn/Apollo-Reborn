@@ -86,7 +86,7 @@ Feed and post routing is scoped to the `UIWindowScene` whose foreground callback
 began restoration; controllers in another iPad or visionOS window cannot
 consume the global pending snapshot.
 
-The Foundation host harness now exercises 88 state, route, bounds, launch-
+The Foundation host harness now exercises 94 state, route, bounds, launch-
 precedence, persistence, and restore-eligibility checks under
 `-Wall -Wextra -Werror`. The prior seven-finding state completed a full arm64
 package build with SDK 27.1 and an iOS 15.0 deployment target; no app/package

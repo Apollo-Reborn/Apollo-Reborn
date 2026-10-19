@@ -66,6 +66,12 @@ ApolloSessionStateDetailIdentifiersMatchSavedRoute(NSString * _Nullable postID,
                                                     NSString * _Nullable commentID,
                                                     NSString * _Nullable savedURL);
 
+// Sort restoration is post-scoped even when the saved route also contains a
+// contextual comment anchor.
+FOUNDATION_EXPORT BOOL
+ApolloSessionStateDetailPostIdentifierMatchesSavedRoute(NSString * _Nullable postID,
+                                                        NSString * _Nullable savedURL);
+
 // A cold launch with an explicit URL, notification, activity, or quick action
 // owns navigation and must not be replaced by passive reading-session restore.
 FOUNDATION_EXPORT BOOL
@@ -130,6 +136,14 @@ ApolloSessionStateShouldDeleteSnapshotAfterDetailFailure(BOOL feedFinished,
 FOUNDATION_EXPORT BOOL
 ApolloSessionStateShouldCancelUnstartedDetail(BOOL detailRouteOpened,
                                               BOOL detailFinished);
+
+// A detail controller that appeared and was then popped is terminal even when
+// its delayed anchor retry has not fired yet.
+FOUNDATION_EXPORT BOOL
+ApolloSessionStateShouldFinishAbandonedDetail(BOOL detailRouteOpened,
+                                              BOOL detailControllerSeen,
+                                              BOOL detailFinished,
+                                              BOOL restoredDetailOnTop);
 
 // Once restoration is active, an account-ready notification is a cancellation
 // boundary when its coherent live scope differs from the saved snapshot.
