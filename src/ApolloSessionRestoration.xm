@@ -569,7 +569,10 @@ static void ApolloSessionConsiderInitialRestore(void) {
 %hook _TtC6Apollo19PostsViewController
 
 - (void)viewDidLoad {
-    if (sApolloSessionPendingRestore && !sApolloSessionFeedViewportStarted) {
+    NSString *candidateURL = ApolloSessionFeedURL((UIViewController *)self);
+    NSString *savedURL = sApolloSessionPendingRestore[ApolloSessionStateFeedURLKey];
+    if (!sApolloSessionFeedViewportStarted &&
+        ApolloSessionStateFeedURLMatchesSavedRoute(candidateURL, savedURL)) {
         ApolloSessionApplyFeedSort((UIViewController *)self);
         sApolloSessionFeedSortPreparedController = (UIViewController *)self;
     }
@@ -581,8 +584,9 @@ static void ApolloSessionConsiderInitialRestore(void) {
     sApolloSessionFeedController = (UIViewController *)self;
     sApolloSessionCommentsController = nil;
     NSDictionary *pending = sApolloSessionPendingRestore;
-    if (pending && [ApolloSessionFeedURL((UIViewController *)self)
-                        isEqualToString:pending[ApolloSessionStateFeedURLKey]] &&
+    if (pending && ApolloSessionStateFeedURLMatchesSavedRoute(
+                       ApolloSessionFeedURL((UIViewController *)self),
+                       pending[ApolloSessionStateFeedURLKey]) &&
         !sApolloSessionFeedViewportStarted) {
         id selfObject = (id)self;
         BOOL preparedBeforeLoad = sApolloSessionFeedSortPreparedController ==

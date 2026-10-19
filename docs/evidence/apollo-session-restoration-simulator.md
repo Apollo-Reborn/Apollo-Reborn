@@ -62,9 +62,11 @@ restoration, and that backgrounding during an incomplete restore keeps the
 last complete disk snapshot instead of erasing its pending detail state. A
 further navigation-lifecycle fix finishes a restore phase when its controller
 is popped or superseded, while allowing a temporarily hidden top controller to
-restart on its next appearance.
+restart on its next appearance. Pre-fetch feed-sort writes are also restricted
+to the controller whose route matches the saved feed, leaving unrelated startup
+and secondary-pane listings unchanged.
 
-The Foundation host harness now exercises 47 state, route, bounds, launch-
+The Foundation host harness now exercises 49 state, route, bounds, launch-
 precedence, persistence, and restore-eligibility checks under
 `-Wall -Wextra -Werror`. The prior seven-finding state completed a full arm64
 package build with SDK 27.1 and an iOS 15.0 deployment target; no app/package

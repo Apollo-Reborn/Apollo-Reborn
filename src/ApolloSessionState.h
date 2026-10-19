@@ -32,6 +32,12 @@ ApolloSessionStateNormalize(NSDictionary * _Nullable candidate,
 FOUNDATION_EXPORT BOOL ApolloSessionStateFeedURLIsAllowed(NSString * _Nullable value);
 FOUNDATION_EXPORT BOOL ApolloSessionStateDetailURLIsAllowed(NSString * _Nullable value);
 
+// Only the feed represented by the saved route may receive pre-fetch sort
+// state; startup and secondary-pane listings must retain their own ordering.
+FOUNDATION_EXPORT BOOL
+ApolloSessionStateFeedURLMatchesSavedRoute(NSString * _Nullable candidateURL,
+                                           NSString * _Nullable savedURL);
+
 // Turns a post route into Apollo's canonical contextual-comment route. The
 // comment ID may be a bare base36 value or a t1_ fullname. Invalid IDs leave
 // the original route unchanged.

@@ -90,6 +90,12 @@ int main(void) {
               @"feed route rejected as detail");
         Check(!ApolloSessionStateFeedURLIsAllowed(@"apollo://reddit.com/r/all?sort=new"),
               @"query-bearing route rejected");
+        Check(ApolloSessionStateFeedURLMatchesSavedRoute(
+                  @"apollo://reddit.com/r/ApolloApp", @"apollo://reddit.com/r/apolloapp"),
+              @"saved feed route matches case-insensitively");
+        Check(!ApolloSessionStateFeedURLMatchesSavedRoute(
+                   @"apollo://reddit.com/r/apolloapp", @"apollo://reddit.com/r/ios"),
+              @"unrelated feed cannot receive saved sort state");
 
         Check([ApolloSessionStateDetailURLByAddingCommentID(
                    @"apollo://reddit.com/r/apolloapp/comments/abc/title/", @"t1_DeF")
