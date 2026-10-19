@@ -10,6 +10,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloAccountCredentials.h"
+#import "ApolloClasses.h"
 #import "ApolloCommon.h"
 #import "ApolloPerPostCommentSort.h"
 #import "ApolloSessionState.h"
@@ -322,9 +323,10 @@ static BOOL ApolloSessionOpenHomeFeed(void) {
     UINavigationController *navigation = ApolloSessionSelectedNavigation(tabs);
     [navigation popToRootViewControllerAnimated:NO];
     UIViewController *root = navigation.viewControllers.firstObject;
-    Class listClass = objc_getClass("_TtC6Apollo24RedditListViewController");
     SEL selector = @selector(tableView:didSelectRowAtIndexPath:);
-    if (!listClass || ![root isMemberOfClass:listClass] || ![root respondsToSelector:selector]) return NO;
+    if (!ApolloClassRedditListViewController ||
+        ![root isMemberOfClass:ApolloClassRedditListViewController] ||
+        ![root respondsToSelector:selector]) return NO;
     UITableView *table = [root respondsToSelector:@selector(tableView)]
         ? ((id (*)(id, SEL))objc_msgSend)(root, @selector(tableView)) : nil;
     ((void (*)(id, SEL, id, id))objc_msgSend)(root, selector, table,
@@ -386,10 +388,10 @@ static BOOL ApolloSessionRequestNextFeedPage(UIViewController *controller) {
     if (!ApolloSessionStateShouldRequestNextFeedPage(savedPage, page, lastRequested)) return NO;
     id tableNode = ApolloObjectIvar(controller, "tableNode");
     id adapter = ApolloObjectIvar(controller, "listAdapter");
-    Class contextClass = objc_getClass("ASBatchContext");
     SEL selector = @selector(tableNode:willBeginBatchFetchWithContext:);
-    if (!tableNode || !adapter || !contextClass || ![adapter respondsToSelector:selector]) return NO;
-    id context = [contextClass new];
+    if (!tableNode || !adapter || !ApolloClassASBatchContext ||
+        ![adapter respondsToSelector:selector]) return NO;
+    id context = [ApolloClassASBatchContext new];
     if (!context) return NO;
     sApolloSessionPagingController = controller;
     sApolloSessionLastRequestedPage = page;
@@ -525,7 +527,7 @@ static void ApolloSessionRouteFeed(NSUInteger attempt, NSUInteger generation) {
                    dispatch_get_main_queue(), ^{ ApolloSessionRouteFeed(attempt + 1, generation); });
 }
 
-static void ApolloSessionConsiderInitialRestore(void) {
+static void ApolloSessionConsiderInitialRestore(BOOL preferLiveAccount) {
     if (sApolloSessionInitialRestoreConsidered) return;
     if (sApolloSessionLaunchHasExplicitDestination) {
         sApolloSessionInitialRestoreConsidered = YES;
@@ -539,13 +541,14 @@ static void ApolloSessionConsiderInitialRestore(void) {
         sApolloSessionInitialRestoreConsidered = YES;
         return;
     }
-    NSString *accountScope = ApolloSessionAccountScope(NO);
+    NSString *persistedAccountScope = ApolloSessionAccountScope(NO);
+    NSString *liveAccountScope = ApolloSessionAccountScope(YES);
     // AccountManager posts its account-change notification as soon as its live
     // selection is coherent, before the defaults mirror is necessarily
-    // persisted. The notification observer below re-enters this function; use
-    // that live identity as the cold-launch fallback instead of skipping the
-    // saved session for the rest of the activation.
-    if (!accountScope) accountScope = ApolloSessionAccountScope(YES);
+    // persisted. Those account-ready callbacks prefer live identity; generic
+    // lifecycle callbacks keep the persisted mirror as their primary signal.
+    NSString *accountScope = ApolloSessionStatePreferredAccountScope(
+        persistedAccountScope, liveAccountScope, preferLiveAccount);
     if (!accountScope) return; // The account notification will retry this path.
     sApolloSessionInitialRestoreConsidered = YES;
     if (![accountScope isEqualToString:normalized[ApolloSessionStateAccountScopeKey]]) {
@@ -667,7 +670,7 @@ static void ApolloSessionConsiderInitialRestore(void) {
     // The notification observer normally owns this. The scene callback is a
     // lifecycle-safe fallback for launch orders where this dylib finishes
     // loading after UIApplication posted its first active notification.
-    ApolloSessionConsiderInitialRestore();
+    ApolloSessionConsiderInitialRestore(NO);
 }
 
 %end
@@ -681,7 +684,7 @@ static void ApolloSessionConsiderInitialRestore(void) {
     ]) {
         [center addObserverForName:name object:nil queue:NSOperationQueue.mainQueue
                          usingBlock:^(__unused NSNotification *note) {
-            ApolloSessionConsiderInitialRestore();
+            ApolloSessionConsiderInitialRestore(YES);
         }];
     }
     [center addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil
@@ -690,7 +693,7 @@ static void ApolloSessionConsiderInitialRestore(void) {
     }];
     [center addObserverForName:UIApplicationDidBecomeActiveNotification object:nil
                          queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {
-        ApolloSessionConsiderInitialRestore();
+        ApolloSessionConsiderInitialRestore(NO);
     }];
     [center addObserverForName:UIApplicationDidReceiveMemoryWarningNotification object:nil
                          queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {

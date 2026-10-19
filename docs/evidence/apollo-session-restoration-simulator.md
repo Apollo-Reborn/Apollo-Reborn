@@ -49,7 +49,9 @@ and addresses seven review findings by:
 - completing feed and detail restoration independently so either phase cannot
   cancel the other;
 - retrying restoration from Apollo's account-ready notifications when account
-  identity was not available during the first lifecycle callbacks; and
+  identity was not available during the first lifecycle callbacks, while
+  preferring the coherent live identity from those notifications over a stale
+  persisted account mirror; and
 - restricting restored comment sort and viewport state to the saved post and
   optional contextual-comment identity.
 
@@ -66,7 +68,7 @@ restart on its next appearance. Pre-fetch feed-sort writes are also restricted
 to the controller whose route matches the saved feed, leaving unrelated startup
 and secondary-pane listings unchanged.
 
-The Foundation host harness now exercises 49 state, route, bounds, launch-
+The Foundation host harness now exercises 51 state, route, bounds, launch-
 precedence, persistence, and restore-eligibility checks under
 `-Wall -Wextra -Werror`. The prior seven-finding state completed a full arm64
 package build with SDK 27.1 and an iOS 15.0 deployment target; no app/package

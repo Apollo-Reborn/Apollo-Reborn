@@ -38,6 +38,14 @@ FOUNDATION_EXPORT BOOL
 ApolloSessionStateFeedURLMatchesSavedRoute(NSString * _Nullable candidateURL,
                                            NSString * _Nullable savedURL);
 
+// Account-ready notifications expose the coherent live selection before the
+// defaults mirror necessarily catches up. Lifecycle-only callbacks retain the
+// persisted identity as their primary signal.
+FOUNDATION_EXPORT NSString * _Nullable
+ApolloSessionStatePreferredAccountScope(NSString * _Nullable persistedScope,
+                                        NSString * _Nullable liveScope,
+                                        BOOL preferLiveScope);
+
 // Turns a post route into Apollo's canonical contextual-comment route. The
 // comment ID may be a bare base36 value or a t1_ fullname. Invalid IDs leave
 // the original route unchanged.

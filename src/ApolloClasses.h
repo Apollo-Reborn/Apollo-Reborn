@@ -13,6 +13,7 @@
 __BEGIN_DECLS
 
 extern Class ApolloClassASBackgroundLayoutSpec;
+extern Class ApolloClassASBatchContext;
 extern Class ApolloClassASButtonNode;
 extern Class ApolloClassASCellNode;
 extern Class ApolloClassASCenterLayoutSpec;

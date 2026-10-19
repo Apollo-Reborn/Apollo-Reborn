@@ -96,6 +96,12 @@ int main(void) {
         Check(!ApolloSessionStateFeedURLMatchesSavedRoute(
                    @"apollo://reddit.com/r/apolloapp", @"apollo://reddit.com/r/ios"),
               @"unrelated feed cannot receive saved sort state");
+        Check([ApolloSessionStatePreferredAccountScope(@"persisted-a", @"live-b", YES)
+                  isEqual:@"live-b"],
+              @"account-ready retry prefers coherent live identity");
+        Check([ApolloSessionStatePreferredAccountScope(@"persisted-a", @"live-b", NO)
+                  isEqual:@"persisted-a"],
+              @"lifecycle retry retains persisted identity preference");
 
         Check([ApolloSessionStateDetailURLByAddingCommentID(
                    @"apollo://reddit.com/r/apolloapp/comments/abc/title/", @"t1_DeF")

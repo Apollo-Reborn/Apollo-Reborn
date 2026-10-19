@@ -66,6 +66,13 @@ BOOL ApolloSessionStateFeedURLMatchesSavedRoute(NSString *candidateURL, NSString
            [candidateURL caseInsensitiveCompare:savedURL] == NSOrderedSame;
 }
 
+NSString *ApolloSessionStatePreferredAccountScope(NSString *persistedScope,
+                                                   NSString *liveScope,
+                                                   BOOL preferLiveScope) {
+    NSString *primary = preferLiveScope ? liveScope : persistedScope;
+    return primary.length ? primary : (preferLiveScope ? persistedScope : liveScope);
+}
+
 NSString *ApolloSessionStateDetailURLByAddingCommentID(NSString *detailURL,
                                                         NSString *commentID) {
     NSURLComponents *components = ApolloSessionRedditComponents(detailURL);
