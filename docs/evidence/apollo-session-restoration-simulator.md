@@ -34,16 +34,17 @@ banner. Its bottom tab bar is cropped only to hide account identity.
 
 This demonstrates simulator cold restoration of an open post and its
 identity-based visible-comment anchor even when the saved feed anchor is no
-longer available. Dan later reported that build 354 reopened full-thread reading
-as a single-comment context. A targeted read-only copy of that build's bounded
-session plist confirmed that the correct post, comment anchor, sort, and account
-scope had been saved, but the visible anchor had also been promoted into the URL
-route. The second capture verifies the corrected route/anchor separation against
-that exact snapshot. It demonstrates a near-anchor result because live Reddit
-content and row heights changed between device capture and simulator replay; it
-does not claim exact pixel equality. The corrected build has not yet been
-accepted on a physical device, and overnight suspension or real memory-pressure
-eviction remains untested.
+longer available. The physical-device tester later reported that build 354
+reopened full-thread reading as a single-comment context. A targeted read-only
+copy of that build's bounded session plist confirmed that the correct post,
+comment anchor, sort, and account scope had been saved, but the visible anchor
+had also been promoted into the URL route. The second capture verifies the
+corrected route/anchor separation against that exact snapshot. It demonstrates
+a near-anchor result because live Reddit content and row heights changed between
+device capture and simulator replay; it does not claim exact pixel equality. The
+corrected route/anchor behavior was later accepted through the documented
+physical-device force-close/reopen flow; overnight suspension or real
+memory-pressure eviction remains untested.
 
 ## Review follow-up
 
