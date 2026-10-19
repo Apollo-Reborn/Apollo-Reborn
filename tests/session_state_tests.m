@@ -25,6 +25,7 @@ int main(void) {
             ApolloSessionStateDetailItemKey: @"t1_comment",
             ApolloSessionStateDetailDeltaKey: @12,
             ApolloSessionStateDetailSortKey: @6,
+            ApolloSessionStateDetailContextualKey: @NO,
             @"unrecognized": @"discard me",
         };
         NSDictionary *normalized = ApolloSessionStateNormalize(valid, now, 7 * 86400);
@@ -111,6 +112,38 @@ int main(void) {
                    @"apollo://reddit.com/r/apolloapp/comments/abc/title/", @"bad/id")
                   isEqual:@"apollo://reddit.com/r/apolloapp/comments/abc/title/"],
               @"invalid comment id leaves post route unchanged");
+        Check([ApolloSessionStateDetailURLByRemovingCommentID(
+                   @"apollo://reddit.com/r/apolloapp/comments/abc/_/def/")
+                  isEqual:@"apollo://reddit.com/r/apolloapp/comments/abc/restored/"],
+              @"contextual route can return to the full post");
+
+        NSMutableDictionary *legacyContext = [valid mutableCopy];
+        [legacyContext removeObjectForKey:ApolloSessionStateDetailContextualKey];
+        legacyContext[ApolloSessionStateDetailURLKey] =
+            @"apollo://reddit.com/r/apolloapp/comments/abc/_/def/";
+        NSDictionary *legacyNormalized = ApolloSessionStateNormalize(
+            legacyContext, now, 7 * 86400);
+        Check([legacyNormalized[ApolloSessionStateDetailURLKey]
+                  isEqual:@"apollo://reddit.com/r/apolloapp/comments/abc/restored/"],
+              @"legacy visible-anchor routes migrate to full post context");
+        Check([legacyNormalized[ApolloSessionStateDetailItemKey] isEqual:@"t1_comment"],
+              @"legacy migration keeps the viewport anchor separate from its route");
+
+        NSMutableDictionary *fullThread = [legacyContext mutableCopy];
+        fullThread[ApolloSessionStateDetailContextualKey] = @NO;
+        NSDictionary *fullThreadNormalized = ApolloSessionStateNormalize(
+            fullThread, now, 7 * 86400);
+        Check([fullThreadNormalized[ApolloSessionStateDetailURLKey]
+                  isEqual:@"apollo://reddit.com/r/apolloapp/comments/abc/restored/"],
+              @"explicit full-thread state never reopens as a single-comment thread");
+
+        NSMutableDictionary *explicitContext = [legacyContext mutableCopy];
+        explicitContext[ApolloSessionStateDetailContextualKey] = @YES;
+        NSDictionary *explicitNormalized = ApolloSessionStateNormalize(
+            explicitContext, now, 7 * 86400);
+        Check([explicitNormalized[ApolloSessionStateDetailURLKey]
+                  isEqual:@"apollo://reddit.com/r/apolloapp/comments/abc/_/def/"],
+              @"genuine single-comment context remains contextual");
         Check(ApolloSessionStateDetailURLMatchesSavedRoute(
                   @"apollo://reddit.com/r/apolloapp/comments/abc/new-title/",
                   @"apollo://reddit.com/r/apolloapp/comments/abc/old-title/"),

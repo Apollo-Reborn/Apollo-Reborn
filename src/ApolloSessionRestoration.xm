@@ -229,7 +229,7 @@ static id ApolloSessionLinkFromComments(UIViewController *controller) {
     return nil;
 }
 
-static NSString *ApolloSessionDetailURL(UIViewController *controller, NSString *visibleItem) {
+static NSString *ApolloSessionDetailURL(UIViewController *controller) {
     id link = ApolloSessionLinkFromComments(controller);
     if (![link respondsToSelector:@selector(permalink)]) return nil;
     id permalink = ((id (*)(id, SEL))objc_msgSend)(link, @selector(permalink));
@@ -237,7 +237,6 @@ static NSString *ApolloSessionDetailURL(UIViewController *controller, NSString *
     if (![permalink isKindOfClass:NSString.class] || ![permalink hasPrefix:@"/"]) return nil;
     NSString *URLString = ApolloSessionURLStringWithPath(permalink);
     NSString *commentID = ApolloReadSwiftStringIvar(controller, "commentID");
-    if (!commentID.length && [visibleItem hasPrefix:@"t1_"]) commentID = visibleItem;
     return ApolloSessionStateDetailURLByAddingCommentID(URLString, commentID);
 }
 
@@ -294,8 +293,10 @@ static NSDictionary<NSString *, id> *ApolloSessionCapture(void) {
     UIViewController *comments = sApolloSessionCommentsController;
     if (comments && comments.navigationController.topViewController == comments) {
         NSDictionary *detailViewport = ApolloSessionViewport(comments, YES);
-        NSString *detailURL = ApolloSessionDetailURL(comments, detailViewport[@"item"]);
+        NSString *detailURL = ApolloSessionDetailURL(comments);
         if (detailURL) snapshot[ApolloSessionStateDetailURLKey] = detailURL;
+        snapshot[ApolloSessionStateDetailContextualKey] =
+            @(ApolloReadSwiftStringIvar(comments, "commentID").length > 0);
         if (detailViewport[@"item"]) snapshot[ApolloSessionStateDetailItemKey] = detailViewport[@"item"];
         if (detailViewport[@"delta"]) snapshot[ApolloSessionStateDetailDeltaKey] = detailViewport[@"delta"];
         if (detailViewport[@"offset"]) snapshot[ApolloSessionStateDetailOffsetKey] = detailViewport[@"offset"];
@@ -822,9 +823,9 @@ static void ApolloSessionHandleAccountReady(void) {
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig(animated);
-    if (!ApolloSessionControllerOwnsRestore((UIViewController *)self)) return;
     sApolloSessionFeedController = (UIViewController *)self;
     sApolloSessionCommentsController = nil;
+    if (!ApolloSessionControllerOwnsRestore((UIViewController *)self)) return;
     NSDictionary *pending = sApolloSessionPendingRestore;
     if (pending && ApolloSessionStateFeedURLMatchesSavedRoute(
                        ApolloSessionFeedURL((UIViewController *)self),
@@ -870,8 +871,8 @@ static void ApolloSessionHandleAccountReady(void) {
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig(animated);
-    if (!ApolloSessionControllerOwnsRestore((UIViewController *)self)) return;
     sApolloSessionCommentsController = (UIViewController *)self;
+    if (!ApolloSessionControllerOwnsRestore((UIViewController *)self)) return;
     NSDictionary *pending = sApolloSessionPendingRestore;
     if (pending && sApolloSessionDetailRouteStarted && !sApolloSessionDetailViewportStarted &&
         ApolloSessionCommentsControllerMatchesPendingDetail((UIViewController *)self)) {

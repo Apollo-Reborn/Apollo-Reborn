@@ -12,6 +12,7 @@ NSString *const ApolloSessionStateDetailItemKey = @"detailItem";
 NSString *const ApolloSessionStateDetailDeltaKey = @"detailDelta";
 NSString *const ApolloSessionStateDetailOffsetKey = @"detailOffset";
 NSString *const ApolloSessionStateDetailSortKey = @"detailSort";
+NSString *const ApolloSessionStateDetailContextualKey = @"detailContextual";
 NSString *const ApolloSessionStateSavedAtKey = @"savedAt";
 NSString *const ApolloSessionStateAccountScopeKey = @"accountScope";
 
@@ -99,6 +100,25 @@ NSString *ApolloSessionStateDetailURLByAddingCommentID(NSString *detailURL,
     for (NSUInteger index = 1; index <= comments + 1; index++) [route addObject:parts[index]];
     [route addObject:@"_"];
     [route addObject:bare];
+    components.path = [@"/" stringByAppendingString:[route componentsJoinedByString:@"/"]];
+    components.path = [components.path stringByAppendingString:@"/"];
+    return components.URL.absoluteString ?: detailURL;
+}
+
+NSString *ApolloSessionStateDetailURLByRemovingCommentID(NSString *detailURL) {
+    NSURLComponents *components = ApolloSessionRedditComponents(detailURL);
+    if (!components || !ApolloSessionStateDetailURLIsAllowed(detailURL)) return detailURL;
+    NSArray<NSString *> *parts = components.path.pathComponents;
+    NSUInteger comments = [parts indexOfObjectPassingTest:^BOOL(NSString *part,
+                                                                 __unused NSUInteger index,
+                                                                 __unused BOOL *stop) {
+        return [part.lowercaseString isEqualToString:@"comments"];
+    }];
+    if (comments == NSNotFound || comments + 3 >= parts.count ||
+        ![parts[comments + 2] isEqualToString:@"_"]) return detailURL;
+    NSMutableArray<NSString *> *route = [NSMutableArray array];
+    for (NSUInteger index = 1; index <= comments + 1; index++) [route addObject:parts[index]];
+    [route addObject:@"restored"];
     components.path = [@"/" stringByAppendingString:[route componentsJoinedByString:@"/"]];
     components.path = [components.path stringByAppendingString:@"/"];
     return components.URL.absoluteString ?: detailURL;
@@ -307,6 +327,20 @@ NSDictionary<NSString *, id> *ApolloSessionStateNormalize(NSDictionary *candidat
     }];
     NSString *detailURL = ApolloSessionBoundedString(candidate[ApolloSessionStateDetailURLKey]);
     if (detailURL && ApolloSessionStateDetailURLIsAllowed(detailURL)) {
+        id contextual = candidate[ApolloSessionStateDetailContextualKey];
+        BOOL hasContextMarker = [contextual isKindOfClass:NSNumber.class] &&
+            ([contextual integerValue] == 0 || [contextual integerValue] == 1);
+        if (!hasContextMarker) {
+            // Builds 352-354 accidentally promoted the visible comment anchor
+            // into route context. Legacy snapshots cannot distinguish that
+            // from intentional context, so safely restore the full post.
+            detailURL = ApolloSessionStateDetailURLByRemovingCommentID(detailURL);
+        } else {
+            normalized[ApolloSessionStateDetailContextualKey] = @([contextual boolValue]);
+            if (![contextual boolValue]) {
+                detailURL = ApolloSessionStateDetailURLByRemovingCommentID(detailURL);
+            }
+        }
         normalized[ApolloSessionStateDetailURLKey] = detailURL;
     }
     return normalized;

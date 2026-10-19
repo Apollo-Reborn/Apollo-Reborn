@@ -14,6 +14,7 @@ FOUNDATION_EXPORT NSString *const ApolloSessionStateDetailItemKey;
 FOUNDATION_EXPORT NSString *const ApolloSessionStateDetailDeltaKey;
 FOUNDATION_EXPORT NSString *const ApolloSessionStateDetailOffsetKey;
 FOUNDATION_EXPORT NSString *const ApolloSessionStateDetailSortKey;
+FOUNDATION_EXPORT NSString *const ApolloSessionStateDetailContextualKey;
 FOUNDATION_EXPORT NSString *const ApolloSessionStateSavedAtKey;
 FOUNDATION_EXPORT NSString *const ApolloSessionStateAccountScopeKey;
 
@@ -52,6 +53,12 @@ ApolloSessionStatePreferredAccountScope(NSString * _Nullable persistedScope,
 FOUNDATION_EXPORT NSString * _Nullable
 ApolloSessionStateDetailURLByAddingCommentID(NSString * _Nullable detailURL,
                                              NSString * _Nullable commentID);
+
+// Converts Apollo's canonical contextual route back to a full-post route with
+// a harmless title placeholder. Apollo's legacy parser requires that segment
+// to avoid treating the route as contextual.
+FOUNDATION_EXPORT NSString * _Nullable
+ApolloSessionStateDetailURLByRemovingCommentID(NSString * _Nullable detailURL);
 
 // Matches the Reddit post and optional contextual comment rather than a title
 // slug, which Reddit may rewrite independently of the post identity.

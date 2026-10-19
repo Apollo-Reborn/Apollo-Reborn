@@ -2,10 +2,18 @@
 
 ![Apollo comments before termination, during cold launch, and after restoration](apollo-session-restoration-simulator.gif)
 
+![Build 354 full-thread regression fix cold launch](apollo-session-full-thread-restoration.gif)
+
 This capture is from the real Apollo 1.15.11 app shell running the freshly built
 Apollo Reborn tweak on an iPhone 16 Pro simulator with iOS 27 in non-Glass mode.
 The account tab was cropped from the published GIF to avoid exposing account
 identity; no application behavior was removed from the sequence.
+
+The second capture is a separate regression test made from the exact bounded
+session plist copied from build 354 on the physical test device. It cold-launches
+the corrected simulator build into the full 40-comment Fios post, near the saved
+AutoModerator comment anchor, without the blue **View All Comments** single-thread
+banner. Its bottom tab bar is cropped only to hide account identity.
 
 ## Exercised path
 
@@ -26,12 +34,16 @@ identity; no application behavior was removed from the sequence.
 
 This demonstrates simulator cold restoration of an open post and its
 identity-based visible-comment anchor even when the saved feed anchor is no
-longer available. Separately, Dan performed the requested physical-device
-acceptance flow on build 352—open a post, stop at a recognizable comment,
-force-close Apollo, and reopen—and reported that Apollo returned to the same
-post/comment position. That device result is user-reported, not direct
-observation by the contributor. Overnight suspension and a real
-memory-pressure eviction remain untested on build 352.
+longer available. Dan later reported that build 354 reopened full-thread reading
+as a single-comment context. A targeted read-only copy of that build's bounded
+session plist confirmed that the correct post, comment anchor, sort, and account
+scope had been saved, but the visible anchor had also been promoted into the URL
+route. The second capture verifies the corrected route/anchor separation against
+that exact snapshot. It demonstrates a near-anchor result because live Reddit
+content and row heights changed between device capture and simulator replay; it
+does not claim exact pixel equality. The corrected build has not yet been
+accepted on a physical device, and overnight suspension or real memory-pressure
+eviction remains untested.
 
 ## Review follow-up
 
@@ -44,7 +56,8 @@ and addresses seven review findings by:
   for those pages before falling back to a pixel offset;
 - retaining the active feed and comment sorts (except Live Update, whose timer
   Apollo only starts through its interactive menu);
-- saving a contextual comment permalink for the visible comment;
+- preserving full-post versus genuine single-comment navigation context
+  separately from the visible comment viewport anchor;
 - continuing feed-anchor restoration while its restored post is on top;
 - completing feed and detail restoration independently so either phase cannot
   cancel the other;
@@ -86,11 +99,13 @@ Feed and post routing is scoped to the `UIWindowScene` whose foreground callback
 began restoration; controllers in another iPad or visionOS window cannot
 consume the global pending snapshot.
 
-The Foundation host harness now exercises 94 state, route, bounds, launch-
+The Foundation host harness now exercises 99 state, route, bounds, launch-
 precedence, persistence, and restore-eligibility checks under
-`-Wall -Wextra -Werror`. The prior seven-finding state completed a full arm64
-package build with SDK 27.1 and an iOS 15.0 deployment target; no app/package
-build has been launched for the eighth through tenth fixes because Dan's gate
-requires clean, resolved reviews first. The new deep-page, non-default-sort,
-late-account, pre-fetch identity, explicit-launch, and interrupted-restore paths
-have not yet been recaptured in the simulator or accepted on a physical device.
+`-Wall -Wextra -Werror`. The full-thread migration and genuine contextual-route
+preservation are covered independently. The corrected tweak also completed a
+full arm64 simulator build with SDK 27.1 and an iOS 15.0 deployment target and
+the exact build-354 snapshot replay shown above, plus a full arm64 device-package
+build with the same SDK and deployment target. The new deep-page,
+non-default-sort, late-account, pre-fetch identity, explicit-launch, and
+interrupted-restore paths have not all been recaptured independently or accepted
+on a physical device.
