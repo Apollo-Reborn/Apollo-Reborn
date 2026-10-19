@@ -91,6 +91,32 @@ NSString *ApolloSessionStateDetailURLByAddingCommentID(NSString *detailURL,
     return components.URL.absoluteString ?: detailURL;
 }
 
+static NSArray<NSString *> *ApolloSessionDetailRouteIdentity(NSString *value) {
+    NSURLComponents *components = ApolloSessionRedditComponents(value);
+    if (!components || !ApolloSessionStateDetailURLIsAllowed(value)) return nil;
+    NSArray<NSString *> *parts = components.path.pathComponents;
+    NSUInteger comments = [parts indexOfObjectPassingTest:^BOOL(NSString *part,
+                                                                 __unused NSUInteger index,
+                                                                 __unused BOOL *stop) {
+        return [part.lowercaseString isEqualToString:@"comments"];
+    }];
+    if (comments == NSNotFound || comments < 1 || comments + 1 >= parts.count) return nil;
+    NSString *subreddit = parts[comments - 1].lowercaseString;
+    NSString *postID = parts[comments + 1].lowercaseString;
+    if (!subreddit.length || !postID.length) return nil;
+    NSString *commentID = @"";
+    if (comments + 3 < parts.count && [parts[comments + 2] isEqualToString:@"_"]) {
+        commentID = parts[comments + 3].lowercaseString;
+    }
+    return @[subreddit, postID, commentID];
+}
+
+BOOL ApolloSessionStateDetailURLMatchesSavedRoute(NSString *candidateURL, NSString *savedURL) {
+    NSArray<NSString *> *candidate = ApolloSessionDetailRouteIdentity(candidateURL);
+    NSArray<NSString *> *saved = ApolloSessionDetailRouteIdentity(savedURL);
+    return candidate && saved && [candidate isEqualToArray:saved];
+}
+
 BOOL ApolloSessionStateViewportRestoreIsEligible(BOOL detail, BOOL visible, BOOL top,
                                                   BOOL inNavigationStack) {
     return detail ? (visible && top) : ((visible && top) || inNavigationStack);

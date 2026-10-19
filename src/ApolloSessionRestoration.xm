@@ -207,6 +207,12 @@ static NSString *ApolloSessionDetailURL(UIViewController *controller, NSString *
     return ApolloSessionStateDetailURLByAddingCommentID(URLString, commentID);
 }
 
+static BOOL ApolloSessionCommentsControllerMatchesPendingDetail(UIViewController *controller) {
+    NSString *savedURL = sApolloSessionPendingRestore[ApolloSessionStateDetailURLKey];
+    NSString *controllerURL = ApolloSessionDetailURL(controller, nil);
+    return ApolloSessionStateDetailURLMatchesSavedRoute(controllerURL, savedURL);
+}
+
 static void ApolloSessionCaptureOptionalEnum(NSMutableDictionary *snapshot, id controller,
                                              const char *ivarName, NSString *key,
                                              int64_t minimum, int64_t maximum) {
@@ -502,7 +508,13 @@ static void ApolloSessionConsiderInitialRestore(void) {
         return;
     }
     NSString *accountScope = ApolloSessionAccountScope(NO);
-    if (!accountScope) return; // AccountManager has not finished restoring yet.
+    // AccountManager posts its account-change notification as soon as its live
+    // selection is coherent, before the defaults mirror is necessarily
+    // persisted. The notification observer below re-enters this function; use
+    // that live identity as the cold-launch fallback instead of skipping the
+    // saved session for the rest of the activation.
+    if (!accountScope) accountScope = ApolloSessionAccountScope(YES);
+    if (!accountScope) return; // The account notification will retry this path.
     sApolloSessionInitialRestoreConsidered = YES;
     if (![accountScope isEqualToString:normalized[ApolloSessionStateAccountScopeKey]]) {
         ApolloLog(@"[SessionRestore] Ignoring reading session saved for a different account");
@@ -563,7 +575,9 @@ static void ApolloSessionConsiderInitialRestore(void) {
 
 - (void)viewDidLoad {
     NSNumber *sort = sApolloSessionPendingRestore[ApolloSessionStateDetailSortKey];
-    if (sApolloSessionDetailRouteStarted && sort) {
+    if (sApolloSessionDetailRouteStarted && !sApolloSessionDetailViewportStarted &&
+        !sApolloSessionDetailViewportFinished && sort &&
+        ApolloSessionCommentsControllerMatchesPendingDetail((UIViewController *)self)) {
         ApolloCommentsVCWriteCurrentSort(self, sort.longLongValue);
     }
     %orig;
@@ -573,7 +587,8 @@ static void ApolloSessionConsiderInitialRestore(void) {
     %orig(animated);
     sApolloSessionCommentsController = (UIViewController *)self;
     NSDictionary *pending = sApolloSessionPendingRestore;
-    if (pending && sApolloSessionDetailRouteStarted && !sApolloSessionDetailViewportStarted) {
+    if (pending && sApolloSessionDetailRouteStarted && !sApolloSessionDetailViewportStarted &&
+        ApolloSessionCommentsControllerMatchesPendingDetail((UIViewController *)self)) {
         sApolloSessionDetailViewportStarted = YES;
         ApolloSessionRestoreViewport((UIViewController *)self, YES, 0,
                                      sApolloSessionRestoreGeneration);
@@ -604,6 +619,15 @@ static void ApolloSessionConsiderInitialRestore(void) {
 
 %ctor {
     NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+    for (NSNotificationName name in @[
+        @"com.christianselig.RedditCurrentAccountChanged",
+        @"com.christianselig.RedditAccountChanged",
+    ]) {
+        [center addObserverForName:name object:nil queue:NSOperationQueue.mainQueue
+                         usingBlock:^(__unused NSNotification *note) {
+            ApolloSessionConsiderInitialRestore();
+        }];
+    }
     [center addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil
                          queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {
         ApolloSessionPersist();

@@ -99,6 +99,18 @@ int main(void) {
                    @"apollo://reddit.com/r/apolloapp/comments/abc/title/", @"bad/id")
                   isEqual:@"apollo://reddit.com/r/apolloapp/comments/abc/title/"],
               @"invalid comment id leaves post route unchanged");
+        Check(ApolloSessionStateDetailURLMatchesSavedRoute(
+                  @"apollo://reddit.com/r/apolloapp/comments/abc/new-title/",
+                  @"apollo://reddit.com/r/apolloapp/comments/abc/old-title/"),
+              @"detail matching ignores a changed title slug");
+        Check(!ApolloSessionStateDetailURLMatchesSavedRoute(
+                   @"apollo://reddit.com/r/apolloapp/comments/abc/_/one/",
+                   @"apollo://reddit.com/r/apolloapp/comments/abc/_/two/"),
+              @"detail matching rejects another contextual comment");
+        Check(!ApolloSessionStateDetailURLMatchesSavedRoute(
+                   @"apollo://reddit.com/r/apolloapp/comments/def/title/",
+                   @"apollo://reddit.com/r/apolloapp/comments/abc/title/"),
+              @"detail matching rejects another post");
         Check(ApolloSessionStateViewportRestoreIsEligible(NO, NO, NO, YES),
               @"feed restore remains eligible beneath pushed detail");
         Check(!ApolloSessionStateViewportRestoreIsEligible(YES, NO, NO, YES),
