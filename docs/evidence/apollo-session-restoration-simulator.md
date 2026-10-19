@@ -37,20 +37,30 @@ memory-pressure eviction remain untested on build 352.
 
 The GIF and physical-device report above cover build 352. They predate the
 review follow-up and are not presented as evidence for its additional edge
-cases. The follow-up keeps the original behavior and addresses five review
-findings by:
+cases. The published follow-up through `c3c18aa0` keeps the original behavior
+and addresses seven review findings by:
 
 - retaining bounded feed page depth and asking Apollo's own batch-fetch adapter
   for those pages before falling back to a pixel offset;
 - retaining the active feed and comment sorts (except Live Update, whose timer
   Apollo only starts through its interactive menu);
 - saving a contextual comment permalink for the visible comment;
-- continuing feed-anchor restoration while its restored post is on top; and
+- continuing feed-anchor restoration while its restored post is on top;
 - completing feed and detail restoration independently so either phase cannot
-  cancel the other.
+  cancel the other;
+- retrying restoration from Apollo's account-ready notifications when account
+  identity was not available during the first lifecycle callbacks; and
+- restricting restored comment sort and viewport state to the saved post and
+  optional contextual-comment identity.
 
-The Foundation host harness now exercises 30 state, route, bounds, and restore-
-eligibility checks under `-Wall -Wextra -Werror`. A full arm64 package build
-also completed with SDK 27.1 and an iOS 15.0 deployment target. The new
-deep-page and non-default-sort runtime paths have not yet been recaptured in
-the simulator or accepted on a physical device.
+An eighth P2 follow-up is held locally behind the review-completion build gate:
+URL-routed comments controllers now match the saved route from their pre-fetch
+`linkID` and `commentID` Swift ivars instead of waiting for an `RDKLink` that is
+not populated until the first fetch. The Foundation host harness now exercises
+36 state, route, bounds, and restore-eligibility checks under
+`-Wall -Wextra -Werror`. The prior seven-finding state completed a full arm64
+package build with SDK 27.1 and an iOS 15.0 deployment target; no app/package
+build was launched for the eighth fix because Dan's gate requires a clean,
+resolved review first. The new deep-page, non-default-sort, late-account, and
+pre-fetch identity paths have not yet been recaptured in the simulator or
+accepted on a physical device.

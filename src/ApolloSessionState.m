@@ -117,6 +117,25 @@ BOOL ApolloSessionStateDetailURLMatchesSavedRoute(NSString *candidateURL, NSStri
     return candidate && saved && [candidate isEqualToArray:saved];
 }
 
+static NSString *ApolloSessionBareFullname(NSString *value, NSString *prefix) {
+    NSString *bare = ApolloSessionBoundedString(value).lowercaseString;
+    if ([bare hasPrefix:prefix]) bare = [bare substringFromIndex:prefix.length];
+    NSCharacterSet *notBase36 = [[NSCharacterSet characterSetWithCharactersInString:
+        @"0123456789abcdefghijklmnopqrstuvwxyz"] invertedSet];
+    return bare.length && [bare rangeOfCharacterFromSet:notBase36].location == NSNotFound
+        ? bare : nil;
+}
+
+BOOL ApolloSessionStateDetailIdentifiersMatchSavedRoute(NSString *postID, NSString *commentID,
+                                                        NSString *savedURL) {
+    NSArray<NSString *> *saved = ApolloSessionDetailRouteIdentity(savedURL);
+    NSString *barePost = ApolloSessionBareFullname(postID, @"t3_");
+    if (!saved || ![barePost isEqualToString:saved[1]]) return NO;
+    NSString *bareComment = commentID.length
+        ? ApolloSessionBareFullname(commentID, @"t1_") : @"";
+    return bareComment && [bareComment isEqualToString:saved[2]];
+}
+
 BOOL ApolloSessionStateViewportRestoreIsEligible(BOOL detail, BOOL visible, BOOL top,
                                                   BOOL inNavigationStack) {
     return detail ? (visible && top) : ((visible && top) || inNavigationStack);

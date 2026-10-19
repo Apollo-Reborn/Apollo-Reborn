@@ -209,8 +209,12 @@ static NSString *ApolloSessionDetailURL(UIViewController *controller, NSString *
 
 static BOOL ApolloSessionCommentsControllerMatchesPendingDetail(UIViewController *controller) {
     NSString *savedURL = sApolloSessionPendingRestore[ApolloSessionStateDetailURLKey];
-    NSString *controllerURL = ApolloSessionDetailURL(controller, nil);
-    return ApolloSessionStateDetailURLMatchesSavedRoute(controllerURL, savedURL);
+    // URL-routed controllers have no link object until their first fetch. The
+    // Swift initializer has already populated these IDs before viewDidLoad,
+    // which is exactly where the saved sort must be written.
+    NSString *postID = ApolloReadSwiftStringIvar(controller, "linkID");
+    NSString *commentID = ApolloReadSwiftStringIvar(controller, "commentID");
+    return ApolloSessionStateDetailIdentifiersMatchSavedRoute(postID, commentID, savedURL);
 }
 
 static void ApolloSessionCaptureOptionalEnum(NSMutableDictionary *snapshot, id controller,

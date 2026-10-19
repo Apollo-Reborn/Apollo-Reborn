@@ -45,6 +45,13 @@ FOUNDATION_EXPORT BOOL
 ApolloSessionStateDetailURLMatchesSavedRoute(NSString * _Nullable candidateURL,
                                              NSString * _Nullable savedURL);
 
+// URL-routed comments controllers have no RDKLink before their first fetch.
+// Match the Swift linkID/commentID ivars to the saved route at that boundary.
+FOUNDATION_EXPORT BOOL
+ApolloSessionStateDetailIdentifiersMatchSavedRoute(NSString * _Nullable postID,
+                                                    NSString * _Nullable commentID,
+                                                    NSString * _Nullable savedURL);
+
 // A detail viewport is safe to mutate only while it is visible and on top.
 // A feed viewport may continue restoring while a detail controller pushed
 // from it is visible, provided the feed still belongs to that navigation stack.

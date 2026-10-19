@@ -111,6 +111,18 @@ int main(void) {
                    @"apollo://reddit.com/r/apolloapp/comments/def/title/",
                    @"apollo://reddit.com/r/apolloapp/comments/abc/title/"),
               @"detail matching rejects another post");
+        Check(ApolloSessionStateDetailIdentifiersMatchSavedRoute(
+                  @"t3_AbC", @"t1_DeF",
+                  @"apollo://reddit.com/r/apolloapp/comments/abc/_/def/"),
+              @"pre-fetch controller IDs match a contextual saved route");
+        Check(!ApolloSessionStateDetailIdentifiersMatchSavedRoute(
+                   @"t3_abc", nil,
+                   @"apollo://reddit.com/r/apolloapp/comments/abc/_/def/"),
+              @"contextual saved route requires its comment ID");
+        Check(ApolloSessionStateDetailIdentifiersMatchSavedRoute(
+                  @"abc", nil,
+                  @"apollo://reddit.com/r/apolloapp/comments/abc/title/"),
+              @"bare pre-fetch post ID matches a non-contextual saved route");
         Check(ApolloSessionStateViewportRestoreIsEligible(NO, NO, NO, YES),
               @"feed restore remains eligible beneath pushed detail");
         Check(!ApolloSessionStateViewportRestoreIsEligible(YES, NO, NO, YES),
