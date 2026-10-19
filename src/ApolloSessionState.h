@@ -6,10 +6,14 @@ FOUNDATION_EXPORT NSString *const ApolloSessionStateFeedURLKey;
 FOUNDATION_EXPORT NSString *const ApolloSessionStateFeedItemKey;
 FOUNDATION_EXPORT NSString *const ApolloSessionStateFeedDeltaKey;
 FOUNDATION_EXPORT NSString *const ApolloSessionStateFeedOffsetKey;
+FOUNDATION_EXPORT NSString *const ApolloSessionStateFeedPageKey;
+FOUNDATION_EXPORT NSString *const ApolloSessionStateFeedSortKey;
+FOUNDATION_EXPORT NSString *const ApolloSessionStateFeedTimeSortKey;
 FOUNDATION_EXPORT NSString *const ApolloSessionStateDetailURLKey;
 FOUNDATION_EXPORT NSString *const ApolloSessionStateDetailItemKey;
 FOUNDATION_EXPORT NSString *const ApolloSessionStateDetailDeltaKey;
 FOUNDATION_EXPORT NSString *const ApolloSessionStateDetailOffsetKey;
+FOUNDATION_EXPORT NSString *const ApolloSessionStateDetailSortKey;
 FOUNDATION_EXPORT NSString *const ApolloSessionStateSavedAtKey;
 FOUNDATION_EXPORT NSString *const ApolloSessionStateAccountScopeKey;
 
@@ -27,5 +31,25 @@ ApolloSessionStateNormalize(NSDictionary * _Nullable candidate,
 // Reddit destinations go through Apollo's own URL router.
 FOUNDATION_EXPORT BOOL ApolloSessionStateFeedURLIsAllowed(NSString * _Nullable value);
 FOUNDATION_EXPORT BOOL ApolloSessionStateDetailURLIsAllowed(NSString * _Nullable value);
+
+// Turns a post route into Apollo's canonical contextual-comment route. The
+// comment ID may be a bare base36 value or a t1_ fullname. Invalid IDs leave
+// the original route unchanged.
+FOUNDATION_EXPORT NSString * _Nullable
+ApolloSessionStateDetailURLByAddingCommentID(NSString * _Nullable detailURL,
+                                             NSString * _Nullable commentID);
+
+// A detail viewport is safe to mutate only while it is visible and on top.
+// A feed viewport may continue restoring while a detail controller pushed
+// from it is visible, provided the feed still belongs to that navigation stack.
+FOUNDATION_EXPORT BOOL ApolloSessionStateViewportRestoreIsEligible(BOOL detail,
+                                                                   BOOL visible,
+                                                                   BOOL top,
+                                                                   BOOL inNavigationStack);
+
+// Page restoration is monotonic and requests each observed page at most once.
+FOUNDATION_EXPORT BOOL ApolloSessionStateShouldRequestNextFeedPage(NSInteger savedPage,
+                                                                  NSInteger currentPage,
+                                                                  NSInteger lastRequestedPage);
 
 NS_ASSUME_NONNULL_END

@@ -18,9 +18,13 @@ int main(void) {
             ApolloSessionStateFeedItemKey: @"t3_feed",
             ApolloSessionStateFeedDeltaKey: @42.5,
             ApolloSessionStateFeedOffsetKey: @9001,
+            ApolloSessionStateFeedPageKey: @4,
+            ApolloSessionStateFeedSortKey: @3,
+            ApolloSessionStateFeedTimeSortKey: @2,
             ApolloSessionStateDetailURLKey: @"apollo://reddit.com/r/apolloapp/comments/abc/title/",
             ApolloSessionStateDetailItemKey: @"t1_comment",
             ApolloSessionStateDetailDeltaKey: @12,
+            ApolloSessionStateDetailSortKey: @6,
             @"unrecognized": @"discard me",
         };
         NSDictionary *normalized = ApolloSessionStateNormalize(valid, now, 7 * 86400);
@@ -29,6 +33,9 @@ int main(void) {
         Check([normalized[ApolloSessionStateDetailURLKey] hasPrefix:@"apollo://reddit.com/r/"],
               @"post route retained");
         Check(normalized[@"unrecognized"] == nil, @"unknown fields discarded");
+        Check([normalized[ApolloSessionStateFeedPageKey] isEqual:@4], @"feed page retained");
+        Check([normalized[ApolloSessionStateFeedSortKey] isEqual:@3], @"feed sort retained");
+        Check([normalized[ApolloSessionStateDetailSortKey] isEqual:@6], @"comment sort retained");
 
         NSMutableDictionary *unscoped = [valid mutableCopy];
         [unscoped removeObjectForKey:ApolloSessionStateAccountScopeKey];
@@ -83,6 +90,33 @@ int main(void) {
               @"feed route rejected as detail");
         Check(!ApolloSessionStateFeedURLIsAllowed(@"apollo://reddit.com/r/all?sort=new"),
               @"query-bearing route rejected");
+
+        Check([ApolloSessionStateDetailURLByAddingCommentID(
+                   @"apollo://reddit.com/r/apolloapp/comments/abc/title/", @"t1_DeF")
+                  isEqual:@"apollo://reddit.com/r/apolloapp/comments/abc/_/def/"],
+              @"comment fullname creates canonical contextual route");
+        Check([ApolloSessionStateDetailURLByAddingCommentID(
+                   @"apollo://reddit.com/r/apolloapp/comments/abc/title/", @"bad/id")
+                  isEqual:@"apollo://reddit.com/r/apolloapp/comments/abc/title/"],
+              @"invalid comment id leaves post route unchanged");
+        Check(ApolloSessionStateViewportRestoreIsEligible(NO, NO, NO, YES),
+              @"feed restore remains eligible beneath pushed detail");
+        Check(!ApolloSessionStateViewportRestoreIsEligible(YES, NO, NO, YES),
+              @"detail restore requires visible top controller");
+        Check(ApolloSessionStateViewportRestoreIsEligible(YES, YES, YES, YES),
+              @"visible top detail remains eligible");
+        Check(ApolloSessionStateShouldRequestNextFeedPage(4, 1, NSNotFound),
+              @"deep feed requests its next missing page");
+        Check(!ApolloSessionStateShouldRequestNextFeedPage(4, 1, 1),
+              @"same feed page is requested at most once");
+        Check(!ApolloSessionStateShouldRequestNextFeedPage(4, 4, 3),
+              @"caught-up feed does not request another page");
+
+        NSMutableDictionary *excessivePage = [valid mutableCopy];
+        excessivePage[ApolloSessionStateFeedPageKey] = @21;
+        normalized = ApolloSessionStateNormalize(excessivePage, now, 7 * 86400);
+        Check(normalized != nil && normalized[ApolloSessionStateFeedPageKey] == nil,
+              @"excessive page depth discarded");
 
         NSLog(@"PASS: %lu session-state checks", (unsigned long)checks);
     }

@@ -32,3 +32,25 @@ force-close Apollo, and reopen—and reported that Apollo returned to the same
 post/comment position. That device result is user-reported, not direct
 observation by the contributor. Overnight suspension and a real
 memory-pressure eviction remain untested on build 352.
+
+## Review follow-up
+
+The GIF and physical-device report above cover build 352. They predate the
+review follow-up and are not presented as evidence for its additional edge
+cases. The follow-up keeps the original behavior and addresses five review
+findings by:
+
+- retaining bounded feed page depth and asking Apollo's own batch-fetch adapter
+  for those pages before falling back to a pixel offset;
+- retaining the active feed and comment sorts (except Live Update, whose timer
+  Apollo only starts through its interactive menu);
+- saving a contextual comment permalink for the visible comment;
+- continuing feed-anchor restoration while its restored post is on top; and
+- completing feed and detail restoration independently so either phase cannot
+  cancel the other.
+
+The Foundation host harness now exercises 30 state, route, bounds, and restore-
+eligibility checks under `-Wall -Wextra -Werror`. A full arm64 package build
+also completed with SDK 27.1 and an iOS 15.0 deployment target. The new
+deep-page and non-default-sort runtime paths have not yet been recaptured in
+the simulator or accepted on a physical device.

@@ -11,6 +11,7 @@
 
 #import "ApolloAccountCredentials.h"
 #import "ApolloCommon.h"
+#import "ApolloPerPostCommentSort.h"
 #import "ApolloSessionState.h"
 #import "ApolloSwiftRuntime.h"
 
@@ -22,7 +23,8 @@ extern NSString *ApolloMultiredditPathFromViewController(UIViewController *viewC
 static NSString *const kApolloSessionHomeURL = @"apollo-reborn://session/home";
 static const NSTimeInterval kApolloSessionMaximumAge = 7.0 * 24.0 * 60.0 * 60.0;
 static const NSUInteger kApolloSessionRouteAttempts = 24;
-static const NSUInteger kApolloSessionAnchorAttempts = 48;
+static const NSUInteger kApolloSessionDetailAnchorAttempts = 48;
+static const NSUInteger kApolloSessionFeedAnchorAttempts = 120;
 static const NSTimeInterval kApolloSessionRetryDelay = 0.25;
 static const NSTimeInterval kApolloSessionDetailRouteGrace = 0.75;
 
@@ -33,7 +35,41 @@ static BOOL sApolloSessionInitialRestoreConsidered;
 static BOOL sApolloSessionDetailRouteStarted;
 static BOOL sApolloSessionFeedViewportStarted;
 static BOOL sApolloSessionDetailViewportStarted;
+static BOOL sApolloSessionFeedViewportFinished;
+static BOOL sApolloSessionDetailViewportFinished;
+static __weak UIViewController *sApolloSessionFeedSortPreparedController;
+static __weak UIViewController *sApolloSessionPagingController;
+static NSInteger sApolloSessionLastRequestedPage = NSNotFound;
 static NSUInteger sApolloSessionRestoreGeneration;
+
+static BOOL ApolloSessionReadOptionalEnum(id object, const char *name, int64_t *outRaw) {
+    ptrdiff_t offset = ApolloIvarOffset(object_getClass(object), name);
+    if (offset < 0 || (size_t)(offset + 9) > class_getInstanceSize(object_getClass(object))) return NO;
+    const uint8_t *base = (const uint8_t *)(__bridge const void *)object;
+    if ((*(base + offset + 8)) & 0x1) return NO;
+    int64_t raw = 0;
+    memcpy(&raw, base + offset, sizeof(raw));
+    if (outRaw) *outRaw = raw;
+    return YES;
+}
+
+static BOOL ApolloSessionWriteOptionalEnum(id object, const char *name, int64_t raw) {
+    ptrdiff_t offset = ApolloIvarOffset(object_getClass(object), name);
+    if (offset < 0 || (size_t)(offset + 9) > class_getInstanceSize(object_getClass(object))) return NO;
+    uint8_t *base = (uint8_t *)(__bridge void *)object;
+    memcpy(base + offset, &raw, sizeof(raw));
+    *(base + offset + 8) = 0;
+    return YES;
+}
+
+static NSInteger ApolloSessionCurrentFeedPage(UIViewController *controller) {
+    ptrdiff_t offset = ApolloIvarOffset(object_getClass(controller), "currentPage");
+    if (offset < 0 || (size_t)(offset + sizeof(NSInteger)) >
+        class_getInstanceSize(object_getClass(controller))) return 0;
+    NSInteger page = 0;
+    memcpy(&page, (const uint8_t *)(__bridge const void *)controller + offset, sizeof(page));
+    return MAX(0, page);
+}
 
 static NSString *ApolloSessionAccountScope(BOOL live) {
     NSString *username = nil;
@@ -159,13 +195,25 @@ static id ApolloSessionLinkFromComments(UIViewController *controller) {
     return nil;
 }
 
-static NSString *ApolloSessionDetailURL(UIViewController *controller) {
+static NSString *ApolloSessionDetailURL(UIViewController *controller, NSString *visibleItem) {
     id link = ApolloSessionLinkFromComments(controller);
     if (![link respondsToSelector:@selector(permalink)]) return nil;
     id permalink = ((id (*)(id, SEL))objc_msgSend)(link, @selector(permalink));
     if ([permalink isKindOfClass:NSURL.class]) permalink = [permalink path];
     if (![permalink isKindOfClass:NSString.class] || ![permalink hasPrefix:@"/"]) return nil;
-    return ApolloSessionURLStringWithPath(permalink);
+    NSString *URLString = ApolloSessionURLStringWithPath(permalink);
+    NSString *commentID = ApolloReadSwiftStringIvar(controller, "commentID");
+    if (!commentID.length && [visibleItem hasPrefix:@"t1_"]) commentID = visibleItem;
+    return ApolloSessionStateDetailURLByAddingCommentID(URLString, commentID);
+}
+
+static void ApolloSessionCaptureOptionalEnum(NSMutableDictionary *snapshot, id controller,
+                                             const char *ivarName, NSString *key,
+                                             int64_t minimum, int64_t maximum) {
+    int64_t raw = 0;
+    if (ApolloSessionReadOptionalEnum(controller, ivarName, &raw) && raw >= minimum && raw <= maximum) {
+        snapshot[key] = @(raw);
+    }
 }
 
 static NSDictionary<NSString *, id> *ApolloSessionCapture(void) {
@@ -182,15 +230,24 @@ static NSDictionary<NSString *, id> *ApolloSessionCapture(void) {
     if (feedViewport[@"item"]) snapshot[ApolloSessionStateFeedItemKey] = feedViewport[@"item"];
     if (feedViewport[@"delta"]) snapshot[ApolloSessionStateFeedDeltaKey] = feedViewport[@"delta"];
     if (feedViewport[@"offset"]) snapshot[ApolloSessionStateFeedOffsetKey] = feedViewport[@"offset"];
+    snapshot[ApolloSessionStateFeedPageKey] = @(MIN(20, ApolloSessionCurrentFeedPage(feed)));
+    ApolloSessionCaptureOptionalEnum(snapshot, feed, "currentSort", ApolloSessionStateFeedSortKey, 1, 6);
+    ApolloSessionCaptureOptionalEnum(snapshot, feed, "currentTimeSort",
+                                     ApolloSessionStateFeedTimeSortKey, 1, 7);
 
     UIViewController *comments = sApolloSessionCommentsController;
     if (comments && comments.navigationController.topViewController == comments) {
-        NSString *detailURL = ApolloSessionDetailURL(comments);
         NSDictionary *detailViewport = ApolloSessionViewport(comments, YES);
+        NSString *detailURL = ApolloSessionDetailURL(comments, detailViewport[@"item"]);
         if (detailURL) snapshot[ApolloSessionStateDetailURLKey] = detailURL;
         if (detailViewport[@"item"]) snapshot[ApolloSessionStateDetailItemKey] = detailViewport[@"item"];
         if (detailViewport[@"delta"]) snapshot[ApolloSessionStateDetailDeltaKey] = detailViewport[@"delta"];
         if (detailViewport[@"offset"]) snapshot[ApolloSessionStateDetailOffsetKey] = detailViewport[@"offset"];
+        // Live Update is intentionally not restored: Apollo only starts its
+        // timer from the interactive menu path. The stable 1...7 sorts are
+        // safe to apply before the restored controller's first fetch.
+        ApolloSessionCaptureOptionalEnum(snapshot, comments, "currentSort",
+                                         ApolloSessionStateDetailSortKey, 1, 7);
     }
     return ApolloSessionStateNormalize(snapshot, NSDate.date, kApolloSessionMaximumAge);
 }
@@ -275,6 +332,52 @@ static NSIndexPath *ApolloSessionPathForIdentifier(UIViewController *controller,
     return nil;
 }
 
+static void ApolloSessionFinishViewport(BOOL detail) {
+    if (detail) sApolloSessionDetailViewportFinished = YES;
+    else sApolloSessionFeedViewportFinished = YES;
+    if (sApolloSessionFeedViewportFinished && sApolloSessionDetailViewportFinished) {
+        sApolloSessionPendingRestore = nil;
+    }
+}
+
+static BOOL ApolloSessionApplyFeedSort(UIViewController *controller) {
+    BOOL changed = NO;
+    NSNumber *sort = sApolloSessionPendingRestore[ApolloSessionStateFeedSortKey];
+    NSNumber *timeSort = sApolloSessionPendingRestore[ApolloSessionStateFeedTimeSortKey];
+    for (NSArray *entry in @[
+        @[@"currentSort", sort ?: NSNull.null],
+        @[@"currentTimeSort", timeSort ?: NSNull.null],
+    ]) {
+        NSNumber *saved = entry[1];
+        if (saved == (id)NSNull.null) continue;
+        int64_t current = 0;
+        const char *name = [entry[0] UTF8String];
+        if ((!ApolloSessionReadOptionalEnum(controller, name, &current) || current != saved.longLongValue) &&
+            ApolloSessionWriteOptionalEnum(controller, name, saved.longLongValue)) changed = YES;
+    }
+    return changed;
+}
+
+static BOOL ApolloSessionRequestNextFeedPage(UIViewController *controller) {
+    NSInteger page = ApolloSessionCurrentFeedPage(controller);
+    NSInteger lastRequested = sApolloSessionPagingController == controller
+        ? sApolloSessionLastRequestedPage : NSNotFound;
+    NSInteger savedPage = [sApolloSessionPendingRestore[ApolloSessionStateFeedPageKey] integerValue];
+    if (!ApolloSessionStateShouldRequestNextFeedPage(savedPage, page, lastRequested)) return NO;
+    id tableNode = ApolloObjectIvar(controller, "tableNode");
+    id adapter = ApolloObjectIvar(controller, "listAdapter");
+    Class contextClass = objc_getClass("ASBatchContext");
+    SEL selector = @selector(tableNode:willBeginBatchFetchWithContext:);
+    if (!tableNode || !adapter || !contextClass || ![adapter respondsToSelector:selector]) return NO;
+    id context = [contextClass new];
+    if (!context) return NO;
+    sApolloSessionPagingController = controller;
+    sApolloSessionLastRequestedPage = page;
+    ((void (*)(id, SEL, id, id))objc_msgSend)(adapter, selector, tableNode, context);
+    ApolloLog(@"[SessionRestore] Requested feed page after page %ld for saved anchor", (long)page);
+    return YES;
+}
+
 static void ApolloSessionStartDetailRoute(void) {
     if (sApolloSessionDetailRouteStarted) return;
     sApolloSessionDetailRouteStarted = YES;
@@ -287,18 +390,18 @@ static void ApolloSessionStartDetailRoute(void) {
                    dispatch_get_main_queue(), ^{
         if (!ApolloSessionOpenURLString(detailURL)) {
             ApolloLog(@"[SessionRestore] Apollo rejected saved post route %@", detailURL);
-            sApolloSessionPendingRestore = nil;
+            ApolloSessionFinishViewport(YES);
             [[NSFileManager defaultManager] removeItemAtPath:ApolloSessionFilePath() error:nil];
             return;
         }
         NSUInteger generation = sApolloSessionRestoreGeneration;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                     (int64_t)(kApolloSessionAnchorAttempts * kApolloSessionRetryDelay * NSEC_PER_SEC)),
+                                     (int64_t)(kApolloSessionDetailAnchorAttempts * kApolloSessionRetryDelay * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             if (generation == sApolloSessionRestoreGeneration && sApolloSessionPendingRestore &&
                 !sApolloSessionDetailViewportStarted) {
                 ApolloLog(@"[SessionRestore] Saved post did not become available; keeping restored feed");
-                sApolloSessionPendingRestore = nil;
+                ApolloSessionFinishViewport(YES);
                 [[NSFileManager defaultManager] removeItemAtPath:ApolloSessionFilePath() error:nil];
             }
         });
@@ -322,8 +425,12 @@ static void ApolloSessionScheduleDetailRoute(NSUInteger generation) {
 
 static void ApolloSessionRestoreViewport(UIViewController *controller, BOOL detail,
                                          NSUInteger attempt, NSUInteger generation) {
+    UINavigationController *navigation = controller.navigationController;
+    BOOL visible = controller.viewIfLoaded.window != nil;
+    BOOL top = navigation.topViewController == controller;
+    BOOL inStack = [navigation.viewControllers containsObject:controller];
     if (generation != sApolloSessionRestoreGeneration || !sApolloSessionPendingRestore ||
-        !controller.viewIfLoaded.window || controller.navigationController.topViewController != controller) return;
+        !ApolloSessionStateViewportRestoreIsEligible(detail, visible, top, inStack)) return;
     UITableView *table = ApolloSessionTableView(controller);
     NSString *itemKey = detail ? ApolloSessionStateDetailItemKey : ApolloSessionStateFeedItemKey;
     NSString *deltaKey = detail ? ApolloSessionStateDetailDeltaKey : ApolloSessionStateFeedDeltaKey;
@@ -339,10 +446,18 @@ static void ApolloSessionRestoreViewport(UIViewController *controller, BOOL deta
                              table.adjustedContentInset.bottom);
         [table setContentOffset:CGPointMake(table.contentOffset.x, MIN(MAX(y, top), bottom)) animated:NO];
         ApolloLog(@"[SessionRestore] Restored %@ anchor %@", detail ? @"post" : @"feed", identifier);
-        if (detail) sApolloSessionPendingRestore = nil; else ApolloSessionStartDetailRoute();
+        if (!detail) ApolloSessionStartDetailRoute();
+        ApolloSessionFinishViewport(detail);
         return;
     }
-    if (attempt + 1 < kApolloSessionAnchorAttempts) {
+    NSUInteger maximumAttempts = detail ? kApolloSessionDetailAnchorAttempts
+                                        : kApolloSessionFeedAnchorAttempts;
+    NSInteger savedPage = [sApolloSessionPendingRestore[ApolloSessionStateFeedPageKey] integerValue];
+    NSInteger currentPage = detail ? savedPage : ApolloSessionCurrentFeedPage(controller);
+    if (!detail && settled && currentPage < savedPage && attempt % 4 == 3) {
+        ApolloSessionRequestNextFeedPage(controller);
+    }
+    if (attempt + 1 < maximumAttempts) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kApolloSessionRetryDelay * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             ApolloSessionRestoreViewport(controller, detail, attempt + 1, generation);
@@ -361,7 +476,8 @@ static void ApolloSessionRestoreViewport(UIViewController *controller, BOOL deta
         ApolloLog(@"[SessionRestore] %@ anchor unavailable; used bounded pixel fallback",
                   detail ? @"Post" : @"Feed");
     }
-    if (detail) sApolloSessionPendingRestore = nil; else ApolloSessionStartDetailRoute();
+    if (!detail) ApolloSessionStartDetailRoute();
+    ApolloSessionFinishViewport(detail);
 }
 
 static void ApolloSessionRouteFeed(NSUInteger attempt, NSUInteger generation) {
@@ -396,12 +512,25 @@ static void ApolloSessionConsiderInitialRestore(void) {
     sApolloSessionDetailRouteStarted = NO;
     sApolloSessionFeedViewportStarted = NO;
     sApolloSessionDetailViewportStarted = NO;
+    sApolloSessionFeedViewportFinished = NO;
+    sApolloSessionDetailViewportFinished = ![normalized[ApolloSessionStateDetailURLKey] length];
+    sApolloSessionFeedSortPreparedController = nil;
+    sApolloSessionPagingController = nil;
+    sApolloSessionLastRequestedPage = NSNotFound;
     NSUInteger generation = ++sApolloSessionRestoreGeneration;
     ApolloLog(@"[SessionRestore] Cold launch has a recent reading session");
     ApolloSessionRouteFeed(0, generation);
 }
 
 %hook _TtC6Apollo19PostsViewController
+
+- (void)viewDidLoad {
+    if (sApolloSessionPendingRestore && !sApolloSessionFeedViewportStarted) {
+        ApolloSessionApplyFeedSort((UIViewController *)self);
+        sApolloSessionFeedSortPreparedController = (UIViewController *)self;
+    }
+    %orig;
+}
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig(animated);
@@ -411,6 +540,15 @@ static void ApolloSessionConsiderInitialRestore(void) {
     if (pending && [ApolloSessionFeedURL((UIViewController *)self)
                         isEqualToString:pending[ApolloSessionStateFeedURLKey]] &&
         !sApolloSessionFeedViewportStarted) {
+        id selfObject = (id)self;
+        BOOL preparedBeforeLoad = sApolloSessionFeedSortPreparedController ==
+                                  (UIViewController *)self;
+        BOOL changedSort = preparedBeforeLoad ? NO :
+            ApolloSessionApplyFeedSort((UIViewController *)self);
+        if (changedSort && [selfObject respondsToSelector:@selector(reloadPostsWithNotification:)]) {
+            ((void (*)(id, SEL, id))objc_msgSend)(selfObject,
+                @selector(reloadPostsWithNotification:), nil);
+        }
         sApolloSessionFeedViewportStarted = YES;
         NSUInteger generation = sApolloSessionRestoreGeneration;
         ApolloSessionRestoreViewport((UIViewController *)self, NO, 0,
@@ -422,6 +560,14 @@ static void ApolloSessionConsiderInitialRestore(void) {
 %end
 
 %hook _TtC6Apollo22CommentsViewController
+
+- (void)viewDidLoad {
+    NSNumber *sort = sApolloSessionPendingRestore[ApolloSessionStateDetailSortKey];
+    if (sApolloSessionDetailRouteStarted && sort) {
+        ApolloCommentsVCWriteCurrentSort(self, sort.longLongValue);
+    }
+    %orig;
+}
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig(animated);

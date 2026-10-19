@@ -4,10 +4,14 @@ NSString *const ApolloSessionStateFeedURLKey = @"feedURL";
 NSString *const ApolloSessionStateFeedItemKey = @"feedItem";
 NSString *const ApolloSessionStateFeedDeltaKey = @"feedDelta";
 NSString *const ApolloSessionStateFeedOffsetKey = @"feedOffset";
+NSString *const ApolloSessionStateFeedPageKey = @"feedPage";
+NSString *const ApolloSessionStateFeedSortKey = @"feedSort";
+NSString *const ApolloSessionStateFeedTimeSortKey = @"feedTimeSort";
 NSString *const ApolloSessionStateDetailURLKey = @"detailURL";
 NSString *const ApolloSessionStateDetailItemKey = @"detailItem";
 NSString *const ApolloSessionStateDetailDeltaKey = @"detailDelta";
 NSString *const ApolloSessionStateDetailOffsetKey = @"detailOffset";
+NSString *const ApolloSessionStateDetailSortKey = @"detailSort";
 NSString *const ApolloSessionStateSavedAtKey = @"savedAt";
 NSString *const ApolloSessionStateAccountScopeKey = @"accountScope";
 
@@ -56,6 +60,47 @@ BOOL ApolloSessionStateDetailURLIsAllowed(NSString *value) {
     return [path hasPrefix:@"/r/"] && [path rangeOfString:@"/comments/"].location != NSNotFound;
 }
 
+NSString *ApolloSessionStateDetailURLByAddingCommentID(NSString *detailURL,
+                                                        NSString *commentID) {
+    NSURLComponents *components = ApolloSessionRedditComponents(detailURL);
+    if (!components || !ApolloSessionStateDetailURLIsAllowed(detailURL)) return detailURL;
+    NSString *bare = ApolloSessionBoundedString(commentID).lowercaseString;
+    if ([bare hasPrefix:@"t1_"]) bare = [bare substringFromIndex:3];
+    NSCharacterSet *notBase36 = [[NSCharacterSet characterSetWithCharactersInString:
+        @"0123456789abcdefghijklmnopqrstuvwxyz"] invertedSet];
+    if (!bare.length || [bare rangeOfCharacterFromSet:notBase36].location != NSNotFound) {
+        return detailURL;
+    }
+
+    NSArray<NSString *> *parts = [components.path pathComponents];
+    NSUInteger comments = [parts indexOfObjectPassingTest:^BOOL(NSString *part,
+                                                                 __unused NSUInteger index,
+                                                                 __unused BOOL *stop) {
+        return [part.lowercaseString isEqualToString:@"comments"];
+    }];
+    if (comments == NSNotFound || comments + 1 >= parts.count) return detailURL;
+    NSString *postID = parts[comments + 1];
+    if (!postID.length) return detailURL;
+
+    NSMutableArray<NSString *> *route = [NSMutableArray array];
+    for (NSUInteger index = 1; index <= comments + 1; index++) [route addObject:parts[index]];
+    [route addObject:@"_"];
+    [route addObject:bare];
+    components.path = [@"/" stringByAppendingString:[route componentsJoinedByString:@"/"]];
+    components.path = [components.path stringByAppendingString:@"/"];
+    return components.URL.absoluteString ?: detailURL;
+}
+
+BOOL ApolloSessionStateViewportRestoreIsEligible(BOOL detail, BOOL visible, BOOL top,
+                                                  BOOL inNavigationStack) {
+    return detail ? (visible && top) : ((visible && top) || inNavigationStack);
+}
+
+BOOL ApolloSessionStateShouldRequestNextFeedPage(NSInteger savedPage, NSInteger currentPage,
+                                                 NSInteger lastRequestedPage) {
+    return savedPage > currentPage && currentPage != lastRequestedPage;
+}
+
 static BOOL ApolloSessionAccountScopeIsAllowed(NSString *scope) {
     if ([scope isEqualToString:@"signed-out"]) return YES;
     if (scope.length != 64) return NO;
@@ -100,6 +145,21 @@ NSDictionary<NSString *, id> *ApolloSessionStateNormalize(NSDictionary *candidat
         NSNumber *value = ApolloSessionBoundedNumber(candidate[key]);
         if (value) normalized[key] = value;
     }
+    NSDictionary<NSString *, NSArray<NSNumber *> *> *integerRanges = @{
+        ApolloSessionStateFeedPageKey: @[@0, @20],
+        ApolloSessionStateFeedSortKey: @[@1, @6],
+        ApolloSessionStateFeedTimeSortKey: @[@1, @7],
+        ApolloSessionStateDetailSortKey: @[@1, @7],
+    };
+    [integerRanges enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSArray<NSNumber *> *range,
+                                                       __unused BOOL *stop) {
+        id raw = candidate[key];
+        if (![raw isKindOfClass:NSNumber.class]) return;
+        double value = [raw doubleValue];
+        NSInteger integer = [raw integerValue];
+        if (isfinite(value) && value == (double)integer && integer >= range[0].integerValue &&
+            integer <= range[1].integerValue) normalized[key] = @(integer);
+    }];
     NSString *detailURL = ApolloSessionBoundedString(candidate[ApolloSessionStateDetailURLKey]);
     if (detailURL && ApolloSessionStateDetailURLIsAllowed(detailURL)) {
         normalized[ApolloSessionStateDetailURLKey] = detailURL;
