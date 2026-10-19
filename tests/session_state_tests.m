@@ -200,9 +200,9 @@ int main(void) {
         Check(!ApolloSessionStateShouldDeleteSnapshotAfterDetailFailure(NO, NO),
               @"two unfinished phases cannot delete snapshot");
         Check(ApolloSessionStateShouldCancelUnstartedDetail(NO, NO),
-              @"feed cancellation suppresses a detail route that has not started");
+              @"feed cancellation suppresses a detail route Apollo has not opened");
         Check(!ApolloSessionStateShouldCancelUnstartedDetail(YES, NO),
-              @"started detail phase remains independent from feed cancellation");
+              @"opened detail phase remains independent from feed cancellation");
         Check(!ApolloSessionStateShouldCancelUnstartedDetail(NO, YES),
               @"finished detail phase is not cancelled twice");
         Check(ApolloSessionStateShouldCancelForAccountChange(
@@ -225,6 +225,14 @@ int main(void) {
               @"lifecycle callback cannot consume an account-ready retry");
         Check(!ApolloSessionStateAccountReadyMayRetry(YES, NO, YES),
               @"completed initial consideration remains one-shot");
+        Check(ApolloSessionStateFeedOwnsSelectedNavigation(YES, YES, NO),
+              @"selected feed on top owns background persistence");
+        Check(ApolloSessionStateFeedOwnsSelectedNavigation(YES, NO, YES),
+              @"matching restored detail owns its selected feed stack");
+        Check(!ApolloSessionStateFeedOwnsSelectedNavigation(NO, YES, NO),
+              @"tab switch invalidates the hidden restore stack");
+        Check(!ApolloSessionStateFeedOwnsSelectedNavigation(YES, NO, NO),
+              @"unrelated pushed controller invalidates the restore stack");
         Check(ApolloSessionStateShouldRequestNextFeedPage(4, 1, NSNotFound),
               @"deep feed requests its next missing page");
         Check(!ApolloSessionStateShouldRequestNextFeedPage(4, 1, 1),

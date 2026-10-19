@@ -79,8 +79,11 @@ identity no longer matches the snapshot, invalidating all queued callbacks.
 Offscreen feed retries now remain eligible only while the specific restored
 detail is on top (or the app itself is inactive); a tab switch or unrelated
 push cancels paging and suppresses an unstarted saved-post route.
+Background persistence revalidates selected-tab/navigation topology before it
+defers, and duplicate foreground/feed timers become no-ops after detail routing
+has begun.
 
-The Foundation host harness now exercises 80 state, route, bounds, launch-
+The Foundation host harness now exercises 84 state, route, bounds, launch-
 precedence, persistence, and restore-eligibility checks under
 `-Wall -Wextra -Werror`. The prior seven-finding state completed a full arm64
 package build with SDK 27.1 and an iOS 15.0 deployment target; no app/package

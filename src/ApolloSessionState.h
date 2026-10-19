@@ -128,7 +128,7 @@ ApolloSessionStateShouldDeleteSnapshotAfterDetailFailure(BOOL feedFinished,
 // started. An already-started or already-finished detail phase remains
 // independent and reaches its own terminal state.
 FOUNDATION_EXPORT BOOL
-ApolloSessionStateShouldCancelUnstartedDetail(BOOL detailRouteStarted,
+ApolloSessionStateShouldCancelUnstartedDetail(BOOL detailRouteOpened,
                                               BOOL detailFinished);
 
 // Once restoration is active, an account-ready notification is a cancellation
@@ -145,6 +145,14 @@ FOUNDATION_EXPORT BOOL
 ApolloSessionStateAccountReadyMayRetry(BOOL initialRestoreConsidered,
                                        BOOL accountReadyRetryPending,
                                        BOOL preferLiveScope);
+
+// Background persistence uses navigation topology rather than window
+// visibility: UIKit may detach every window after the user has already changed
+// tabs or pushed another controller.
+FOUNDATION_EXPORT BOOL
+ApolloSessionStateFeedOwnsSelectedNavigation(BOOL feedNavigationSelected,
+                                             BOOL topIsFeed,
+                                             BOOL topIsRestoredDetail);
 
 // Page restoration is monotonic and requests each observed page at most once.
 FOUNDATION_EXPORT BOOL ApolloSessionStateShouldRequestNextFeedPage(NSInteger savedPage,

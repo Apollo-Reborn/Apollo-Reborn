@@ -35,6 +35,7 @@ static NSDictionary<NSString *, id> *sApolloSessionPendingRestore;
 static BOOL sApolloSessionInitialRestoreConsidered;
 static BOOL sApolloSessionAccountReadyRetryPending;
 static BOOL sApolloSessionDetailRouteStarted;
+static BOOL sApolloSessionDetailRouteOpened;
 static BOOL sApolloSessionFeedViewportStarted;
 static BOOL sApolloSessionDetailViewportStarted;
 static BOOL sApolloSessionDetailControllerSeen;
@@ -46,6 +47,8 @@ static __weak UIViewController *sApolloSessionFeedSortPreparedController;
 static __weak UIViewController *sApolloSessionPagingController;
 static NSInteger sApolloSessionLastRequestedPage = NSNotFound;
 static NSUInteger sApolloSessionRestoreGeneration;
+
+static void ApolloSessionRevalidatePendingNavigation(void);
 
 static BOOL ApolloSessionReadOptionalEnum(id object, const char *name, int64_t *outRaw) {
     ptrdiff_t offset = ApolloIvarOffset(object_getClass(object), name);
@@ -269,6 +272,7 @@ static NSDictionary<NSString *, id> *ApolloSessionCapture(void) {
 
 static void ApolloSessionPersist(void) {
     if (!NSThread.isMainThread) return;
+    ApolloSessionRevalidatePendingNavigation();
     if (ApolloSessionStateShouldDeferPersistence(sApolloSessionPendingRestore != nil,
                                                  sApolloSessionFeedViewportFinished,
                                                  sApolloSessionDetailViewportFinished)) {
@@ -392,10 +396,10 @@ static void ApolloSessionFinishViewport(BOOL detail) {
 static void ApolloSessionCancelFeedForRouteChange(void) {
     // If detail routing has not begun, the in-place feed change is the user's
     // newer navigation intent and should also suppress the pending route. Once
-    // detail routing has begun, its independent phase owns its own terminal
-    // state and must not be cancelled by the underlying feed controller.
+    // Apollo has accepted the detail route, that independent phase owns its own
+    // terminal state and must not be cancelled by the underlying feed.
     if (ApolloSessionStateShouldCancelUnstartedDetail(
-            sApolloSessionDetailRouteStarted, sApolloSessionDetailViewportFinished)) {
+            sApolloSessionDetailRouteOpened, sApolloSessionDetailViewportFinished)) {
         ApolloSessionFinishViewport(YES);
     }
     ApolloSessionFinishViewport(NO);
@@ -404,11 +408,40 @@ static void ApolloSessionCancelFeedForRouteChange(void) {
 static BOOL ApolloSessionFeedOwnsPendingNavigation(void) {
     if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return NO;
     UIViewController *feed = sApolloSessionFeedController;
+    return feed.viewIfLoaded.window != nil &&
+           ApolloSessionStateFeedOwnsSelectedNavigation(
+               feed.navigationController == ApolloSessionSelectedNavigation(ApolloMainTabBarController()),
+               feed.navigationController.topViewController == feed,
+               NO) &&
+           ApolloSessionStateFeedURLMatchesSavedRoute(
+               ApolloSessionFeedURL(feed),
+               sApolloSessionPendingRestore[ApolloSessionStateFeedURLKey]);
+}
+
+static BOOL ApolloSessionFeedOwnsSelectedRestoreStack(void) {
+    UIViewController *feed = sApolloSessionFeedController;
     UINavigationController *navigation = feed.navigationController;
-    return feed && feed.viewIfLoaded.window != nil && navigation.topViewController == feed &&
+    UIViewController *topController = navigation.topViewController;
+    BOOL topIsRestoredDetail = sApolloSessionDetailRouteOpened &&
+        ApolloClassCommentsViewController &&
+        [topController isMemberOfClass:ApolloClassCommentsViewController] &&
+        ApolloSessionCommentsControllerMatchesPendingDetail(topController);
+    return feed && ApolloSessionStateFeedOwnsSelectedNavigation(
+            navigation == ApolloSessionSelectedNavigation(ApolloMainTabBarController()),
+            topController == feed,
+            topIsRestoredDetail) &&
         ApolloSessionStateFeedURLMatchesSavedRoute(
             ApolloSessionFeedURL(feed),
             sApolloSessionPendingRestore[ApolloSessionStateFeedURLKey]);
+}
+
+static void ApolloSessionRevalidatePendingNavigation(void) {
+    if (!sApolloSessionPendingRestore || !sApolloSessionFeedController ||
+        (!sApolloSessionFeedViewportStarted && !sApolloSessionFeedViewportFinished)) return;
+    if (!ApolloSessionFeedOwnsSelectedRestoreStack()) {
+        ApolloLog(@"[SessionRestore] Newer navigation replaced the restore stack before backgrounding");
+        ApolloSessionCancelFeedForRouteChange();
+    }
 }
 
 static BOOL ApolloSessionApplyFeedSort(UIViewController *controller) {
@@ -479,6 +512,7 @@ static void ApolloSessionStartDetailRoute(void) {
             ApolloSessionFinishViewport(YES);
             return;
         }
+        sApolloSessionDetailRouteOpened = YES;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                      (int64_t)(kApolloSessionDetailAnchorAttempts * kApolloSessionRetryDelay * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
@@ -494,11 +528,13 @@ static void ApolloSessionStartDetailRoute(void) {
 }
 
 static void ApolloSessionScheduleDetailRoute(NSUInteger generation) {
-    if (![sApolloSessionPendingRestore[ApolloSessionStateDetailURLKey] length]) return;
+    if (sApolloSessionDetailRouteStarted ||
+        ![sApolloSessionPendingRestore[ApolloSessionStateDetailURLKey] length]) return;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                  (int64_t)(kApolloSessionDetailRouteGrace * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        if (generation != sApolloSessionRestoreGeneration || !sApolloSessionPendingRestore) return;
+        if (generation != sApolloSessionRestoreGeneration || !sApolloSessionPendingRestore ||
+            sApolloSessionDetailRouteStarted) return;
         if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
         if (!ApolloSessionFeedOwnsPendingNavigation()) {
             ApolloLog(@"[SessionRestore] Newer navigation suppressed the saved post route");
@@ -685,6 +721,7 @@ static void ApolloSessionConsiderInitialRestore(BOOL preferLiveAccount) {
     sApolloSessionAccountReadyRetryPending = NO;
     sApolloSessionPendingRestore = normalized;
     sApolloSessionDetailRouteStarted = NO;
+    sApolloSessionDetailRouteOpened = NO;
     sApolloSessionFeedViewportStarted = NO;
     sApolloSessionDetailViewportStarted = NO;
     sApolloSessionDetailControllerSeen = NO;

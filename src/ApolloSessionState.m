@@ -196,9 +196,9 @@ BOOL ApolloSessionStateShouldDeleteSnapshotAfterDetailFailure(BOOL feedFinished,
     return feedFinished && detailFinished;
 }
 
-BOOL ApolloSessionStateShouldCancelUnstartedDetail(BOOL detailRouteStarted,
+BOOL ApolloSessionStateShouldCancelUnstartedDetail(BOOL detailRouteOpened,
                                                    BOOL detailFinished) {
-    return !detailRouteStarted && !detailFinished;
+    return !detailRouteOpened && !detailFinished;
 }
 
 BOOL ApolloSessionStateShouldCancelForAccountChange(BOOL hasPendingRestore,
@@ -212,6 +212,12 @@ BOOL ApolloSessionStateAccountReadyMayRetry(BOOL initialRestoreConsidered,
                                             BOOL accountReadyRetryPending,
                                             BOOL preferLiveScope) {
     return !initialRestoreConsidered || (accountReadyRetryPending && preferLiveScope);
+}
+
+BOOL ApolloSessionStateFeedOwnsSelectedNavigation(BOOL feedNavigationSelected,
+                                                  BOOL topIsFeed,
+                                                  BOOL topIsRestoredDetail) {
+    return feedNavigationSelected && (topIsFeed || topIsRestoredDetail);
 }
 
 BOOL ApolloSessionStateShouldRequestNextFeedPage(NSInteger savedPage, NSInteger currentPage,
