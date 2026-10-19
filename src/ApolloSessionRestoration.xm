@@ -24,6 +24,7 @@ static const NSTimeInterval kApolloSessionMaximumAge = 7.0 * 24.0 * 60.0 * 60.0;
 static const NSUInteger kApolloSessionRouteAttempts = 24;
 static const NSUInteger kApolloSessionAnchorAttempts = 48;
 static const NSTimeInterval kApolloSessionRetryDelay = 0.25;
+static const NSTimeInterval kApolloSessionDetailRouteGrace = 0.75;
 
 static __weak UIViewController *sApolloSessionFeedController;
 static __weak UIViewController *sApolloSessionCommentsController;
@@ -85,22 +86,34 @@ static NSString *ApolloSessionNodeIdentifier(id node) {
     return nil;
 }
 
-static NSDictionary<NSString *, id> *ApolloSessionViewport(UIViewController *controller) {
+static NSDictionary<NSString *, id> *ApolloSessionViewport(UIViewController *controller,
+                                                            BOOL preferComment) {
     UITableView *table = ApolloSessionTableView(controller);
     if (!table) return nil;
     CGFloat viewportTop = table.contentOffset.y + table.adjustedContentInset.top;
     NSArray<NSIndexPath *> *visible =
         [[table indexPathsForVisibleRows] sortedArrayUsingSelector:@selector(compare:)];
+    NSDictionary<NSString *, id> *firstIdentifiedRow = nil;
     for (NSIndexPath *path in visible) {
         CGRect row = [table rectForRowAtIndexPath:path];
         if (CGRectGetMaxY(row) <= viewportTop + 0.5) continue;
         NSString *identifier = ApolloSessionNodeIdentifier(ApolloSessionNode(controller, path));
         if (identifier.length) {
-            return @{ @"item": identifier,
-                      @"delta": @(viewportTop - row.origin.y),
-                      @"offset": @(table.contentOffset.y) };
+            NSDictionary<NSString *, id> *candidate = @{
+                @"item": identifier,
+                @"delta": @(viewportTop - row.origin.y),
+                @"offset": @(table.contentOffset.y),
+            };
+            // A comments header is one very tall t3 row. Anchoring to it is
+            // fragile because its title, media, and link-summary heights can
+            // change while a cold load hydrates. Prefer the first visible
+            // comment identity whenever one is on screen; only retain the
+            // post row when the reader is still wholly inside the header.
+            if (!preferComment || [identifier hasPrefix:@"t1_"]) return candidate;
+            if (!firstIdentifiedRow) firstIdentifiedRow = candidate;
         }
     }
+    if (firstIdentifiedRow) return firstIdentifiedRow;
     return @{ @"offset": @(table.contentOffset.y) };
 }
 
@@ -165,7 +178,7 @@ static NSDictionary<NSString *, id> *ApolloSessionCapture(void) {
         ApolloSessionStateFeedURLKey: feedURL,
         ApolloSessionStateAccountScopeKey: accountScope,
     } mutableCopy];
-    NSDictionary *feedViewport = ApolloSessionViewport(feed);
+    NSDictionary *feedViewport = ApolloSessionViewport(feed, NO);
     if (feedViewport[@"item"]) snapshot[ApolloSessionStateFeedItemKey] = feedViewport[@"item"];
     if (feedViewport[@"delta"]) snapshot[ApolloSessionStateFeedDeltaKey] = feedViewport[@"delta"];
     if (feedViewport[@"offset"]) snapshot[ApolloSessionStateFeedOffsetKey] = feedViewport[@"offset"];
@@ -173,7 +186,7 @@ static NSDictionary<NSString *, id> *ApolloSessionCapture(void) {
     UIViewController *comments = sApolloSessionCommentsController;
     if (comments && comments.navigationController.topViewController == comments) {
         NSString *detailURL = ApolloSessionDetailURL(comments);
-        NSDictionary *detailViewport = ApolloSessionViewport(comments);
+        NSDictionary *detailViewport = ApolloSessionViewport(comments, YES);
         if (detailURL) snapshot[ApolloSessionStateDetailURLKey] = detailURL;
         if (detailViewport[@"item"]) snapshot[ApolloSessionStateDetailItemKey] = detailViewport[@"item"];
         if (detailViewport[@"delta"]) snapshot[ApolloSessionStateDetailDeltaKey] = detailViewport[@"delta"];
@@ -277,6 +290,21 @@ static void ApolloSessionStartDetailRoute(void) {
     });
 }
 
+static void ApolloSessionScheduleDetailRoute(NSUInteger generation) {
+    if (![sApolloSessionPendingRestore[ApolloSessionStateDetailURLKey] length]) return;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(kApolloSessionDetailRouteGrace * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (generation != sApolloSessionRestoreGeneration || !sApolloSessionPendingRestore) return;
+        // Feed restoration builds the back stack, but a moved/deleted post may
+        // no longer be present in the refreshed first page. Do not hold the
+        // authoritative post route behind twelve seconds of feed-anchor
+        // retries. The short grace period still lets the common in-page anchor
+        // case settle before the detail route is opened.
+        ApolloSessionStartDetailRoute();
+    });
+}
+
 static void ApolloSessionRestoreViewport(UIViewController *controller, BOOL detail,
                                          NSUInteger attempt, NSUInteger generation) {
     if (generation != sApolloSessionRestoreGeneration || !sApolloSessionPendingRestore ||
@@ -369,8 +397,10 @@ static void ApolloSessionConsiderInitialRestore(void) {
                         isEqualToString:pending[ApolloSessionStateFeedURLKey]] &&
         !sApolloSessionFeedViewportStarted) {
         sApolloSessionFeedViewportStarted = YES;
+        NSUInteger generation = sApolloSessionRestoreGeneration;
         ApolloSessionRestoreViewport((UIViewController *)self, NO, 0,
-                                     sApolloSessionRestoreGeneration);
+                                     generation);
+        ApolloSessionScheduleDetailRoute(generation);
     }
 }
 

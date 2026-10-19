@@ -1,6 +1,6 @@
 # Session restoration simulator evidence
 
-![Apollo feed before termination, during cold launch, and after restoration](apollo-session-restoration-simulator.gif)
+![Apollo comments before termination, during cold launch, and after restoration](apollo-session-restoration-simulator.gif)
 
 This capture is from the real Apollo 1.15.11 app shell running the freshly built
 Apollo Reborn tweak on an iPhone 16 Pro simulator with iOS 27 in non-Glass mode.
@@ -9,19 +9,23 @@ identity; no application behavior was removed from the sequence.
 
 ## Exercised path
 
-1. Apollo displayed the Home feed and persisted top-row identity `t3_1x9alu4`.
-2. Another app foregrounded, allowing Apollo's normal background lifecycle to
-   save the reading snapshot.
-3. Apollo was explicitly terminated to model iOS process eviction.
-4. Apollo was cold-launched.
-5. The restored process logged `Cold launch has a recent reading session` and
-   then `Restored feed anchor t3_1x9alu4`; the same feed position is visible at
-   the end of the GIF.
+1. Apollo displayed a scrolled comments screen for post `t3_1x9alu4` and the
+   background lifecycle persisted visible comment identity `t1_phjnt7p`.
+2. The saved feed item was deliberately replaced with nonexistent
+   `t3_missing`, reproducing the case where a refreshed feed no longer contains
+   the post that was open.
+3. Apollo was explicitly terminated to model iOS process eviction, then
+   cold-launched.
+4. The restored process logged `Cold launch has a recent reading session` at
+   `19:28:57.621` and `Restored post anchor t1_phjnt7p` at `19:28:59.475`.
+5. The same comments viewport is visible before termination and after the cold
+   launch. The account tab is cropped from the GIF; no application behavior is
+   removed from the sequence.
 
 ## Evidence boundary
 
-This demonstrates simulator cold restoration of the Home feed and its
-identity-based top-row anchor. It does **not** claim physical-device acceptance,
-hours-long elapsed-time testing, subreddit/multireddit restoration, or the
-open-post/comment-anchor path. Those remain explicit acceptance items before an
-upstream pull request.
+This demonstrates simulator cold restoration of an open post and its
+identity-based visible-comment anchor even when the saved feed anchor is no
+longer available. It does **not** claim physical-device acceptance or
+hours-long elapsed-time testing. Physical-device acceptance remains required
+before any upstream pull request.
