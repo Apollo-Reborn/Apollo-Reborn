@@ -216,9 +216,24 @@ static void ApolloSessionPersist(void) {
               snapshot[ApolloSessionStateDetailURLKey] ? @" and open post" : @"");
 }
 
+static UINavigationController *ApolloSessionNavigationControllerForTabChild(UIViewController *child) {
+    if (!child) return nil;
+    if ([child isKindOfClass:UINavigationController.class]) {
+        return (UINavigationController *)child;
+    }
+    if ([child isKindOfClass:UISplitViewController.class]) {
+        for (UIViewController *column in [(UISplitViewController *)child viewControllers].reverseObjectEnumerator) {
+            UINavigationController *navigation = ApolloSessionNavigationControllerForTabChild(column);
+            if (navigation) return navigation;
+        }
+    }
+    return child.navigationController;
+}
+
 static UINavigationController *ApolloSessionSelectedNavigation(id tabs) {
     if (![tabs isKindOfClass:UITabBarController.class]) return nil;
-    return ApolloNavigationControllerForTabChild([(UITabBarController *)tabs selectedViewController]);
+    return ApolloSessionNavigationControllerForTabChild(
+        [(UITabBarController *)tabs selectedViewController]);
 }
 
 static BOOL ApolloSessionOpenHomeFeed(void) {
