@@ -68,7 +68,7 @@ restart on its next appearance. Pre-fetch feed-sort writes are also restricted
 to the controller whose route matches the saved feed, leaving unrelated startup
 and secondary-pane listings unchanged.
 
-The Foundation host harness now exercises 51 state, route, bounds, launch-
+The Foundation host harness now exercises 53 state, route, bounds, launch-
 precedence, persistence, and restore-eligibility checks under
 `-Wall -Wextra -Werror`. The prior seven-finding state completed a full arm64
 package build with SDK 27.1 and an iOS 15.0 deployment target; no app/package

@@ -172,6 +172,11 @@ BOOL ApolloSessionStateViewportRestoreWasCancelled(BOOL detail, BOOL top,
     return !inNavigationStack || (detail && !top);
 }
 
+BOOL ApolloSessionStateDetailRouteDeadlineShouldFinish(BOOL detailControllerSeen,
+                                                       BOOL detailFinished) {
+    return !detailControllerSeen && !detailFinished;
+}
+
 BOOL ApolloSessionStateShouldRequestNextFeedPage(NSInteger savedPage, NSInteger currentPage,
                                                  NSInteger lastRequestedPage) {
     return savedPage > currentPage && currentPage != lastRequestedPage;

@@ -36,6 +36,7 @@ static BOOL sApolloSessionInitialRestoreConsidered;
 static BOOL sApolloSessionDetailRouteStarted;
 static BOOL sApolloSessionFeedViewportStarted;
 static BOOL sApolloSessionDetailViewportStarted;
+static BOOL sApolloSessionDetailControllerSeen;
 static BOOL sApolloSessionFeedViewportFinished;
 static BOOL sApolloSessionDetailViewportFinished;
 static BOOL sApolloSessionLaunchHasExplicitDestination;
@@ -421,7 +422,8 @@ static void ApolloSessionStartDetailRoute(void) {
                                      (int64_t)(kApolloSessionDetailAnchorAttempts * kApolloSessionRetryDelay * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             if (generation == sApolloSessionRestoreGeneration && sApolloSessionPendingRestore &&
-                !sApolloSessionDetailViewportStarted) {
+                ApolloSessionStateDetailRouteDeadlineShouldFinish(
+                    sApolloSessionDetailControllerSeen, sApolloSessionDetailViewportFinished)) {
                 ApolloLog(@"[SessionRestore] Saved post did not become available; keeping restored feed");
                 ApolloSessionFinishViewport(YES);
                 [[NSFileManager defaultManager] removeItemAtPath:ApolloSessionFilePath() error:nil];
@@ -559,6 +561,7 @@ static void ApolloSessionConsiderInitialRestore(BOOL preferLiveAccount) {
     sApolloSessionDetailRouteStarted = NO;
     sApolloSessionFeedViewportStarted = NO;
     sApolloSessionDetailViewportStarted = NO;
+    sApolloSessionDetailControllerSeen = NO;
     sApolloSessionFeedViewportFinished = NO;
     sApolloSessionDetailViewportFinished = ![normalized[ApolloSessionStateDetailURLKey] length];
     sApolloSessionFeedSortPreparedController = nil;
@@ -628,6 +631,7 @@ static void ApolloSessionConsiderInitialRestore(BOOL preferLiveAccount) {
     NSDictionary *pending = sApolloSessionPendingRestore;
     if (pending && sApolloSessionDetailRouteStarted && !sApolloSessionDetailViewportStarted &&
         ApolloSessionCommentsControllerMatchesPendingDetail((UIViewController *)self)) {
+        sApolloSessionDetailControllerSeen = YES;
         sApolloSessionDetailViewportStarted = YES;
         ApolloSessionRestoreViewport((UIViewController *)self, YES, 0,
                                      sApolloSessionRestoreGeneration);

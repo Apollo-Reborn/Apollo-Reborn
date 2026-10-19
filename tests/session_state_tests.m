@@ -163,6 +163,10 @@ int main(void) {
               @"temporarily hidden top detail remains resumable");
         Check(ApolloSessionStateViewportRestoreWasCancelled(NO, NO, NO),
               @"removed feed controller cancels its restore phase");
+        Check(ApolloSessionStateDetailRouteDeadlineShouldFinish(NO, NO),
+              @"detail route deadline finishes when no controller appeared");
+        Check(!ApolloSessionStateDetailRouteDeadlineShouldFinish(YES, NO),
+              @"backgrounded appeared detail remains resumable past route deadline");
         Check(ApolloSessionStateShouldRequestNextFeedPage(4, 1, NSNotFound),
               @"deep feed requests its next missing page");
         Check(!ApolloSessionStateShouldRequestNextFeedPage(4, 1, 1),

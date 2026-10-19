@@ -97,6 +97,13 @@ ApolloSessionStateViewportRestoreWasCancelled(BOOL detail,
                                               BOOL top,
                                               BOOL inNavigationStack);
 
+// The route deadline only handles a post controller that never appeared. Once
+// it has appeared, temporary background detachment must leave its anchor phase
+// available to resume on the next foreground appearance.
+FOUNDATION_EXPORT BOOL
+ApolloSessionStateDetailRouteDeadlineShouldFinish(BOOL detailControllerSeen,
+                                                  BOOL detailFinished);
+
 // Page restoration is monotonic and requests each observed page at most once.
 FOUNDATION_EXPORT BOOL ApolloSessionStateShouldRequestNextFeedPage(NSInteger savedPage,
                                                                   NSInteger currentPage,
