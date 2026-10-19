@@ -26,6 +26,9 @@ identity; no application behavior was removed from the sequence.
 
 This demonstrates simulator cold restoration of an open post and its
 identity-based visible-comment anchor even when the saved feed anchor is no
-longer available. It does **not** claim physical-device acceptance or
-hours-long elapsed-time testing. Physical-device acceptance remains required
-before any upstream pull request.
+longer available. Separately, Dan performed the requested physical-device
+acceptance flow on build 352—open a post, stop at a recognizable comment,
+force-close Apollo, and reopen—and reported that Apollo returned to the same
+post/comment position. That device result is user-reported, not direct
+observation by the contributor. Overnight suspension and a real
+memory-pressure eviction remain untested on build 352.
