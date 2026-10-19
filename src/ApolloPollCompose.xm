@@ -3,9 +3,9 @@
 // Apollo's ComposePostViewController drives its Link/Text/Image types from a
 // UISegmentedControl (postTypeSegmentedControl ivar). Polls never existed in
 // the official API, so instead of teaching Apollo's Swift table layout a new
-// postType, we append a "Poll" segment and, when it's selected, snap the
-// control back and present our own composer on top. The poll is submitted the
-// way new.reddit.com does it — POST /api/submit_poll_post.json with the
+// postType, we append a "Poll" segment and, when it's selected, show our own
+// composer beneath the shared control. The poll is submitted the way
+// new.reddit.com does it — POST /api/submit_poll_post.json with the
 // account's harvested web-session cookie + modhash (the same per-username
 // session ApolloPollVoting.xm votes with; OAuth accounts harvest one on first
 // use via the existing login flow).
@@ -27,6 +27,8 @@ static const NSInteger kApolloPollDefaultDurationDays = 3;
 
 static const void *kApolloPollSegmentIndexKey = &kApolloPollSegmentIndexKey;
 static const void *kApolloPollComposerKey = &kApolloPollComposerKey;
+static const void *kApolloPollPendingPostTypeKey = &kApolloPollPendingPostTypeKey;
+static const void *kApolloPollSetupScheduledKey = &kApolloPollSetupScheduledKey;
 
 static NSString *ApolloPollComposeFlairString(NSDictionary *option, NSArray<NSString *> *keys) {
     if (![option isKindOfClass:NSDictionary.class]) return nil;
@@ -90,37 +92,50 @@ static void ApolloPollComposeSetPendingPostType(NSString *type) {
     sApolloPollPendingPostTypeSetAt = CFAbsoluteTimeGetCurrent();
 }
 
-static void ApolloPollComposeApplyPendingPostType(id composeVC) {
+static void ApolloPollComposeClaimPendingPostType(id composeVC) {
     NSString *pending = sApolloPollPendingPostType;
     sApolloPollPendingPostType = nil;
     if (pending.length == 0 || CFAbsoluteTimeGetCurrent() - sApolloPollPendingPostTypeSetAt > 30.0) return;
+    // Once the sheet owns the pick, retain it through Apollo's asynchronous
+    // setup. Another sheet must not steal it, and a slow subreddit fetch must
+    // not turn a Poll quick-pick into the default Photo Post.
+    objc_setAssociatedObject(composeVC, kApolloPollPendingPostTypeKey, pending, OBJC_ASSOCIATION_COPY_NONATOMIC);
+}
+
+static void ApolloPollComposeApplyPendingPostType(id composeVC) {
+    NSString *pending = objc_getAssociatedObject(composeVC, kApolloPollPendingPostTypeKey);
+    if (pending.length == 0) return;
     UISegmentedControl *control = ApolloObjectIvar(composeVC, "postTypeSegmentedControl");
-    if (![control isKindOfClass:UISegmentedControl.class]) return;
+    if (![control isKindOfClass:UISegmentedControl.class] || control.numberOfSegments == 0) return;
 
     // Match the picked type against the compose sheet's segment titles
-    // case-insensitively, and treat "Photo"/"Image" as synonyms. Apollo titles
-    // its image segment "Photo" (confirmed against the binary), but matching by
-    // exact display string is fragile: a rebrand or future build could relabel
-    // it "Image", and the quick-pick must still land on the right segment
-    // instead of silently opening compose on the default type.
+    // case-insensitively. Apollo calls its image segment "Photo", while
+    // ApolloPhotoPostComposerScrollFix relabels it "Media" for Reddit uploads.
+    // That relabel can run before this deferred selection, so all three names
+    // must select the same native post type.
     NSString *wanted = pending.lowercaseString;
-    NSArray<NSString *> *accepted =
-        ([wanted isEqualToString:@"photo"] || [wanted isEqualToString:@"image"]) ? @[@"photo", @"image"]
-                                                                                 : @[wanted];
+    NSArray<NSString *> *mediaTitles = @[@"photo", @"image", @"media"];
+    NSArray<NSString *> *accepted = [mediaTitles containsObject:wanted] ? mediaTitles : @[wanted];
     for (NSInteger index = 0; index < control.numberOfSegments; index++) {
         NSString *segTitle = [control titleForSegmentAtIndex:index].lowercaseString;
         if (segTitle.length == 0 || ![accepted containsObject:segTitle]) continue;
+        objc_setAssociatedObject(composeVC, kApolloPollPendingPostTypeKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
         if (control.selectedSegmentIndex != index) {
             control.selectedSegmentIndex = index;
             // Fires Apollo's own postTypeSegmentedControlValueChanged: (and,
             // for Poll, this file's hook) exactly as a user tap would.
             [control sendActionsForControlEvents:UIControlEventValueChanged];
         }
+        ApolloLog(@"[PollCompose] applied quick-pick '%@'", pending);
         return;
     }
-    // No segment matched — leave the sheet on its default type rather than
+    // The selector can arrive before the subreddit/account prerequisites for
+    // installing Poll. Keep that choice with this sheet until setup completes.
+    if ([wanted isEqualToString:@"poll"] && ApolloPollsFeatureEnabled()) return;
+    // No native segment matched — leave the sheet on its default type rather than
     // guessing an index, but surface the miss so a title/label drift can't fail
     // silently the way it would with a bare exact-string match.
+    objc_setAssociatedObject(composeVC, kApolloPollPendingPostTypeKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
     ApolloLog(@"[PollCompose] quick-pick '%@' matched no compose segment title — left default type", pending);
 }
 
@@ -143,6 +158,33 @@ UIImage *ApolloPollComposeSymbol(NSString *symbolName) {
         if (!symbols) ApolloLog(@"[PollCompose] ApolloPollSymbols.bundle not found — using SF Symbol fallbacks");
     });
     return symbols ? [UIImage imageNamed:symbolName inBundle:symbols compatibleWithTraitCollection:nil] : nil;
+}
+
+// SF Symbols has no checklist.badge.plus. Combine the configured checklist
+// with a small creation badge so it fits the other three post shortcuts.
+// Both the live menu and its settings preview use this same template image.
+static UIImage *ApolloPollComposeChecklistSymbol(UIImageSymbolConfiguration *configuration) {
+    UIImage *image = [UIImage systemImageNamed:@"checklist" withConfiguration:configuration];
+    if (!image) return nil;
+    UIImage *badge = [UIImage systemImageNamed:@"plus.circle.fill"
+        withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:10.0
+                                                                          weight:UIImageSymbolWeightRegular]];
+    CGSize size = CGSizeMake(image.size.width + badge.size.width * 0.35,
+                             image.size.height + badge.size.height * 0.25);
+    CGRect badgeRect = CGRectMake(size.width - badge.size.width, size.height - badge.size.height,
+                                  badge.size.width, badge.size.height);
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size];
+    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
+        [[image imageWithTintColor:UIColor.blackColor renderingMode:UIImageRenderingModeAlwaysOriginal]
+            drawAtPoint:CGPointZero];
+        // A transparent halo, not a painted background, keeps the badge clear
+        // on dark/custom themes and the translucent native menu surface.
+        CGContextSetBlendMode(context.CGContext, kCGBlendModeClear);
+        CGContextFillEllipseInRect(context.CGContext, CGRectInset(badgeRect, -1.0, -1.0));
+        CGContextSetBlendMode(context.CGContext, kCGBlendModeNormal);
+        [[badge imageWithTintColor:UIColor.blackColor renderingMode:UIImageRenderingModeAlwaysOriginal]
+            drawInRect:badgeRect];
+    }];
 }
 
 // The ControlGroup-style inline icon row that replaces the "Submit Post" menu
@@ -172,29 +214,24 @@ UIMenu *ApolloSubmitPostTypesMenu(__unused id actionController, void (^selectRow
     }
     BOOL linkAllowed = submissionType != 3;
     BOOL textAllowed = submissionType != 2;
-    // Custom SF Symbols (…badge.plus) ship in ApolloPollSymbols.bundle; each
-    // falls back to a stock SF Symbol if the bundle can't be loaded.
+    // Photo/Link/Text use bundled custom symbols with stock fallbacks. Poll
+    // uses the system checklist with a creation badge composed below.
     // These fields only borrow string literals, whose lifetime covers every menu
-    // use. The table needs no ARC ownership; makeAction accepts ordinary strong
-    // parameters when constructing the actions and their escaping handlers.
+    // use. The action handler captures its title with normal ARC ownership.
     const struct {
         __unsafe_unretained NSString *title;
         __unsafe_unretained NSString *customSymbol;
         __unsafe_unretained NSString *fallback;
         BOOL available;
     } entries[] = {
-        { @"Photo", @"custom.photo.badge.plus",                         @"photo",          linkAllowed && allowImages },
-        { @"Link",  @"custom.link.badge.plus",                          @"link",           linkAllowed },
-        { @"Text",  @"custom.text.page.badge.plus",                     @"text.alignleft", textAllowed },
-        // Feature gate already passed above; Poll just needs a signed-in account.
-        { @"Poll",  @"custom.chart.bar.horizontal.page.fill.badge.plus", @"chart.bar",     ApolloActiveAccountUsername().length > 0 },
+        { @"Photo", @"custom.photo.badge.plus",     @"photo",          linkAllowed && allowImages },
+        { @"Link",  @"custom.link.badge.plus",      @"link",           linkAllowed },
+        { @"Text",  @"custom.text.page.badge.plus", @"text.alignleft", textAllowed },
     };
     UIImageSymbolConfiguration *iconConfig =
         [UIImageSymbolConfiguration configurationWithPointSize:22.0 weight:UIImageSymbolWeightRegular];
-    UIAction *(^makeAction)(NSString *, NSString *, NSString *) = ^(NSString *title, NSString *custom, NSString *fallback) {
-        UIImage *image = ApolloPollComposeSymbol(custom) ?: [UIImage systemImageNamed:fallback];
-        image = [[image imageByApplyingSymbolConfiguration:iconConfig]
-                    imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    UIAction *(^makeAction)(NSString *, UIImage *) = ^(NSString *title, UIImage *image) {
+        image = [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
         return [UIAction actionWithTitle:title image:image
                               identifier:nil handler:^(__unused UIAction *action) {
             ApolloPollComposeSetPendingPostType(title);
@@ -202,10 +239,15 @@ UIMenu *ApolloSubmitPostTypesMenu(__unused id actionController, void (^selectRow
         }];
     };
     NSMutableArray<UIAction *> *nativeActions = [NSMutableArray array];
-    for (size_t i = 0; i < 3; i++) {
-        if (entries[i].available) [nativeActions addObject:makeAction(entries[i].title, entries[i].customSymbol, entries[i].fallback)];
+    for (const auto &entry : entries) {
+        if (!entry.available) continue;
+        UIImage *image = ApolloPollComposeSymbol(entry.customSymbol) ?: [UIImage systemImageNamed:entry.fallback];
+        image = [image imageByApplyingSymbolConfiguration:iconConfig];
+        [nativeActions addObject:makeAction(entry.title, image)];
     }
-    UIAction *pollAction = entries[3].available ? makeAction(entries[3].title, entries[3].customSymbol, entries[3].fallback) : nil;
+    // Feature gate already passed above; Poll just needs a signed-in account.
+    UIAction *pollAction = ApolloActiveAccountUsername().length > 0
+        ? makeAction(@"Poll", ApolloPollComposeChecklistSymbol(iconConfig)) : nil;
     if (nativeActions.count + (pollAction ? 1 : 0) < 2) return nil;
 
     // Small elements keep all four post types on one clean, compact icon row
@@ -667,7 +709,7 @@ static void ApolloPollComposePresentComposer(UIViewController *composeVC) {
     composer.composeHost = composeVC;
     composer.originalComposeTitle = composeVC.navigationItem.title ?: composeVC.title;
     composeVC.navigationItem.title = @"Poll";
-    UITableView *nativeTable = ApolloObjectIvar(composeVC, "tableView");
+    UITableView *nativeTable = ApolloReadSwiftWeakObjectIvar(composeVC, "tableView");
     UITableViewCell *nativeCell = [nativeTable.visibleCells firstObject];
     // Use the same semantic surface roles that the settings controllers use,
     // rather than sampling the presenting controller.  The latter is the
@@ -713,9 +755,8 @@ static void ApolloPollComposeHideComposer(UIViewController *composeVC) {
     composeVC.navigationItem.title = composer.originalComposeTitle;
 }
 
-// The segmented control is built after viewDidLoad/viewWillAppear (it's still
-// nil there), so install from viewDidAppear: — idempotent via the "Poll" title
-// check so re-appearances are no-ops.
+// Apollo builds the segmented control asynchronously, sometimes after
+// viewDidAppear:. Install only once that control exists.
 static void ApolloPollComposeInstallSegment(id composeVC) {
     if (!ApolloPollsFeatureEnabled()) return;
     UISegmentedControl *control = ApolloObjectIvar(composeVC, "postTypeSegmentedControl");
@@ -731,15 +772,45 @@ static void ApolloPollComposeInstallSegment(id composeVC) {
     [control insertSegmentWithTitle:@"Poll" atIndex:control.numberOfSegments animated:NO];
     objc_setAssociatedObject(composeVC, kApolloPollSegmentIndexKey,
                              @(control.numberOfSegments - 1), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloLog(@"[PollCompose] installed Poll segment after native composer became ready");
+}
+
+static void ApolloPollComposeScheduleSetup(UIViewController *composeVC) {
+    UISegmentedControl *control = ApolloObjectIvar(composeVC, "postTypeSegmentedControl");
+    if (![control isKindOfClass:UISegmentedControl.class] || control.numberOfSegments == 0) return;
+    BOOL pending = objc_getAssociatedObject(composeVC, kApolloPollPendingPostTypeKey) != nil;
+    BOOL needsPoll = ApolloPollsFeatureEnabled()
+        && ![[control titleForSegmentAtIndex:control.numberOfSegments - 1] isEqualToString:@"Poll"]
+        && ApolloPollComposeSubredditName(composeVC).length > 0
+        && ApolloPollComposeUsername(composeVC).length > 0;
+    if ((!pending && !needsPoll) || objc_getAssociatedObject(composeVC, kApolloPollSetupScheduledKey)) return;
+
+    // Layout tells us when Apollo has attached the asynchronously created
+    // selector. Do not mutate that control or add child-view constraints in
+    // the layout pass itself: coalesce one setup on the next main-queue turn.
+    objc_setAssociatedObject(composeVC, kApolloPollSetupScheduledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak UIViewController *weakHost = composeVC;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *host = weakHost;
+        if (!host) return;
+        objc_setAssociatedObject(host, kApolloPollSetupScheduledKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (!host.viewIfLoaded.window) return;
+        ApolloPollComposeInstallSegment(host);
+        ApolloPollComposeApplyPendingPostType(host);
+    });
 }
 
 %hook _TtC6Apollo25ComposePostViewController
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
-    ApolloPollComposeInstallSegment(self);
-    // After the Poll segment exists, so a "Poll" quick-pick can land on it.
-    ApolloPollComposeApplyPendingPostType(self);
+    ApolloPollComposeClaimPendingPostType(self);
+    ApolloPollComposeScheduleSetup((UIViewController *)self);
+}
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    ApolloPollComposeScheduleSetup((UIViewController *)self);
 }
 
 - (void)postTypeSegmentedControlValueChanged:(UISegmentedControl *)sender {

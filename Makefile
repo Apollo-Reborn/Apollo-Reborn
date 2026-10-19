@@ -58,6 +58,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloInlineImageMetadata.m \
     $(SRC_DIR)/ApolloProfilePagination.xm \
     $(SRC_DIR)/ApolloListEmptyState.xm \
+    $(SRC_DIR)/ApolloEmptyFeedNextPage.xm \
     $(SRC_DIR)/ApolloWebTextDecoding.m \
     $(SRC_DIR)/ApolloNitterInstances.m \
     $(SRC_DIR)/ApolloMemoryDiagnostics.m \
@@ -162,6 +163,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloFindInCommentsGlass.xm \
     $(SRC_DIR)/ApolloStatsRowTouch.xm \
     $(SRC_DIR)/ApolloCommentVoteFlicker.xm \
+    $(SRC_DIR)/ApolloThreeStateVoting.xm \
     $(SRC_DIR)/ApolloFeedSubredditIcons.xm \
     $(SRC_DIR)/ApolloPostedCommentInsert.xm \
     $(SRC_DIR)/ApolloLoadMoreComments.xm \
@@ -179,6 +181,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloInterruptibleNavTransition.xm \
     $(SRC_DIR)/ApolloSystemBackSwipeGuard.xm \
     $(SRC_DIR)/ApolloLiquidGlassIconPicker.xm \
+    $(SRC_DIR)/ApolloLiquidGlassSpotlight.m \
     $(SRC_DIR)/ApolloModmailLayout.xm \
     $(SRC_DIR)/ApolloModmailSubjectCounter.xm \
     $(SRC_DIR)/ApolloCrosspostTitle.xm \

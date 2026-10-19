@@ -3742,6 +3742,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyShowSubredditHeaders: @NO,
                                     UDKeySubredditHeaderImmersive: @YES,
                                     UDKeySubredditShowBanner: @YES,
+                                    UDKeySubredditShowIcon: @YES,
                                     UDKeySubredditShowJoinButton: @YES,
                                     UDKeySubredditShowUserFlairButton: @NO,
                                     UDKeySubredditShowSidebarButton: @NO,
@@ -3768,6 +3769,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyScrollReturnButton: @YES,
                                     UDKeyCenterTitleBetweenButtons: @NO,
                                     UDKeyInfoRowTapTranslation: @YES,
+                                    UDKeyThreeStateVoting: @NO,
                                     UDKeyLiveCommentsFollow: @YES,
                                     UDKeyPerPostCommentSort: @NO,
                                     UDKeyEnableBulkTranslation: @NO,
@@ -4045,6 +4047,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     sShowSubredditHeaders = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowSubredditHeaders];
     sSubredditHeaderImmersive = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySubredditHeaderImmersive];
     sSubredditShowBanner = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySubredditShowBanner];
+    sSubredditShowIcon = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySubredditShowIcon];
     sSubredditShowJoinButton = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySubredditShowJoinButton];
     sSubredditShowUserFlairButton = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySubredditShowUserFlairButton];
     sSubredditShowSidebarButton = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySubredditShowSidebarButton];
@@ -4081,6 +4084,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     // it (ApolloInfoTapFired / SRTActivateTarget check it first).
     if (sInfoRowPopupMode && sInfoRowOverlayMode) sInfoRowPopupMode = NO;
     sInfoRowTapTranslation = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyInfoRowTapTranslation];
+    sThreeStateVoting = [standardDefaults boolForKey:UDKeyThreeStateVoting];
     sLiveCommentsFollow = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyLiveCommentsFollow];
     sPerPostCommentSort = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyPerPostCommentSort];
     // Both sort memories on = stale state from an older build or a restored backup;
