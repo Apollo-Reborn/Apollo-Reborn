@@ -31,6 +31,7 @@ static const NSTimeInterval kApolloSessionDetailRouteGrace = 0.75;
 
 static __weak UIViewController *sApolloSessionFeedController;
 static __weak UIViewController *sApolloSessionCommentsController;
+static __weak UIWindowScene *sApolloSessionRestoreScene;
 static NSDictionary<NSString *, id> *sApolloSessionPendingRestore;
 static BOOL sApolloSessionInitialRestoreConsidered;
 static BOOL sApolloSessionAccountReadyRetryPending;
@@ -49,6 +50,30 @@ static NSInteger sApolloSessionLastRequestedPage = NSNotFound;
 static NSUInteger sApolloSessionRestoreGeneration;
 
 static void ApolloSessionRevalidatePendingNavigation(void);
+
+static UIWindowScene *ApolloSessionOnlyForegroundScene(void) {
+    UIWindowScene *only = nil;
+    for (UIScene *candidate in UIApplication.sharedApplication.connectedScenes) {
+        if (![candidate isKindOfClass:UIWindowScene.class] ||
+            candidate.activationState != UISceneActivationStateForegroundActive) continue;
+        if (only) return nil;
+        only = (UIWindowScene *)candidate;
+    }
+    return only;
+}
+
+static UIWindowScene *ApolloSessionControllerScene(UIViewController *controller) {
+    return controller.viewIfLoaded.window.windowScene ?:
+           controller.navigationController.viewIfLoaded.window.windowScene;
+}
+
+static BOOL ApolloSessionControllerOwnsRestore(UIViewController *controller) {
+    UIWindowScene *controllerScene = ApolloSessionControllerScene(controller);
+    return ApolloSessionStateControllerSceneOwnsRestore(
+        sApolloSessionPendingRestore != nil,
+        sApolloSessionRestoreScene != nil,
+        controllerScene == sApolloSessionRestoreScene);
+}
 
 static BOOL ApolloSessionReadOptionalEnum(id object, const char *name, int64_t *outRaw) {
     ptrdiff_t offset = ApolloIvarOffset(object_getClass(object), name);
@@ -322,7 +347,7 @@ static UINavigationController *ApolloSessionSelectedNavigation(id tabs) {
 }
 
 static BOOL ApolloSessionOpenHomeFeed(void) {
-    id tabs = ApolloMainTabBarController();
+    id tabs = ApolloMainTabBarControllerForScene(sApolloSessionRestoreScene);
     if (![tabs isKindOfClass:UITabBarController.class]) return NO;
     if ([tabs respondsToSelector:@selector(goToHomeTab)]) {
         ((void (*)(id, SEL))objc_msgSend)(tabs, @selector(goToHomeTab));
@@ -342,9 +367,10 @@ static BOOL ApolloSessionOpenHomeFeed(void) {
 }
 
 static BOOL ApolloSessionOpenURLString(NSString *URLString) {
+    if (!sApolloSessionRestoreScene) return NO;
     if ([URLString isEqualToString:kApolloSessionHomeURL]) return ApolloSessionOpenHomeFeed();
     NSURL *URL = [NSURL URLWithString:URLString];
-    return URL ? ApolloRouteURLThroughApp(URL) : NO;
+    return URL ? ApolloRouteURLThroughAppInScene(URL, sApolloSessionRestoreScene) : NO;
 }
 
 static NSIndexPath *ApolloSessionPathForIdentifier(UIViewController *controller,
@@ -410,7 +436,8 @@ static BOOL ApolloSessionFeedOwnsPendingNavigation(void) {
     UIViewController *feed = sApolloSessionFeedController;
     return feed.viewIfLoaded.window != nil &&
            ApolloSessionStateFeedOwnsSelectedNavigation(
-               feed.navigationController == ApolloSessionSelectedNavigation(ApolloMainTabBarController()),
+               feed.navigationController == ApolloSessionSelectedNavigation(
+                   ApolloMainTabBarControllerForScene(sApolloSessionRestoreScene)),
                feed.navigationController.topViewController == feed,
                NO) &&
            ApolloSessionStateFeedURLMatchesSavedRoute(
@@ -427,7 +454,8 @@ static BOOL ApolloSessionFeedOwnsSelectedRestoreStack(void) {
         [topController isMemberOfClass:ApolloClassCommentsViewController] &&
         ApolloSessionCommentsControllerMatchesPendingDetail(topController);
     return feed && ApolloSessionStateFeedOwnsSelectedNavigation(
-            navigation == ApolloSessionSelectedNavigation(ApolloMainTabBarController()),
+            navigation == ApolloSessionSelectedNavigation(
+                ApolloMainTabBarControllerForScene(sApolloSessionRestoreScene)),
             topController == feed,
             topIsRestoredDetail) &&
         ApolloSessionStateFeedURLMatchesSavedRoute(
@@ -693,6 +721,8 @@ static void ApolloSessionConsiderInitialRestore(BOOL preferLiveAccount) {
         ApolloLog(@"[SessionRestore] Explicit launch destination takes precedence");
         return;
     }
+    if (!sApolloSessionRestoreScene) sApolloSessionRestoreScene = ApolloSessionOnlyForegroundScene();
+    if (!sApolloSessionRestoreScene) return;
     NSDictionary *stored = [NSDictionary dictionaryWithContentsOfFile:ApolloSessionFilePath()];
     NSDictionary *normalized = ApolloSessionStateNormalize(stored, NSDate.date,
                                                             kApolloSessionMaximumAge);
@@ -757,7 +787,8 @@ static void ApolloSessionHandleAccountReady(void) {
 - (void)viewDidLoad {
     NSString *candidateURL = ApolloSessionFeedURL((UIViewController *)self);
     NSString *savedURL = sApolloSessionPendingRestore[ApolloSessionStateFeedURLKey];
-    if (!sApolloSessionFeedViewportStarted &&
+    if (ApolloSessionControllerOwnsRestore((UIViewController *)self) &&
+        !sApolloSessionFeedViewportStarted &&
         ApolloSessionStateFeedURLMatchesSavedRoute(candidateURL, savedURL)) {
         ApolloSessionApplyFeedSort((UIViewController *)self);
         sApolloSessionFeedSortPreparedController = (UIViewController *)self;
@@ -767,6 +798,7 @@ static void ApolloSessionHandleAccountReady(void) {
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig(animated);
+    if (!ApolloSessionControllerOwnsRestore((UIViewController *)self)) return;
     sApolloSessionFeedController = (UIViewController *)self;
     sApolloSessionCommentsController = nil;
     NSDictionary *pending = sApolloSessionPendingRestore;
@@ -803,7 +835,8 @@ static void ApolloSessionHandleAccountReady(void) {
 
 - (void)viewDidLoad {
     NSNumber *sort = sApolloSessionPendingRestore[ApolloSessionStateDetailSortKey];
-    if (sApolloSessionDetailRouteStarted && !sApolloSessionDetailViewportStarted &&
+    if (ApolloSessionControllerOwnsRestore((UIViewController *)self) &&
+        sApolloSessionDetailRouteStarted && !sApolloSessionDetailViewportStarted &&
         !sApolloSessionDetailViewportFinished && sort &&
         ApolloSessionCommentsControllerMatchesPendingDetail((UIViewController *)self)) {
         ApolloCommentsVCWriteCurrentSort(self, sort.longLongValue);
@@ -813,6 +846,7 @@ static void ApolloSessionHandleAccountReady(void) {
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig(animated);
+    if (!ApolloSessionControllerOwnsRestore((UIViewController *)self)) return;
     sApolloSessionCommentsController = (UIViewController *)self;
     NSDictionary *pending = sApolloSessionPendingRestore;
     if (pending && sApolloSessionDetailRouteStarted && !sApolloSessionDetailViewportStarted &&
@@ -861,6 +895,10 @@ static void ApolloSessionHandleAccountReady(void) {
     // The notification observer normally owns this. The scene callback is a
     // lifecycle-safe fallback for launch orders where this dylib finishes
     // loading after UIApplication posted its first active notification.
+    if ([scene isKindOfClass:UIWindowScene.class] && !sApolloSessionPendingRestore &&
+        !sApolloSessionInitialRestoreConsidered) {
+        sApolloSessionRestoreScene = (UIWindowScene *)scene;
+    }
     ApolloSessionConsiderInitialRestore(NO);
     if (sApolloSessionPendingRestore && !sApolloSessionDetailRouteStarted &&
         [sApolloSessionPendingRestore[ApolloSessionStateDetailURLKey] length]) {

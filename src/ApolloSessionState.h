@@ -154,6 +154,13 @@ ApolloSessionStateFeedOwnsSelectedNavigation(BOOL feedNavigationSelected,
                                              BOOL topIsFeed,
                                              BOOL topIsRestoredDetail);
 
+// While restoration is pending, only controllers belonging to the originating
+// UIWindowScene may consume it. Ordinary capture remains scene-agnostic.
+FOUNDATION_EXPORT BOOL
+ApolloSessionStateControllerSceneOwnsRestore(BOOL hasPendingRestore,
+                                             BOOL restoreSceneAvailable,
+                                             BOOL controllerSceneMatches);
+
 // Page restoration is monotonic and requests each observed page at most once.
 FOUNDATION_EXPORT BOOL ApolloSessionStateShouldRequestNextFeedPage(NSInteger savedPage,
                                                                   NSInteger currentPage,

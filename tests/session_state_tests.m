@@ -233,6 +233,14 @@ int main(void) {
               @"tab switch invalidates the hidden restore stack");
         Check(!ApolloSessionStateFeedOwnsSelectedNavigation(YES, NO, NO),
               @"unrelated pushed controller invalidates the restore stack");
+        Check(ApolloSessionStateControllerSceneOwnsRestore(NO, NO, NO),
+              @"ordinary capture remains scene-agnostic without a pending restore");
+        Check(ApolloSessionStateControllerSceneOwnsRestore(YES, YES, YES),
+              @"originating scene controller may consume a pending restore");
+        Check(!ApolloSessionStateControllerSceneOwnsRestore(YES, YES, NO),
+              @"another window cannot consume a pending restore");
+        Check(!ApolloSessionStateControllerSceneOwnsRestore(YES, NO, NO),
+              @"missing originating scene cannot route a pending restore");
         Check(ApolloSessionStateShouldRequestNextFeedPage(4, 1, NSNotFound),
               @"deep feed requests its next missing page");
         Check(!ApolloSessionStateShouldRequestNextFeedPage(4, 1, 1),

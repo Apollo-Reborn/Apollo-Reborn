@@ -220,6 +220,12 @@ BOOL ApolloSessionStateFeedOwnsSelectedNavigation(BOOL feedNavigationSelected,
     return feedNavigationSelected && (topIsFeed || topIsRestoredDetail);
 }
 
+BOOL ApolloSessionStateControllerSceneOwnsRestore(BOOL hasPendingRestore,
+                                                  BOOL restoreSceneAvailable,
+                                                  BOOL controllerSceneMatches) {
+    return !hasPendingRestore || (restoreSceneAvailable && controllerSceneMatches);
+}
+
 BOOL ApolloSessionStateShouldRequestNextFeedPage(NSInteger savedPage, NSInteger currentPage,
                                                  NSInteger lastRequestedPage) {
     return savedPage > currentPage && currentPage != lastRequestedPage;
