@@ -33,6 +33,7 @@ static __weak UIViewController *sApolloSessionFeedController;
 static __weak UIViewController *sApolloSessionCommentsController;
 static NSDictionary<NSString *, id> *sApolloSessionPendingRestore;
 static BOOL sApolloSessionInitialRestoreConsidered;
+static BOOL sApolloSessionAccountReadyRetryPending;
 static BOOL sApolloSessionDetailRouteStarted;
 static BOOL sApolloSessionFeedViewportStarted;
 static BOOL sApolloSessionDetailViewportStarted;
@@ -609,9 +610,13 @@ static void ApolloSessionRouteFeed(NSUInteger attempt, NSUInteger generation) {
 }
 
 static void ApolloSessionConsiderInitialRestore(BOOL preferLiveAccount) {
-    if (sApolloSessionInitialRestoreConsidered) return;
+    if (!ApolloSessionStateAccountReadyMayRetry(
+            sApolloSessionInitialRestoreConsidered,
+            sApolloSessionAccountReadyRetryPending,
+            preferLiveAccount)) return;
     if (sApolloSessionLaunchHasExplicitDestination) {
         sApolloSessionInitialRestoreConsidered = YES;
+        sApolloSessionAccountReadyRetryPending = NO;
         ApolloLog(@"[SessionRestore] Explicit launch destination takes precedence");
         return;
     }
@@ -620,6 +625,7 @@ static void ApolloSessionConsiderInitialRestore(BOOL preferLiveAccount) {
                                                             kApolloSessionMaximumAge);
     if (!normalized) {
         sApolloSessionInitialRestoreConsidered = YES;
+        sApolloSessionAccountReadyRetryPending = NO;
         return;
     }
     NSString *persistedAccountScope = ApolloSessionAccountScope(NO);
@@ -633,9 +639,13 @@ static void ApolloSessionConsiderInitialRestore(BOOL preferLiveAccount) {
     if (!accountScope) return; // The account notification will retry this path.
     sApolloSessionInitialRestoreConsidered = YES;
     if (![accountScope isEqualToString:normalized[ApolloSessionStateAccountScopeKey]]) {
+        // A lifecycle callback can observe a stale defaults mirror before the
+        // account-ready notification exposes the coherent live selection.
+        sApolloSessionAccountReadyRetryPending = !preferLiveAccount;
         ApolloLog(@"[SessionRestore] Ignoring reading session saved for a different account");
         return;
     }
+    sApolloSessionAccountReadyRetryPending = NO;
     sApolloSessionPendingRestore = normalized;
     sApolloSessionDetailRouteStarted = NO;
     sApolloSessionFeedViewportStarted = NO;
@@ -650,6 +660,22 @@ static void ApolloSessionConsiderInitialRestore(BOOL preferLiveAccount) {
     NSUInteger generation = ++sApolloSessionRestoreGeneration;
     ApolloLog(@"[SessionRestore] Cold launch has a recent reading session");
     ApolloSessionRouteFeed(0, generation);
+}
+
+static void ApolloSessionHandleAccountReady(void) {
+    if (sApolloSessionPendingRestore) {
+        NSString *liveScope = ApolloSessionAccountScope(YES);
+        NSString *savedScope = sApolloSessionPendingRestore[ApolloSessionStateAccountScopeKey];
+        if (ApolloSessionStateShouldCancelForAccountChange(
+                YES, savedScope, liveScope)) {
+            ApolloLog(@"[SessionRestore] Account changed during restoration; cancelling saved session");
+            sApolloSessionPendingRestore = nil;
+            sApolloSessionDeleteSnapshotAfterRestore = NO;
+            ++sApolloSessionRestoreGeneration;
+        }
+        return;
+    }
+    ApolloSessionConsiderInitialRestore(YES);
 }
 
 %hook _TtC6Apollo19PostsViewController
@@ -749,6 +775,7 @@ static void ApolloSessionConsiderInitialRestore(BOOL preferLiveAccount) {
         // the URL, notification, Handoff activity, or quick action.
         sApolloSessionLaunchHasExplicitDestination = YES;
         sApolloSessionInitialRestoreConsidered = YES;
+        sApolloSessionAccountReadyRetryPending = NO;
         sApolloSessionPendingRestore = nil;
         ++sApolloSessionRestoreGeneration;
     }
@@ -774,7 +801,7 @@ static void ApolloSessionConsiderInitialRestore(BOOL preferLiveAccount) {
     ]) {
         [center addObserverForName:name object:nil queue:NSOperationQueue.mainQueue
                          usingBlock:^(__unused NSNotification *note) {
-            ApolloSessionConsiderInitialRestore(YES);
+            ApolloSessionHandleAccountReady();
         }];
     }
     [center addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil

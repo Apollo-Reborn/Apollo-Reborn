@@ -195,6 +195,26 @@ int main(void) {
               @"started detail phase remains independent from feed cancellation");
         Check(!ApolloSessionStateShouldCancelUnstartedDetail(NO, YES),
               @"finished detail phase is not cancelled twice");
+        Check(ApolloSessionStateShouldCancelForAccountChange(
+                  YES, @"account-a", @"account-b"),
+              @"live account change cancels an active restore");
+        Check(!ApolloSessionStateShouldCancelForAccountChange(
+                   YES, @"account-a", @"account-a"),
+              @"matching live account keeps an active restore");
+        Check(!ApolloSessionStateShouldCancelForAccountChange(
+                   YES, @"account-a", nil),
+              @"unknown live identity waits rather than cancelling");
+        Check(!ApolloSessionStateShouldCancelForAccountChange(
+                   NO, @"account-a", @"account-b"),
+              @"account notification without a pending restore is not a cancellation");
+        Check(ApolloSessionStateAccountReadyMayRetry(NO, NO, NO),
+              @"unconsidered lifecycle path may attempt initial restoration");
+        Check(ApolloSessionStateAccountReadyMayRetry(YES, YES, YES),
+              @"account-ready callback retries a stale persisted mismatch");
+        Check(!ApolloSessionStateAccountReadyMayRetry(YES, YES, NO),
+              @"lifecycle callback cannot consume an account-ready retry");
+        Check(!ApolloSessionStateAccountReadyMayRetry(YES, NO, YES),
+              @"completed initial consideration remains one-shot");
         Check(ApolloSessionStateShouldRequestNextFeedPage(4, 1, NSNotFound),
               @"deep feed requests its next missing page");
         Check(!ApolloSessionStateShouldRequestNextFeedPage(4, 1, 1),

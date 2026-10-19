@@ -194,6 +194,19 @@ BOOL ApolloSessionStateShouldCancelUnstartedDetail(BOOL detailRouteStarted,
     return !detailRouteStarted && !detailFinished;
 }
 
+BOOL ApolloSessionStateShouldCancelForAccountChange(BOOL hasPendingRestore,
+                                                    NSString *savedScope,
+                                                    NSString *liveScope) {
+    return hasPendingRestore && savedScope.length && liveScope.length &&
+           ![savedScope isEqualToString:liveScope];
+}
+
+BOOL ApolloSessionStateAccountReadyMayRetry(BOOL initialRestoreConsidered,
+                                            BOOL accountReadyRetryPending,
+                                            BOOL preferLiveScope) {
+    return !initialRestoreConsidered || (accountReadyRetryPending && preferLiveScope);
+}
+
 BOOL ApolloSessionStateShouldRequestNextFeedPage(NSInteger savedPage, NSInteger currentPage,
                                                  NSInteger lastRequestedPage) {
     return savedPage > currentPage && currentPage != lastRequestedPage;

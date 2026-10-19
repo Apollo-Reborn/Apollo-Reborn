@@ -74,8 +74,10 @@ route on every anchor/page retry, and retains the sole disk snapshot after a
 missing/rejected post until the feed phase also reaches a terminal state. It
 also suppresses an unstarted detail route when the user replaces the restored
 feed in place, while preserving an already-started detail phase independently.
+An account-ready notification also cancels an active restore when Apollo's live
+identity no longer matches the snapshot, invalidating all queued callbacks.
 
-The Foundation host harness now exercises 67 state, route, bounds, launch-
+The Foundation host harness now exercises 75 state, route, bounds, launch-
 precedence, persistence, and restore-eligibility checks under
 `-Wall -Wextra -Werror`. The prior seven-finding state completed a full arm64
 package build with SDK 27.1 and an iOS 15.0 deployment target; no app/package

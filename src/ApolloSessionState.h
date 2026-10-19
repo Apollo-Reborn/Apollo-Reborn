@@ -126,6 +126,21 @@ FOUNDATION_EXPORT BOOL
 ApolloSessionStateShouldCancelUnstartedDetail(BOOL detailRouteStarted,
                                               BOOL detailFinished);
 
+// Once restoration is active, an account-ready notification is a cancellation
+// boundary when its coherent live scope differs from the saved snapshot.
+// Unknown live identity waits for a later notification rather than guessing.
+FOUNDATION_EXPORT BOOL
+ApolloSessionStateShouldCancelForAccountChange(BOOL hasPendingRestore,
+                                               NSString * _Nullable savedScope,
+                                               NSString * _Nullable liveScope);
+
+// A stale persisted mismatch may be reconsidered exactly by an account-ready
+// callback using live identity; ordinary lifecycle callbacks remain one-shot.
+FOUNDATION_EXPORT BOOL
+ApolloSessionStateAccountReadyMayRetry(BOOL initialRestoreConsidered,
+                                       BOOL accountReadyRetryPending,
+                                       BOOL preferLiveScope);
+
 // Page restoration is monotonic and requests each observed page at most once.
 FOUNDATION_EXPORT BOOL ApolloSessionStateShouldRequestNextFeedPage(NSInteger savedPage,
                                                                   NSInteger currentPage,
