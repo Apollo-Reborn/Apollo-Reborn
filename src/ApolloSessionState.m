@@ -136,6 +136,19 @@ BOOL ApolloSessionStateDetailIdentifiersMatchSavedRoute(NSString *postID, NSStri
     return bareComment && [bareComment isEqualToString:saved[2]];
 }
 
+BOOL ApolloSessionStateLaunchHasExplicitDestination(NSUInteger URLContextCount,
+                                                     BOOL hasNotificationResponse,
+                                                     NSUInteger userActivityCount,
+                                                     BOOL hasShortcutItem) {
+    return URLContextCount > 0 || hasNotificationResponse || userActivityCount > 0 ||
+           hasShortcutItem;
+}
+
+BOOL ApolloSessionStateShouldDeferPersistence(BOOL hasPendingRestore, BOOL feedFinished,
+                                              BOOL detailFinished) {
+    return hasPendingRestore && (!feedFinished || !detailFinished);
+}
+
 BOOL ApolloSessionStateViewportRestoreIsEligible(BOOL detail, BOOL visible, BOOL top,
                                                   BOOL inNavigationStack) {
     return detail ? (visible && top) : ((visible && top) || inNavigationStack);

@@ -53,14 +53,19 @@ and addresses seven review findings by:
 - restricting restored comment sort and viewport state to the saved post and
   optional contextual-comment identity.
 
-An eighth P2 follow-up is held locally behind the review-completion build gate:
-URL-routed comments controllers now match the saved route from their pre-fetch
-`linkID` and `commentID` Swift ivars instead of waiting for an `RDKLink` that is
-not populated until the first fetch. The Foundation host harness now exercises
-36 state, route, bounds, and restore-eligibility checks under
+An eighth P2 follow-up in `295603b0` makes URL-routed comments controllers
+match the saved route from their pre-fetch `linkID` and `commentID` Swift ivars
+instead of waiting for an `RDKLink` that is not populated until the first
+fetch. Two further review fixes ensure that an explicit URL, notification,
+activity, or quick-action cold launch takes precedence over passive session
+restoration, and that backgrounding during an incomplete restore keeps the
+last complete disk snapshot instead of erasing its pending detail state.
+
+The Foundation host harness now exercises 43 state, route, bounds, launch-
+precedence, persistence, and restore-eligibility checks under
 `-Wall -Wextra -Werror`. The prior seven-finding state completed a full arm64
 package build with SDK 27.1 and an iOS 15.0 deployment target; no app/package
-build was launched for the eighth fix because Dan's gate requires a clean,
-resolved review first. The new deep-page, non-default-sort, late-account, and
-pre-fetch identity paths have not yet been recaptured in the simulator or
-accepted on a physical device.
+build has been launched for the eighth through tenth fixes because Dan's gate
+requires clean, resolved reviews first. The new deep-page, non-default-sort,
+late-account, pre-fetch identity, explicit-launch, and interrupted-restore paths
+have not yet been recaptured in the simulator or accepted on a physical device.

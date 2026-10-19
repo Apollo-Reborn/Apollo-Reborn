@@ -123,6 +123,20 @@ int main(void) {
                   @"abc", nil,
                   @"apollo://reddit.com/r/apolloapp/comments/abc/title/"),
               @"bare pre-fetch post ID matches a non-contextual saved route");
+        Check(ApolloSessionStateLaunchHasExplicitDestination(1, NO, 0, NO),
+              @"URL cold launch takes navigation precedence");
+        Check(ApolloSessionStateLaunchHasExplicitDestination(0, YES, 0, NO),
+              @"notification cold launch takes navigation precedence");
+        Check(ApolloSessionStateLaunchHasExplicitDestination(0, NO, 1, NO),
+              @"activity cold launch takes navigation precedence");
+        Check(!ApolloSessionStateLaunchHasExplicitDestination(0, NO, 0, NO),
+              @"ordinary launch remains eligible for session restore");
+        Check(ApolloSessionStateShouldDeferPersistence(YES, YES, NO),
+              @"pending detail restore preserves complete disk snapshot");
+        Check(ApolloSessionStateShouldDeferPersistence(YES, NO, YES),
+              @"pending feed restore preserves complete disk snapshot");
+        Check(!ApolloSessionStateShouldDeferPersistence(YES, YES, YES),
+              @"completed restore permits a fresh snapshot");
         Check(ApolloSessionStateViewportRestoreIsEligible(NO, NO, NO, YES),
               @"feed restore remains eligible beneath pushed detail");
         Check(!ApolloSessionStateViewportRestoreIsEligible(YES, NO, NO, YES),

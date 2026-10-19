@@ -52,6 +52,21 @@ ApolloSessionStateDetailIdentifiersMatchSavedRoute(NSString * _Nullable postID,
                                                     NSString * _Nullable commentID,
                                                     NSString * _Nullable savedURL);
 
+// A cold launch with an explicit URL, notification, activity, or quick action
+// owns navigation and must not be replaced by passive reading-session restore.
+FOUNDATION_EXPORT BOOL
+ApolloSessionStateLaunchHasExplicitDestination(NSUInteger URLContextCount,
+                                               BOOL hasNotificationResponse,
+                                               NSUInteger userActivityCount,
+                                               BOOL hasShortcutItem);
+
+// Keep the last complete on-disk snapshot while either requested restore phase
+// is still pending, so a quick background/eviction cannot erase its detail.
+FOUNDATION_EXPORT BOOL
+ApolloSessionStateShouldDeferPersistence(BOOL hasPendingRestore,
+                                         BOOL feedFinished,
+                                         BOOL detailFinished);
+
 // A detail viewport is safe to mutate only while it is visible and on top.
 // A feed viewport may continue restoring while a detail controller pushed
 // from it is visible, provided the feed still belongs to that navigation stack.

@@ -37,6 +37,7 @@ static BOOL sApolloSessionFeedViewportStarted;
 static BOOL sApolloSessionDetailViewportStarted;
 static BOOL sApolloSessionFeedViewportFinished;
 static BOOL sApolloSessionDetailViewportFinished;
+static BOOL sApolloSessionLaunchHasExplicitDestination;
 static __weak UIViewController *sApolloSessionFeedSortPreparedController;
 static __weak UIViewController *sApolloSessionPagingController;
 static NSInteger sApolloSessionLastRequestedPage = NSNotFound;
@@ -264,6 +265,15 @@ static NSDictionary<NSString *, id> *ApolloSessionCapture(void) {
 
 static void ApolloSessionPersist(void) {
     if (!NSThread.isMainThread) return;
+    if (ApolloSessionStateShouldDeferPersistence(sApolloSessionPendingRestore != nil,
+                                                 sApolloSessionFeedViewportFinished,
+                                                 sApolloSessionDetailViewportFinished)) {
+        // The complete pre-eviction snapshot is still on disk. Replacing it
+        // with a partially rebuilt feed would discard an open post/detail
+        // anchor if the process is evicted during this background transition.
+        ApolloLog(@"[SessionRestore] Keeping saved session while restoration is incomplete");
+        return;
+    }
     NSDictionary *snapshot = ApolloSessionCapture();
     if (!snapshot) return;
     NSString *path = ApolloSessionFilePath();
@@ -504,6 +514,11 @@ static void ApolloSessionRouteFeed(NSUInteger attempt, NSUInteger generation) {
 
 static void ApolloSessionConsiderInitialRestore(void) {
     if (sApolloSessionInitialRestoreConsidered) return;
+    if (sApolloSessionLaunchHasExplicitDestination) {
+        sApolloSessionInitialRestoreConsidered = YES;
+        ApolloLog(@"[SessionRestore] Explicit launch destination takes precedence");
+        return;
+    }
     NSDictionary *stored = [NSDictionary dictionaryWithContentsOfFile:ApolloSessionFilePath()];
     NSDictionary *normalized = ApolloSessionStateNormalize(stored, NSDate.date,
                                                             kApolloSessionMaximumAge);
@@ -609,6 +624,26 @@ static void ApolloSessionConsiderInitialRestore(void) {
 %end
 
 %hook _TtC6Apollo13SceneDelegate
+
+- (void)scene:(UIScene *)scene
+ willConnectToSession:(UISceneSession *)session
+             options:(UISceneConnectionOptions *)connectionOptions {
+    BOOL explicitDestination = ApolloSessionStateLaunchHasExplicitDestination(
+        connectionOptions.URLContexts.count,
+        connectionOptions.notificationResponse != nil,
+        connectionOptions.userActivities.count,
+        connectionOptions.shortcutItem != nil);
+    if (explicitDestination) {
+        // Set this before Apollo consumes the options in %orig. Later
+        // foreground/account callbacks must not route the saved session over
+        // the URL, notification, Handoff activity, or quick action.
+        sApolloSessionLaunchHasExplicitDestination = YES;
+        sApolloSessionInitialRestoreConsidered = YES;
+        sApolloSessionPendingRestore = nil;
+        ++sApolloSessionRestoreGeneration;
+    }
+    %orig(scene, session, connectionOptions);
+}
 
 - (void)sceneWillEnterForeground:(UIScene *)scene {
     %orig;
