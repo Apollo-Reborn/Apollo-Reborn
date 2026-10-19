@@ -4640,12 +4640,18 @@ static void ApolloInlineAvatarFireBatchNow(void) {
 // preload range at once → fire promptly once a burst accumulates; a slow trickle of
 // cells is gathered over a short window so it still collapses into one request rather
 // than many 1-id calls. Main-thread only, so the statics need no locking.
-// YES when `fullName` joined a batch (and will be looked up within ~0.6s).
-static BOOL ApolloInlineAvatarEnqueueFullNameForBatch(NSString *fullName) {
+// YES when any of `fullNames` joined a batch (and will be looked up within ~0.6s).
+// All of them join before the burst check, so a feed page's authors leave as one.
+static BOOL ApolloInlineAvatarEnqueueFullNamesForBatch(NSArray<NSString *> *fullNames) {
     if (!sShowUserAvatars) return NO;
-    if (![fullName isKindOfClass:[NSString class]] || ![fullName hasPrefix:@"t2_"]) return NO;
-    if (!sApolloPendingBatchFullNames) sApolloPendingBatchFullNames = [NSMutableSet set];
-    [sApolloPendingBatchFullNames addObject:fullName];
+    BOOL joined = NO;
+    for (NSString *fullName in fullNames) {
+        if (![fullName isKindOfClass:[NSString class]] || ![fullName hasPrefix:@"t2_"]) continue;
+        if (!sApolloPendingBatchFullNames) sApolloPendingBatchFullNames = [NSMutableSet set];
+        [sApolloPendingBatchFullNames addObject:fullName];
+        joined = YES;
+    }
+    if (!joined) return NO;
     if (sApolloPendingBatchFullNames.count >= 25) {
         ApolloInlineAvatarFireBatchNow();
         return YES;
@@ -4656,6 +4662,11 @@ static BOOL ApolloInlineAvatarEnqueueFullNameForBatch(NSString *fullName) {
         ApolloInlineAvatarFireBatchNow();
     });
     return YES;
+}
+
+// YES when `fullName` joined a batch.
+static BOOL ApolloInlineAvatarEnqueueFullNameForBatch(NSString *fullName) {
+    return fullName ? ApolloInlineAvatarEnqueueFullNamesForBatch(@[fullName]) : NO;
 }
 
 // Read the comment cell's own RDKComment (the same safe ivar path the avatar binding
@@ -4673,10 +4684,33 @@ static void ApolloInlineAvatarBatchEnqueueFromCommentCell(id cell) {
     if (ApolloInlineAvatarEnqueueFullNameForBatch(fullName)) ApolloInlineAvatarNoteQueuedForBatch(username);
 }
 
+// The t3_ fullname of the post a feed cell shows, from the same `link` model its
+// author is read from (ApolloUsernameFromCell): the ivar, else a getter.
+static NSString *ApolloPostFullNameFromCell(id cell) {
+    id link = ApolloObjectIvarValue(cell, @"link");
+    SEL linkSEL = NSSelectorFromString(@"link");
+    if (!link && [cell respondsToSelector:linkSEL]) link = ((id (*)(id, SEL))objc_msgSend)(cell, linkSEL);
+    if (![link respondsToSelector:@selector(fullName)]) return nil;
+    @try {
+        id fullName = ((id (*)(id, SEL))objc_msgSend)(link, @selector(fullName));
+        return [fullName isKindOfClass:[NSString class]] ? fullName : nil;
+    } @catch (__unused NSException *exception) {
+        return nil;
+    }
+}
+
 // Reduce Rate Limiting only: queue a feed post's author for the same batch,
 // using the t2_ fullname noted from the feed listing (Apollo's RDKLink has no
 // author fullname of its own). Without the setting, feed avatars keep their
 // own lookups and the collectible frames that come with them.
+//
+// The rest of the post's listing page goes with it (#1438). A feed scroll brings
+// posts into the preload range one or two at a time, so the 0.6s window above
+// used to send a batch every second or so while scrolling, often for a single
+// author, and that alone could spend an API-Key-Free session's Reddit budget in
+// a few minutes. With the page's uncached authors queued together it's one batch
+// per page: the page's later posts find their authors cached, or already asked
+// for (the cache drops those before sending anything).
 static void ApolloInlineAvatarBatchEnqueueFromPostCell(id cell) {
     if (!cell || !ApolloReduceRateLimitingActive()) return;
     NSString *username = ApolloUsernameFromCell(cell, @"link");
@@ -4684,7 +4718,11 @@ static void ApolloInlineAvatarBatchEnqueueFromPostCell(id cell) {
     ApolloUserProfileCache *cache = [ApolloUserProfileCache sharedCache];
     if ([cache cachedInfoForUsername:username].iconURL) return;
     NSString *fullName = [cache authorFullNameForUsername:username];
-    if (ApolloInlineAvatarEnqueueFullNameForBatch(fullName)) ApolloInlineAvatarNoteQueuedForBatch(username);
+    if (![fullName hasPrefix:@"t2_"]) return;
+    NSMutableArray<NSString *> *batch = [NSMutableArray arrayWithObject:fullName];
+    NSArray<NSString *> *pageFullNames = [cache uncachedAuthorFullNamesOnPageOfPost:ApolloPostFullNameFromCell(cell)];
+    if (pageFullNames.count > 0) [batch addObjectsFromArray:pageFullNames];
+    if (ApolloInlineAvatarEnqueueFullNamesForBatch(batch)) ApolloInlineAvatarNoteQueuedForBatch(username);
 }
 
 // ASSizeRange { CGSize min; CGSize max; } — same -layoutSpecThatFits: ABI
