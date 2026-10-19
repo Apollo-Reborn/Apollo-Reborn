@@ -75,6 +75,14 @@ FOUNDATION_EXPORT BOOL ApolloSessionStateViewportRestoreIsEligible(BOOL detail,
                                                                    BOOL top,
                                                                    BOOL inNavigationStack);
 
+// Leaving the navigation stack cancels either phase. A detail controller also
+// cancels when another controller replaces it on top; temporary invisibility
+// while it remains topmost is a pause, not a cancellation.
+FOUNDATION_EXPORT BOOL
+ApolloSessionStateViewportRestoreWasCancelled(BOOL detail,
+                                              BOOL top,
+                                              BOOL inNavigationStack);
+
 // Page restoration is monotonic and requests each observed page at most once.
 FOUNDATION_EXPORT BOOL ApolloSessionStateShouldRequestNextFeedPage(NSInteger savedPage,
                                                                   NSInteger currentPage,

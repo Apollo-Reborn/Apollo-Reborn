@@ -154,6 +154,11 @@ BOOL ApolloSessionStateViewportRestoreIsEligible(BOOL detail, BOOL visible, BOOL
     return detail ? (visible && top) : ((visible && top) || inNavigationStack);
 }
 
+BOOL ApolloSessionStateViewportRestoreWasCancelled(BOOL detail, BOOL top,
+                                                   BOOL inNavigationStack) {
+    return !inNavigationStack || (detail && !top);
+}
+
 BOOL ApolloSessionStateShouldRequestNextFeedPage(NSInteger savedPage, NSInteger currentPage,
                                                  NSInteger lastRequestedPage) {
     return savedPage > currentPage && currentPage != lastRequestedPage;

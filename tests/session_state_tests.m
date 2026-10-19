@@ -143,6 +143,14 @@ int main(void) {
               @"detail restore requires visible top controller");
         Check(ApolloSessionStateViewportRestoreIsEligible(YES, YES, YES, YES),
               @"visible top detail remains eligible");
+        Check(ApolloSessionStateViewportRestoreWasCancelled(YES, YES, NO),
+              @"popped detail controller cancels its restore phase");
+        Check(ApolloSessionStateViewportRestoreWasCancelled(YES, NO, YES),
+              @"superseded detail controller cancels its restore phase");
+        Check(!ApolloSessionStateViewportRestoreWasCancelled(YES, YES, YES),
+              @"temporarily hidden top detail remains resumable");
+        Check(ApolloSessionStateViewportRestoreWasCancelled(NO, NO, NO),
+              @"removed feed controller cancels its restore phase");
         Check(ApolloSessionStateShouldRequestNextFeedPage(4, 1, NSNotFound),
               @"deep feed requests its next missing page");
         Check(!ApolloSessionStateShouldRequestNextFeedPage(4, 1, 1),

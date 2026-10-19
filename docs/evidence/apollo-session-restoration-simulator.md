@@ -59,9 +59,12 @@ instead of waiting for an `RDKLink` that is not populated until the first
 fetch. Two further review fixes ensure that an explicit URL, notification,
 activity, or quick-action cold launch takes precedence over passive session
 restoration, and that backgrounding during an incomplete restore keeps the
-last complete disk snapshot instead of erasing its pending detail state.
+last complete disk snapshot instead of erasing its pending detail state. A
+further navigation-lifecycle fix finishes a restore phase when its controller
+is popped or superseded, while allowing a temporarily hidden top controller to
+restart on its next appearance.
 
-The Foundation host harness now exercises 43 state, route, bounds, launch-
+The Foundation host harness now exercises 47 state, route, bounds, launch-
 precedence, persistence, and restore-eligibility checks under
 `-Wall -Wextra -Werror`. The prior seven-finding state completed a full arm64
 package build with SDK 27.1 and an iOS 15.0 deployment target; no app/package

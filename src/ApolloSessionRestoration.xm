@@ -449,8 +449,21 @@ static void ApolloSessionRestoreViewport(UIViewController *controller, BOOL deta
     BOOL visible = controller.viewIfLoaded.window != nil;
     BOOL top = navigation.topViewController == controller;
     BOOL inStack = [navigation.viewControllers containsObject:controller];
-    if (generation != sApolloSessionRestoreGeneration || !sApolloSessionPendingRestore ||
-        !ApolloSessionStateViewportRestoreIsEligible(detail, visible, top, inStack)) return;
+    if (generation != sApolloSessionRestoreGeneration || !sApolloSessionPendingRestore) return;
+    if (ApolloSessionStateViewportRestoreWasCancelled(detail, top, inStack)) {
+        ApolloLog(@"[SessionRestore] %@ controller left its restore stack; cancelling phase",
+                  detail ? @"Post" : @"Feed");
+        ApolloSessionFinishViewport(detail);
+        return;
+    }
+    if (detail && !visible) {
+        // Backgrounding can temporarily detach the top controller's window.
+        // Let its next viewDidAppear restart retries instead of leaving the
+        // phase permanently started-but-unfinished.
+        sApolloSessionDetailViewportStarted = NO;
+        return;
+    }
+    if (!ApolloSessionStateViewportRestoreIsEligible(detail, visible, top, inStack)) return;
     UITableView *table = ApolloSessionTableView(controller);
     NSString *itemKey = detail ? ApolloSessionStateDetailItemKey : ApolloSessionStateFeedItemKey;
     NSString *deltaKey = detail ? ApolloSessionStateDetailDeltaKey : ApolloSessionStateFeedDeltaKey;
