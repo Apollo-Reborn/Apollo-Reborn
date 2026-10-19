@@ -213,9 +213,11 @@ BOOL ApolloSessionStateDetailRouteDeadlineShouldFinish(BOOL detailControllerSeen
 
 BOOL ApolloSessionStateSortedFeedReloadHasProducedRows(NSString *initialFingerprint,
                                                        NSString *currentFingerprint,
-                                                       BOOL observedContentChange) {
+                                                       BOOL observedContentChange,
+                                                       BOOL reloadWaitExpired) {
     if (!currentFingerprint.length) return NO;
-    return observedContentChange || ![currentFingerprint isEqualToString:initialFingerprint];
+    return observedContentChange || reloadWaitExpired ||
+        ![currentFingerprint isEqualToString:initialFingerprint];
 }
 
 BOOL ApolloSessionStateShouldDeleteSnapshotAfterDetailFailure(BOOL feedFinished,

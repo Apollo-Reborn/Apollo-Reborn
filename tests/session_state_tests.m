@@ -216,14 +216,16 @@ int main(void) {
               @"backgrounded appeared detail remains resumable past route deadline");
         Check(!ApolloSessionStateDetailRouteDeadlineShouldFinish(NO, YES),
               @"completed detail ignores a later route deadline");
-        Check(!ApolloSessionStateSortedFeedReloadHasProducedRows(@"old", @"old", NO),
+        Check(!ApolloSessionStateSortedFeedReloadHasProducedRows(@"old", @"old", NO, NO),
               @"old pre-reload rows cannot complete viewport restoration");
-        Check(ApolloSessionStateSortedFeedReloadHasProducedRows(@"old", @"new", NO),
+        Check(ApolloSessionStateSortedFeedReloadHasProducedRows(@"old", @"new", NO, NO),
               @"changed sorted rows permit viewport restoration");
-        Check(ApolloSessionStateSortedFeedReloadHasProducedRows(nil, @"new", NO),
+        Check(ApolloSessionStateSortedFeedReloadHasProducedRows(nil, @"new", NO, NO),
               @"initially empty feed accepts newly produced sorted rows");
-        Check(ApolloSessionStateSortedFeedReloadHasProducedRows(@"same", @"same", YES),
+        Check(ApolloSessionStateSortedFeedReloadHasProducedRows(@"same", @"same", YES, NO),
               @"transient content replacement accepts an identical final page");
+        Check(ApolloSessionStateSortedFeedReloadHasProducedRows(@"same", @"same", NO, YES),
+              @"identical sorted rows remain restorable after the reload wait expires");
         Check(!ApolloSessionStateShouldDeleteSnapshotAfterDetailFailure(NO, YES),
               @"detail failure retains snapshot while feed is unfinished");
         Check(ApolloSessionStateShouldDeleteSnapshotAfterDetailFailure(YES, YES),

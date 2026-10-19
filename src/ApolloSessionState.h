@@ -122,13 +122,15 @@ FOUNDATION_EXPORT BOOL
 ApolloSessionStateDetailRouteDeadlineShouldFinish(BOOL detailControllerSeen,
                                                   BOOL detailFinished);
 
-// A sort-triggered reload must replace or clear the old rows before viewport
-// identity is read. observedContentChange remembers a transient empty state so
-// an identical final first page is still recognized as newly produced data.
+// A sort-triggered reload normally replaces or clears the old rows before
+// viewport identity is read. observedContentChange remembers a transient empty
+// state; reloadWaitExpired permits a nonempty identical result only after the
+// bounded reload wait, because two sorts can legitimately return the same page.
 FOUNDATION_EXPORT BOOL
 ApolloSessionStateSortedFeedReloadHasProducedRows(NSString * _Nullable initialFingerprint,
                                                   NSString * _Nullable currentFingerprint,
-                                                  BOOL observedContentChange);
+                                                  BOOL observedContentChange,
+                                                  BOOL reloadWaitExpired);
 
 // A rejected/missing post invalidates the detail portion of the snapshot, but
 // the only on-disk recovery point remains necessary until feed restoration has

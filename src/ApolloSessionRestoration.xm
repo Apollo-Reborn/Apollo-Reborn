@@ -741,12 +741,13 @@ static void ApolloSessionWaitForSortedFeed(UIViewController *controller,
     BOOL changed = observedContentChange ||
         ((initialFingerprint || currentFingerprint) &&
          ![initialFingerprint isEqualToString:currentFingerprint]);
+    BOOL reloadWaitExpired = attempt + 1 >= kApolloSessionFeedAnchorAttempts;
     if (ApolloSessionStateSortedFeedReloadHasProducedRows(
-            initialFingerprint, currentFingerprint, changed)) {
+            initialFingerprint, currentFingerprint, changed, reloadWaitExpired)) {
         ApolloSessionRestoreViewport(controller, NO, 0, generation);
         return;
     }
-    if (attempt + 1 >= kApolloSessionFeedAnchorAttempts) {
+    if (reloadWaitExpired) {
         ApolloLog(@"[SessionRestore] Sorted feed rows did not settle; skipping stale viewport data");
         ApolloSessionFinishViewport(NO);
         return;
