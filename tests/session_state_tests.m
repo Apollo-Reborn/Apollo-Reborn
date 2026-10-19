@@ -153,20 +153,30 @@ int main(void) {
               @"both unfinished phases preserve the sole disk snapshot");
         Check(!ApolloSessionStateShouldDeferPersistence(NO, NO, NO),
               @"no pending restore permits ordinary persistence");
-        Check(ApolloSessionStateViewportRestoreIsEligible(NO, NO, NO, YES),
+        Check(ApolloSessionStateViewportRestoreIsEligible(NO, NO, NO, YES, YES, YES),
               @"feed restore remains eligible beneath pushed detail");
-        Check(!ApolloSessionStateViewportRestoreIsEligible(YES, NO, NO, YES),
+        Check(!ApolloSessionStateViewportRestoreIsEligible(YES, NO, NO, YES, NO, YES),
               @"detail restore requires visible top controller");
-        Check(ApolloSessionStateViewportRestoreIsEligible(YES, YES, YES, YES),
+        Check(ApolloSessionStateViewportRestoreIsEligible(YES, YES, YES, YES, NO, YES),
               @"visible top detail remains eligible");
-        Check(ApolloSessionStateViewportRestoreWasCancelled(YES, YES, NO),
+        Check(ApolloSessionStateViewportRestoreWasCancelled(YES, YES, YES, NO, NO, YES),
               @"popped detail controller cancels its restore phase");
-        Check(ApolloSessionStateViewportRestoreWasCancelled(YES, NO, YES),
+        Check(ApolloSessionStateViewportRestoreWasCancelled(YES, NO, NO, YES, NO, YES),
               @"superseded detail controller cancels its restore phase");
-        Check(!ApolloSessionStateViewportRestoreWasCancelled(YES, YES, YES),
+        Check(!ApolloSessionStateViewportRestoreWasCancelled(YES, NO, YES, YES, NO, NO),
               @"temporarily hidden top detail remains resumable");
-        Check(ApolloSessionStateViewportRestoreWasCancelled(NO, NO, NO),
+        Check(ApolloSessionStateViewportRestoreWasCancelled(NO, NO, NO, NO, NO, YES),
               @"removed feed controller cancels its restore phase");
+        Check(ApolloSessionStateViewportRestoreWasCancelled(NO, NO, YES, YES, NO, YES),
+              @"active tab switch cancels an invisible feed restore");
+        Check(ApolloSessionStateViewportRestoreWasCancelled(NO, NO, NO, YES, NO, YES),
+              @"unrelated pushed controller cancels an invisible feed restore");
+        Check(!ApolloSessionStateViewportRestoreWasCancelled(NO, NO, NO, YES, YES, YES),
+              @"specific restored detail keeps its underlying feed phase alive");
+        Check(!ApolloSessionStateViewportRestoreWasCancelled(NO, NO, YES, YES, NO, NO),
+              @"background detachment does not cancel a feed restore");
+        Check(ApolloSessionStateViewportRestoreIsEligible(NO, NO, YES, YES, NO, NO),
+              @"backgrounded feed remains resumable through queued retries");
         Check(ApolloSessionStateDetailRouteDeadlineShouldFinish(NO, NO),
               @"detail route deadline finishes when no controller appeared");
         Check(!ApolloSessionStateDetailRouteDeadlineShouldFinish(YES, NO),

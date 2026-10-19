@@ -87,15 +87,20 @@ ApolloSessionStateShouldDeferPersistence(BOOL hasPendingRestore,
 FOUNDATION_EXPORT BOOL ApolloSessionStateViewportRestoreIsEligible(BOOL detail,
                                                                    BOOL visible,
                                                                    BOOL top,
-                                                                   BOOL inNavigationStack);
+                                                                   BOOL inNavigationStack,
+                                                                   BOOL underRestoredDetail,
+                                                                   BOOL applicationActive);
 
 // Leaving the navigation stack cancels either phase. A detail controller also
 // cancels when another controller replaces it on top; temporary invisibility
 // while it remains topmost is a pause, not a cancellation.
 FOUNDATION_EXPORT BOOL
 ApolloSessionStateViewportRestoreWasCancelled(BOOL detail,
+                                              BOOL visible,
                                               BOOL top,
-                                              BOOL inNavigationStack);
+                                              BOOL inNavigationStack,
+                                              BOOL underRestoredDetail,
+                                              BOOL applicationActive);
 
 // The route deadline only handles a post controller that never appeared. Once
 // it has appeared, temporary background detachment must leave its anchor phase

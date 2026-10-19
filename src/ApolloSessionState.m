@@ -163,13 +163,20 @@ BOOL ApolloSessionStateShouldDeferPersistence(BOOL hasPendingRestore, BOOL feedF
 }
 
 BOOL ApolloSessionStateViewportRestoreIsEligible(BOOL detail, BOOL visible, BOOL top,
-                                                  BOOL inNavigationStack) {
-    return detail ? (visible && top) : ((visible && top) || inNavigationStack);
+                                                  BOOL inNavigationStack,
+                                                  BOOL underRestoredDetail,
+                                                  BOOL applicationActive) {
+    if (detail) return visible && top;
+    return (visible && top) || (inNavigationStack && underRestoredDetail) ||
+           (inNavigationStack && !applicationActive);
 }
 
-BOOL ApolloSessionStateViewportRestoreWasCancelled(BOOL detail, BOOL top,
-                                                   BOOL inNavigationStack) {
-    return !inNavigationStack || (detail && !top);
+BOOL ApolloSessionStateViewportRestoreWasCancelled(BOOL detail, BOOL visible, BOOL top,
+                                                   BOOL inNavigationStack,
+                                                   BOOL underRestoredDetail,
+                                                   BOOL applicationActive) {
+    if (!inNavigationStack || (detail && !top)) return YES;
+    return !detail && applicationActive && !visible && !underRestoredDetail;
 }
 
 BOOL ApolloSessionStateDetailRouteDeadlineShouldFinish(BOOL detailControllerSeen,
