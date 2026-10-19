@@ -266,6 +266,22 @@ BOOL ApolloSessionStateShouldRequestNextFeedPage(NSInteger savedPage, NSInteger 
     return savedPage > currentPage && currentPage != lastRequestedPage;
 }
 
+BOOL ApolloSessionStateMoreCommentsChildrenContainIdentifier(NSArray *children,
+                                                              NSString *identifier) {
+    if (![children isKindOfClass:NSArray.class] || ![identifier isKindOfClass:NSString.class]) {
+        return NO;
+    }
+    NSString *bareIdentifier = [identifier hasPrefix:@"t1_"]
+        ? [identifier substringFromIndex:3] : identifier;
+    if (bareIdentifier.length == 0) return NO;
+    for (id child in children) {
+        if (![child isKindOfClass:NSString.class]) continue;
+        NSString *bareChild = [child hasPrefix:@"t1_"] ? [child substringFromIndex:3] : child;
+        if ([bareChild caseInsensitiveCompare:bareIdentifier] == NSOrderedSame) return YES;
+    }
+    return NO;
+}
+
 static BOOL ApolloSessionAccountScopeIsAllowed(NSString *scope) {
     if ([scope isEqualToString:@"signed-out"]) return YES;
     if (scope.length != 64) return NO;

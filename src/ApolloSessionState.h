@@ -187,4 +187,11 @@ FOUNDATION_EXPORT BOOL ApolloSessionStateShouldRequestNextFeedPage(NSInteger sav
                                                                   NSInteger currentPage,
                                                                   NSInteger lastRequestedPage);
 
+// Reddit's morechildren payload uses bare comment IDs while viewport anchors
+// use t1_ fullnames. This identifies the one load-more row that can reveal the
+// saved anchor without expanding unrelated branches.
+FOUNDATION_EXPORT BOOL
+ApolloSessionStateMoreCommentsChildrenContainIdentifier(NSArray * _Nullable children,
+                                                         NSString * _Nullable identifier);
+
 NS_ASSUME_NONNULL_END

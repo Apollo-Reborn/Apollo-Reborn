@@ -294,6 +294,15 @@ int main(void) {
               @"same feed page is requested at most once");
         Check(!ApolloSessionStateShouldRequestNextFeedPage(4, 4, 3),
               @"caught-up feed does not request another page");
+        Check(ApolloSessionStateMoreCommentsChildrenContainIdentifier(
+                  @[@"abc", @"Def"], @"t1_def"),
+              @"saved fullname selects its exact bare more-comments child");
+        Check(ApolloSessionStateMoreCommentsChildrenContainIdentifier(
+                  @[@"t1_abc"], @"ABC"),
+              @"more-comments matching accepts either fullname representation");
+        Check(!ApolloSessionStateMoreCommentsChildrenContainIdentifier(
+                   @[@"abc", @"def"], @"t1_other"),
+              @"unrelated more-comments branches are not expanded during restore");
 
         NSMutableDictionary *excessivePage = [valid mutableCopy];
         excessivePage[ApolloSessionStateFeedPageKey] = @21;

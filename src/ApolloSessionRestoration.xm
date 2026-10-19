@@ -27,6 +27,7 @@ static const NSTimeInterval kApolloSessionMaximumAge = 7.0 * 24.0 * 60.0 * 60.0;
 static const NSUInteger kApolloSessionRouteAttempts = 24;
 static const NSUInteger kApolloSessionDetailAnchorAttempts = 48;
 static const NSUInteger kApolloSessionFeedAnchorAttempts = 120;
+static const NSUInteger kApolloSessionMaximumMoreCommentsRequests = 4;
 static const NSTimeInterval kApolloSessionRetryDelay = 0.25;
 static const NSTimeInterval kApolloSessionDetailRouteGrace = 0.75;
 
@@ -48,6 +49,7 @@ static BOOL sApolloSessionLaunchHasExplicitDestination;
 static __weak UIViewController *sApolloSessionFeedSortPreparedController;
 static __weak UIViewController *sApolloSessionPagingController;
 static NSInteger sApolloSessionLastRequestedPage = NSNotFound;
+static NSHashTable *sApolloSessionRequestedMoreComments;
 static NSUInteger sApolloSessionRestoreGeneration;
 
 static void ApolloSessionRevalidatePendingNavigation(void);
@@ -535,6 +537,36 @@ static BOOL ApolloSessionRequestNextFeedPage(UIViewController *controller) {
     return YES;
 }
 
+static BOOL ApolloSessionRequestMoreCommentsForAnchor(UIViewController *controller,
+                                                      NSString *identifier) {
+    if (!controller || identifier.length == 0 ||
+        sApolloSessionRequestedMoreComments.count >= kApolloSessionMaximumMoreCommentsRequests) {
+        return NO;
+    }
+    UITableView *table = ApolloSessionTableView(controller);
+    Class moreCellClass = objc_getClass("_TtC6Apollo20MoreCommentsCellNode");
+    SEL tapSelector = NSSelectorFromString(@"moreCommentsCellTappedWithMoreComments:");
+    if (!table || !moreCellClass || ![controller respondsToSelector:tapSelector]) return NO;
+    for (NSInteger section = 0; section < table.numberOfSections; section++) {
+        for (NSInteger row = 0; row < [table numberOfRowsInSection:section]; row++) {
+            id node = ApolloSessionNode(controller,
+                [NSIndexPath indexPathForRow:row inSection:section]);
+            if (![node isKindOfClass:moreCellClass]) continue;
+            id moreComments = ApolloObjectIvar(node, "moreComments");
+            if (!moreComments || [sApolloSessionRequestedMoreComments containsObject:moreComments] ||
+                ![moreComments respondsToSelector:@selector(children)]) continue;
+            id children = ((id (*)(id, SEL))objc_msgSend)(moreComments, @selector(children));
+            if (!ApolloSessionStateMoreCommentsChildrenContainIdentifier(children, identifier)) continue;
+            [sApolloSessionRequestedMoreComments addObject:moreComments];
+            ((void (*)(id, SEL, id))objc_msgSend)(controller, tapSelector, moreComments);
+            ApolloLog(@"[SessionRestore] Requested the comment branch containing saved anchor %@",
+                      identifier);
+            return YES;
+        }
+    }
+    return NO;
+}
+
 static void ApolloSessionStartDetailRoute(void) {
     if (sApolloSessionDetailRouteStarted) return;
     sApolloSessionDetailRouteStarted = YES;
@@ -664,6 +696,9 @@ static void ApolloSessionRestoreViewport(UIViewController *controller, BOOL deta
                                         : kApolloSessionFeedAnchorAttempts;
     NSInteger savedPage = [sApolloSessionPendingRestore[ApolloSessionStateFeedPageKey] integerValue];
     NSInteger currentPage = detail ? savedPage : ApolloSessionCurrentFeedPage(controller);
+    if (detail && settled && attempt % 4 == 3) {
+        ApolloSessionRequestMoreCommentsForAnchor(controller, identifier);
+    }
     if (!detail && settled && currentPage < savedPage && attempt % 4 == 3) {
         ApolloSessionRequestNextFeedPage(controller);
     }
@@ -786,6 +821,7 @@ static void ApolloSessionConsiderInitialRestore(BOOL preferLiveAccount) {
     sApolloSessionFeedSortPreparedController = nil;
     sApolloSessionPagingController = nil;
     sApolloSessionLastRequestedPage = NSNotFound;
+    sApolloSessionRequestedMoreComments = [NSHashTable weakObjectsHashTable];
     NSUInteger generation = ++sApolloSessionRestoreGeneration;
     ApolloLog(@"[SessionRestore] Cold launch has a recent reading session");
     ApolloSessionRouteFeed(0, generation);
