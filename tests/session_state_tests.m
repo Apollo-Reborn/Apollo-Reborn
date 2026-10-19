@@ -149,6 +149,10 @@ int main(void) {
               @"pending feed restore preserves complete disk snapshot");
         Check(!ApolloSessionStateShouldDeferPersistence(YES, YES, YES),
               @"completed restore permits a fresh snapshot");
+        Check(ApolloSessionStateShouldDeferPersistence(YES, NO, NO),
+              @"both unfinished phases preserve the sole disk snapshot");
+        Check(!ApolloSessionStateShouldDeferPersistence(NO, NO, NO),
+              @"no pending restore permits ordinary persistence");
         Check(ApolloSessionStateViewportRestoreIsEligible(NO, NO, NO, YES),
               @"feed restore remains eligible beneath pushed detail");
         Check(!ApolloSessionStateViewportRestoreIsEligible(YES, NO, NO, YES),
@@ -167,6 +171,30 @@ int main(void) {
               @"detail route deadline finishes when no controller appeared");
         Check(!ApolloSessionStateDetailRouteDeadlineShouldFinish(YES, NO),
               @"backgrounded appeared detail remains resumable past route deadline");
+        Check(!ApolloSessionStateDetailRouteDeadlineShouldFinish(NO, YES),
+              @"completed detail ignores a later route deadline");
+        Check(!ApolloSessionStateSortedFeedReloadHasProducedRows(@"old", @"old", NO),
+              @"old pre-reload rows cannot complete viewport restoration");
+        Check(ApolloSessionStateSortedFeedReloadHasProducedRows(@"old", @"new", NO),
+              @"changed sorted rows permit viewport restoration");
+        Check(ApolloSessionStateSortedFeedReloadHasProducedRows(nil, @"new", NO),
+              @"initially empty feed accepts newly produced sorted rows");
+        Check(ApolloSessionStateSortedFeedReloadHasProducedRows(@"same", @"same", YES),
+              @"transient content replacement accepts an identical final page");
+        Check(!ApolloSessionStateShouldDeleteSnapshotAfterDetailFailure(NO, YES),
+              @"detail failure retains snapshot while feed is unfinished");
+        Check(ApolloSessionStateShouldDeleteSnapshotAfterDetailFailure(YES, YES),
+              @"detail failure deletes snapshot only after both phases finish");
+        Check(!ApolloSessionStateShouldDeleteSnapshotAfterDetailFailure(YES, NO),
+              @"unfinished detail cannot delete snapshot");
+        Check(!ApolloSessionStateShouldDeleteSnapshotAfterDetailFailure(NO, NO),
+              @"two unfinished phases cannot delete snapshot");
+        Check(ApolloSessionStateShouldCancelUnstartedDetail(NO, NO),
+              @"feed cancellation suppresses a detail route that has not started");
+        Check(!ApolloSessionStateShouldCancelUnstartedDetail(YES, NO),
+              @"started detail phase remains independent from feed cancellation");
+        Check(!ApolloSessionStateShouldCancelUnstartedDetail(NO, YES),
+              @"finished detail phase is not cancelled twice");
         Check(ApolloSessionStateShouldRequestNextFeedPage(4, 1, NSNotFound),
               @"deep feed requests its next missing page");
         Check(!ApolloSessionStateShouldRequestNextFeedPage(4, 1, 1),

@@ -68,7 +68,14 @@ restart on its next appearance. Pre-fetch feed-sort writes are also restricted
 to the controller whose route matches the saved feed, leaving unrelated startup
 and secondary-pane listings unchanged.
 
-The Foundation host harness now exercises 53 state, route, bounds, launch-
+The lifecycle transition audit additionally waits for a sort-triggered reload
+to replace its old rows before reading viewport identity, revalidates the feed
+route on every anchor/page retry, and retains the sole disk snapshot after a
+missing/rejected post until the feed phase also reaches a terminal state. It
+also suppresses an unstarted detail route when the user replaces the restored
+feed in place, while preserving an already-started detail phase independently.
+
+The Foundation host harness now exercises 67 state, route, bounds, launch-
 precedence, persistence, and restore-eligibility checks under
 `-Wall -Wextra -Werror`. The prior seven-finding state completed a full arm64
 package build with SDK 27.1 and an iOS 15.0 deployment target; no app/package

@@ -104,6 +104,28 @@ FOUNDATION_EXPORT BOOL
 ApolloSessionStateDetailRouteDeadlineShouldFinish(BOOL detailControllerSeen,
                                                   BOOL detailFinished);
 
+// A sort-triggered reload must replace or clear the old rows before viewport
+// identity is read. observedContentChange remembers a transient empty state so
+// an identical final first page is still recognized as newly produced data.
+FOUNDATION_EXPORT BOOL
+ApolloSessionStateSortedFeedReloadHasProducedRows(NSString * _Nullable initialFingerprint,
+                                                  NSString * _Nullable currentFingerprint,
+                                                  BOOL observedContentChange);
+
+// A rejected/missing post invalidates the detail portion of the snapshot, but
+// the only on-disk recovery point remains necessary until feed restoration has
+// also reached a terminal state.
+FOUNDATION_EXPORT BOOL
+ApolloSessionStateShouldDeleteSnapshotAfterDetailFailure(BOOL feedFinished,
+                                                         BOOL detailFinished);
+
+// A user-driven feed replacement also suppresses a detail route that has not
+// started. An already-started or already-finished detail phase remains
+// independent and reaches its own terminal state.
+FOUNDATION_EXPORT BOOL
+ApolloSessionStateShouldCancelUnstartedDetail(BOOL detailRouteStarted,
+                                              BOOL detailFinished);
+
 // Page restoration is monotonic and requests each observed page at most once.
 FOUNDATION_EXPORT BOOL ApolloSessionStateShouldRequestNextFeedPage(NSInteger savedPage,
                                                                   NSInteger currentPage,

@@ -177,6 +177,23 @@ BOOL ApolloSessionStateDetailRouteDeadlineShouldFinish(BOOL detailControllerSeen
     return !detailControllerSeen && !detailFinished;
 }
 
+BOOL ApolloSessionStateSortedFeedReloadHasProducedRows(NSString *initialFingerprint,
+                                                       NSString *currentFingerprint,
+                                                       BOOL observedContentChange) {
+    if (!currentFingerprint.length) return NO;
+    return observedContentChange || ![currentFingerprint isEqualToString:initialFingerprint];
+}
+
+BOOL ApolloSessionStateShouldDeleteSnapshotAfterDetailFailure(BOOL feedFinished,
+                                                              BOOL detailFinished) {
+    return feedFinished && detailFinished;
+}
+
+BOOL ApolloSessionStateShouldCancelUnstartedDetail(BOOL detailRouteStarted,
+                                                   BOOL detailFinished) {
+    return !detailRouteStarted && !detailFinished;
+}
+
 BOOL ApolloSessionStateShouldRequestNextFeedPage(NSInteger savedPage, NSInteger currentPage,
                                                  NSInteger lastRequestedPage) {
     return savedPage > currentPage && currentPage != lastRequestedPage;

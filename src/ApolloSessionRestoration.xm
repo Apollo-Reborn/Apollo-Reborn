@@ -39,6 +39,7 @@ static BOOL sApolloSessionDetailViewportStarted;
 static BOOL sApolloSessionDetailControllerSeen;
 static BOOL sApolloSessionFeedViewportFinished;
 static BOOL sApolloSessionDetailViewportFinished;
+static BOOL sApolloSessionDeleteSnapshotAfterRestore;
 static BOOL sApolloSessionLaunchHasExplicitDestination;
 static __weak UIViewController *sApolloSessionFeedSortPreparedController;
 static __weak UIViewController *sApolloSessionPagingController;
@@ -355,12 +356,48 @@ static NSIndexPath *ApolloSessionPathForIdentifier(UIViewController *controller,
     return nil;
 }
 
+static NSString *ApolloSessionFeedContentFingerprint(UIViewController *controller) {
+    UITableView *table = ApolloSessionTableView(controller);
+    if (!table || table.numberOfSections == 0 || table.contentSize.height <= 0) return nil;
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    NSInteger rowCount = 0;
+    for (NSInteger section = 0; section < table.numberOfSections; section++) {
+        for (NSInteger row = 0; row < [table numberOfRowsInSection:section]; row++) {
+            rowCount++;
+            NSString *identifier = ApolloSessionNodeIdentifier(ApolloSessionNode(
+                controller, [NSIndexPath indexPathForRow:row inSection:section]));
+            if (identifier.length) [parts addObject:identifier];
+        }
+    }
+    if (rowCount == 0) return nil;
+    return [NSString stringWithFormat:@"%ld:%@", (long)rowCount,
+            [parts componentsJoinedByString:@","]];
+}
+
 static void ApolloSessionFinishViewport(BOOL detail) {
     if (detail) sApolloSessionDetailViewportFinished = YES;
     else sApolloSessionFeedViewportFinished = YES;
     if (sApolloSessionFeedViewportFinished && sApolloSessionDetailViewportFinished) {
         sApolloSessionPendingRestore = nil;
+        if (sApolloSessionDeleteSnapshotAfterRestore &&
+            ApolloSessionStateShouldDeleteSnapshotAfterDetailFailure(
+                sApolloSessionFeedViewportFinished, sApolloSessionDetailViewportFinished)) {
+            [[NSFileManager defaultManager] removeItemAtPath:ApolloSessionFilePath() error:nil];
+            sApolloSessionDeleteSnapshotAfterRestore = NO;
+        }
     }
+}
+
+static void ApolloSessionCancelFeedForRouteChange(void) {
+    // If detail routing has not begun, the in-place feed change is the user's
+    // newer navigation intent and should also suppress the pending route. Once
+    // detail routing has begun, its independent phase owns its own terminal
+    // state and must not be cancelled by the underlying feed controller.
+    if (ApolloSessionStateShouldCancelUnstartedDetail(
+            sApolloSessionDetailRouteStarted, sApolloSessionDetailViewportFinished)) {
+        ApolloSessionFinishViewport(YES);
+    }
+    ApolloSessionFinishViewport(NO);
 }
 
 static BOOL ApolloSessionApplyFeedSort(UIViewController *controller) {
@@ -406,18 +443,19 @@ static void ApolloSessionStartDetailRoute(void) {
     sApolloSessionDetailRouteStarted = YES;
     NSString *detailURL = sApolloSessionPendingRestore[ApolloSessionStateDetailURLKey];
     if (!detailURL.length) {
-        sApolloSessionPendingRestore = nil;
+        ApolloSessionFinishViewport(YES);
         return;
     }
+    NSUInteger generation = sApolloSessionRestoreGeneration;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kApolloSessionRetryDelay * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
+        if (generation != sApolloSessionRestoreGeneration || !sApolloSessionPendingRestore) return;
         if (!ApolloSessionOpenURLString(detailURL)) {
             ApolloLog(@"[SessionRestore] Apollo rejected saved post route %@", detailURL);
+            sApolloSessionDeleteSnapshotAfterRestore = YES;
             ApolloSessionFinishViewport(YES);
-            [[NSFileManager defaultManager] removeItemAtPath:ApolloSessionFilePath() error:nil];
             return;
         }
-        NSUInteger generation = sApolloSessionRestoreGeneration;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                      (int64_t)(kApolloSessionDetailAnchorAttempts * kApolloSessionRetryDelay * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
@@ -425,8 +463,8 @@ static void ApolloSessionStartDetailRoute(void) {
                 ApolloSessionStateDetailRouteDeadlineShouldFinish(
                     sApolloSessionDetailControllerSeen, sApolloSessionDetailViewportFinished)) {
                 ApolloLog(@"[SessionRestore] Saved post did not become available; keeping restored feed");
+                sApolloSessionDeleteSnapshotAfterRestore = YES;
                 ApolloSessionFinishViewport(YES);
-                [[NSFileManager defaultManager] removeItemAtPath:ApolloSessionFilePath() error:nil];
             }
         });
     });
@@ -454,10 +492,18 @@ static void ApolloSessionRestoreViewport(UIViewController *controller, BOOL deta
     BOOL top = navigation.topViewController == controller;
     BOOL inStack = [navigation.viewControllers containsObject:controller];
     if (generation != sApolloSessionRestoreGeneration || !sApolloSessionPendingRestore) return;
+    if (!detail && !ApolloSessionStateFeedURLMatchesSavedRoute(
+                       ApolloSessionFeedURL(controller),
+                       sApolloSessionPendingRestore[ApolloSessionStateFeedURLKey])) {
+        ApolloLog(@"[SessionRestore] Feed changed during anchor retries; cancelling feed phase");
+        ApolloSessionCancelFeedForRouteChange();
+        return;
+    }
     if (ApolloSessionStateViewportRestoreWasCancelled(detail, top, inStack)) {
         ApolloLog(@"[SessionRestore] %@ controller left its restore stack; cancelling phase",
                   detail ? @"Post" : @"Feed");
-        ApolloSessionFinishViewport(detail);
+        if (detail) ApolloSessionFinishViewport(YES);
+        else ApolloSessionCancelFeedForRouteChange();
         return;
     }
     if (detail && !visible) {
@@ -517,6 +563,39 @@ static void ApolloSessionRestoreViewport(UIViewController *controller, BOOL deta
     ApolloSessionFinishViewport(detail);
 }
 
+static void ApolloSessionWaitForSortedFeed(UIViewController *controller,
+                                           NSString *initialFingerprint,
+                                           BOOL observedContentChange,
+                                           NSUInteger attempt,
+                                           NSUInteger generation) {
+    if (generation != sApolloSessionRestoreGeneration || !sApolloSessionPendingRestore) return;
+    NSString *savedURL = sApolloSessionPendingRestore[ApolloSessionStateFeedURLKey];
+    if (!ApolloSessionStateFeedURLMatchesSavedRoute(ApolloSessionFeedURL(controller), savedURL)) {
+        ApolloLog(@"[SessionRestore] Feed changed while waiting for sorted rows; cancelling feed phase");
+        ApolloSessionCancelFeedForRouteChange();
+        return;
+    }
+    NSString *currentFingerprint = ApolloSessionFeedContentFingerprint(controller);
+    BOOL changed = observedContentChange ||
+        ((initialFingerprint || currentFingerprint) &&
+         ![initialFingerprint isEqualToString:currentFingerprint]);
+    if (ApolloSessionStateSortedFeedReloadHasProducedRows(
+            initialFingerprint, currentFingerprint, changed)) {
+        ApolloSessionRestoreViewport(controller, NO, 0, generation);
+        return;
+    }
+    if (attempt + 1 >= kApolloSessionFeedAnchorAttempts) {
+        ApolloLog(@"[SessionRestore] Sorted feed rows did not settle; skipping stale viewport data");
+        ApolloSessionFinishViewport(NO);
+        return;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kApolloSessionRetryDelay * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        ApolloSessionWaitForSortedFeed(controller, initialFingerprint, changed,
+                                       attempt + 1, generation);
+    });
+}
+
 static void ApolloSessionRouteFeed(NSUInteger attempt, NSUInteger generation) {
     if (generation != sApolloSessionRestoreGeneration || !sApolloSessionPendingRestore) return;
     if (ApolloSessionOpenURLString(sApolloSessionPendingRestore[ApolloSessionStateFeedURLKey])) return;
@@ -564,6 +643,7 @@ static void ApolloSessionConsiderInitialRestore(BOOL preferLiveAccount) {
     sApolloSessionDetailControllerSeen = NO;
     sApolloSessionFeedViewportFinished = NO;
     sApolloSessionDetailViewportFinished = ![normalized[ApolloSessionStateDetailURLKey] length];
+    sApolloSessionDeleteSnapshotAfterRestore = NO;
     sApolloSessionFeedSortPreparedController = nil;
     sApolloSessionPagingController = nil;
     sApolloSessionLastRequestedPage = NSNotFound;
@@ -597,6 +677,8 @@ static void ApolloSessionConsiderInitialRestore(BOOL preferLiveAccount) {
         id selfObject = (id)self;
         BOOL preparedBeforeLoad = sApolloSessionFeedSortPreparedController ==
                                   (UIViewController *)self;
+        NSString *initialFingerprint = ApolloSessionFeedContentFingerprint(
+            (UIViewController *)self);
         BOOL changedSort = preparedBeforeLoad ? NO :
             ApolloSessionApplyFeedSort((UIViewController *)self);
         if (changedSort && [selfObject respondsToSelector:@selector(reloadPostsWithNotification:)]) {
@@ -605,9 +687,13 @@ static void ApolloSessionConsiderInitialRestore(BOOL preferLiveAccount) {
         }
         sApolloSessionFeedViewportStarted = YES;
         NSUInteger generation = sApolloSessionRestoreGeneration;
-        ApolloSessionRestoreViewport((UIViewController *)self, NO, 0,
-                                     generation);
         ApolloSessionScheduleDetailRoute(generation);
+        if (changedSort) {
+            ApolloSessionWaitForSortedFeed((UIViewController *)self, initialFingerprint,
+                                           NO, 0, generation);
+        } else {
+            ApolloSessionRestoreViewport((UIViewController *)self, NO, 0, generation);
+        }
     }
 }
 
