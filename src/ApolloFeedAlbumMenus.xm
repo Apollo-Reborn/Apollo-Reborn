@@ -48,6 +48,7 @@
 
 static char kApolloFeedAlbumMenuContext;
 static char kApolloFeedAlbumShareFile;
+static char kApolloFeedAlbumHighlightPreview;
 static ApolloFeedAlbumMenuContext *sApolloFeedAlbumNativePreviewContext;
 
 // Share files live exactly as long as the share controller, including when
@@ -156,6 +157,9 @@ static ApolloFeedAlbumMenuContext *ApolloFeedAlbumContext(UIContextMenuInteracti
         ![cell isKindOfClass:ApolloClassRichMediaHeaderCellNode]) return nil;
     id link = ApolloFeedAlbumLinkForCell(cell);
     BOOL collection = ApolloSaveAllMediaLinkHasCollection(link);
+    // Feed cells keep Apollo's own single-media menu (Open in Safari,
+    // Download Video...); only the comments header gets the media menu.
+    if (!collection && ![cell isKindOfClass:ApolloClassRichMediaHeaderCellNode]) return nil;
     id rich = ApolloObjectIvar(cell, "richMediaNode");
     ApolloSaveAllMediaItem *single = collection ? nil : ApolloFeedAlbumSingleItem(link, rich);
     if (!collection && !single) return nil;
@@ -436,17 +440,23 @@ static UIMenu *ApolloFeedAlbumMenu(ApolloFeedAlbumMenuContext *context) {
 }
 - (UITargetedPreview *)contextMenuInteraction:(UIContextMenuInteraction *)interaction previewForHighlightingMenuWithConfiguration:(UIContextMenuConfiguration *)configuration {
     ApolloFeedAlbumMenuContext *context = objc_getAssociatedObject(configuration, &kApolloFeedAlbumMenuContext);
-    if (!context) return %orig;
-    if (ApolloFeedAlbumLinkForCell(context.cell) != context.link) return nil;
-    return context.sourceView.window ? [[UITargetedPreview alloc] initWithView:context.sourceView] : nil;
+    UITargetedPreview *preview = nil;
+    if (!context) preview = %orig;
+    else if (ApolloFeedAlbumLinkForCell(context.cell) == context.link && context.sourceView.window) {
+        preview = [[UITargetedPreview alloc] initWithView:context.sourceView];
+    }
+    // Remembered for the dismissal callback below, including Apollo's own.
+    objc_setAssociatedObject(configuration, &kApolloFeedAlbumHighlightPreview, preview, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return preview;
 }
-// Apollo has no dismissal-preview callback. UIKit otherwise chooses its own
-// return target, which can be the complete media grid in the comments header.
+// Without this callback UIKit reuses the highlight preview; with it, nil
+// shrinks the preview in place. Return the highlight preview for every menu.
 %new
 - (UITargetedPreview *)contextMenuInteraction:(UIContextMenuInteraction *)interaction previewForDismissingMenuWithConfiguration:(UIContextMenuConfiguration *)configuration {
     ApolloFeedAlbumMenuContext *context = objc_getAssociatedObject(configuration, &kApolloFeedAlbumMenuContext);
-    if (!context || ApolloFeedAlbumLinkForCell(context.cell) != context.link) return nil;
-    return context.sourceView.window ? [[UITargetedPreview alloc] initWithView:context.sourceView] : nil;
+    if (context && ApolloFeedAlbumLinkForCell(context.cell) != context.link) return nil;
+    UITargetedPreview *preview = objc_getAssociatedObject(configuration, &kApolloFeedAlbumHighlightPreview);
+    return preview.view.window ? preview : nil;
 }
 - (void)contextMenuInteraction:(UIContextMenuInteraction *)interaction willDisplayMenuForConfiguration:(UIContextMenuConfiguration *)configuration animator:(id<UIContextMenuInteractionAnimating>)animator {
     ApolloFeedAlbumMenuContext *context = objc_getAssociatedObject(configuration, &kApolloFeedAlbumMenuContext);
