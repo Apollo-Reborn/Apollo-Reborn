@@ -1175,6 +1175,9 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
     }
     NSMutableArray *native = [items mutableCopy] ?: [NSMutableArray array];
     if (owner.inboxDisclosure) [native removeObjectIdenticalTo:owner.inboxDisclosure];
+    // The disclosure only collapses the group. Regular phones with Collapse
+    // Navigation Actions off always stay expanded, so it would do nothing.
+    if (!ApolloDeviceIsDuo() && !sCollapseNavigationActions) return native;
     // Inbox compose/selection modes and lone actions need no added disclosure.
     if (box.controller.isEditing || native.count < 2) return native;
     NSUInteger actionable = 0;
@@ -1256,10 +1259,11 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
 
 @implementation ApolloNavigationActionsOwner
 - (BOOL)collapseEnabled {
-    // Inbox's added ellipsis is a disclosure, not an Apollo More menu. It must
-    // remain toggleable even when other pages keep their actions expanded.
-    return [NSStringFromClass(self.controller.class) isEqualToString:@"Apollo.InboxViewController"]
-        || sCollapseNavigationActions;
+    // On Duo, Inbox's added ellipsis is a disclosure, not an Apollo More menu.
+    // It must remain toggleable even when other pages keep their actions
+    // expanded. Regular phones follow Collapse Navigation Actions, as on main.
+    return sCollapseNavigationActions || (ApolloDeviceIsDuo() &&
+        [NSStringFromClass(self.controller.class) isEqualToString:@"Apollo.InboxViewController"]);
 }
 - (instancetype)init {
     self = [super init];
