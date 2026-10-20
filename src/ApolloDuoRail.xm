@@ -452,6 +452,10 @@ static BOOL sApolloDuoClampingJumpButton;
 %end
 
 %ctor {
+    if (!ApolloDeviceIsDuo()) {
+        ApolloLog(@"[DuoRail] not an iPhone Duo; rail adapters NOT installed");
+        return;
+    }
     %init;
     Class tabs = objc_getClass("_TtC6Apollo22ApolloTabBarController");
     if (!tabs) {

@@ -572,6 +572,10 @@ static id ApolloDuoFeedLayoutSpec(id spec, CGFloat availableWidth, ApolloDuoFeed
 %end
 
 %ctor {
+    if (!ApolloDeviceIsDuo()) {
+        ApolloLog(@"[DuoFeed] not an iPhone Duo; media hinge hooks NOT installed");
+        return;
+    }
     %init;
     [[NSNotificationCenter defaultCenter] addObserverForName:@"ApolloDuoFeedLayoutDidChange"
         object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {

@@ -97,6 +97,10 @@ NSURLSessionDataTask *ApolloStartBoundedDataRequest(
 BOOL IsLiquidGlass(void);
 // Build/runtime capability, independent of the selected appearance.
 BOOL ApolloLiquidGlassCanToggle(void);
+// Hardware capability, decided once before any %ctor: YES only on a device
+// with more than one built-in logical display (iPhone Duo, iOS 27+). Duo-only
+// hook groups install only when this is YES, so regular phones never run them.
+BOOL ApolloDeviceIsDuo(void);
 
 NSURL *ApolloURLByConvertingResolvedURLToApolloScheme(NSURL *url);
 BOOL ApolloRouteResolvedURLViaApolloScheme(NSURL *resolvedURL);

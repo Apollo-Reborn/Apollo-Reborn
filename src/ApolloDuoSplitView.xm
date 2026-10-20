@@ -890,6 +890,7 @@ BOOL ApolloDuoSplitIsResizing(void) {
 }
 
 BOOL ApolloDuoSplitIsUnfolded(void) {
+    if (!ApolloDeviceIsDuo()) return NO;
     UITabBarController *tabs = (id)ApolloMainTabBarController();
     if (UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPhone
         || ![tabs isKindOfClass:UITabBarController.class] || !tabs.isViewLoaded) return NO;
@@ -3268,6 +3269,10 @@ static CGFloat ApolloDuoEmptyStateCenterX(UILabel *label, CGFloat nativeX) {
 %end
 
 %ctor {
+    if (!ApolloDeviceIsDuo()) {
+        ApolloLog(@"[DuoSplit] not an iPhone Duo; split view hooks NOT installed");
+        return;
+    }
     Class comments = NSClassFromString(@"Apollo.CommentsViewController");
     if (comments) %init(ApolloDuoCommentsLayoutHooks, ApolloDuoCommentsPage = comments);
     [NSNotificationCenter.defaultCenter addObserverForName:@"ApolloDuoFeedLayoutDidChange"

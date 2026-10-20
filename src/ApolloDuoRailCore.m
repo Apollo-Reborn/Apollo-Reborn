@@ -44,6 +44,8 @@ static BOOL ApolloDuoRailDualDisplays(void) {
 }
 
 static int ApolloDuoRailModeForTabs(UITabBarController *tabs) {
+    // Regular phones are always Phone mode, whatever the window geometry.
+    if (!ApolloDeviceIsDuo()) return ApolloDuoModePhone;
     if (![tabs isKindOfClass:[UITabBarController class]] || !tabs.isViewLoaded) {
         return ApolloDuoModePhone;
     }
@@ -70,6 +72,7 @@ BOOL ApolloDuoDeviceDetected(void) {
     // keep it through folds and temporarily detached bars. Never cache an early
     // NO, and never inspect UIKit geometry from a SpriteKit background callback.
     static atomic_bool knownDuo = false;
+    if (!ApolloDeviceIsDuo()) return NO;
     if (atomic_load_explicit(&knownDuo, memory_order_relaxed)) return YES;
     if (!NSThread.isMainThread ||
         UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPhone) return NO;
@@ -80,7 +83,7 @@ BOOL ApolloDuoDeviceDetected(void) {
 }
 
 BOOL ApolloDuoUsesAdaptiveBars(void) {
-    if (!IsLiquidGlass() || UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPhone) return NO;
+    if (!ApolloDeviceIsDuo() || !IsLiquidGlass() || UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPhone) return NO;
     UITabBarController *tabs = (id)ApolloMainTabBarController();
     if (![tabs isKindOfClass:UITabBarController.class]) return NO;
     NSNumber *known = objc_getAssociatedObject(tabs, &kApolloDuoAdaptiveBarsKey);
@@ -351,6 +354,7 @@ void ApolloDuoRailAlignFeedScrollIndicator(UIScrollView *scrollView) {
 }
 
 void ApolloDuoRailSync(void) {
+    if (!ApolloDeviceIsDuo()) return;
     UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
     if (![tabs isKindOfClass:UITabBarController.class] || !tabs.isViewLoaded) return;
     int mode = ApolloDuoRailModeForTabs(tabs);

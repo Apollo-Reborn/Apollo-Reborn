@@ -60,6 +60,13 @@ static void ApolloDeviceDisplayApplySoon(void) {
 %end
 
 %ctor {
+    // Canvas fill only matters where the system can letterbox Apollo inside a
+    // larger display, which is the Duo's inner screen.
+    if (!ApolloDeviceIsDuo()) {
+        ApolloLog(@"[DeviceDisplay] not an iPhone Duo; scene canvas hooks NOT installed");
+        return;
+    }
+    %init;
     for (NSNotificationName name in @[UIApplicationDidBecomeActiveNotification,
                                       UISceneWillEnterForegroundNotification,
                                       UISceneDidActivateNotification]) {

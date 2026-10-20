@@ -622,17 +622,30 @@ static NSDictionary *(*sLiquidGlassOriginalInfoDictionary)(id, SEL);
 static id (*sLiquidGlassOriginalInfoValue)(id, SEL, NSString *);
 static NSString *const kApolloDesignCompatibilityKey = @"UIDesignRequiresCompatibility";
 
-static NSInteger ApolloLiquidGlassLogicalDisplayCount(NSInteger runtimeMajor) {
-    // Duo requires iOS 27.1. On iOS 26 there is no foldable display to protect.
-    // Scene/window geometry is unavailable during +load and a closed Duo can
-    // otherwise be mistaken for a regular phone. This capability counts the
-    // built-in logical displays before UIKit creates a scene, in either pose.
-    if (runtimeMajor == 26) return 1;
-    void *gestalt = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_LAZY | RTLD_LOCAL);
-    CFIndex (*displayCount)(void) = gestalt ? dlsym(gestalt, "MGGetLogicalDeviceDisplayCount") : NULL;
-    NSInteger count = displayCount ? displayCount() : 0;
-    if (gestalt) dlclose(gestalt);
+static NSInteger ApolloLogicalDeviceDisplayCount(void) {
+    // Duo requires iOS 27.1. On iOS 26 and earlier there is no foldable
+    // display. Scene/window geometry is unavailable during +load and a closed
+    // Duo can otherwise be mistaken for a regular phone. This capability
+    // counts the built-in logical displays before UIKit creates a scene, in
+    // either pose (the Device Hub Duo simulator reports 2, phones report 1).
+    static NSInteger count;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        if (NSProcessInfo.processInfo.operatingSystemVersion.majorVersion < 27) {
+            count = 1;
+            return;
+        }
+        void *gestalt = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_LAZY | RTLD_LOCAL);
+        CFIndex (*displayCount)(void) = gestalt ? dlsym(gestalt, "MGGetLogicalDeviceDisplayCount") : NULL;
+        count = displayCount ? displayCount() : 0;
+        if (gestalt) dlclose(gestalt);
+        ApolloLog(@"[DeviceDuo] logical displays=%ld duo=%d", (long)count, count > 1);
+    });
     return count;
+}
+
+BOOL ApolloDeviceIsDuo(void) {
+    return ApolloLogicalDeviceDisplayCount() > 1;
 }
 
 static BOOL ApolloLiquidGlassDisabledForLaunch(__unused id object, __unused SEL selector) {
@@ -717,7 +730,7 @@ static void ApolloInitializeLiquidGlassMode(void) {
         const struct mach_header *nativeHeader = ApolloNativeImageHeader();
         BOOL standalone = nativeHeader && nativeHeader->filetype == MH_EXECUTE;
         NSInteger runtimeMajor = NSProcessInfo.processInfo.operatingSystemVersion.majorVersion;
-        NSInteger logicalDisplays = glassRuntime ? ApolloLiquidGlassLogicalDisplayCount(runtimeMajor) : 0;
+        NSInteger logicalDisplays = glassRuntime ? ApolloLogicalDeviceDisplayCount() : 0;
         BOOL bundleCompatibility = ApolloSDKSupportsLiquidGlassCompatibility(sdkVersion, glassRuntime);
         BOOL runtimeCompatibility = ApolloSDKSupportsLiquidGlassRuntimeSelection(sdkVersion,
             glassRuntime, runtimeMajor, logicalDisplays);

@@ -196,6 +196,10 @@ static void ApolloDuoSubsChromeRestoreScrollAnchorAfterEditing(UITableView *tabl
 %end
 
 %ctor {
+    if (!ApolloDeviceIsDuo()) {
+        ApolloLog(@"[DuoSubsChrome] not an iPhone Duo; hooks NOT installed");
+        return;
+    }
     Class list = objc_getClass("_TtC6Apollo24RedditListViewController");
     if (!list) {
         ApolloLog(@"[DuoSubsChrome] RedditListViewController missing; chrome inactive");
