@@ -1674,12 +1674,17 @@ static void *NSBCommentJumpTableForController(UIViewController *vc) {
 // (becomeFirstResponder -> textFieldShouldBeginEditing reparents the toolbar +
 // the didBeginEditing block runs the takeover). With the native bar installed
 // that whole path must stay dark — the field is a hidden model object only.
+//
+// On the comments screen the request is also Apollo's way INTO a search: the
+// ••• menu's Find in Comments row focuses this field. The native bar takes
+// that request instead (ApolloFindInCommentsGlass.xm).
 %hook _TtC6Apollo24ApolloSearchBarTextField
 
 - (BOOL)becomeFirstResponder {
     if (ApolloNativeFeedSearchEnabled()) {
         UIViewController *vc = NSBFeedVCForView((UIView *)self);
         if (vc && NSBIsNativeSearchVC(vc) && vc.navigationItem.searchController != nil) {
+            if (NSBIsNativeSearchCommentsVC(vc)) ApolloFindInCommentsGlassApolloFieldFocusRequested(vc);
             return NO;
         }
     }
