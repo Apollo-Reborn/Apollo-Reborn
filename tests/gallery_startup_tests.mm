@@ -516,6 +516,17 @@ static void TestSavedFeed(void) {
     Check(Load(paging).length == 1 && paging.isExhausted && paging.requestedCursors.count == 5 &&
           [paging.items.firstObject.postFullname isEqualToString:@"t3_match"],
           @"category scanning reaches its first member beyond four pages of other saved media");
+    testSavedDatabase = @{@"categories": @{@"Early": @[@"t3_early", @"t3_note"]}};
+    paging = [[GalleryTestFeed alloc] initWithSavedCategory:@"Early"];
+    paging.pages = @[Listing(@[Photo(@"early"), @{@"name": @"t3_note"}], @"t3_note"),
+                     Listing(@[Photo(@"unrelated")], @"t3_unrelated"), Listing(@[Photo(@"tail")], nil)];
+    Check(Load(paging).length == 1 && paging.isExhausted && paging.requestedCursors.count == 1,
+          @"category stops paging Saved once every member has been met, media or not");
+    paging = [[GalleryTestFeed alloc] initWithSavedCategory:@"Early"];
+    paging.pages = @[Listing(@[@{@"name": @"t3_note"}], @"t3_note"), Listing(@[], @"t3_gap"),
+                     Listing(@[@{@"name": @"t3_early"}], @"t3_early"), Listing(@[Photo(@"tail")], nil)];
+    Check(Load(paging).length == 0 && paging.isExhausted && paging.requestedCursors.count == 3,
+          @"text-only category finishes at its last member instead of walking all of Saved");
     activeTestUsername = nil;
     testSavedDatabase = nil;
 }

@@ -236,6 +236,10 @@ static BOOL ApolloGalleryURLLooksLikeImage(NSURL *url) {
 @property (nonatomic) BOOL savedFeed;
 @property (nonatomic, copy, nullable) NSString *savedCategory;
 @property (nonatomic, copy) NSSet<NSString *> *savedCategoryPostIDs;
+// Category members already met in a loaded page, media or not. Once it covers
+// savedCategoryPostIDs the rest of Saved cannot add anything to this gallery.
+@property (nonatomic, strong) NSMutableSet<NSString *> *inspectedSavedCategoryPostIDs;
+@property (nonatomic, readonly) BOOL savedCategoryFullyInspected;
 @property (nonatomic, copy, nullable) NSString *savedCategoryError;
 // The account this gallery is bound to, captured at presentation time. We pin
 // the account IDENTITY, never a credential: Reddit rotates access tokens, so a
@@ -374,6 +378,7 @@ static NSString *ApolloGalleryBearerForClient(id client) {
 // Saved comments have no gallery media and are deliberately excluded.
 - (void)reloadSavedCategory {
     self.savedCategoryPostIDs = [NSSet set];
+    self.inspectedSavedCategoryPostIDs = [NSMutableSet set];
     self.savedCategoryError = nil;
     if (self.savedCategory == nil) return;
     NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.christianselig.apollo"];
@@ -865,7 +870,10 @@ static NSString *ApolloGalleryBearerForClient(id client) {
             strongSelf.afterCursor = nextCursor;
 
             NSUInteger gainedThisBatch = strongSelf.filteredItems.count - startIndex;
-            BOOL noMorePages = (nextCursor.length == 0) || cursorDidNotAdvance;
+            // A category is finished once every member has been met, even if
+            // the surrounding Saved listing still has pages left.
+            BOOL noMorePages = (nextCursor.length == 0) || cursorDidNotAdvance ||
+                strongSelf.savedCategoryFullyInspected;
             // Saved can contain long runs of text posts/comments. Its finite
             // source must not truncate before later media or category matches.
             BOOL tooManyEmptyPages = !strongSelf.savedFeed &&
@@ -916,6 +924,13 @@ static NSString *ApolloGalleryBearerForClient(id client) {
 
 #pragma mark Listing -> items
 
+// Members that are no longer saved never appear in the listing, so a category
+// holding one still walks to the end of Saved; that only costs extra pages.
+- (BOOL)savedCategoryFullyInspected {
+    return self.savedFeed && self.savedCategory != nil && self.savedCategoryPostIDs.count > 0 &&
+        [self.savedCategoryPostIDs isSubsetOfSet:self.inspectedSavedCategoryPostIDs];
+}
+
 - (BOOL)seedFromSavedListing:(NSDictionary *)listing category:(NSString *)category {
     if (!self.savedFeed || self.savedCategoryError ||
         !(self.savedCategory == category || [self.savedCategory isEqualToString:category]) ||
@@ -938,21 +953,12 @@ static NSString *ApolloGalleryBearerForClient(id client) {
     }
     self.afterCursor = ApolloGalleryString(listing[@"after"]);
     self.exhausted = self.afterCursor.length == 0;
-    if (self.savedFeed && self.savedCategory != nil) {
+    if (self.savedCategoryFullyInspected) {
         // A category can be complete before the surrounding Saved listing.
         // Every member must be represented by a captured post; merely seeing
         // no matching media in the first page is not evidence of emptiness.
-        NSMutableSet<NSString *> *loadedPostIDs = [NSMutableSet set];
-        for (id child in ApolloGalleryArray(listing[@"children"])) {
-            NSDictionary *thing = ApolloGalleryDict(child);
-            if (![ApolloGalleryString(thing[@"kind"]) isEqualToString:@"t3"]) continue;
-            NSString *fullname = [ApolloGalleryString(ApolloGalleryDict(thing[@"data"])[@"name"]) lowercaseString];
-            if (fullname) [loadedPostIDs addObject:fullname];
-        }
-        if ([self.savedCategoryPostIDs isSubsetOfSet:loadedPostIDs]) {
-            self.afterCursor = nil;
-            self.exhausted = YES;
-        }
+        self.afterCursor = nil;
+        self.exhausted = YES;
     }
     self.lastErrorMessage = nil;
     return YES;
@@ -965,8 +971,11 @@ static NSString *ApolloGalleryBearerForClient(id client) {
         if (kind && ![kind isEqualToString:@"t3"]) continue;
         NSDictionary *post = ApolloGalleryDict(thing[@"data"]);
         if (!post) continue;
-        if (self.savedCategory != nil &&
-            ![self.savedCategoryPostIDs containsObject:[ApolloGalleryString(post[@"name"]) lowercaseString] ?: @""]) continue;
+        if (self.savedCategory != nil) {
+            NSString *fullname = [ApolloGalleryString(post[@"name"]) lowercaseString];
+            if (!fullname || ![self.savedCategoryPostIDs containsObject:fullname]) continue;
+            [self.inspectedSavedCategoryPostIDs addObject:fullname];
+        }
         for (ApolloGalleryItem *item in [self itemsFromPost:post]) {
             // Key on the stream for playables: two posts of the same video can
             // carry differently-signed poster URLs, and every v.redd.it poster
