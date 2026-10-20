@@ -1,7 +1,9 @@
-// The subreddit title remains Apollo's native quick-switcher control, without
-// its decorative drop-down triangle. This applies to every device and theme.
+// On iPhone Duo the subreddit title remains Apollo's native quick-switcher
+// control, without its decorative drop-down triangle. Regular phones keep the
+// triangle: it is their only hint that the title can be tapped.
 
 #import <UIKit/UIKit.h>
+#import "ApolloCommon.h"
 
 @interface _TtC6Apollo7JumpBar : UIControl
 @end
@@ -52,5 +54,10 @@ static void ApolloJumpBarRemoveTitleArrow(UIView *jumpBar) {
 %end
 
 %ctor {
+    if (!ApolloDeviceIsDuo()) {
+        ApolloLog(@"[JumpBarTitle] not an iPhone Duo; title triangle kept, hook NOT installed");
+        return;
+    }
     %init;
+    ApolloLog(@"[JumpBarTitle] hook installed (Duo: title triangle removed)");
 }
