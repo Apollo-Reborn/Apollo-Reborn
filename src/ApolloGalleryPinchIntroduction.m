@@ -1,5 +1,6 @@
 #import "ApolloGalleryPinchIntroduction.h"
 #import "ApolloCommon.h"
+#import "ApolloThemeRuntime.h"
 #import <Symbols/Symbols.h>
 
 static NSString *const kApolloGalleryPinchIntroductionKey = @"ApolloGalleryPinchIntroductionAcknowledged";
@@ -66,12 +67,16 @@ static NSString *const kApolloGalleryPinchIntroductionKey = @"ApolloGalleryPinch
     title.accessibilityTraits = UIAccessibilityTraitHeader;
     [stack addArrangedSubview:title];
 
+    UIColor *accent = ApolloThemeAccentColor() ?: UIColor.systemBlueColor;
     UIImageSymbolConfiguration *configuration = [UIImageSymbolConfiguration
         configurationWithPointSize:68.0 weight:UIImageSymbolWeightRegular];
-    self.gestureImage = [[UIImageView alloc] initWithImage:
-        [UIImage systemImageNamed:@"hand.pinch" withConfiguration:configuration]];
+    // hand.pinch only ships with iOS 18's SF Symbols; hand.draw (iOS 13) keeps
+    // the guide from showing an empty animated gap on iOS 14-17.
+    UIImage *gesture = [UIImage systemImageNamed:@"hand.pinch" withConfiguration:configuration] ?:
+        [UIImage systemImageNamed:@"hand.draw" withConfiguration:configuration];
+    self.gestureImage = [[UIImageView alloc] initWithImage:gesture];
     self.gestureImage.contentMode = UIViewContentModeScaleAspectFit;
-    self.gestureImage.tintColor = UIColor.systemBlueColor;
+    self.gestureImage.tintColor = accent;
     self.gestureImage.isAccessibilityElement = NO;
     [self.gestureImage.heightAnchor constraintEqualToConstant:94.0].active = YES;
     [stack addArrangedSubview:self.gestureImage];
@@ -87,10 +92,15 @@ static NSString *const kApolloGalleryPinchIntroductionKey = @"ApolloGalleryPinch
 
     self.acknowledgeButton = [UIButton buttonWithType:UIButtonTypeSystem];
     [self.acknowledgeButton setTitle:@"Got it!" forState:UIControlStateNormal];
-    [self.acknowledgeButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    // Near-white accents (monochromatic, chumbus) need dark text on the fill.
+    UIColor *buttonText = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
+        return ApolloColorIsLight([accent resolvedColorWithTraitCollection:traits]) ?
+            UIColor.blackColor : UIColor.whiteColor;
+    }];
+    [self.acknowledgeButton setTitleColor:buttonText forState:UIControlStateNormal];
     self.acknowledgeButton.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
     self.acknowledgeButton.titleLabel.adjustsFontForContentSizeCategory = YES;
-    self.acknowledgeButton.backgroundColor = UIColor.systemBlueColor;
+    self.acknowledgeButton.backgroundColor = accent;
     self.acknowledgeButton.layer.cornerRadius = 25.0;
     self.acknowledgeButton.layer.cornerCurve = kCACornerCurveContinuous;
     self.acknowledgeButton.alpha = 0.0;

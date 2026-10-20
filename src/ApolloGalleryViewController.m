@@ -678,11 +678,10 @@ static void *kApolloGalleryTileItemStatusContext = &kApolloGalleryTileItemStatus
 @property (nonatomic) CGFloat coverageWidth;
 @property (nonatomic) NSInteger coverageColumns;
 @property (nonatomic) CGFloat shortestColumnBottom;
-// Menu-time preparation owns the same feed and callback before and after the
-// push. A tap never waits for this work, and never starts a competing batch.
+// Menu-time preparation: a seeded feed and warmed thumbnails, handed to the
+// push. It makes no listing request; a tap never waits for this work.
 @property (nonatomic, copy) NSArray *preparationKey;
 @property (nonatomic) CGSize preparationViewport;
-@property (nonatomic) NSUInteger preparationBatchesRemaining;
 @property (nonatomic) NSUInteger preparationWarmedCount;
 @property (nonatomic, strong) NSMutableArray<ApolloGalleryImageRequest *> *preparationWarmRequests;
 // Outstanding look-ahead loads keyed by index path, so UIKit's cancel callback
@@ -845,9 +844,6 @@ static NSArray *ApolloGalleryPreparationKey(NSString *identifier, UIViewControll
         gallery = ApolloGalleryControllerForIdentifier(subreddit, sortValue, topWindowValue);
         if (!gallery || !ApolloGallerySeedFeedFromSource(gallery.feed, sourceViewController)) return;
         gallery.preparationKey = key;
-        // Two useful pages is a ceiling, not a target. Normally one fills the
-        // dense viewport; no speculative walk through an entire subreddit.
-        gallery.preparationBatchesRemaining = 2;
         gallery.preparationWarmRequests = [NSMutableArray array];
         objc_setAssociatedObject(sourceViewController, &kApolloGalleryPreparedController, gallery, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         __weak UIViewController *weakOwner = sourceViewController;
@@ -879,45 +875,13 @@ static NSArray *ApolloGalleryPreparationKey(NSString *identifier, UIViewControll
     self.preparationWarmedCount = MAX(self.preparationWarmedCount, count);
 }
 
+// Menu time only snapshots the posts the feed already loaded and warms their
+// thumbnails. It never requests a listing page: opening "..." and cancelling
+// must not spend API-Key-Free budget. Once Gallery View is actually tapped,
+// -apollo_fillViewportIfNeeded fetches whatever the grid still needs.
 - (void)apollo_prepareViewport {
     [self apollo_warmPreparedViewport];
-    if (self.isViewLoaded) {
-        [self apollo_scheduleViewportFill];
-        return;
-    }
-    if (self.preparationBatchesRemaining == 0 || self.feed.isLoading || self.feed.isExhausted ||
-        self.feed.lastErrorMessage.length > 0 ||
-        UIApplication.sharedApplication.applicationState == UIApplicationStateBackground) return;
-    CGSize viewport = self.preparationViewport;
-    if (viewport.width <= 0.0 || viewport.height <= 0.0) return;
-    NSArray<ApolloGalleryItem *> *items = self.feed.items;
-    NSInteger columns = ApolloGalleryGridColumnCount(viewport.width,
-        ApolloGalleryGridSavedTileSizeIndex(NSUserDefaults.standardUserDefaults));
-    CGFloat target = viewport.height + ApolloGalleryGridTileWidth(viewport.width, columns);
-    ApolloGalleryGridMeasurement coverage = ApolloGalleryGridMeasure(items.count, viewport.width, columns,
-        ^CGSize(NSUInteger index) { return items[index].pixelSize; }, target);
-    if (coverage.shortestColumnBottom + 0.5 >= target) return;
-    self.preparationBatchesRemaining--;
-    ApolloLog(@"[Gallery] preparing continuation before selection (%lu media)", (unsigned long)items.count);
-    __weak typeof(self) weakSelf = self;
-    [self.feed loadNextBatchWithCompletion:^(NSRange addedRange, NSString *errorMessage) {
-        typeof(self) strongSelf = weakSelf;
-        if (!strongSelf) return;
-        [strongSelf apollo_warmPreparedViewport];
-        if (strongSelf.isViewLoaded) {
-            // The user selected Gallery before the request finished. Publish
-            // into that very controller, without a second request or a wait.
-            if (addedRange.length > 0) [strongSelf apollo_syncAppendedItems];
-            [strongSelf apollo_updateEmptyStateWithError:errorMessage];
-            if (errorMessage.length > 0) {
-                [strongSelf apollo_setFooterText:@"Couldn't load more"];
-                [strongSelf apollo_clearFooterAfterDelay];
-            }
-            [strongSelf apollo_scheduleViewportFill];
-        } else if (addedRange.length > 0) {
-            [strongSelf apollo_prepareViewport];
-        }
-    }];
+    if (self.isViewLoaded) [self apollo_scheduleViewportFill];
 }
 
 static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
