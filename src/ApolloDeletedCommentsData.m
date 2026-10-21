@@ -1370,7 +1370,8 @@ static void ApolloDeletedCommentsWarmArcticCacheForLink(NSString *linkFullName, 
     NSString *capturedLinkFullName = [linkFullName copy];
     NSString *capturedSource = [source copy] ?: @"unknown";
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        ApolloLog(@"[DeletedComments] Warming Arctic cache for %@ (%@)", capturedLinkFullName, capturedSource);
+        os_log_info(ApolloFixLog(), "[ApolloFix] [DeletedComments] Warming Arctic cache for %{public}s (%{public}s)",
+                    [capturedLinkFullName UTF8String], [capturedSource UTF8String]);
         ApolloDeletedCommentsFetchArcticComments(capturedLinkFullName, ^(__unused NSDictionary<NSString *, NSDictionary *> *comments) {});
     });
 #endif
