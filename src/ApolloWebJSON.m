@@ -444,6 +444,17 @@ BOOL ApolloWebJSONPathNeedsWebBearer(NSString *path) {
     return [re firstMatchInString:path options:0 range:NSMakeRange(0, path.length)] != nil;
 }
 
+// GET /api/info (RDKClient's thingsByFullNames:completion:) goes to
+// api.reddit.com, which serves it to the cookie as the signed-in user.
+// www.reddit.com answers it with its 403 HTML page, and oauth.reddit.com
+// refuses the web bearer the same way (checked live 2026-10-22). The Inbox's
+// Notifications list waits on this lookup (completion at 0x10019dde8).
+static BOOL ApolloWebJSONReadNeedsAPIHost(NSString *method, NSString *path) {
+    if (![method isEqualToString:@"GET"]) return NO;
+    NSString *p = path.lowercaseString;
+    return [p isEqualToString:@"/api/info"] || [p isEqualToString:@"/api/info.json"] || [p isEqualToString:@"/api/info/"];
+}
+
 // Which web-session account a Reddit request carrying `bearer` belongs to, or
 // nil when it's an OAuth account's request. Resolved per request rather than
 // from whichever account is globally active: Apollo runs background polls
@@ -631,7 +642,7 @@ NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
 
     NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
     if (!components) return nil;
-    components.host = @"www.reddit.com";
+    components.host = ApolloWebJSONReadNeedsAPIHost(method, path) ? @"api.reddit.com" : @"www.reddit.com";
     if (subredditWritePath) components.path = subredditWritePath;
 
     // Listing/page URLs must carry ".json"; /api endpoints are already JSON.
@@ -1294,7 +1305,9 @@ void ApolloWebJSONNoteResponse(NSURLRequest *request, NSURLResponse *response) {
         return;
     }
 
-    if (![url.host.lowercaseString isEqualToString:@"www.reddit.com"]) return;
+    // api.reddit.com carries the cookie for GET /api/info (ApolloWebJSONReadNeedsAPIHost).
+    if (![url.host.lowercaseString isEqualToString:@"www.reddit.com"] &&
+        ![url.host.lowercaseString isEqualToString:@"api.reddit.com"]) return;
     // Only react to requests we authenticated with the cookie — those carry the
     // Cookie header we set in ApolloWebJSONRewriteRequest. This skips unrelated
     // www.reddit.com traffic (e.g. the trending-subreddits fetch) that could
