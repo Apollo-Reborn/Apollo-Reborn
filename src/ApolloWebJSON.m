@@ -1686,15 +1686,17 @@ NSData *ApolloWebJSONFixupListingMediaResponseData(NSURLResponse *response, NSDa
 // See ApolloWebJSONWriteRepair.h. Lives here because it needs this file's
 // transport privates (session cookie, captured bearer, probe marker, browser
 // User-Agent). Auth follows the active account's mode: web-session actives use
-// their cookie against www; API-key (OAuth) actives use the captured bearer
-// against oauth.reddit.com.
+// their cookie against api.reddit.com (the probe marker skips the rewrite, so
+// this read doesn't get ApolloWebJSONReadNeedsAPIHost's host on its own, and
+// www answers /api/info with its 403 block page); API-key (OAuth) actives use
+// the captured bearer against oauth.reddit.com.
 void ApolloWebJSONPrefetchModernThingData(NSString *fullname, void (^completion)(NSDictionary *data)) {
     if (fullname.length == 0) { completion(nil); return; }
     NSString *cookie = ApolloActiveWebSession().cookieHeader;
     NSString *bearer = cookie.length == 0 ? [sLatestRedditBearerToken copy] : nil;
     if (cookie.length == 0 && bearer.length == 0) { completion(nil); return; }
 
-    NSString *host = cookie.length > 0 ? @"https://www.reddit.com" : @"https://oauth.reddit.com";
+    NSString *host = cookie.length > 0 ? @"https://api.reddit.com" : @"https://oauth.reddit.com";
     NSString *urlStr = [NSString stringWithFormat:@"%@/api/info.json?id=%@&raw_json=1", host, fullname];
     NSURL *probeURL = ApolloWebJSONURLWithFragment([NSURL URLWithString:urlStr], kApolloWebJSONProbeMarker);
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:probeURL];
