@@ -154,17 +154,28 @@ static NSInteger UITableViewRowAnimationNone;
     });
 }
 @end
+struct CDStruct_90e057aa { CGSize min; CGSize max; };
 @interface ASDisplayNode : NSObject
 @property BOOL isNodeLoaded, hidden;
 @property UIView *view;
 @property ASDisplayNode *owner, *supernode;
 @property NSDictionary *footers;
 @property NSUInteger layoutInvalidations;
+// The applied layout: its frame, its size, the range it was measured in, and
+// whether a rich card (rather than Apollo's native button) produced it.
+@property CGRect bounds;
+@property CGSize calculatedSize;
+@property struct CDStruct_90e057aa layoutRange;
+@property BOOL hasCard;
 - (void)invalidateCalculatedLayout;
+- (struct CDStruct_90e057aa)constrainedSizeForCalculatedLayout;
 @end
 @implementation ASDisplayNode
 - (void)invalidateCalculatedLayout {
     self.layoutInvalidations++;
+}
+- (struct CDStruct_90e057aa)constrainedSizeForCalculatedLayout {
+    return self.layoutRange;
 }
 @end
 @protocol NodeSizeDelegate <NSObject>
@@ -278,6 +289,12 @@ static NSString *ApolloGetLinkButtonNodeURLString(ASDisplayNode *n) {
 static BOOL ApolloLPShouldDeferToInlineMedia(NSURL *u) {
     return [u.path hasSuffix:@".jpg"];
 }
+static BOOL ApolloLPHostShowsCard(ASDisplayNode *n) {
+    return n.hasCard;
+}
+static NSString *ApolloLPHost(NSURL *u) {
+    return u.host;
+}
 static BOOL ApolloLPInvokeRowReloadIfPossible(ASDisplayNode *, ASDisplayNode *, NSString *,
                                               BOOL (^)(UIView *) = nil, void (^)(void) = nil);
 static Class ApolloClassASCellNode, ApolloClassASCollectionView, ApolloClassASTableView, ApolloClassLargePostCellNode;
@@ -374,6 +391,102 @@ static ASDisplayNode *HostedFixture(Class cellClass, BOOL collection, UIScrollVi
 static void FinishFixture(ASDisplayNode *node) {
     node.view.window = nil;
     Tick();
+}
+static struct CDStruct_90e057aa HeightRange(CGFloat minHeight, CGFloat maxHeight) {
+    struct CDStruct_90e057aa range = {CGSizeMake(370, minHeight), CGSizeMake(370, maxHeight)};
+    return range;
+}
+// A hosted feed card whose applied layout matches its frame (the healthy case).
+static ASDisplayNode *CardFixture(UIScrollView **host) {
+    ASDisplayNode *node = HostedFixture(LargePost.class, NO, host);
+    node.hasCard = YES;
+    node.bounds = CGRectMake(0, 0, 370, 305.33);
+    node.calculatedSize = CGSizeMake(370, 305.33);
+    node.layoutRange = HeightRange(0, CGFLOAT_MAX);
+    return node;
+}
+// V26: a card laid out in place at a stale (placeholder-era) row height.
+static void RunStaleRowRepairTests(void) {
+    UIScrollView *host;
+    ASDisplayNode *node = CardFixture(&host);
+    NSUInteger before = nativeSizeUpdates;
+    for (int i = 0; i < 100; i++)
+        ApolloLPRepairRowIfLayoutPinned(node);
+    Check(immediateJobs.count == 0, @"healthy card layouts schedule nothing");
+    RunImmediate();
+    Check(nativeSizeUpdates == before && node.layoutInvalidations == 0, @"healthy card layouts leave the row alone");
+    FinishFixture(node);
+
+    node = CardFixture(&host);
+    ASCellNode *cell = (ASCellNode *)node.owner;
+    node.layoutRange = HeightRange(305.33, 305.33);
+    before = nativeSizeUpdates;
+    ApolloLPRepairRowIfLayoutPinned(node);
+    ApolloLPRepairRowIfLayoutPinned(node);
+    Check(nativeSizeUpdates == before && immediateJobs.count == 1,
+          @"a pinned layout repairs once, on the next main turn, outside Texture's layout stack");
+    RunImmediate();
+    Check(nativeSizeUpdates == before + 1 && [((ASTableView *)host).sizeQueue containsObject:cell] &&
+          node.layoutInvalidations == 1 && cell.layoutInvalidations == 1 && cell.supernode.layoutInvalidations == 0,
+          @"a pinned card asks the table to re-measure just its row");
+    FinishFixture(node);
+
+    node = CardFixture(&host);
+    node.calculatedSize = CGSizeMake(370, 308.67);
+    before = nativeSizeUpdates;
+    ApolloLPRepairRowIfLayoutPinned(node);
+    RunImmediate();
+    Check(nativeSizeUpdates == before + 1, @"a layout taller than its frame repairs the row");
+    FinishFixture(node);
+
+    node = CardFixture(&host);
+    node.calculatedSize = CGSizeMake(370, 305.6);
+    before = nativeSizeUpdates;
+    ApolloLPRepairRowIfLayoutPinned(node);
+    RunImmediate();
+    Check(nativeSizeUpdates == before, @"sub-pixel rounding between frame and layout is not a repair");
+    FinishFixture(node);
+
+    node = CardFixture(&host);
+    node.layoutRange = HeightRange(305.33, 305.33);
+    before = nativeSizeUpdates;
+    for (int i = 0; i < 10; i++) {
+        ApolloLPRepairRowIfLayoutPinned(node);
+        RunImmediate();
+    }
+    Check(nativeSizeUpdates == before + 3, @"a row that never converges stops re-measuring");
+    now += 10.5;
+    ApolloLPRepairRowIfLayoutPinned(node);
+    RunImmediate();
+    Check(nativeSizeUpdates == before + 4, @"the convergence guard window slides");
+    FinishFixture(node);
+
+    node = CardFixture(&host);
+    node.hasCard = NO;
+    node.layoutRange = HeightRange(305.33, 305.33);
+    before = nativeSizeUpdates;
+    ApolloLPRepairRowIfLayoutPinned(node);
+    Check(immediateJobs.count == 0, @"Apollo's native link button is never resized by the card repair");
+    FinishFixture(node);
+
+    node = CardFixture(&host);
+    node.bounds = CGRectMake(0, 0, 370, 0);
+    node.layoutRange = HeightRange(0, 0);
+    ApolloLPRepairRowIfLayoutPinned(node);
+    node.calculatedSize = CGSizeMake(370, 305.33);
+    ApolloLPRepairRowIfLayoutPinned(node);
+    Check(immediateJobs.count == 0, @"a collapsed (zero-height) row never asks for a re-measure");
+    FinishFixture(node);
+
+    node = CardFixture(&host);
+    node.layoutRange = HeightRange(305.33, 305.33);
+    ((ASCellNode *)node.owner).interactionDelegate = nil;
+    before = nativeSizeUpdates;
+    ApolloLPRepairRowIfLayoutPinned(node);
+    RunImmediate();
+    Check(nativeSizeUpdates == before && node.layoutInvalidations == 0,
+          @"an unhosted cell is skipped instead of measured synchronously");
+    FinishFixture(node);
 }
 static void RunHostedSizeTests(void) {
     UIScrollView *host;
@@ -711,6 +824,7 @@ int main(void) {
               @"collection completion releases retained node");
         Check(jobs.count == 0, @"no callbacks left after completion");
         RunHostedSizeTests();
+        RunStaleRowRepairTests();
         printf("PASS: %lu overflow lifecycle checks\n", (unsigned long)checks);
     }
 }
