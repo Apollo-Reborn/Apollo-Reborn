@@ -268,6 +268,12 @@ static BOOL HeaderRetakeLayerIsOnScreen(CALayer *layer) {
     return !CGRectIsNull(visible) && visible.size.width >= 1.0 && visible.size.height >= 1.0;
 }
 
+// Exported for ApolloVideoUnmute.xm: a feed video whose cell left the screen is
+// still on screen when its post's comments header took its shared layer.
+BOOL ApolloVideoSwipeFix_LayerIsOnScreen(CALayer *layer) {
+    return HeaderRetakeLayerIsOnScreen(layer);
+}
+
 static UIViewController *HeaderRetakeScreenForNode(id node) {
     if (!HeaderRetakeNodeIsLoaded(node) || ![node respondsToSelector:@selector(view)]) return nil;
     UIView *view = ((UIView *(*)(id, SEL))objc_msgSend)(node, @selector(view));

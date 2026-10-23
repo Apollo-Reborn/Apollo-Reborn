@@ -30,6 +30,14 @@ static NSUInteger const kApolloGalleryDataCacheCostLimit = 32 * 1024 * 1024;
 
 static NSTimeInterval const kApolloGalleryImageTimeout = 30.0;
 
+// The same cache-only API used by ApolloSubredditListIcons. The downloader
+// owns Apollo's actual feed-image manager; PIN's default shared manager can
+// point at a different cache. These calls never start a native download.
+@interface NSObject (ApolloGalleryNativeImageCache)
+- (void)imageFromCacheWithURL:(NSURL *)URL processorKey:(nullable NSString *)processorKey
+                     options:(NSUInteger)options completion:(void (^)(id result))completion;
+@end
+
 @class ApolloGalleryPendingDownload;
 
 #pragma mark - Request handle
@@ -89,6 +97,28 @@ static UIImage *ApolloGalleryDecodeStillThumbnail(NSData *data, CGFloat maxPixel
     UIImage *image = [UIImage imageWithCGImage:cgImage];
     CGImageRelease(cgImage);
     return image;
+}
+
+// A native cache hit is already a UIImage. Render just its first frame into
+// the same bounded tier as network thumbnails, off the main queue. Retaining
+// the native image directly could pin a full-size bitmap (or every animation
+// frame) in our cache, and drawing it for the first time in a cell can stall
+// the opening animation. A serial queue bounds these working allocations.
+static UIImage *ApolloGalleryThumbnailFromCachedImage(UIImage *image, CGFloat maxPixelSize) {
+    image = image.images.firstObject ?: image;
+    CGFloat width = image.size.width * image.scale;
+    CGFloat height = image.size.height * image.scale;
+    if (!isfinite(width) || !isfinite(height) || width <= 0.0 || height <= 0.0) return nil;
+    CGFloat ratio = MIN(1.0, maxPixelSize / MAX(width, height));
+    CGSize size = CGSizeMake(MAX(1.0, floor(width * ratio)), MAX(1.0, floor(height * ratio)));
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat preferredFormat];
+    format.scale = 1.0;
+    format.preferredRange = UIGraphicsImageRendererFormatRangeStandard;
+    format.opaque = NO;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size format:format];
+    return [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
+        [image drawInRect:(CGRect){CGPointZero, size}];
+    }];
 }
 
 #pragma mark - Animated GIF playback
@@ -217,6 +247,8 @@ static ApolloGalleryDecodedImage *ApolloGalleryDecodeFullTier(NSData *data) {
 @property (nonatomic, strong) NSCache<NSString *, ApolloGalleryDecodedImage *> *imageCache;
 @property (nonatomic, strong) NSCache<NSString *, NSData *> *dataCache;
 @property (nonatomic, strong) NSURLSession *session;
+@property (nonatomic, strong, nullable) id nativeImageManager;
+@property (nonatomic, strong) dispatch_queue_t nativeThumbnailQueue;
 // key -> the single in-flight download for that URL. Main-thread only, so no
 // lock: every mutation happens from -loadImageAtURL:… , -cancelRequest: or the
 // task completion's main-queue hop.
@@ -262,6 +294,15 @@ static ApolloGalleryDecodedImage *ApolloGalleryDecodeFullTier(NSData *data) {
         _dataCache = [[NSCache alloc] init];
         _dataCache.totalCostLimit = kApolloGalleryDataCacheCostLimit;
         _pending = [NSMutableDictionary dictionary];
+        // This initializer runs once for sharedLoader, so the runtime lookup
+        // is outside the per-cell path. Apollo's Texture downloader is mapped
+        // at launch; a missing cache API simply uses our existing loader.
+        id downloader = ApolloSendObject(objc_getClass("ASPINRemoteImageDownloader"), @selector(sharedDownloader));
+        id manager = ApolloSendObject(downloader, @selector(sharedPINRemoteImageManager));
+        if ([manager respondsToSelector:@selector(imageFromCacheWithURL:processorKey:options:completion:)]) {
+            _nativeImageManager = manager;
+        }
+        _nativeThumbnailQueue = dispatch_queue_create("app.apolloreborn.gallery-native-thumbnails", DISPATCH_QUEUE_SERIAL);
 
         NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
         // Reddit's image CDN is a single host, so the default per-host cap is
@@ -396,6 +437,59 @@ static ApolloGalleryDecodedImage *ApolloGalleryDecodeFullTier(NSData *data) {
     request.download = download;
     self.pending[key] = download;
 
+    if (progress) progress(0.0);
+    if (thumbnailMax > 0.0 && self.nativeImageManager) {
+        [self apollo_loadNativeThumbnailAtURL:url key:key download:download thumbnailMax:thumbnailMax];
+    } else {
+        [self apollo_startDownloadAtURL:url key:key download:download thumbnailMax:thumbnailMax];
+    }
+    return request;
+}
+
+// Keep the native cache read in the same pending slot as a possible network
+// miss. Opening a cell during prewarm therefore joins the existing lookup,
+// and cancelling its last waiter prevents a late cache miss starting work.
+- (void)apollo_loadNativeThumbnailAtURL:(NSURL *)url key:(NSString *)key
+                              download:(ApolloGalleryPendingDownload *)download thumbnailMax:(CGFloat)thumbnailMax {
+    __weak typeof(self) weakSelf = self;
+    [self.nativeImageManager imageFromCacheWithURL:url processorKey:nil options:0 completion:^(id result) {
+        id nativeImage = ApolloSendObject(result, @selector(image));
+        UIImage *image = [nativeImage isKindOfClass:UIImage.class] ? nativeImage : nil;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(self) strongSelf = weakSelf;
+            if (!strongSelf || strongSelf.pending[key] != download) return;
+            if (!image) {
+                [strongSelf apollo_startDownloadAtURL:url key:key download:download thumbnailMax:thumbnailMax];
+                return;
+            }
+            dispatch_async(strongSelf.nativeThumbnailQueue, ^{
+                @autoreleasepool {
+                    ApolloGalleryDecodedImage *decoded = ApolloGalleryMakeDecodedImage(
+                        ApolloGalleryThumbnailFromCachedImage(image, thumbnailMax), nil, 0);
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        typeof(self) loader = weakSelf;
+                        // A cancelled lookup must not remove or satisfy a new
+                        // request for the same URL, nor repopulate its cache.
+                        if (!loader || loader.pending[key] != download) return;
+                        if (!decoded) {
+                            [loader apollo_startDownloadAtURL:url key:key download:download thumbnailMax:thumbnailMax];
+                            return;
+                        }
+                        [loader.imageCache setObject:decoded forKey:key cost:decoded.cost];
+                        [loader.pending removeObjectForKey:key];
+                        for (ApolloGalleryImageRequest *waiter in download.requests) {
+                            if (!waiter.isCancelled && waiter.completion) waiter.completion(decoded, nil);
+                        }
+                    });
+                }
+            });
+        });
+    }];
+}
+
+- (void)apollo_startDownloadAtURL:(NSURL *)url key:(NSString *)key
+                       download:(ApolloGalleryPendingDownload *)download thumbnailMax:(CGFloat)thumbnailMax {
+    if (self.pending[key] != download) return;
     NSMutableURLRequest *urlRequest = [NSMutableURLRequest requestWithURL:url];
     urlRequest.timeoutInterval = kApolloGalleryImageTimeout;
     [urlRequest setValue:(sUserAgent.length > 0 ? sUserAgent : @"ApolloGallery/1.0") forHTTPHeaderField:@"User-Agent"];
@@ -445,9 +539,7 @@ static ApolloGalleryDecodedImage *ApolloGalleryDecodeFullTier(NSData *data) {
         });
     }];
 
-    if (progress) progress(0.0);
     [download.task resume];
-    return request;
 }
 
 @end

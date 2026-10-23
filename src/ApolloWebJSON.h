@@ -70,7 +70,10 @@ id ApolloWebJSONFixupModeratorsResponseObject(NSURLResponse *response, id respon
 // the serializer's response URL misses malformed login/error responses.
 // A non-dictionary listing result becomes nil + an error, even if an existing
 // error is already present (native completions inspect the object first).
-// Valid dictionary responses, nil, writes and array-rooted endpoints pass through.
+// A listing that comes back with no object and no error, or with an HTTP status
+// of 400 or more and no error, also becomes nil + an error: RedditKit reports
+// neither, and a feed would take it as its last page (#1420). Valid dictionary
+// responses, existing errors, writes and array-rooted endpoints pass through.
 id ApolloWebJSONGuardListingTaskResponse(NSString *method, NSString *path,
                                         NSHTTPURLResponse *response, id responseObject,
                                         NSError **error);

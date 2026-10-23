@@ -7,6 +7,9 @@
 
 @property(nonatomic, assign) CGFloat contentTranslation;
 @property(nonatomic, assign) BOOL usesProfileHero;
+// Optional horizontal occlusion for a table that extends underneath an iPad
+// sidebar. The table background stays full size; its artwork fits the column.
+@property(nonatomic, assign) UIEdgeInsets artworkInsets;
 // Unscrolled height of the sharp artwork after viewport/region clipping.
 @property(nonatomic, readonly) CGFloat sharpArtworkHeight;
 

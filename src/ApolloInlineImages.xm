@@ -4,7 +4,7 @@
 // Renders image URLs inside Apollo's selftext / comment markdown bodies as
 // actual inline images, replacing the URL text in-place. Tap opens
 // MediaViewer (via Apollo's tappedLinkAttribute path); long-press shows
-// Copy Link / Share / Open in Safari / Inline Media Settings
+// Copy Image / Save Image / Share / Inline Media Settings
 // (UIContextMenuInteraction wins over Apollo's cell-level menu since it's
 // installed on the deeper view).
 //
@@ -17,6 +17,8 @@
 #import "ApolloMediaAutoplay.h"
 #import "ApolloMemoryDiagnostics.h"
 #import "ApolloState.h"
+#import "ApolloImageActions.h"
+#import "ApolloSaveAllMedia.h"
 #import "Tweak.h"
 #import "UserDefaultConstants.h"
 #import "settings/ApolloSettingsRouter.h"
@@ -161,6 +163,7 @@ static char kApolloImageNodesByURLKey;         // NSMutableDictionary<NSString U
 static char kApolloImageCacheKey;              // NSString stable cache key (set even before deferred image URLs resolve)
 static char kApolloInlineMediaLeafKey;         // Non-nil permanent identity marker for tweak-created image/video leaves
 static char kApolloImageURLKey;                // NSURL on the imageNode AND mirrored on the imageNode's view
+static char kApolloImageExportURLKey;          // Resolved image/GIF file; survives the GIF pipeline clearing node.URL
 static char kApolloOriginalImageURLKey;        // NSURL for tap/long-press when different from the loaded URL (e.g. album URL)
 static char kApolloInlineVideoThumbnailKey;    // NSNumber(BOOL): use player-card sizing instead of tall-image sizing
 static char kApolloAspectRatioKey;             // NSNumber height/width — NIL if unknown (no URL params yet, no DIDLOAD yet)
@@ -1428,8 +1431,24 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
 
 @end
 
+// Carry the loaded image and zoom origin through an inline tap. The native
+// pager retains this context if its view loads after the tap returns.
+@interface ApolloInlineMediaOpeningContext : NSObject
+@property (nonatomic, strong) UIImage *image;
+@property (nonatomic, strong) UIView *sourceView;
+@end
+@implementation ApolloInlineMediaOpeningContext
+@end
+
+static ApolloInlineMediaOpeningContext *sApolloInlineMediaOpeningContext;
+static char kApolloInlineMediaOpeningContextKey;
+
+// Swift owns assignment and release of the native [Int: UIImage] dictionary.
+extern "C" void ApolloHiddenMediaAssignThumbnail(void *, NSInteger, const void *);
+
 @interface ApolloImageChestAlbumViewController : UIViewController <UIScrollViewDelegate, UIGestureRecognizerDelegate>
 @property (nonatomic) BOOL profileBannerPresentation;
+@property (nonatomic, strong) UIImage *initialPreviewImage;
 @property (nonatomic, strong) id previewFeedback;
 @property (nonatomic, copy) NSArray<NSDictionary *> *items;
 @property (nonatomic) NSInteger initialIndex;
@@ -1555,6 +1574,7 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
         imageView.tag = 3000 + (NSInteger)i;
         imageView.backgroundColor = UIColor.blackColor;
         imageView.contentMode = UIViewContentModeScaleAspectFit;
+        if ((NSInteger)i == self.initialIndex) imageView.image = self.initialPreviewImage;
         [zoomScrollView addSubview:imageView];
         [page addSubview:zoomScrollView];
 
@@ -1706,13 +1726,16 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
     if (![imageView isKindOfClass:[UIImageView class]] || ![zoom isKindOfClass:[UIScrollView class]]) return;
     if (decodedImage) {
         imageView.image = decodedImage;
+        if (page == self.initialIndex) self.initialPreviewImage = nil;
         [self apollo_layoutZoomScrollView:zoom resetZoom:(zoom.zoomScale <= zoom.minimumZoomScale + 0.01)];
         return;
     }
 
     // updateCounterForPage: runs throughout a swipe. Never read and decode the
     // same large file synchronously from each scroll callback.
-    if (imageView.image || [self.decodingImageIndexes containsObject:index]) return;
+    BOOL showingOpeningPreview = page == self.initialIndex && self.initialPreviewImage &&
+        imageView.image == self.initialPreviewImage;
+    if ((imageView.image && !showingOpeningPreview) || [self.decodingImageIndexes containsObject:index]) return;
     NSURL *fileURL = self.imageFileURLsByIndex[index];
     if (!fileURL) return;
     [self.decodingImageIndexes addObject:index];
@@ -1932,6 +1955,7 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
         UIImageView *imageView = (UIImageView *)[self.scrollView viewWithTag:3000 + (NSInteger)i];
         if (![window containsObject:index]) {
             imageView.image = nil;
+            if ((NSInteger)i == self.initialIndex) self.initialPreviewImage = nil;
             UIScrollView *zoom = (UIScrollView *)[self.scrollView viewWithTag:4000 + (NSInteger)i];
             if ([zoom isKindOfClass:[UIScrollView class]]) zoom.zoomScale = zoom.minimumZoomScale;
             continue;
@@ -2042,6 +2066,7 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
         if ((NSInteger)i == current) continue;
         UIImageView *imageView = (UIImageView *)[self.scrollView viewWithTag:3000 + (NSInteger)i];
         imageView.image = nil;
+        if ((NSInteger)i == self.initialIndex) self.initialPreviewImage = nil;
     }
 }
 
@@ -2556,11 +2581,41 @@ static void ApolloReleaseVideoCommentAudioSession(NSUInteger generation);
 }
 @end
 
+// Freeze the selected file so cell reuse or album resolution cannot change it.
+@interface ApolloInlineImageMenuContext : NSObject
+@property (nonatomic, copy) NSURL *URL;
+@property (nonatomic, weak) UIViewController *presenter;
+@property (nonatomic, weak) UIView *sourceView;
+@property (nonatomic) BOOL ended;
+@property (nonatomic, copy) dispatch_block_t pendingAction;
+@end
+@implementation ApolloInlineImageMenuContext
+@end
+static char kApolloInlineImageMenuContextKey;
+
+static UIAction *ApolloInlineImageMenuAction(NSString *title, NSString *symbol,
+                                           ApolloInlineImageMenuContext *context,
+                                           dispatch_block_t action) {
+    return [UIAction actionWithTitle:title image:[UIImage systemImageNamed:symbol]
+                         identifier:nil handler:^(__unused UIAction *sender) {
+        // Photos permission and share-sheet presentation must wait for UIKit
+        // to dismiss the context menu. Retain the selection through late taps.
+        if (context.ended) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (context.presenter.viewIfLoaded.window) action();
+            });
+        } else {
+            context.pendingAction = action;
+        }
+    }];
+}
+
 // MARK: - Tap dispatcher + UIContextMenuInteraction delegate (singleton)
 
 @interface ApolloInlineImageDispatcher : NSObject <UIContextMenuInteractionDelegate>
 + (instancetype)shared;
 - (void)imageNodeTapped:(id)sender;
+- (void)apollo_openImageNode:(id)imageNode;
 - (void)imageNode:(id)imageNode didLoadImage:(UIImage *)image;
 - (void)updateAspectRatioForImageNode:(id)imageNode imageSize:(CGSize)size;
 @end
@@ -2635,6 +2690,25 @@ static id ApolloFindResponderForSelector(SEL sel, id imageNode) {
         }
     }
 
+    UIView *sourceView = [imageNode respondsToSelector:@selector(view)] ? [imageNode view] : nil;
+    UIImage *previewImage = ApolloSendObject(imageNode, @selector(image));
+    if (!previewImage) previewImage = objc_getAssociatedObject(imageNode, &kApolloInlineGIFCoverImageKey);
+    ApolloInlineMediaOpeningContext *previousContext = sApolloInlineMediaOpeningContext;
+    ApolloInlineMediaOpeningContext *context = nil;
+    if ([previewImage isKindOfClass:UIImage.class] && sourceView.window) {
+        context = [ApolloInlineMediaOpeningContext new];
+        context.image = previewImage;
+        context.sourceView = sourceView;
+    }
+    sApolloInlineMediaOpeningContext = context;
+    @try {
+        [self apollo_openImageNode:imageNode];
+    } @finally {
+        sApolloInlineMediaOpeningContext = previousContext;
+    }
+}
+
+- (void)apollo_openImageNode:(id)imageNode {
     NSArray *imageChestItems = objc_getAssociatedObject(imageNode, &kApolloImageChestItemsKey);
     if (imageChestItems.count > 0) {
         UIView *view = [imageNode respondsToSelector:@selector(view)] ? [imageNode view] : nil;
@@ -2833,6 +2907,9 @@ BOOL ApolloPresentImageChestItemsWithAlbumURL(NSArray<NSDictionary *> *items, UI
 
     ApolloImageChestAlbumViewController *viewer = [[ApolloImageChestAlbumViewController alloc] initWithItems:items initialIndex:initialIndex];
     viewer.albumURL = albumURL;
+    if (sApolloInlineMediaOpeningContext.sourceView == sourceView) {
+        viewer.initialPreviewImage = sApolloInlineMediaOpeningContext.image;
+    }
     [top presentViewController:viewer animated:YES completion:nil];
     return YES;
 }
@@ -2880,6 +2957,49 @@ static BOOL ApolloPresentOrResolveImageChestAlbumURL(NSURL *url, UIView *sourceV
               ?: objc_getAssociatedObject(v, &kApolloImageURLKey);
     if (![url isKindOfClass:[NSURL class]]) return nil;
 
+    id node = ApolloSendObject(v, @selector(asyncdisplaykit_node)) ?: ApolloSendObject(v, @selector(node));
+    // Video posters keep their link menu; images export the resolved file.
+    if (![objc_getAssociatedObject(node, &kApolloInlineVideoThumbnailKey) boolValue]) {
+        NSURL *imageURL = objc_getAssociatedObject(node, &kApolloImageExportURLKey);
+        ApolloInlineImageMenuContext *context = [ApolloInlineImageMenuContext new];
+        context.URL = [imageURL isKindOfClass:NSURL.class] ? imageURL : nil;
+        context.presenter = ApolloTopVCFromView(v);
+        context.sourceView = v;
+        UIContextMenuConfiguration *configuration = [UIContextMenuConfiguration configurationWithIdentifier:nil
+            previewProvider:nil actionProvider:^UIMenu *(__unused NSArray<UIMenuElement *> *suggested) {
+            __weak ApolloInlineImageMenuContext *weakContext = context;
+            UIAction *copy = ApolloInlineImageMenuAction(@"Copy Image", @"doc.on.doc", context, ^{
+                ApolloInlineImageMenuContext *selection = weakContext;
+                ApolloCopyOrShareImage(selection.URL, selection.presenter, selection.sourceView, NO);
+            });
+            UIAction *save = ApolloInlineImageMenuAction(@"Save Image", @"square.and.arrow.down", context, ^{
+                ApolloInlineImageMenuContext *selection = weakContext;
+                if (selection.URL && selection.presenter.viewIfLoaded.window) {
+                    ApolloSaveAllMedia(@[[[ApolloSaveAllMediaItem alloc] initWithURL:selection.URL isVideo:NO]],
+                                       selection.presenter);
+                }
+            });
+            UIAction *share = ApolloInlineImageMenuAction(@"Share", @"square.and.arrow.up", context, ^{
+                ApolloInlineImageMenuContext *selection = weakContext;
+                ApolloCopyOrShareImage(selection.URL, selection.presenter, selection.sourceView, YES);
+            });
+            // An unresolved album cover has no image file to export yet.
+            if (!context.URL) {
+                copy.attributes = UIMenuElementAttributesDisabled;
+                save.attributes = UIMenuElementAttributesDisabled;
+                share.attributes = UIMenuElementAttributesDisabled;
+            }
+            UIAction *settings = ApolloInlineImageMenuAction(@"Inline Media Settings", @"gearshape", context, ^{
+                ApolloSettingsRouteOpen(@"inline-media");
+            });
+            UIMenu *settingsGroup = [UIMenu menuWithTitle:@"" image:nil identifier:nil
+                options:UIMenuOptionsDisplayInline children:@[settings]];
+            return [UIMenu menuWithTitle:@"" children:@[copy, save, share, settingsGroup]];
+        }];
+        objc_setAssociatedObject(configuration, &kApolloInlineImageMenuContextKey, context, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return configuration;
+    }
+
     return [UIContextMenuConfiguration configurationWithIdentifier:nil
                                                    previewProvider:nil
                                                     actionProvider:^UIMenu *(NSArray<UIMenuElement *> *suggested) {
@@ -2924,6 +3044,21 @@ static BOOL ApolloPresentOrResolveImageChestAlbumURL(NSURL *url, UIView *sourceV
                                              children:@[settings]];
         return [UIMenu menuWithTitle:@"" children:@[copy, share, open, settingsGroup]];
     }];
+}
+
+- (void)contextMenuInteraction:(UIContextMenuInteraction *)interaction
+      willEndForConfiguration:(UIContextMenuConfiguration *)configuration
+                     animator:(id<UIContextMenuInteractionAnimating>)animator {
+    ApolloInlineImageMenuContext *context = objc_getAssociatedObject(configuration, &kApolloInlineImageMenuContextKey);
+    if (!context) return;
+    dispatch_block_t finish = ^{
+        context.ended = YES;
+        dispatch_block_t pending = context.pendingAction;
+        context.pendingAction = nil;
+        if (context.presenter.viewIfLoaded.window && pending) pending();
+    };
+    if (animator) [animator addCompletion:finish];
+    else dispatch_async(dispatch_get_main_queue(), finish);
 }
 
 - (void)imageNode:(id)imageNode didLoadImage:(UIImage *)image {
@@ -3311,7 +3446,7 @@ static void ApolloMirrorImageURLsToLoadedView(ASNetworkImageNode *imageNode) {
 
 // Record the URL the user actually posted (different from the loaded
 // CDN URL after normalization, or different from the resolved image
-// URL after Imgur album lookup). Used for tap routing + Copy Link.
+// URL after Imgur album lookup). Used for tap routing to the full album.
 static void ApolloSetOriginalImageURL(ASNetworkImageNode *imageNode, NSURL *originalURL) {
     if (![originalURL isKindOfClass:[NSURL class]]) return;
     objc_setAssociatedObject(imageNode, &kApolloOriginalImageURLKey, originalURL, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -3320,8 +3455,8 @@ static void ApolloSetOriginalImageURL(ASNetworkImageNode *imageNode, NSURL *orig
 
 // Apply an async album resolution result to an imageNode. Sets the load
 // URL, captures aspect ratio if available, and triggers cell relayout.
-// Preserves kApolloOriginalImageURLKey so copy/share still use the user
-// posted album URL instead of only the resolved cover image.
+// Preserves kApolloOriginalImageURLKey so tapping still opens the full album;
+// image export actions read the resolved cover's own URL.
 // Applies a resolved album result to the node (load URL, tap-routing keys,
 // aspect ratio, stacked card) WITHOUT scheduling any relayout. Use directly
 // when the resolution comes from cache during the same layout pass that is
@@ -3335,6 +3470,7 @@ static BOOL ApolloApplyResolvedAlbumImageContent(ASNetworkImageNode *imageNode, 
     if (![imageURL isKindOfClass:[NSURL class]]) return NO;
 
     imageNode.URL = imageURL;
+    objc_setAssociatedObject(imageNode, &kApolloImageExportURLKey, imageURL, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     NSArray *images = [result[@"images"] isKindOfClass:[NSArray class]] ? result[@"images"] : nil;
     if (images.count > 0) {
         objc_setAssociatedObject(imageNode, &kApolloImageChestItemsKey, images, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -4500,6 +4636,7 @@ static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (!deferredAlbum) {
         imageNode.URL = normalizedURL;
+        objc_setAssociatedObject(imageNode, &kApolloImageExportURLKey, normalizedURL, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     imageNode.shouldRenderProgressImages = YES;
     // aspectFit always: container ratio may be clamped (very tall/wide
@@ -4564,8 +4701,8 @@ static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
     if (!deferredAlbum) {
         objc_setAssociatedObject(imageNode, &kApolloImageURLKey, normalizedURL, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     } else {
-        // For album URLs, record the album URL as "original" so
-        // copy/share/open actions keep what the user posted.
+        // For album URLs, record the album URL as "original" so tapping
+        // opens the full album instead of only its cover image.
         objc_setAssociatedObject(imageNode, &kApolloOriginalImageURLKey, normalizedURL, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     if (ratio > 0) {
@@ -5133,10 +5270,8 @@ static NSArray *ApolloBuildLeavesForTextNode(ASTextNode *textNode,
                 ? ApolloVideoThumbnailNodeForURL(urls[leafIndex], hostMarkdownNode)
                 : ApolloImageNodeForURL(urls[leafIndex], hostMarkdownNode);
             if (img) {
-                // Route tap/long-press to the original posted URL when
-                // it differs from the loaded URL — Copy Link returns
-                // what the user shared, and album taps route to the
-                // album viewer instead of just the cover image.
+                // Keep the original posted URL for taps so albums open
+                // their full viewer. Image actions export the resolved file.
                 NSURL *original = originalURLs[leafIndex];
                 if (original && ![original.absoluteString isEqualToString:urls[leafIndex].absoluteString]) {
                     ApolloSetOriginalImageURL(img, original);
@@ -5609,6 +5744,51 @@ static BOOL ApolloLinkButtonHasInlineHost(ASDisplayNode *linkButtonNode) {
     ASLayoutSpec *empty = [[layoutSpecCls alloc] init];
     [[empty style] setValue:[NSValue valueWithCGSize:CGSizeZero] forKey:@"preferredSize"];
     return empty;
+}
+
+%end
+
+// Capture the inline tap's preview on its native pager before the view loads.
+%hook _TtC6Apollo23MediaPageViewController
+
++ (id)allocWithZone:(struct _NSZone *)zone {
+    id page = %orig;
+    if (NSThread.isMainThread && sApolloInlineMediaOpeningContext) {
+        objc_setAssociatedObject(page, &kApolloInlineMediaOpeningContextKey,
+                                 sApolloInlineMediaOpeningContext, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return page;
+}
+
+- (void)viewDidLoad {
+    ApolloInlineMediaOpeningContext *context = objc_getAssociatedObject(self, &kApolloInlineMediaOpeningContextKey);
+    objc_setAssociatedObject(self, &kApolloInlineMediaOpeningContextKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (context.image && context.sourceView.window) {
+        Class pageClass = object_getClass(self);
+        Ivar thumbnails = class_getInstanceVariable(pageClass, "thumbnails");
+        Ivar selectedIndex = class_getInstanceVariable(pageClass, "selectedThumbnailIndex");
+        Ivar originView = class_getInstanceVariable(pageClass, "originView");
+        Ivar originCell = class_getInstanceVariable(pageClass, "originCellNode");
+        if (thumbnails && selectedIndex && originView && originCell &&
+            ivar_getOffset(selectedIndex) - ivar_getOffset(thumbnails) == sizeof(void *) &&
+            ivar_getOffset(originCell) - ivar_getOffset(originView) == sizeof(void *)) {
+            uint8_t *base = (uint8_t *)(__bridge void *)self;
+            ApolloHiddenMediaAssignThumbnail(base + ivar_getOffset(thumbnails), 0,
+                                            (__bridge const void *)context.image);
+            // originView is a Swift-owned strong UIView? slot. The native
+            // deinitializer releases it; explicitly transfer the +1 and drop
+            // the previous value, as object_setIvar cannot own a Swift slot.
+            void **slot = (void **)(base + ivar_getOffset(originView));
+            void *oldView = *slot;
+            *slot = (void *)CFRetain((__bridge CFTypeRef)context.sourceView);
+            if (oldView) CFRelease(oldView);
+            ApolloLog(@"[InlineImages] opening native viewer with inline preview and attached zoom origin");
+        } else {
+            ApolloLog(@"[InlineImages] native preview layout unavailable; keeping original media presentation");
+        }
+    }
+    // Seed thumbnails[0] before the native load constructs its first viewer.
+    %orig;
 }
 
 %end

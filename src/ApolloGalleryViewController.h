@@ -24,6 +24,9 @@ NS_ASSUME_NONNULL_BEGIN
 // `username` is the bare name, no "u/" prefix. Shows the media that user has
 // posted anywhere on Reddit (their submitted listing).
 - (instancetype)initWithUsername:(NSString *)username NS_DESIGNATED_INITIALIZER;
+// The signed-in account's Saved posts, or one of Apollo's local categories.
+// nil means All; saved comments do not become gallery tiles.
+- (instancetype)initWithSavedCategory:(nullable NSString *)category NS_DESIGNATED_INITIALIZER;
 - (instancetype)initWithNibName:(nullable NSString *)nibName bundle:(nullable NSBundle *)bundle NS_UNAVAILABLE;
 - (instancetype)initWithCoder:(NSCoder *)coder NS_UNAVAILABLE;
 
@@ -49,6 +52,14 @@ NS_ASSUME_NONNULL_BEGIN
                 inheritedSortValue:(nullable NSNumber *)sortValue
            inheritedTopWindowValue:(nullable NSNumber *)topWindowValue;
 
+// While the source menu is opening, fill and warm the initial viewport on a
+// short-lived gallery. Presentation reuses it only if source/account/sort still
+// match; selecting Gallery never waits for an unfinished request.
++ (void)prepareGalleryForSubreddit:(NSString *)subreddit
+               fromViewController:(UIViewController *)sourceViewController
+               inheritedSortValue:(nullable NSNumber *)sortValue
+          inheritedTopWindowValue:(nullable NSNumber *)topWindowValue;
+
 // `multiredditPath` is Reddit's canonical `/user/<owner>/m/<name>` path. It is
 // kept intact so public multireddits load from their actual owner rather than
 // being incorrectly rebuilt under the active account.
@@ -60,6 +71,9 @@ NS_ASSUME_NONNULL_BEGIN
 // there's no navigation controller to push onto.
 + (BOOL)presentGalleryForUsername:(NSString *)username
                fromViewController:(UIViewController *)sourceViewController;
+
++ (BOOL)presentGalleryForSavedCategory:(nullable NSString *)category
+                    fromViewController:(UIViewController *)sourceViewController;
 
 @end
 

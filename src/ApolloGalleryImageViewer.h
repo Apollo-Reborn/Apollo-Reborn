@@ -25,6 +25,8 @@ NS_ASSUME_NONNULL_BEGIN
 // Closing on `index` — the grid scrolls that tile into view so the user lands
 // back where they left off.
 - (void)galleryViewer:(ApolloGalleryImageViewer *)viewer willDismissAtIndex:(NSInteger)index;
+// The dismissal has completed; the retained grid can resume playback.
+- (void)galleryViewerDidDismiss:(ApolloGalleryImageViewer *)viewer;
 @end
 
 @interface ApolloGalleryImageViewer : UIViewController

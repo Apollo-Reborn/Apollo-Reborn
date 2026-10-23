@@ -34,6 +34,7 @@
 #import "ApolloActionMenu.h"
 #import "ApolloCommon.h"
 #import "ApolloGalleryFeed.h"
+#import "ApolloGallerySource.h"
 #import "ApolloGalleryViewController.h"
 #import "ApolloNativeActionMenus.h"
 #import "ApolloSwiftRuntime.h"
@@ -235,9 +236,8 @@ static void ApolloGalleryMenuResolveInheritedSort(UIViewController *owner,
 
 static void ApolloGalleryMenuOpenForController(id actionController) {
     UIViewController *owner = ApolloGalleryMenuOwnerForController(actionController);
-    // Keep the established presentation call below: PR #767 wraps that exact
-    // call in the Liquid Glass dismissal completion, so every identifier kind
-    // automatically receives the same crash fix.
+    // Show the prepared listing on the tap, alongside the menu dismissal.
+    // Its presenter retains UIKit's dismissal resources through the push.
     NSString *subreddit = ApolloGalleryMenuIdentifierForOwner(owner);
     if (subreddit.length == 0 || !owner) {
         ApolloLog(@"[GalleryMenu] Gallery View tapped but the listing could not be resolved");
@@ -257,8 +257,8 @@ static void ApolloGalleryMenuOpenForController(id actionController) {
                                              inheritedSortValue:inheritedSort
                                         inheritedTopWindowValue:inheritedWindow];
     };
-    if (ApolloNativeActionMenuPerformAfterDismissal(actionController, openGallery)) {
-        ApolloLog(@"[GalleryMenu] Waiting for the glass menu to dismiss before opening %@",
+    if (ApolloNativeActionMenuPerformWithDismissal(actionController, openGallery)) {
+        ApolloLog(@"[GalleryMenu] Opening alongside the glass menu dismissal for %@",
                   ApolloGalleryMenuSourceDescription(subreddit));
         return;
     }
@@ -272,9 +272,17 @@ static void ApolloGalleryMenuOpenForController(id actionController) {
 - (void)moreOptionsBarButtonItemTappedWithSender:(id)sender {
     // Only arm for feeds a gallery makes sense for; that keeps every other
     // sheet (and every other feed type) completely untouched.
-    if (ApolloGalleryMenuIdentifierForOwner((UIViewController *)self).length > 0) {
+    NSString *identifier = ApolloGalleryMenuIdentifierForOwner((UIViewController *)self);
+    if (identifier.length > 0) {
         sApolloGalleryArmedVC = (UIViewController *)self;
         sApolloGalleryArmedAt = CACurrentMediaTime();
+        NSNumber *sort = nil;
+        NSNumber *window = nil;
+        ApolloGalleryMenuResolveInheritedSort((UIViewController *)self, &sort, &window);
+        [ApolloGalleryViewController prepareGalleryForSubreddit:identifier
+                                            fromViewController:(UIViewController *)self
+                                            inheritedSortValue:sort
+                                       inheritedTopWindowValue:window];
     } else {
         sApolloGalleryArmedVC = nil;
     }
