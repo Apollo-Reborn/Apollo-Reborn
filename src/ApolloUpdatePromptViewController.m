@@ -187,6 +187,9 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
 
 #pragma mark - Sheet
 
+@interface ApolloUpdatePromptViewController () <UIAdaptivePresentationControllerDelegate>
+@end
+
 @implementation ApolloUpdatePromptViewController {
     ApolloUpdateInfo *_info;
     NSString *_installedVersion;
@@ -259,6 +262,7 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
     } else {
         self.modalPresentationStyle = UIModalPresentationPageSheet;
     }
+    self.presentationController.delegate = self;
     [presenter presentViewController:self animated:YES completion:nil];
 }
 
@@ -873,7 +877,7 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
     [_notificationFeedback notificationOccurred:UINotificationFeedbackTypeWarning];
     [self apollo_animateEntrance];
     // Fetch the notes now, while the summary is being read, so Release Notes opens with them
-    // ready. Only when the sheet is actually shown (not on every daily check); a failed
+    // ready. Only when the sheet is actually shown (not on every periodic check); a failed
     // prefetch is simply retried when Release Notes is tapped.
     if (_info.handoff != ApolloUpdateHandoffNone && _info.notesSourceURL) [self apollo_loadNotesIfNeeded];
 }
@@ -1024,7 +1028,12 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
 // Later and the chooser's Cancel.
 - (void)apollo_dismissTapped {
     [self apollo_selectionTick];
+    if (self.onLater) self.onLater();
     [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)presentationControllerDidDismiss:(UIPresentationController *)presentationController {
+    if (self.onLater) self.onLater();
 }
 
 - (void)apollo_skipTapped {

@@ -19,8 +19,6 @@
 //                                   what the header's Edit pill used to do
 //                                   (the pill itself is deleted from
 //                                   ApolloUserAvatars.xm)
-//   • Recently Read               — what the standalone clock button used to
-//                                   do (retired in ApolloRecentlyRead.xm)
 //   • Share Profile               — share sheet for your
 //                                   reddit.com/user/<name> URL, mirroring the
 //                                   Share row on other people's menus
@@ -62,8 +60,6 @@
 
 // Defined in ApolloUserAvatars.xm.
 extern NSString *ApolloUsernameFromProfileViewController(UIViewController *viewController);
-// Defined in ApolloRecentlyRead.xm.
-extern void ApolloRecentlyReadPresentFromViewController(UIViewController *fromViewController);
 
 // Our bar button, associated to the profile view controller that owns it.
 static char kApolloProfileMoreMenuItemKey;
@@ -167,14 +163,6 @@ UIMenu *ApolloProfileMoreMenuForController(UIViewController *viewController) {
         if (vc) ApolloProfileEditorOpenFromViewController(vc);
     }];
 
-    UIAction *recentlyRead = [UIAction actionWithTitle:@"Recently Read"
-                                                 image:[UIImage systemImageNamed:@"clock.arrow.circlepath"]
-                                            identifier:nil
-                                               handler:^(__unused __kindof UIAction *action) {
-        UIViewController *vc = weakVC;
-        if (vc) ApolloRecentlyReadPresentFromViewController(vc);
-    }];
-
     UIAction *share = [UIAction actionWithTitle:@"Share Profile"
                                           image:[UIImage systemImageNamed:@"square.and.arrow.up"]
                                      identifier:nil
@@ -184,7 +172,7 @@ UIMenu *ApolloProfileMoreMenuForController(UIViewController *viewController) {
     }];
     UIMenu *actionsSection = [UIMenu menuWithTitle:@"" image:nil identifier:nil
                                            options:UIMenuOptionsDisplayInline
-                                          children:@[edit, recentlyRead, share]];
+                                          children:@[edit, share]];
 
     return [UIMenu menuWithTitle:@"" children:@[gallerySection, actionsSection]];
 }

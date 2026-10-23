@@ -1193,6 +1193,25 @@ static CGFloat NSBNavBottomForTable(UIScrollView *table, UIViewController *vc) {
 @implementation ApolloNativeSearchRestingState
 @end
 
+// MARK: - Overlay return policy
+//
+// Apollo presents its fullscreen media viewer without sending the covered feed
+// viewWillDisappear:, but it does send viewWillAppear:/viewDidAppear: again when
+// the viewer is swiped away. `wasVisible` distinguishes that unmatched return
+// from a real navigation appearance, whose disappear hook has already cleared
+// the flag and recorded leftAtTop / leftCollapsedAtRest. Preserve only the
+// exact user-owned collapsed rest; active search, revealed chrome, overscroll,
+// and a list that has moved past the rest keep their existing behavior.
+static BOOL NSBShouldKeepCollapsedAfterOverlayReturn(BOOL wasVisible,
+                                                     BOOL searchActive,
+                                                     CGFloat barHeight,
+                                                     CGFloat offsetY,
+                                                     CGFloat adjustedTop) {
+    if (!wasVisible || searchActive || barHeight > 1.0) return NO;
+    return fabs(offsetY + adjustedTop) <= 2.0;
+}
+// MARK: - End overlay return policy
+
 static const void *kNSBRestingStateKey = &kNSBRestingStateKey;
 
 static ApolloNativeSearchRestingState *NSBRestingStateForVC(UIViewController *vc) {
@@ -1552,6 +1571,24 @@ static void NSBViewWillDisappear(UIViewController *vc) {
 %hook _TtC6Apollo21ASTableViewController
 
 - (void)viewWillAppear:(BOOL)animated {
+    // A fullscreen media viewer covers the feed without a matching
+    // viewWillDisappear:, then re-enters here when it is swiped away. Capture
+    // the still-live resting geometry before invalidation clears `visible`, so
+    // viewDidAppear does not mistake the return for a programmatic trip to the
+    // top and reveal a bar the user had scrolled away.
+    BOOL keepCollapsedAfterOverlayReturn = NO;
+    if (ApolloNativeFeedSearchEnabled() && NSBIsNativeSearchVC((id)self)) {
+        UIViewController *controller = (UIViewController *)self;
+        ApolloNativeSearchRestingState *state = NSBRestingStateForVC(controller);
+        UISearchController *searchController = controller.navigationItem.searchController;
+        UIScrollView *table = NSBTableForVC(controller);
+        keepCollapsedAfterOverlayReturn = searchController && table &&
+            NSBShouldKeepCollapsedAfterOverlayReturn(state.visible,
+                                                     searchController.active,
+                                                     CGRectGetHeight(searchController.searchBar.bounds),
+                                                     table.contentOffset.y,
+                                                     table.adjustedContentInset.top);
+    }
     if (ApolloNativeFeedSearchEnabled()) NSBInvalidateRestingSearch((UIViewController *)self);
     %orig;
     if (!ApolloNativeFeedSearchEnabled() || !NSBIsNativeSearchVC(self)) return;
@@ -1602,10 +1639,14 @@ static void NSBViewWillDisappear(UIViewController *vc) {
         // One-shot as well: a list that left with the bar scrolled away comes
         // back that way (viewDidAppear skips the appearance reveal for this
         // appearance).
-        reappearState.keepCollapsedOnAppear = reappearState.leftCollapsedAtRest;
+        BOOL recordedCollapsedDeparture = reappearState.leftCollapsedAtRest;
+        reappearState.keepCollapsedOnAppear = recordedCollapsedDeparture ||
+                                               keepCollapsedAfterOverlayReturn;
         reappearState.leftCollapsedAtRest = NO;
         if (reappearState.keepCollapsedOnAppear && NSBTraceEnabled()) {
-            ApolloLog(@"[NSBTrace] re-appearance: left at the collapsed rest, keeping the bar away");
+            ApolloLog(@"[NSBTrace] re-appearance: collapsed rest preserved (recorded departure=%d overlay return=%d)",
+                      (int)recordedCollapsedDeparture,
+                      (int)keepCollapsedAfterOverlayReturn);
         }
     }
     UISearchController *reappearSC = navItem.searchController;
