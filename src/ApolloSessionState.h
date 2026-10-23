@@ -115,6 +115,16 @@ ApolloSessionStateViewportRestoreWasCancelled(BOOL detail,
                                               BOOL underRestoredDetail,
                                               BOOL applicationActive);
 
+// A pan-began notification is durable evidence of reader intent even when the
+// gesture finishes between bounded restore polls. Only the active unfinished
+// restore phase owned by that controller should react to it.
+FOUNDATION_EXPORT BOOL
+ApolloSessionStateShouldCancelForReaderScroll(BOOL hasPendingRestore,
+                                              BOOL controllerOwnsRestore,
+                                              BOOL phaseStarted,
+                                              BOOL phaseFinished,
+                                              BOOL panBegan);
+
 // The route deadline only handles a post controller that never appeared. Once
 // it has appeared, temporary background detachment must leave its anchor phase
 // available to resume on the next foreground appearance.

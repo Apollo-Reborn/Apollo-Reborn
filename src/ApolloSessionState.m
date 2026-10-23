@@ -206,6 +206,15 @@ BOOL ApolloSessionStateViewportRestoreWasCancelled(BOOL detail, BOOL visible, BO
     return !detail && applicationActive && !visible && !underRestoredDetail;
 }
 
+BOOL ApolloSessionStateShouldCancelForReaderScroll(BOOL hasPendingRestore,
+                                                   BOOL controllerOwnsRestore,
+                                                   BOOL phaseStarted,
+                                                   BOOL phaseFinished,
+                                                   BOOL panBegan) {
+    return hasPendingRestore && controllerOwnsRestore && phaseStarted &&
+           !phaseFinished && panBegan;
+}
+
 BOOL ApolloSessionStateDetailRouteDeadlineShouldFinish(BOOL detailControllerSeen,
                                                        BOOL detailFinished) {
     return !detailControllerSeen && !detailFinished;

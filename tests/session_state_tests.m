@@ -210,6 +210,18 @@ int main(void) {
               @"background detachment does not cancel a feed restore");
         Check(ApolloSessionStateViewportRestoreIsEligible(NO, NO, YES, YES, NO, NO),
               @"backgrounded feed remains resumable through queued retries");
+        Check(ApolloSessionStateShouldCancelForReaderScroll(YES, YES, YES, NO, YES),
+              @"reader drag cancels an active unfinished restore phase");
+        Check(!ApolloSessionStateShouldCancelForReaderScroll(NO, YES, YES, NO, YES),
+              @"reader drag cannot cancel without a pending restore");
+        Check(!ApolloSessionStateShouldCancelForReaderScroll(YES, NO, YES, NO, YES),
+              @"reader drag in another controller cannot cancel this restore");
+        Check(!ApolloSessionStateShouldCancelForReaderScroll(YES, YES, NO, NO, YES),
+              @"reader drag cannot cancel a phase before it starts");
+        Check(!ApolloSessionStateShouldCancelForReaderScroll(YES, YES, YES, YES, YES),
+              @"reader drag cannot reopen a finished restore phase");
+        Check(!ApolloSessionStateShouldCancelForReaderScroll(YES, YES, YES, NO, NO),
+              @"settled polling without a new drag does not cancel restore");
         Check(ApolloSessionStateDetailRouteDeadlineShouldFinish(NO, NO),
               @"detail route deadline finishes when no controller appeared");
         Check(!ApolloSessionStateDetailRouteDeadlineShouldFinish(YES, NO),

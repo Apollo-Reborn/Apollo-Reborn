@@ -57,6 +57,23 @@ static NSUInteger sApolloSessionRestoreGeneration;
 
 static void ApolloSessionRevalidatePendingNavigation(void);
 
+@interface ApolloSessionScrollMarker : NSObject
+@property(nonatomic, weak) UIViewController *controller;
+@property(nonatomic) BOOL detail;
+@property(nonatomic) NSUInteger generation;
+@end
+
+@implementation ApolloSessionScrollMarker
+@end
+
+@interface ApolloSessionScrollObserver : NSObject
+- (void)apollo_sessionPanChanged:(UIPanGestureRecognizer *)gesture;
+@end
+
+static const void *kApolloSessionScrollMarkerKey = &kApolloSessionScrollMarkerKey;
+static const void *kApolloSessionScrollObserverInstalledKey =
+    &kApolloSessionScrollObserverInstalledKey;
+
 static UIWindowScene *ApolloSessionOnlyForegroundScene(void) {
     UIWindowScene *only = nil;
     for (UIScene *candidate in UIApplication.sharedApplication.connectedScenes) {
@@ -468,6 +485,56 @@ static void ApolloSessionCancelFeedForRouteChange(void) {
         ApolloSessionFinishViewport(YES);
     }
     ApolloSessionFinishViewport(NO);
+}
+
+@implementation ApolloSessionScrollObserver
+
+- (void)apollo_sessionPanChanged:(UIPanGestureRecognizer *)gesture {
+    ApolloSessionScrollMarker *marker =
+        objc_getAssociatedObject(gesture, kApolloSessionScrollMarkerKey);
+    if (!marker || marker.generation != sApolloSessionRestoreGeneration) return;
+    BOOL phaseStarted = marker.detail ? sApolloSessionDetailViewportStarted
+                                      : sApolloSessionFeedViewportStarted;
+    BOOL phaseFinished = marker.detail ? sApolloSessionDetailViewportFinished
+                                       : sApolloSessionFeedViewportFinished;
+    if (!ApolloSessionStateShouldCancelForReaderScroll(
+            sApolloSessionPendingRestore != nil,
+            ApolloSessionControllerOwnsRestore(marker.controller),
+            phaseStarted, phaseFinished,
+            gesture.state == UIGestureRecognizerStateBegan)) return;
+    objc_setAssociatedObject(gesture, kApolloSessionScrollMarkerKey, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloLog(@"[SessionRestore] Reader started scrolling the %@ during restore; leaving it there",
+              marker.detail ? @"post" : @"feed");
+    if (marker.detail) ApolloSessionFinishViewport(YES);
+    else ApolloSessionCancelFeedForRouteChange();
+}
+
+@end
+
+static ApolloSessionScrollObserver *ApolloSessionSharedScrollObserver(void) {
+    static ApolloSessionScrollObserver *observer = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ observer = [ApolloSessionScrollObserver new]; });
+    return observer;
+}
+
+static void ApolloSessionObserveReaderScroll(UIViewController *controller, BOOL detail) {
+    UITableView *table = ApolloSessionTableView(controller);
+    UIPanGestureRecognizer *gesture = table.panGestureRecognizer;
+    if (!gesture) return;
+    if (![objc_getAssociatedObject(gesture, kApolloSessionScrollObserverInstalledKey) boolValue]) {
+        [gesture addTarget:ApolloSessionSharedScrollObserver()
+                    action:@selector(apollo_sessionPanChanged:)];
+        objc_setAssociatedObject(gesture, kApolloSessionScrollObserverInstalledKey, @YES,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    ApolloSessionScrollMarker *marker = [ApolloSessionScrollMarker new];
+    marker.controller = controller;
+    marker.detail = detail;
+    marker.generation = sApolloSessionRestoreGeneration;
+    objc_setAssociatedObject(gesture, kApolloSessionScrollMarkerKey, marker,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 static BOOL ApolloSessionFeedOwnsPendingNavigation(void) {
@@ -931,6 +998,7 @@ static void ApolloSessionHandleAccountReady(void) {
                 @selector(reloadPostsWithNotification:), nil);
         }
         sApolloSessionFeedViewportStarted = YES;
+        ApolloSessionObserveReaderScroll((UIViewController *)self, NO);
         NSUInteger generation = sApolloSessionRestoreGeneration;
         ApolloSessionScheduleDetailRoute(generation);
         if (changedSort) {
@@ -966,6 +1034,7 @@ static void ApolloSessionHandleAccountReady(void) {
         ApolloSessionCommentsControllerMatchesPendingDetail((UIViewController *)self)) {
         sApolloSessionDetailControllerSeen = YES;
         sApolloSessionDetailViewportStarted = YES;
+        ApolloSessionObserveReaderScroll((UIViewController *)self, YES);
         ApolloSessionRestoreViewport((UIViewController *)self, YES, 0,
                                      sApolloSessionRestoreGeneration);
     }
