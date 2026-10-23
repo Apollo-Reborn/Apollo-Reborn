@@ -659,7 +659,8 @@ static BOOL ApolloSessionRequestMoreCommentsForAnchor(UIViewController *controll
 }
 
 static void ApolloSessionStartDetailRoute(void) {
-    if (sApolloSessionDetailRouteStarted) return;
+    if (sApolloSessionDetailRouteStarted || !sApolloSessionPendingRestore ||
+        sApolloSessionDetailViewportFinished) return;
     sApolloSessionDetailRouteStarted = YES;
     NSString *detailURL = sApolloSessionPendingRestore[ApolloSessionStateDetailURLKey];
     if (!detailURL.length) {
@@ -669,7 +670,10 @@ static void ApolloSessionStartDetailRoute(void) {
     NSUInteger generation = sApolloSessionRestoreGeneration;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kApolloSessionRetryDelay * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        if (generation != sApolloSessionRestoreGeneration || !sApolloSessionPendingRestore) return;
+        if (!ApolloSessionStateQueuedPhaseWorkShouldRun(
+                sApolloSessionPendingRestore != nil,
+                generation == sApolloSessionRestoreGeneration,
+                sApolloSessionDetailViewportFinished)) return;
         if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) {
             // Foregrounding schedules the route again after Apollo has
             // reattached the feed controller's window.
@@ -692,7 +696,10 @@ static void ApolloSessionStartDetailRoute(void) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                      (int64_t)(kApolloSessionDetailAnchorAttempts * kApolloSessionRetryDelay * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            if (generation == sApolloSessionRestoreGeneration && sApolloSessionPendingRestore &&
+            if (ApolloSessionStateQueuedPhaseWorkShouldRun(
+                    sApolloSessionPendingRestore != nil,
+                    generation == sApolloSessionRestoreGeneration,
+                    sApolloSessionDetailViewportFinished) &&
                 ApolloSessionStateDetailRouteDeadlineShouldFinish(
                     sApolloSessionDetailControllerSeen, sApolloSessionDetailViewportFinished)) {
                 ApolloLog(@"[SessionRestore] Saved post did not become available; keeping restored feed");
@@ -704,13 +711,20 @@ static void ApolloSessionStartDetailRoute(void) {
 }
 
 static void ApolloSessionScheduleDetailRoute(NSUInteger generation) {
-    if (sApolloSessionDetailRouteStarted ||
+    BOOL canSchedule = ApolloSessionStateQueuedPhaseWorkShouldRun(
+            sApolloSessionPendingRestore != nil,
+            generation == sApolloSessionRestoreGeneration,
+            sApolloSessionDetailViewportFinished);
+    if (!canSchedule || sApolloSessionDetailRouteStarted ||
         ![sApolloSessionPendingRestore[ApolloSessionStateDetailURLKey] length]) return;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                  (int64_t)(kApolloSessionDetailRouteGrace * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        if (generation != sApolloSessionRestoreGeneration || !sApolloSessionPendingRestore ||
-            sApolloSessionDetailRouteStarted) return;
+        BOOL shouldRun = ApolloSessionStateQueuedPhaseWorkShouldRun(
+                sApolloSessionPendingRestore != nil,
+                generation == sApolloSessionRestoreGeneration,
+                sApolloSessionDetailViewportFinished);
+        if (!shouldRun || sApolloSessionDetailRouteStarted) return;
         if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
         if (!ApolloSessionFeedOwnsPendingNavigation()) {
             ApolloLog(@"[SessionRestore] Newer navigation suppressed the saved post route");
@@ -728,6 +742,12 @@ static void ApolloSessionScheduleDetailRoute(NSUInteger generation) {
 
 static void ApolloSessionRestoreViewport(UIViewController *controller, BOOL detail,
                                          NSUInteger attempt, NSUInteger generation) {
+    BOOL phaseFinished = detail ? sApolloSessionDetailViewportFinished
+                                : sApolloSessionFeedViewportFinished;
+    if (!ApolloSessionStateQueuedPhaseWorkShouldRun(
+            sApolloSessionPendingRestore != nil,
+            generation == sApolloSessionRestoreGeneration,
+            phaseFinished)) return;
     UINavigationController *navigation = controller.navigationController;
     BOOL visible = controller.viewIfLoaded.window != nil;
     BOOL top = navigation.topViewController == controller;
@@ -739,7 +759,6 @@ static void ApolloSessionRestoreViewport(UIViewController *controller, BOOL deta
         topController != controller && ApolloClassCommentsViewController &&
         [topController isMemberOfClass:ApolloClassCommentsViewController] &&
         ApolloSessionCommentsControllerMatchesPendingDetail(topController);
-    if (generation != sApolloSessionRestoreGeneration || !sApolloSessionPendingRestore) return;
     if (!detail && !ApolloSessionStateFeedURLMatchesSavedRoute(
                        ApolloSessionFeedURL(controller),
                        sApolloSessionPendingRestore[ApolloSessionStateFeedURLKey])) {
@@ -828,7 +847,10 @@ static void ApolloSessionWaitForSortedFeed(UIViewController *controller,
                                            BOOL observedContentChange,
                                            NSUInteger attempt,
                                            NSUInteger generation) {
-    if (generation != sApolloSessionRestoreGeneration || !sApolloSessionPendingRestore) return;
+    if (!ApolloSessionStateQueuedPhaseWorkShouldRun(
+            sApolloSessionPendingRestore != nil,
+            generation == sApolloSessionRestoreGeneration,
+            sApolloSessionFeedViewportFinished)) return;
     NSString *savedURL = sApolloSessionPendingRestore[ApolloSessionStateFeedURLKey];
     if (!ApolloSessionStateFeedURLMatchesSavedRoute(ApolloSessionFeedURL(controller), savedURL)) {
         ApolloLog(@"[SessionRestore] Feed changed while waiting for sorted rows; cancelling feed phase");
@@ -858,7 +880,10 @@ static void ApolloSessionWaitForSortedFeed(UIViewController *controller,
 }
 
 static void ApolloSessionRouteFeed(NSUInteger attempt, NSUInteger generation) {
-    if (generation != sApolloSessionRestoreGeneration || !sApolloSessionPendingRestore) return;
+    if (!ApolloSessionStateQueuedPhaseWorkShouldRun(
+            sApolloSessionPendingRestore != nil,
+            generation == sApolloSessionRestoreGeneration,
+            sApolloSessionFeedViewportFinished)) return;
     if (ApolloSessionOpenURLString(sApolloSessionPendingRestore[ApolloSessionStateFeedURLKey])) return;
     if (attempt + 1 >= kApolloSessionRouteAttempts) {
         ApolloLog(@"[SessionRestore] Timed out opening saved feed");
@@ -1083,6 +1108,7 @@ static void ApolloSessionHandleAccountReady(void) {
     }
     ApolloSessionConsiderInitialRestore(NO);
     if (sApolloSessionPendingRestore && !sApolloSessionDetailRouteStarted &&
+        !sApolloSessionDetailViewportFinished &&
         [sApolloSessionPendingRestore[ApolloSessionStateDetailURLKey] length]) {
         ApolloSessionScheduleDetailRoute(sApolloSessionRestoreGeneration);
     }

@@ -215,6 +215,12 @@ BOOL ApolloSessionStateShouldCancelForReaderScroll(BOOL hasPendingRestore,
            !phaseFinished && panBegan;
 }
 
+BOOL ApolloSessionStateQueuedPhaseWorkShouldRun(BOOL hasPendingRestore,
+                                                BOOL generationMatches,
+                                                BOOL phaseFinished) {
+    return hasPendingRestore && generationMatches && !phaseFinished;
+}
+
 BOOL ApolloSessionStateDetailRouteDeadlineShouldFinish(BOOL detailControllerSeen,
                                                        BOOL detailFinished) {
     return !detailControllerSeen && !detailFinished;

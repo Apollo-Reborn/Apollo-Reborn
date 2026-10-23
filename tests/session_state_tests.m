@@ -222,6 +222,16 @@ int main(void) {
               @"reader drag cannot reopen a finished restore phase");
         Check(!ApolloSessionStateShouldCancelForReaderScroll(YES, YES, YES, NO, NO),
               @"settled polling without a new drag does not cancel restore");
+        Check(ApolloSessionStateQueuedPhaseWorkShouldRun(YES, YES, NO),
+              @"queued work runs for its active unfinished restore phase");
+        Check(!ApolloSessionStateQueuedPhaseWorkShouldRun(YES, YES, YES),
+              @"finished detail stays terminal while feed remains pending");
+        Check(!ApolloSessionStateQueuedPhaseWorkShouldRun(YES, YES, YES),
+              @"finished feed stays terminal while detail remains pending");
+        Check(!ApolloSessionStateQueuedPhaseWorkShouldRun(NO, YES, NO),
+              @"queued work stops after the shared restore completes");
+        Check(!ApolloSessionStateQueuedPhaseWorkShouldRun(YES, NO, NO),
+              @"queued work stops when it belongs to an older generation");
         Check(ApolloSessionStateDetailRouteDeadlineShouldFinish(NO, NO),
               @"detail route deadline finishes when no controller appeared");
         Check(!ApolloSessionStateDetailRouteDeadlineShouldFinish(YES, NO),
