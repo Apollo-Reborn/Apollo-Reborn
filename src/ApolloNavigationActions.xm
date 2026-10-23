@@ -252,8 +252,39 @@ static void ApolloActionsApplyChromeToView(UIView *view, BOOL blueDone) {
 @property (nonatomic, weak) UIBarButtonItem *item;
 @property (nonatomic, weak) ApolloNavigationActionsOwner *owner;
 @property (nonatomic) BOOL hidden;
+// Values the rail's vertical styling replaced, put back when the rail goes;
+// a leftover VerticalPreferred/shared item draws its own platter in portrait.
+@property (nonatomic) BOOL railStyled;
+@property (nonatomic) BOOL originalSharesBackground;
+@property (nonatomic) BOOL originalHidesSharedBackground;
+@property (nonatomic) NSInteger originalAxisBehavior;
 @end
 @implementation ApolloNavigationActionsStandardItem
+- (void)applyRailStyleToItem:(UIBarButtonItem *)item {
+    if (!item) return;
+    if (!self.railStyled) {
+        self.railStyled = YES;
+        if (@available(iOS 26.0, *)) {
+            self.originalSharesBackground = item.sharesBackground;
+            self.originalHidesSharedBackground = item.hidesSharedBackground;
+        }
+        if (@available(iOS 27.1, *)) self.originalAxisBehavior = item.axisBehavior;
+    }
+    if (@available(iOS 26.0, *)) {
+        item.hidesSharedBackground = NO;
+        item.sharesBackground = YES;
+    }
+    if (@available(iOS 27.1, *)) item.axisBehavior = UIBarButtonItemAxisBehaviorVerticalPreferred;
+}
+- (void)restoreRailStyleOfItem:(UIBarButtonItem *)item {
+    if (!item || !self.railStyled) return;
+    if (@available(iOS 26.0, *)) {
+        item.sharesBackground = self.originalSharesBackground;
+        item.hidesSharedBackground = self.originalHidesSharedBackground;
+    }
+    if (@available(iOS 27.1, *)) item.axisBehavior = (UIBarButtonItemAxisBehavior)self.originalAxisBehavior;
+    self.railStyled = NO;
+}
 @end
 
 @interface ApolloNavigationActionsOwner : NSObject
@@ -1049,6 +1080,46 @@ static UIBarButtonItem *ApolloActionsNativeItemForDuoButton(UIButton *button, NS
     return item;
 }
 
+BOOL ApolloNavigationActionsDuoMirrorsButton(UINavigationItem *item, UIView *button) {
+    if (!item || !button) return NO;
+    // The live items, plus the generated set: a collapsed rail publishes only
+    // More and keeps the other mirrors in its model.
+    NSArray *generated = objc_getAssociatedObject(item, &kActionsDuoNativeItemsKey) ?: @[];
+    for (UIBarButtonItem *candidate in [item.rightBarButtonItems ?: @[] arrayByAddingObjectsFromArray:generated]) {
+        if (objc_getAssociatedObject(candidate, &kActionsDuoSourceButtonKey) == button) return YES;
+    }
+    return NO;
+}
+
+static NSArray<UIBarButtonItem *> *ApolloActionsWithoutDuoMirrors(UINavigationItem *item,
+                                                                  NSArray<UIBarButtonItem *> *items,
+                                                                  NSArray<UIBarButtonItem *> *original) {
+    NSMutableArray<UIBarButtonItem *> *kept = [NSMutableArray array];
+    NSUInteger firstMirror = NSNotFound, dropped = 0;
+    for (UIBarButtonItem *candidate in items) {
+        if (objc_getAssociatedObject(candidate, &kActionsDuoSourceButtonKey)) {
+            if (firstMirror == NSNotFound) firstMirror = kept.count;
+            dropped++;
+            continue;
+        }
+        [kept addObject:candidate];
+    }
+    if (firstMirror == NSNotFound) return items;
+    // Only the mirrors were left: put the original composite back in their place.
+    BOOL hasComposite = NO;
+    for (UIBarButtonItem *candidate in kept) {
+        if (ApolloActionsFindMore(ApolloNavigationActionsContentView(candidate))) hasComposite = YES;
+    }
+    if (!hasComposite && original.count) {
+        NSArray *originalActions = ApolloActionsWithoutDuoFeedControls(item, original);
+        [kept insertObjects:originalActions
+                  atIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(firstMirror, originalActions.count)]];
+    }
+    ApolloLog(@"[NavigationActions] Dropped %lu leftover Duo rail mirror item(s) after leaving the rail",
+              (unsigned long)dropped);
+    return kept;
+}
+
 static NSArray<UIBarButtonItem *> *ApolloActionsDuoNativeItems(UINavigationItem *item,
                                                                NSArray<UIBarButtonItem *> *items) {
     items = ApolloNativeFeedSearchDuoTrailingItems(item, items);
@@ -1094,6 +1165,10 @@ static NSArray<UIBarButtonItem *> *ApolloActionsDuoNativeItems(UINavigationItem 
             }
             items = restored;
         }
+        // Rail mirrors must not outlive the rail. If Apollo rebuilt its
+        // composite meanwhile, the branch above keeps them beside the new
+        // strip as a second globe/sort over the title. Drop them.
+        items = ApolloActionsWithoutDuoMirrors(item, items, original);
         objc_setAssociatedObject(item, &kActionsDuoNativeItemsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(item, &kActionsDuoOriginalItemsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return items;
@@ -1290,10 +1365,13 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
     sActionsModelWriteDepth++;
     for (ApolloNavigationActionsStandardItem *state in self.standardItems) {
         ApolloActionsSetItemHidden(state.item, state.hidden);
+        [state restoreRailStyleOfItem:state.item];
         objc_setAssociatedObject(state.item, &kActionsStandardItemKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     [self.standardItems removeAllObjects];
     if (self.moreItem) {
+        ApolloNavigationActionsStandardItem *moreState = objc_getAssociatedObject(self.moreItem, &kActionsStandardMoreKey);
+        [moreState restoreRailStyleOfItem:self.moreItem];
         objc_setAssociatedObject(self.moreItem, &kActionsStandardMoreKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         ApolloActionsSetPrimaryAction(self.moreItem, self.nativePrimaryAction);
         self.moreItem.menu = self.nativeMenu;
@@ -1521,24 +1599,22 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
             }
             if (@available(iOS 26.0, *)) {
                 if (!more.identifier) more.identifier = @"ApolloReborn.navigation-actions";
-                if (ApolloActionsHasTrailingTabRail()) {
-                    more.hidesSharedBackground = NO;
-                    more.sharesBackground = YES;
-                    for (ApolloNavigationActionsStandardItem *state in self.standardItems) {
-                        state.item.hidesSharedBackground = NO;
-                        state.item.sharesBackground = YES;
-                    }
-                }
             }
-            if (@available(iOS 27.1, *)) {
-                if (ApolloActionsHasTrailingTabRail()) {
-                    more.axisBehavior = UIBarButtonItemAxisBehaviorVerticalPreferred;
-                    for (ApolloNavigationActionsStandardItem *state in self.standardItems) {
-                        state.item.axisBehavior = UIBarButtonItemAxisBehaviorVerticalPreferred;
-                    }
+            if (ApolloActionsHasTrailingTabRail()) {
+                [moreState applyRailStyleToItem:more];
+                for (ApolloNavigationActionsStandardItem *state in self.standardItems) {
+                    [state applyRailStyleToItem:state.item];
                 }
             }
             [self applyStandardExpanded:self.expanded];
+        }
+    } else if (!ApolloActionsHasTrailingTabRail()) {
+        // Same items, but the rail is gone (unfolded to portrait): drop the
+        // vertical rail styling so they lay out as ordinary bar items again.
+        ApolloNavigationActionsStandardItem *moreState = objc_getAssociatedObject(self.moreItem, &kActionsStandardMoreKey);
+        [moreState restoreRailStyleOfItem:self.moreItem];
+        for (ApolloNavigationActionsStandardItem *state in self.standardItems) {
+            [state restoreRailStyleOfItem:state.item];
         }
     }
     // Keep preparation guarded while publishing size: UIKit synchronously
