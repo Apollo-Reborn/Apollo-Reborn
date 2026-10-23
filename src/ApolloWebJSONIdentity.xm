@@ -955,7 +955,11 @@ static __thread BOOL sApolloWebJSONResendingAfterWebBearerMint = NO;
             return;
         }
         id guarded = ApolloWebJSONGuardListingTaskResponse(requestMethod, requestPath, response, object, &error);
-        if (object && !guarded) ApolloWebJSONNoteMalformedAccountResponse(username, requestPath);
+        // Only a malformed (non-dictionary) body is a reason to check the
+        // session; a refused one (a 429's error JSON) is just a failed load.
+        if (object && !guarded && ![object isKindOfClass:[NSDictionary class]]) {
+            ApolloWebJSONNoteMalformedAccountResponse(username, requestPath);
+        }
         completion(response, guarded, error);
     };
 

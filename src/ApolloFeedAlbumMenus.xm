@@ -1,4 +1,4 @@
-// Image holds belong to the image, while holds outside the gallery retain
+// Media holds belong to the selected item, while holds outside the gallery retain
 // Apollo's post preview/actions. Snapshot the exact displayed page before a
 // menu opens so paging or cell reuse cannot change a later save/copy/share.
 #import <UIKit/UIKit.h>
@@ -12,6 +12,7 @@
 #import "ApolloSwiftRuntime.h"
 #import "ApolloToast.h"
 #import "ApolloClasses.h"
+#import "ApolloMediaAutoplay.h"
 
 // This is our own carousel class. Its native-open helper also serves its
 // ordinary tap recognizer, including the correct index for pages beyond 3.
@@ -32,10 +33,13 @@
 @property (nonatomic, weak) id cell;
 @property (nonatomic, weak) id richMedia;
 @property (nonatomic, weak) id thumbnail;
+@property (nonatomic, weak) id videoNode;
 @property (nonatomic, weak) ApolloFeedGalleryCarouselView *carousel;
 @property (nonatomic) NSUInteger index;
 @property (nonatomic) BOOL compact;
+@property (nonatomic) BOOL collection;
 @property (nonatomic) BOOL albumOverview;
+@property (nonatomic) BOOL nativePreview;
 @property (nonatomic) BOOL ended;
 @property (nonatomic, copy) dispatch_block_t pendingAction;
 @end
@@ -44,6 +48,8 @@
 
 static char kApolloFeedAlbumMenuContext;
 static char kApolloFeedAlbumShareFile;
+static char kApolloFeedAlbumHighlightPreview;
+static ApolloFeedAlbumMenuContext *sApolloFeedAlbumNativePreviewContext;
 
 // Share files live exactly as long as the share controller, including when
 // an activity reads the file after selection. Never remove another job's file.
@@ -81,13 +87,82 @@ static ApolloFeedGalleryCarouselView *ApolloFeedAlbumCarouselInView(UIView *view
     return nil;
 }
 
+static id ApolloFeedAlbumLinkForCell(id cell) {
+    // The comments screen puts media in its own cell. Unlike feed cells,
+    // that wrapper has no link slot: its RichMediaNode owns the post model.
+    if ([cell isKindOfClass:ApolloClassRichMediaHeaderCellNode]) {
+        return ApolloObjectIvar(ApolloObjectIvar(cell, "richMediaNode"), "link");
+    }
+    return ApolloObjectIvar(cell, "link");
+}
+
+static ApolloSaveAllMediaItem *ApolloFeedAlbumSingleItem(id link, id richMedia) {
+    // Media belongs to the crosspost's original post; retain the outer link in
+    // the menu context separately for the cell-reuse check at preview commit.
+    NSMutableArray *seen = [NSMutableArray array];
+    for (NSUInteger depth = 0; link && depth < 8; depth++) {
+        [seen addObject:link];
+        id parent = ApolloSendObject(link, @selector(crosspostParent));
+        if (!parent || [seen indexOfObjectIdenticalTo:parent] != NSNotFound) break;
+        link = parent;
+    }
+    NSURL *URL = ApolloSendObject(link, @selector(URL));
+    if (![URL isKindOfClass:NSURL.class]) return nil;
+    // Prefer the original animation over the still poster or MP4 rendition
+    // used for playback. The shared image writer preserves all GIF frames.
+    NSURL *GIF = ApolloInlineGIFDisplayURLFromMetadata(URL, ApolloSendObject(link, @selector(mediaMetadata)));
+    if ([GIF.pathExtension.lowercaseString isEqualToString:@"gif"]) URL = GIF;
+    NSString *extension = URL.pathExtension.lowercaseString;
+    if ([@[@"gif", @"jpg", @"jpeg", @"png", @"webp", @"heic", @"avif"] containsObject:extension]) {
+        return ApolloSaveAllMediaItemsFromURLs(@[URL], nil).firstObject;
+    }
+    // External GIF/video pages are not downloadable images. Use the playing
+    // asset when it is a file, or the API's video source for Reddit's streams.
+    // Never save a preview thumbnail as though it were the video itself.
+    id video = ApolloObjectIvar(richMedia, "videoNode");
+    id player = ApolloSendObject(ApolloSendObject(video, @selector(playerLayer)), @selector(player))
+        ?: ApolloSendObject(video, @selector(player));
+    id asset = ApolloSendObject(ApolloSendObject(player, @selector(currentItem)), @selector(asset));
+    NSMutableArray<NSURL *> *candidates = [NSMutableArray array];
+    NSURL *playingURL = ApolloSendObject(asset, @selector(URL));
+    if ([playingURL isKindOfClass:NSURL.class]) [candidates addObject:playingURL];
+    const SEL sources[] = { @selector(mediaVideo), @selector(crossPostVideo), @selector(previewVideo) };
+    for (SEL selector : sources) {
+        id model = ApolloSendObject(link, selector);
+        NSURL *fallback = ApolloSendObject(model, @selector(fallbackURL));
+        if ([fallback isKindOfClass:NSURL.class]) [candidates addObject:fallback];
+        NSURL *stream = ApolloSendObject(model, @selector(URL));
+        if ([stream isKindOfClass:NSURL.class]) [candidates addObject:stream];
+    }
+    [candidates addObject:URL];
+    for (NSURL *candidate in candidates) {
+        // The strict saver resolves Reddit's DASH tracks and muxes audio.
+        // Other manifests have no supported export path.
+        if ([candidate.scheme.lowercaseString isEqualToString:@"https"] &&
+            [candidate.host.lowercaseString isEqualToString:@"v.redd.it"] &&
+            [candidate.pathExtension.lowercaseString isEqualToString:@"mpd"]) {
+            return [[ApolloSaveAllMediaItem alloc] initWithURL:candidate isVideo:YES];
+        }
+        ApolloSaveAllMediaItem *item = ApolloSaveAllMediaItemsFromURLs(@[candidate], nil).firstObject;
+        if (item.isVideo) return item;
+    }
+    return nil;
+}
+
 static ApolloFeedAlbumMenuContext *ApolloFeedAlbumContext(UIContextMenuInteraction *interaction, CGPoint location) {
     UIView *source = interaction.view;
     id cell = ApolloSendObject(source, @selector(asyncdisplaykit_node)) ?: ApolloSendObject(source, @selector(node));
     BOOL compact = [cell isKindOfClass:ApolloClassCompactPostCellNode];
-    if (!compact && ![cell isKindOfClass:ApolloClassLargePostCellNode]) return nil;
-    id link = ApolloObjectIvar(cell, "link");
-    if (!ApolloSaveAllMediaLinkHasCollection(link)) return nil;
+    if (!compact && ![cell isKindOfClass:ApolloClassLargePostCellNode] &&
+        ![cell isKindOfClass:ApolloClassRichMediaHeaderCellNode]) return nil;
+    id link = ApolloFeedAlbumLinkForCell(cell);
+    BOOL collection = ApolloSaveAllMediaLinkHasCollection(link);
+    // Feed cells keep Apollo's own single-media menu (Open in Safari,
+    // Download Video...); only the comments header gets the media menu.
+    if (!collection && ![cell isKindOfClass:ApolloClassRichMediaHeaderCellNode]) return nil;
+    id rich = ApolloObjectIvar(cell, "richMediaNode");
+    ApolloSaveAllMediaItem *single = collection ? nil : ApolloFeedAlbumSingleItem(link, rich);
+    if (!collection && !single) return nil;
     UIViewController *presenter = ApolloSendObject(cell, @selector(closestViewController));
     if (![presenter isKindOfClass:UIViewController.class] || !presenter.viewIfLoaded.window) return nil;
 
@@ -97,21 +172,40 @@ static ApolloFeedAlbumMenuContext *ApolloFeedAlbumContext(UIContextMenuInteracti
     context.albumURL = ApolloSendObject(link, @selector(URL));
     context.presenter = presenter;
     context.compact = compact;
-    context.albumOverview = compact;
-    context.items = ApolloSaveAllMediaItemsFromLink(link, nil);
+    context.collection = collection;
+    context.albumOverview = compact && collection;
+    context.items = collection ? ApolloSaveAllMediaItemsFromLink(link, nil) : @[single];
     if (compact) {
         id thumbnail = ApolloObjectIvar(cell, "thumbnailNode");
         context.sourceView = ApolloFeedAlbumNodeView(thumbnail);
         if (!ApolloFeedAlbumContainsPoint(context.sourceView, source, location)) return nil;
-        context.thumbnail = thumbnail;
-        context.previewImage = ApolloSendObject(ApolloObjectIvar(thumbnail, "thumbnailNode"), @selector(image));
+        // The cell's thumbnailNode is a wrapper; Apollo's tap handler sends
+        // -image to its sender, so commit with the inner image node.
+        id imageNode = ApolloObjectIvar(thumbnail, "thumbnailNode");
+        context.thumbnail = imageNode;
+        context.previewImage = ApolloSendObject(imageNode, @selector(image));
     } else {
-        id rich = ApolloObjectIvar(cell, "richMediaNode");
         id album = ApolloObjectIvar(rich, "albumThumbnailsNode");
         UIView *richView = ApolloFeedAlbumNodeView(rich);
         ApolloFeedGalleryCarouselView *carousel = ApolloFeedAlbumCarouselInView(richView);
         context.richMedia = rich;
-        if (carousel && ApolloFeedAlbumContainsPoint(carousel, source, location)) {
+        UIView *cover = ApolloFeedAlbumNodeView(ApolloObjectIvar(rich, "obscuredContentInfoOverlayNode"));
+        if (ApolloFeedAlbumContainsPoint(cover, source, location)) return nil;
+        if (!collection) {
+            id video = ApolloObjectIvar(rich, "videoNode");
+            id thumbnail = ApolloObjectIvar(rich, "thumbnailNode");
+            UIView *videoView = ApolloFeedAlbumNodeView(video);
+            UIView *thumbnailView = ApolloFeedAlbumNodeView(thumbnail);
+            if (ApolloFeedAlbumContainsPoint(videoView, source, location)) {
+                context.sourceView = videoView;
+                context.videoNode = video;
+                context.previewImage = ApolloSendObject(video, @selector(placeholderImage));
+            } else if (ApolloFeedAlbumContainsPoint(thumbnailView, source, location)) {
+                context.sourceView = thumbnailView;
+                context.thumbnail = thumbnail;
+                context.previewImage = ApolloSendObject(thumbnail, @selector(image));
+            } else return nil;
+        } else if (carousel && ApolloFeedAlbumContainsPoint(carousel, source, location)) {
             if (carousel.contentIsObscured) return nil;
             // During a partially completed swipe, two pages can be visible.
             // Choose the image under the finger, not the last settled index.
@@ -153,12 +247,12 @@ static ApolloFeedAlbumMenuContext *ApolloFeedAlbumContext(UIContextMenuInteracti
             }
         }
         if (!context.albumOverview) {
-            if (context.items.count && (context.index >= context.items.count || context.items[context.index].isVideo)) return nil;
+            if (context.items.count && context.index >= context.items.count) return nil;
             // Keep an unrevealed/undownloaded placeholder on Apollo's native route.
-            if (!context.previewImage) return nil;
+            if (!context.previewImage && !context.videoNode) return nil;
         }
     }
-    ApolloLog(@"[FeedAlbumMenu] image hold mode=%@ index=%lu", compact ? @"compact" : (context.albumOverview ? @"album" : (context.carousel ? @"carousel" : @"mosaic")), (unsigned long)context.index);
+    ApolloLog(@"[FeedAlbumMenu] media hold cell=%@ mode=%@ index=%lu", NSStringFromClass([cell class]), compact ? @"compact" : (!collection ? @"single" : (context.albumOverview ? @"album" : (context.carousel ? @"carousel" : @"mosaic"))), (unsigned long)context.index);
     return context;
 }
 
@@ -242,6 +336,24 @@ static UIAction *ApolloFeedAlbumAction(NSString *title, NSString *symbol, Apollo
 }
 
 static UIMenu *ApolloFeedAlbumMenu(ApolloFeedAlbumMenuContext *context) {
+    // Provider albums may not carry native RDKGallery metadata. Resolve once
+    // before choosing image/GIF/video actions, rather than treating an unknown
+    // item as a still image and offering Copy Image for a video.
+    if (!context.albumOverview && !context.items.count) {
+        UIDeferredMenuElement *loading = [UIDeferredMenuElement elementWithProvider:^(void (^completion)(NSArray<UIMenuElement *> *)) {
+            ApolloSaveAllMediaResolveLink(context.link, ^(NSArray *items, NSError *error) {
+                if (error || context.index >= items.count) {
+                    UIAction *unavailable = [UIAction actionWithTitle:@"Unable to Load Media" image:nil identifier:nil handler:^(__unused UIAction *action) {}];
+                    unavailable.attributes = UIMenuElementAttributesDisabled;
+                    completion(@[unavailable]);
+                    return;
+                }
+                context.items = items;
+                completion(ApolloFeedAlbumMenu(context).children);
+            });
+        }];
+        return [UIMenu menuWithTitle:@"" children:@[loading]];
+    }
     // Each handler retains its immutable selection while executing. Deferred
     // actions are cleared before invocation by willEnd below.
     __weak ApolloFeedAlbumMenuContext *weakContext = context;
@@ -264,22 +376,53 @@ static UIMenu *ApolloFeedAlbumMenu(ApolloFeedAlbumMenuContext *context) {
         });
         return [UIMenu menuWithTitle:@"" children:@[copy, saveAll, share]];
     }
-    UIAction *copy = ApolloFeedAlbumAction(@"Copy Image", @"doc.on.doc", context, ^{ ApolloFeedAlbumImageData(weakContext, NO); });
-    UIAction *save = ApolloFeedAlbumAction(@"Save Image", @"square.and.arrow.down", context, ^{
+    ApolloSaveAllMediaItem *item = context.index < context.items.count ? context.items[context.index] : nil;
+    BOOL video = item.isVideo;
+    BOOL gif = [item.URL.pathExtension.lowercaseString isEqualToString:@"gif"];
+    UIAction *copy = ApolloFeedAlbumAction(video ? @"Copy Link" : (gif ? @"Copy GIF" : @"Copy Image"), @"doc.on.doc", context, ^{
+        if (video) UIPasteboard.generalPasteboard.URL = item.URL;
+        else ApolloFeedAlbumImageData(weakContext, NO);
+    });
+    UIAction *save = ApolloFeedAlbumAction(video ? @"Save Video" : (gif ? @"Save GIF" : @"Save Image"), @"square.and.arrow.down", context, ^{
         ApolloFeedAlbumMenuContext *live = weakContext;
         ApolloFeedAlbumResolve(live, ^(NSArray *items) {
             if (live.index < items.count) ApolloSaveAllMedia(@[items[live.index]], live.presenter);
             else ApolloShowToastWithStyle(@"Unable to Load Image", @"Open the album again and try saving this image.", ApolloToastStyleError, nil);
         });
     });
-    UIAction *share = ApolloFeedAlbumAction(@"Share", @"square.and.arrow.up", context, ^{ ApolloFeedAlbumImageData(weakContext, YES); });
-    return [UIMenu menuWithTitle:@"" children:@[copy, save, saveAll, share]];
+    UIAction *share = ApolloFeedAlbumAction(@"Share", @"square.and.arrow.up", context, ^{
+        if (!video) { ApolloFeedAlbumImageData(weakContext, YES); return; }
+        ApolloFeedAlbumMenuContext *live = weakContext;
+        if (!live.presenter.viewIfLoaded.window || live.presenter.presentedViewController) return;
+        UIActivityViewController *sheet = [[UIActivityViewController alloc] initWithActivityItems:@[item.URL] applicationActivities:nil];
+        UIView *anchor = live.sourceView.window ? live.sourceView : live.presenter.view;
+        sheet.popoverPresentationController.sourceView = anchor;
+        sheet.popoverPresentationController.sourceRect = anchor.bounds;
+        [live.presenter presentViewController:sheet animated:YES completion:nil];
+    });
+    return [UIMenu menuWithTitle:@"" children:context.collection ? @[copy, save, saveAll, share] : @[copy, save, share]];
 }
 
 %hook _TtC6Apollo19PostCellActionTaker
 - (UIContextMenuConfiguration *)contextMenuInteraction:(UIContextMenuInteraction *)interaction configurationForMenuAtLocation:(CGPoint)location {
     ApolloFeedAlbumMenuContext *context = ApolloFeedAlbumContext(interaction, location);
     if (!context) return %orig;
+    ApolloSaveAllMediaItem *item = context.index < context.items.count ? context.items[context.index] : nil;
+    if (!context.albumOverview && (context.videoNode || item.isVideo ||
+        [item.URL.pathExtension.lowercaseString isEqualToString:@"gif"])) {
+        // A playing GIF/video's image node may contain only a white poster.
+        // Keep Apollo's live preview and its playback lifecycle; replace the
+        // menu actions at configuration creation, without reading private
+        // UIKit preview-provider storage or flattening animation to UIImage.
+        context.nativePreview = YES;
+        ApolloFeedAlbumMenuContext *previous = sApolloFeedAlbumNativePreviewContext;
+        sApolloFeedAlbumNativePreviewContext = context;
+        @try {
+            return %orig;
+        } @finally {
+            sApolloFeedAlbumNativePreviewContext = previous;
+        }
+    }
     UIContextMenuConfiguration *configuration = [UIContextMenuConfiguration configurationWithIdentifier:nil previewProvider:^UIViewController *{
         if (!context.previewImage) return nil;
         UIViewController *preview = [UIViewController new];
@@ -297,11 +440,27 @@ static UIMenu *ApolloFeedAlbumMenu(ApolloFeedAlbumMenuContext *context) {
 }
 - (UITargetedPreview *)contextMenuInteraction:(UIContextMenuInteraction *)interaction previewForHighlightingMenuWithConfiguration:(UIContextMenuConfiguration *)configuration {
     ApolloFeedAlbumMenuContext *context = objc_getAssociatedObject(configuration, &kApolloFeedAlbumMenuContext);
-    if (!context) return %orig;
-    return context.sourceView.window ? [[UITargetedPreview alloc] initWithView:context.sourceView] : nil;
+    UITargetedPreview *preview = nil;
+    if (!context) preview = %orig;
+    else if (ApolloFeedAlbumLinkForCell(context.cell) == context.link && context.sourceView.window) {
+        preview = [[UITargetedPreview alloc] initWithView:context.sourceView];
+    }
+    // Remembered for the dismissal callback below, including Apollo's own.
+    objc_setAssociatedObject(configuration, &kApolloFeedAlbumHighlightPreview, preview, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return preview;
+}
+// Without this callback UIKit reuses the highlight preview; with it, nil
+// shrinks the preview in place. Return the highlight preview for every menu.
+%new
+- (UITargetedPreview *)contextMenuInteraction:(UIContextMenuInteraction *)interaction previewForDismissingMenuWithConfiguration:(UIContextMenuConfiguration *)configuration {
+    ApolloFeedAlbumMenuContext *context = objc_getAssociatedObject(configuration, &kApolloFeedAlbumMenuContext);
+    if (context && ApolloFeedAlbumLinkForCell(context.cell) != context.link) return nil;
+    UITargetedPreview *preview = objc_getAssociatedObject(configuration, &kApolloFeedAlbumHighlightPreview);
+    return preview.view.window ? preview : nil;
 }
 - (void)contextMenuInteraction:(UIContextMenuInteraction *)interaction willDisplayMenuForConfiguration:(UIContextMenuConfiguration *)configuration animator:(id<UIContextMenuInteractionAnimating>)animator {
-    if (objc_getAssociatedObject(configuration, &kApolloFeedAlbumMenuContext)) return;
+    ApolloFeedAlbumMenuContext *context = objc_getAssociatedObject(configuration, &kApolloFeedAlbumMenuContext);
+    if (context && !context.nativePreview) return;
     %orig;
 }
 - (void)contextMenuInteraction:(UIContextMenuInteraction *)interaction willEndForConfiguration:(UIContextMenuConfiguration *)configuration animator:(id<UIContextMenuInteractionAnimating>)animator {
@@ -310,6 +469,7 @@ static UIMenu *ApolloFeedAlbumMenu(ApolloFeedAlbumMenuContext *context) {
         %orig;
         return;
     }
+    if (context.nativePreview) %orig;
     dispatch_block_t finish = ^{
         context.ended = YES;
         dispatch_block_t pending = context.pendingAction;
@@ -325,15 +485,37 @@ static UIMenu *ApolloFeedAlbumMenu(ApolloFeedAlbumMenuContext *context) {
         %orig;
         return;
     }
+    if (context.nativePreview) {
+        if (ApolloFeedAlbumLinkForCell(context.cell) == context.link) %orig;
+        return;
+    }
     [animator addCompletion:^{
         // A recycled cell must not open another post when the preview commits.
-        if (ApolloObjectIvar(context.cell, "link") != context.link) return;
+        if (ApolloFeedAlbumLinkForCell(context.cell) != context.link) return;
         if (context.carousel) [context.carousel apollo_openPageAtIndex:(NSInteger)context.index];
         else {
             id target = context.compact ? context.cell : context.richMedia;
-            SEL selector = context.compact ? @selector(thumbnailTappedWithSender:) : @selector(albumThumbnailButtonTappedWithSender:);
-            if ([target respondsToSelector:selector]) ((void (*)(id, SEL, id))objc_msgSend)(target, selector, context.thumbnail);
+            SEL selector = context.compact ? @selector(thumbnailTappedWithSender:) :
+                (context.collection ? @selector(albumThumbnailButtonTappedWithSender:) :
+                 (context.videoNode ? @selector(didTapVideoNode:) : @selector(thumbnailTappedWithSender:)));
+            id sender = context.videoNode ?: context.thumbnail;
+            if (![target respondsToSelector:selector]) return;
+            if (selector != @selector(didTapVideoNode:) && ![sender respondsToSelector:@selector(image)]) return;
+            ((void (*)(id, SEL, id))objc_msgSend)(target, selector, sender);
         }
     }];
+}
+%end
+
+%hook UIContextMenuConfiguration
++ (instancetype)configurationWithIdentifier:(id<NSCopying>)identifier previewProvider:(UIContextMenuContentPreviewProvider)previewProvider actionProvider:(UIContextMenuActionProvider)actionProvider {
+    ApolloFeedAlbumMenuContext *context = sApolloFeedAlbumNativePreviewContext;
+    if (!context) return %orig;
+    UIContextMenuActionProvider mediaActions = ^UIMenu *(__unused NSArray<UIMenuElement *> *suggested) {
+        return ApolloFeedAlbumMenu(context);
+    };
+    UIContextMenuConfiguration *configuration = %orig(identifier, previewProvider, mediaActions);
+    objc_setAssociatedObject(configuration, &kApolloFeedAlbumMenuContext, context, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return configuration;
 }
 %end
