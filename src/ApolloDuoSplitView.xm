@@ -1155,14 +1155,15 @@ static BOOL ApolloDuoSplitShouldOpen(UITabBarController *tabs) {
         && tabs == sDuoSplitKnownTabs;
 }
 
-// Observe the public hinge interaction on the tab container, rather than
-// inferring a book posture from window size. A side window can have the same
-// aspect ratio as a cover display; neither should acquire a second column.
-// Resolve the iOS 27.1 API dynamically so device builds using the 26 SDK keep
-// working, as do older iPhones. UIHingeStatusPartiallyOpen is documented as 2.
+// Book posture comes from the division reserved region, not window size (a
+// side window can match a cover display's aspect) and not the hinge reading,
+// per Apple's Duo layout guidance (https://developer.apple.com/forums/thread/847644).
 static BOOL ApolloDuoSplitWantsHalfWidth(UITabBarController *tabs) {
-    return [objc_getAssociatedObject(tabs, &kDuoSplitHingeStatus) integerValue] == 2;
+    return !CGRectIsNull(ApolloDuoActiveVerticalDivision(tabs.view));
 }
+
+// The hinge interaction only prompts a re-check of that region. Resolve the
+// iOS 27.1 API dynamically so 26 SDK device builds and older iPhones work.
 
 static void ApolloDuoSplitObserveHinge(UITabBarController *tabs) {
     if (objc_getAssociatedObject(tabs, &kDuoSplitHingeInteraction)) return;
@@ -1178,10 +1179,14 @@ static void ApolloDuoSplitObserveHinge(UITabBarController *tabs) {
             NSInteger previous = [objc_getAssociatedObject(owner, &kDuoSplitHingeStatus) integerValue];
             if (previous == status) return;
             objc_setAssociatedObject(owner, &kDuoSplitHingeStatus, @(status), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            ApolloLog(@"[DuoSplit] hinge status %ld -> %ld", (long)previous, (long)status);
+            ApolloLog(@"[DuoSplit] hinge status %ld -> %ld; re-checking the division region", (long)previous, (long)status);
             // Defer containment work out of UIKit's interaction delivery. The
             // normal update also prepares the tabs that are not selected.
             ApolloDuoSplitScheduleUpdate();
+            // The division region may publish a beat after the hinge reading;
+            // check once more instead of depending on the hinge update rate.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{ ApolloDuoSplitScheduleUpdate(); });
         };
         id<UIInteraction> interaction = ((id (*)(id, SEL, id))objc_msgSend)([cls alloc], NSSelectorFromString(@"initWithUpdateHandler:"), handler);
         objc_setAssociatedObject(tabs, &kDuoSplitHingeInteraction, interaction, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -1201,10 +1206,19 @@ static void ApolloDuoSplitApplySidebarWidth(ApolloDuoSplitState *state, BOOL hal
     // UIKit may keep an earlier sidebar width across column replacement.
     // Bound both ends for Posts so its actual divider stays at the midpoint.
     CGFloat maximum = postsLandscape ? half : (state.feed || halfWidth ? CGFLOAT_MAX : 420.0);
-    CGFloat minimum = postsLandscape ? half : 240.0;
+    // Settings' widest native row is "Touch ID & Passcode" + its value +
+    // disclosure: a third of the flat inner display (~317pt) cut "Off" to "O".
+    // Give that sidebar enough room for the value at the default text size.
+    CGFloat sidebarMinimum = [state.kind isEqualToString:@"settings"] ? 340.0 : 240.0;
+    CGFloat minimum = postsLandscape ? half : sidebarMinimum;
     if (split.maximumPrimaryColumnWidth != maximum) split.maximumPrimaryColumnWidth = maximum;
     if (split.minimumPrimaryColumnWidth != minimum) split.minimumPrimaryColumnWidth = minimum;
     CGFloat fraction = halfWidth || state.feed ? 0.5 : 1.0 / 3.0;
+    if (halfWidth && !state.feed && canvas.width > 0.0) {
+        // End the sidebar at the fold itself rather than an assumed midpoint.
+        CGRect fold = ApolloDuoActiveVerticalDivision(state.host.view);
+        if (!CGRectIsNull(fold)) fraction = MIN(0.7, MAX(0.3, CGRectGetMinX(fold) / canvas.width));
+    }
     if (split.preferredPrimaryColumnWidthFraction != fraction) split.preferredPrimaryColumnWidthFraction = fraction;
     if (@available(iOS 26.0, *)) {
         // UIKit's default secondary minimum (532pt on this inner display)
@@ -2265,6 +2279,10 @@ static void ApolloDuoSplitOpen(ApolloDuoSplitState *state) {
     // display's compact traits. Pin the split itself before attaching either
     // column: a parent override applied afterward is too late and UIKit starts
     // a compact-column merge during viewWillTransitionToSize:.
+    // Apple advises observing size classes rather than overriding them
+    // (https://developer.apple.com/forums/thread/847644). This pin is limited
+    // to our own split on Duo and goes away with it; the tab container keeps
+    // UIKit's traits (logged as "[DuoRail] native horizontalSizeClass").
     if (@available(iOS 17.0, *)) {
         split.traitOverrides.horizontalSizeClass = UIUserInterfaceSizeClassRegular;
     }
@@ -2379,6 +2397,8 @@ static void ApolloDuoSplitOpen(ApolloDuoSplitState *state) {
     [outer setNavigationBarHidden:YES animated:NO];
     // The compatibility phone can retain a compact horizontal size class on
     // its wide inner display. The width/rail gate above is authoritative.
+    // Cleared in ApolloDuoSplitClose. If that log shows UIKit publishing
+    // regular when unfolded, both pins can become trait observation instead.
     [outer setOverrideTraitCollection:[UITraitCollection traitCollectionWithHorizontalSizeClass:UIUserInterfaceSizeClassRegular]
               forChildViewController:host];
     state.needsDefault = detail.count == 0;

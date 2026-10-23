@@ -8,6 +8,8 @@
 #import "ApolloDuoCompatibility.h"
 #import "ApolloDeviceDisplay.h"
 #import "ApolloAutoHideTabBar.h"
+#import "ApolloClasses.h"
+#import "ApolloThemeRuntime.h"
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <string.h>
@@ -353,6 +355,59 @@ void ApolloDuoRailAlignFeedScrollIndicator(UIScrollView *scrollView) {
     }
 }
 
+// The side rail's tab platter is hosted by UIKit's floating-bar container, not
+// inside the UITabBar, so the accent Apollo assigns to tabBar.tintColor never
+// reaches it and the selected tab inherits the window's system blue. (The open
+// portrait bottom bar does sit in the UITabBar and shows the accent.) Give the
+// platter the theme accent directly.
+static BOOL ApolloDuoRailTintPlatters(UIView *view, UIColor *accent, NSUInteger depth) {
+    if (!view || depth > 16) return NO;
+    if ([view isKindOfClass:ApolloClassUITabBarItemPlatterView]) {
+        if (![view.tintColor isEqual:accent]) view.tintColor = accent;
+        return YES;
+    }
+    BOOL found = NO;
+    for (UIView *subview in view.subviews) found |= ApolloDuoRailTintPlatters(subview, accent, depth + 1);
+    return found;
+}
+
+static void ApolloDuoRailApplyAccent(UITabBarController *tabs) {
+    if (!ApolloClassUITabBarItemPlatterView || !ApolloDuoRailHasVisibleSideBar()) return;
+    UIColor *accent = ApolloThemeAccentColor() ?: tabs.tabBar.tintColor;
+    if (!accent) return;
+    // The platter lives under the tab container's floating-bar subtree only;
+    // never walk the content hierarchy.
+    for (UIView *container in tabs.view.subviews) {
+        if (![NSStringFromClass(container.class) isEqualToString:@"_UITabContainerView"]) continue;
+        for (UIView *floating in container.subviews) {
+            if ([NSStringFromClass(floating.class) isEqualToString:@"_UIFloatingBarContainerView"]) {
+                ApolloDuoRailTintPlatters(floating, accent, 0);
+            }
+        }
+    }
+}
+
+CGRect ApolloDuoActiveVerticalDivision(UIView *view) {
+    // Resolve the public iOS 27.1 API dynamically for the device build's iOS 26 SDK.
+    if (@available(iOS 27.1, *)) {
+        UIWindow *window = view.window;
+        Class kindClass = NSClassFromString(@"UIViewReservedRegionKind");
+        SEL query = NSSelectorFromString(@"reservedRegionsOfKind:");
+        if (!window || !kindClass || ![window respondsToSelector:query]) return CGRectNull;
+        id kind = ((id (*)(id, SEL))objc_msgSend)(kindClass, NSSelectorFromString(@"divisionRegionKind"));
+        NSArray *regions = ((id (*)(id, SEL, id))objc_msgSend)(window, query, kind);
+        for (id region in regions) {
+            if (!((BOOL (*)(id, SEL))objc_msgSend)(region, NSSelectorFromString(@"isActive"))) continue;
+            CGRect frame = ((CGRect (*)(id, SEL))objc_msgSend)(region, NSSelectorFromString(@"frame"));
+            // A portrait/tabletop fold is horizontal; only the book arrangement
+            // splits content into side-by-side halves.
+            if (CGRectGetHeight(frame) <= CGRectGetWidth(frame)) continue;
+            return [view convertRect:frame fromView:window];
+        }
+    }
+    return CGRectNull;
+}
+
 void ApolloDuoRailSync(void) {
     if (!ApolloDeviceIsDuo()) return;
     UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
@@ -371,4 +426,5 @@ void ApolloDuoRailSync(void) {
         objc_setAssociatedObject(tabs, &kApolloDuoAdaptiveBarsKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     ApolloScheduleDuoBarPolicyUpdate(tabs);
+    if (mode != ApolloDuoModePhone) ApolloDuoRailApplyAccent(tabs);
 }

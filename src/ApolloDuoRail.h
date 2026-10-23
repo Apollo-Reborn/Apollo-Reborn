@@ -20,6 +20,12 @@ BOOL ApolloDuoUsesAdaptiveBars(void);
 /// unfolded portrait. Other devices keep their existing policy.
 BOOL ApolloDuoAllowsTabBarScrollHiding(void);
 
+/// The active vertical division (book-posture fold) reserved region, converted
+/// into `view`'s coordinates, or CGRectNull when there is none. Use this for
+/// layout decisions: Apple's guidance is to lay out from the arrangement and
+/// reserved-region APIs, keeping hinge readings for live effects only.
+CGRect ApolloDuoActiveVerticalDivision(UIView *view);
+
 /// Refresh the cached window mode without changing UIKit's tab bar.
 void ApolloDuoRailSync(void);
 

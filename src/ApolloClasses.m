@@ -109,6 +109,7 @@ Class ApolloClassUICornerConfiguration;
 Class ApolloClassUIDropShadowView;
 Class ApolloClassUIFloatingTabBarSelectionContainerView;
 Class ApolloClassUIGlassEffect;
+Class ApolloClassUITabBarItemPlatterView;
 Class ApolloClassUIKBKeyView;
 Class ApolloClassUIKBVisualEffectView;
 Class ApolloClassUINavigationBarHostedViewContainer;
@@ -239,6 +240,7 @@ __attribute__((constructor)) static void ApolloClassesResolve(void) {
     ApolloClassUIDropShadowView = objc_getClass("UIDropShadowView");
     ApolloClassUIFloatingTabBarSelectionContainerView = objc_getClass("_UIFloatingTabBarSelectionContainerView");
     ApolloClassUIGlassEffect = objc_getClass("UIGlassEffect");
+    ApolloClassUITabBarItemPlatterView = objc_getClass("_TtC5UIKit24_UITabBarItemPlatterView");
     ApolloClassUIKBKeyView = objc_getClass("UIKBKeyView");
     ApolloClassUIKBVisualEffectView = objc_getClass("UIKBVisualEffectView");
     ApolloClassUINavigationBarHostedViewContainer = objc_getClass("_UINavigationBarHostedViewContainer");

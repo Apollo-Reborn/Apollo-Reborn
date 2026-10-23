@@ -1,33 +1,11 @@
 #import "ApolloSearchLandingViewController.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloDuoSplitView.h"
+#import "ApolloDuoRail.h"
 #import "ApolloSearchLandingPreferences.h"
 #import "ApolloState.h"
 #import <objc/message.h>
 #include <math.h>
-
-// Query the physical fold before converting into this pane. The trailing rail
-// reduces usable content width, but must not move the division between halves.
-// Resolve the public 27.1 API dynamically for the device build's iOS 26 SDK.
-static CGRect ApolloSearchActiveFold(UIView *view) {
-    if (@available(iOS 27.1, *)) {
-        UIWindow *window = view.window;
-        Class kindClass = NSClassFromString(@"UIViewReservedRegionKind");
-        SEL query = NSSelectorFromString(@"reservedRegionsOfKind:");
-        if (!window || !kindClass || ![window respondsToSelector:query]) return CGRectNull;
-        id kind = ((id (*)(id, SEL))objc_msgSend)(kindClass, NSSelectorFromString(@"divisionRegionKind"));
-        NSArray *regions = ((id (*)(id, SEL, id))objc_msgSend)(window, query, kind);
-        for (id region in regions) {
-            if (!((BOOL (*)(id, SEL))objc_msgSend)(region, NSSelectorFromString(@"isActive"))) continue;
-            CGRect frame = ((CGRect (*)(id, SEL))objc_msgSend)(region, NSSelectorFromString(@"frame"));
-            // A portrait/tabletop fold is horizontal; this two-column landing
-            // only moves its vertical gutter for the book arrangement.
-            if (CGRectGetHeight(frame) <= CGRectGetWidth(frame)) continue;
-            return [view convertRect:frame fromView:window];
-        }
-    }
-    return CGRectNull;
-}
 
 @interface ApolloSearchLandingRow : UIControl
 @property(nonatomic, strong) UILabel *primaryLabel;
@@ -452,7 +430,7 @@ static CGRect ApolloSearchActiveFold(UIView *view) {
     CGFloat margin = twoColumns ? 24 : 20;
     CGFloat widthDifference = 0;
     CGFloat gutter = 20;
-    CGRect fold = twoColumns ? ApolloSearchActiveFold(self.view) : CGRectNull;
+    CGRect fold = twoColumns ? ApolloDuoActiveVerticalDivision(self.view) : CGRectNull;
     if (!CGRectIsNull(fold)) {
         CGFloat center = CGRectGetMidX(fold);
         CGFloat foldGutter = MAX(gutter, CGRectGetWidth(fold));

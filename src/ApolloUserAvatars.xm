@@ -158,6 +158,10 @@ static const void *kApolloProfileTabAvatarImageMarkerKey = &kApolloProfileTabAva
 @interface ApolloProfileHeaderView : UIView <UIGestureRecognizerDelegate, UIPopoverPresentationControllerDelegate>
 @property(nonatomic) BOOL duoLandscape;
 @property(nonatomic, strong) CAGradientLayer *duoBannerMask;
+// Open landscape lays the identity text and stat cards straight over the
+// banner (no details backdrop). This page-colored wash keeps them readable on
+// busy banner art; it lives inside the banner so the fade mask applies too.
+@property(nonatomic, strong) CAGradientLayer *duoTextScrim;
 @property(nonatomic, strong) UIImageView *bannerImageView;
 @property(nonatomic, strong) id bannerPreviewFeedback;
 @property(nonatomic, strong) UIView *detailsBackgroundView;
@@ -1241,8 +1245,23 @@ static UIFont *ApolloProfileClassicNameFont(void) {
     return [self.badgeBookView preferredHeightForWidth:bodyWidth];
 }
 
+// Beside the closed Duo rail the header still spans the full width (its banner
+// and backdrop run under the rail), but its identity and bio must lay out in the
+// same content column as the stat cards, or the name/bio centre on the full
+// width and the bio's last words run under the rail.
+- (CGFloat)apollo_contentWidthForWidth:(CGFloat)width {
+    if (!ApolloDuoSplitIsUnfolded() && ApolloDuoCurrentMode() == ApolloDuoModePhone) return width;
+    CGFloat liveRight = ApolloProfileDuoContentRightEdgeInView(self);
+    if (isfinite(liveRight) && CGRectGetWidth(self.bounds) > 0.0) {
+        self.statCardsTrailingInset = MAX(0.0, CGRectGetWidth(self.bounds) - liveRight);
+    }
+    CGFloat inset = self.statCardsTrailingInset;
+    if (!(inset > 0.0) || inset >= width * 0.5) return width;
+    return width - inset;
+}
+
 - (CGFloat)preferredHeightForWidth:(CGFloat)width {
-    ApolloIdentityHeaderLayout identity = [self apollo_identityForWidth:width];
+    ApolloIdentityHeaderLayout identity = [self apollo_identityForWidth:[self apollo_contentWidthForWidth:width]];
     return [self apollo_layoutBodyForLayout:identity apply:NO] + ApolloIdentityHeaderBottomPadding();
 }
 
@@ -1459,6 +1478,22 @@ static UIFont *ApolloProfileClassicNameFont(void) {
         [CATransaction begin];
         [CATransaction setDisableActions:YES];
         self.duoBannerMask.frame = self.bannerImageView.bounds;
+        if (!self.duoTextScrim) {
+            self.duoTextScrim = [CAGradientLayer layer];
+            // Horizontal: strongest behind the name/social column, still a
+            // solid wash under the stat cards on the right.
+            self.duoTextScrim.startPoint = CGPointMake(0, 0.5);
+            self.duoTextScrim.endPoint = CGPointMake(1, 0.5);
+            self.duoTextScrim.locations = @[@0, @0.5, @1];
+            [self.bannerImageView.layer addSublayer:self.duoTextScrim];
+        }
+        UIColor *page = [(ApolloThemePageBackgroundColor() ?: UIColor.systemBackgroundColor)
+            resolvedColorWithTraitCollection:self.traitCollection];
+        self.duoTextScrim.colors = @[(id)[page colorWithAlphaComponent:0.82].CGColor,
+                                     (id)[page colorWithAlphaComponent:0.7].CGColor,
+                                     (id)[page colorWithAlphaComponent:0.55].CGColor];
+        self.duoTextScrim.hidden = native || self.bannerImageView.hidden;
+        self.duoTextScrim.frame = self.bannerImageView.bounds;
         [CATransaction commit];
         self.aboutLabel.hidden = YES;
         self.aboutToggleButton.hidden = YES;
@@ -1495,11 +1530,18 @@ static UIFont *ApolloProfileClassicNameFont(void) {
         }
         return;
     }
-    CGFloat width = self.bounds.size.width;
+    self.duoTextScrim.hidden = YES;
+    CGFloat fullWidth = self.bounds.size.width;
+    CGFloat width = [self apollo_contentWidthForWidth:fullWidth];
     ApolloIdentityHeaderLayout identity = [self apollo_identityForWidth:width];
-    self.bannerImageView.frame = identity.bannerFrame;
+    CGRect bannerFrame = identity.bannerFrame;
+    if (width < fullWidth && CGRectGetWidth(bannerFrame) > 0.0) {
+        // Keep the banner art and its crop across the full header, rail included.
+        bannerFrame.size.width = fullWidth;
+    }
+    self.bannerImageView.frame = bannerFrame;
     CGFloat bannerH = [self apollo_bannerHeight];
-    self.detailsBackgroundView.frame = CGRectMake(0.0, bannerH, width,
+    self.detailsBackgroundView.frame = CGRectMake(0.0, bannerH, fullWidth,
                                                   MAX(0.0, self.bounds.size.height - bannerH));
 
     // Avatar style: Square (2) → rounded square; Full/Circle → circle.
@@ -1574,7 +1616,7 @@ static UIFont *ApolloProfileClassicNameFont(void) {
 }
 
 - (void)apollo_toggleAboutExpanded {
-    CGFloat aboutWidth = [self apollo_identityForWidth:self.bounds.size.width].bodyWidth;
+    CGFloat aboutWidth = [self apollo_identityForWidth:[self apollo_contentWidthForWidth:self.bounds.size.width]].bodyWidth;
     if (!self.aboutExpanded && ![self apollo_aboutTruncatesForNatural:[self apollo_aboutNaturalHeightForWidth:aboutWidth]]) return;
     self.aboutExpanded = !self.aboutExpanded;
     self.aboutLabel.numberOfLines = self.aboutExpanded ? 0 : ApolloProfileAboutCollapsedLines;

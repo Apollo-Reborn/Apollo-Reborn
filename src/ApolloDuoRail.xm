@@ -1,6 +1,7 @@
 #import "ApolloDuoAccount.h"
 #import "ApolloDuoRail.h"
 #import "ApolloDuoSplitView.h"
+#import "ApolloClasses.h"
 #import "ApolloCommon.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloTextureDecls.h"
@@ -168,6 +169,62 @@ void ApolloDuoRailPrepareTableForTransition(UITableView *table) {
     os_log_debug(ApolloFixLog(), "[ApolloFix] [DuoMeasure] committed column width %.1f (was %.1f)", width, previous.doubleValue);
 }
 
+// Keep the reading position across fold/unfold. A full-width feed is resized
+// by UIKit itself: rows rewrap while contentOffset stays in points, so the
+// wider display lands posts further down. Anchor the first visible row
+// before the transition and restore it once the new layout commits.
+static char kApolloDuoFoldAnchorKey;
+
+static void ApolloDuoCollectVisibleTables(UIView *view, NSMutableArray<UITableView *> *tables, NSUInteger depth) {
+    if (!view || view.hidden || view.alpha < 0.01 || depth > 24) return;
+    if (ApolloClassASTableView && [view isKindOfClass:ApolloClassASTableView]) {
+        [tables addObject:(UITableView *)view];
+        return;
+    }
+    for (UIView *subview in view.subviews) ApolloDuoCollectVisibleTables(subview, tables, depth + 1);
+}
+
+static NSArray<UITableView *> *ApolloDuoFoldAnchorTables(UITabBarController *tabs) {
+    NSMutableArray<UITableView *> *tables = [NSMutableArray array];
+    ApolloDuoCollectVisibleTables(tabs.selectedViewController.viewIfLoaded, tables, 0);
+    return tables;
+}
+
+static void ApolloDuoCaptureFoldAnchor(UITableView *table) {
+    if (!table.window || table.indexPathsForVisibleRows.count == 0) return;
+    CGFloat visibleTop = table.contentOffset.y + table.adjustedContentInset.top;
+    for (NSIndexPath *path in table.indexPathsForVisibleRows) {
+        CGRect rect = [table rectForRowAtIndexPath:path];
+        if (CGRectGetMaxY(rect) <= visibleTop) continue;
+        // Store the offset as a fraction of the row so a row that rewraps to
+        // a different height keeps the same part on screen.
+        CGFloat fraction = rect.size.height > 0.0 ? (visibleTop - CGRectGetMinY(rect)) / rect.size.height : 0.0;
+        objc_setAssociatedObject(table, &kApolloDuoFoldAnchorKey,
+            @[path, @(MAX(0.0, MIN(1.0, fraction)))], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return;
+    }
+}
+
+static void ApolloDuoRestoreFoldAnchor(UITableView *table, BOOL finalPass) {
+    NSArray *anchor = objc_getAssociatedObject(table, &kApolloDuoFoldAnchorKey);
+    if (finalPass) objc_setAssociatedObject(table, &kApolloDuoFoldAnchorKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (anchor.count != 2 || !table.window || table.dragging || table.decelerating || table.tracking) return;
+    NSIndexPath *path = anchor[0];
+    if (path.section >= table.numberOfSections || path.row >= [table numberOfRowsInSection:path.section]) return;
+    SEL commit = @selector(waitUntilAllUpdatesAreCommitted);
+    if ([table respondsToSelector:commit]) ((void (*)(id, SEL))objc_msgSend)(table, commit);
+    [table layoutIfNeeded];
+    CGRect rect = [table rectForRowAtIndexPath:path];
+    CGFloat offset = CGRectGetMinY(rect) + rect.size.height * [anchor[1] doubleValue] - table.adjustedContentInset.top;
+    CGFloat minimum = -table.adjustedContentInset.top;
+    CGFloat maximum = MAX(minimum, table.contentSize.height - table.bounds.size.height + table.adjustedContentInset.bottom);
+    offset = MIN(maximum, MAX(minimum, offset));
+    if (fabs(offset - table.contentOffset.y) < 0.5) return;
+    ApolloLog(@"[DuoRail] fold anchor: row %ld.%ld offset %.1f -> %.1f%@", (long)path.section, (long)path.row,
+              table.contentOffset.y, offset, finalPass ? @" (final)" : @"");
+    [table setContentOffset:CGPointMake(table.contentOffset.x, offset) animated:NO];
+}
+
 // Apollo moves the comments jump button from scroll handling after the
 // controller's layout callbacks have returned. Keep the visible comments
 // controller so the button's own final geometry writes can be clamped too.
@@ -190,12 +247,24 @@ static BOOL sApolloDuoClampingJumpButton;
 
 - (void)traitCollectionDidChange:(UITraitCollection *)previous {
     %orig;
+    // UIKit's own size class for the tab container (never overridden): shows
+    // whether the split's size-class pins in ApolloDuoSplitView are needed.
+    UITraitCollection *traits = ((UIViewController *)self).traitCollection;
+    if (traits.horizontalSizeClass != previous.horizontalSizeClass) {
+        ApolloLog(@"[DuoRail] native horizontalSizeClass %ld -> %ld (view %@, mode %d)",
+                  (long)previous.horizontalSizeClass, (long)traits.horizontalSizeClass,
+                  NSStringFromCGSize(((UIViewController *)self).view.bounds.size), ApolloDuoCurrentMode());
+    }
     ApolloDuoRailSync();
 }
 
 - (void)viewWillTransitionToSize:(CGSize)size
        withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
+    NSArray<UITableView *> *anchored = ApolloDuoFoldAnchorTables((UITabBarController *)self);
+    for (UITableView *table in anchored) ApolloDuoCaptureFoldAnchor(table);
     %orig;
+    NSHashTable<UITableView *> *tables = [NSHashTable weakObjectsHashTable];
+    for (UITableView *table in anchored) [tables addObject:table];
     [coordinator animateAlongsideTransition:^(id<UIViewControllerTransitionCoordinatorContext> context) {
         (void)context;
         ApolloDuoRailSync();
@@ -203,7 +272,14 @@ static BOOL sApolloDuoClampingJumpButton;
         (void)context;
         // Let the split host finish its resize before deciding whether the
         // resulting bottom bar can minimize again.
-        dispatch_async(dispatch_get_main_queue(), ^{ ApolloDuoRailSync(); });
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ApolloDuoRailSync();
+            for (UITableView *table in tables) ApolloDuoRestoreFoldAnchor(table, NO);
+        });
+        // Media and Focused cards can settle their heights a beat later.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            for (UITableView *table in tables) ApolloDuoRestoreFoldAnchor(table, YES);
+        });
     }];
 }
 
