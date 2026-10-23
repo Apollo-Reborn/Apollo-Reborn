@@ -444,15 +444,39 @@ BOOL ApolloWebJSONPathNeedsWebBearer(NSString *path) {
     return [re firstMatchInString:path options:0 range:NSMakeRange(0, path.length)] != nil;
 }
 
-// GET /api/info (RDKClient's thingsByFullNames:completion:) goes to
-// api.reddit.com, which serves it to the cookie as the signed-in user.
-// www.reddit.com answers it with its 403 HTML page, and oauth.reddit.com
-// refuses the web bearer the same way (checked live 2026-10-22). The Inbox's
-// Notifications list waits on this lookup (completion at 0x10019dde8).
+// Reads www.reddit.com now answers with its 403 HTML page for the cookie go to
+// api.reddit.com, which serves them to the cookie as the signed-in user (and
+// 403s them without it):
+// - GET /api/info (RDKClient's thingsByFullNames:completion:). oauth.reddit.com
+//   refuses the web bearer for it the same way (checked live 2026-10-22). The
+//   Inbox's Notifications list waits on this lookup (completion at 0x10019dde8).
+// - /api/morechildren, the "more replies" rows in a thread (issue #1456). Apollo
+//   POSTs it; www 403s it as a POST or a GET, and as /r/<sub>/api/morechildren
+//   too, while api.reddit.com answers both with the comments (checked live
+//   2026-10-22).
 static BOOL ApolloWebJSONReadNeedsAPIHost(NSString *method, NSString *path) {
-    if (![method isEqualToString:@"GET"]) return NO;
     NSString *p = path.lowercaseString;
+    if ([p isEqualToString:@"/api/morechildren"] || [p isEqualToString:@"/api/morechildren.json"] ||
+        [p isEqualToString:@"/api/morechildren/"]) {
+        return [method isEqualToString:@"POST"] || [method isEqualToString:@"GET"];
+    }
+    if (![method isEqualToString:@"GET"]) return NO;
     return [p isEqualToString:@"/api/info"] || [p isEqualToString:@"/api/info.json"] || [p isEqualToString:@"/api/info/"];
+}
+
+// Once per method and path per launch, so a report's log shows the reroute
+// (the per-request "Rewrote" line is debug-level and never reaches it) without
+// a line for every Load More tap. Any thread: the rewrite runs on NSURLSession's queue.
+static void ApolloWebJSONNoteAPIHostRoute(NSString *method, NSString *path) {
+    static NSMutableSet<NSString *> *logged;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ logged = [NSMutableSet set]; });
+    NSString *key = [NSString stringWithFormat:@"%@ %@", method, path.lowercaseString];
+    @synchronized (logged) {
+        if ([logged containsObject:key]) return;
+        [logged addObject:key];
+    }
+    ApolloLog(@"[WebJSON] Sending %@ %@ to api.reddit.com (www.reddit.com refuses it for the cookie)", method, path);
 }
 
 // Which web-session account a Reddit request carrying `bearer` belongs to, or
@@ -642,7 +666,9 @@ NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
 
     NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
     if (!components) return nil;
-    components.host = ApolloWebJSONReadNeedsAPIHost(method, path) ? @"api.reddit.com" : @"www.reddit.com";
+    BOOL apiHost = ApolloWebJSONReadNeedsAPIHost(method, path);
+    components.host = apiHost ? @"api.reddit.com" : @"www.reddit.com";
+    if (apiHost) ApolloWebJSONNoteAPIHostRoute(method, path);
     if (subredditWritePath) components.path = subredditWritePath;
 
     // Listing/page URLs must carry ".json"; /api endpoints are already JSON.
@@ -1305,7 +1331,8 @@ void ApolloWebJSONNoteResponse(NSURLRequest *request, NSURLResponse *response) {
         return;
     }
 
-    // api.reddit.com carries the cookie for GET /api/info (ApolloWebJSONReadNeedsAPIHost).
+    // api.reddit.com carries the cookie for /api/info and /api/morechildren
+    // (ApolloWebJSONReadNeedsAPIHost).
     if (![url.host.lowercaseString isEqualToString:@"www.reddit.com"] &&
         ![url.host.lowercaseString isEqualToString:@"api.reddit.com"]) return;
     // Only react to requests we authenticated with the cookie — those carry the
