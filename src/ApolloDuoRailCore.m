@@ -316,6 +316,37 @@ void ApolloDuoCoverAdjustJumpButton(UIViewController *comments) {
     if (moved) button.frame = frame;
 }
 
+void ApolloDuoRailAdjustHideReadButton(UIViewController *posts) {
+    if (!ApolloClassPostsViewController || ![posts isKindOfClass:ApolloClassPostsViewController]
+        || !posts.isViewLoaded || !ApolloDuoRailHasVisibleSideBar()) return;
+    Ivar ivar = class_getInstanceVariable(posts.class, "hideReadPostsButton");
+    id object = ivar ? object_getIvar(posts, ivar) : nil;
+    UIView *button = [object isKindOfClass:UIView.class] ? object : nil;
+    UIView *container = button.superview;
+    if (!container.window || container.window != posts.view.window) return;
+
+    // Native feed layout and scroll callbacks position this button using the
+    // backing table's full width. The table can extend underneath both the
+    // trailing rail and the comments pane. Convert the feed's *visible* safe
+    // area into the button parent's coordinates; a scrolling parent's bounds
+    // origin is its content offset, not zero.
+    CGRect pane = [posts.view convertRect:posts.view.safeAreaLayoutGuide.layoutFrame toView:container];
+    UITabBarController *tabs = (id)ApolloMainTabBarController();
+    CGRect rail = [tabs.tabBar convertRect:tabs.tabBar.bounds toView:container];
+    CGFloat leading = MAX(CGRectGetMinX(container.bounds), CGRectGetMinX(pane));
+    CGFloat trailing = MIN(CGRectGetMaxX(container.bounds), CGRectGetMaxX(pane));
+    trailing = MIN(trailing, CGRectGetMinX(rail) - 15.0);
+    CGRect frame = button.frame;
+    if (trailing - leading < CGRectGetWidth(frame)) return;
+    CGFloat x = MIN(MAX(CGRectGetMinX(frame), leading), trailing - CGRectGetWidth(frame));
+    // Preserve Apollo's vertical scroll/hide animation and avoid another
+    // geometry write once the button already clears the rail.
+    if (fabs(x - frame.origin.x) > 0.5) {
+        frame.origin.x = x;
+        button.frame = frame;
+    }
+}
+
 void ApolloDuoRailAlignFeedScrollIndicator(UIScrollView *scrollView) {
     if (!scrollView) return;
     UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();

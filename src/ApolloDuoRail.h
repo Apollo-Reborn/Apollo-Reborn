@@ -52,4 +52,7 @@ BOOL ApolloDuoCoverChromeIsActive(void);
 /// Keep the comments jump button clear of Duo's system chrome and tab rail.
 void ApolloDuoCoverAdjustJumpButton(UIViewController *comments);
 
+/// Keep Hide Read Posts inside its feed pane and clear of the trailing rail.
+void ApolloDuoRailAdjustHideReadButton(UIViewController *posts);
+
 __END_DECLS

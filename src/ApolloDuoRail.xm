@@ -31,6 +31,9 @@ struct ApolloDuoSizeRange { CGSize min; CGSize max; };
 @interface _TtC6Apollo22CommentsViewController : UIViewController
 @end
 
+@interface _TtC6Apollo19PostsViewController : UIViewController
+@end
+
 @interface _TtC6Apollo20FloatingActionButton : UIButton
 @end
 
@@ -229,7 +232,20 @@ static void ApolloDuoRestoreFoldAnchor(UITableView *table, BOOL finalPass) {
 // controller's layout callbacks have returned. Keep the visible comments
 // controller so the button's own final geometry writes can be clamped too.
 static __weak UIViewController *sApolloDuoActiveComments;
-static BOOL sApolloDuoClampingJumpButton;
+static BOOL sApolloDuoClampingFloatingButton;
+
+static void ApolloDuoAdjustFloatingActionButton(UIView *button) {
+    if (sApolloDuoClampingFloatingButton) return;
+    sApolloDuoClampingFloatingButton = YES;
+    for (UIResponder *responder = button.nextResponder; responder; responder = responder.nextResponder) {
+        if ([responder isKindOfClass:UIViewController.class]) {
+            ApolloDuoRailAdjustHideReadButton((UIViewController *)responder);
+            break;
+        }
+    }
+    ApolloDuoCoverAdjustJumpButton(sApolloDuoActiveComments);
+    sApolloDuoClampingFloatingButton = NO;
+}
 
 %group ApolloDuoRailTabs
 
@@ -483,7 +499,21 @@ static BOOL sApolloDuoClampingJumpButton;
 
 %end
 
-// The scroll path sets FloatingActionButton geometry after the comments
+%hook _TtC6Apollo19PostsViewController
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    ApolloDuoRailAdjustHideReadButton((UIViewController *)self);
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    %orig(animated);
+    ApolloDuoRailAdjustHideReadButton((UIViewController *)self);
+}
+
+%end
+
+// The scroll path sets FloatingActionButton geometry after the feed/comments
 // controller's delegate callbacks. Clamp after those writes rather than
 // racing them from scrollViewDidScroll:. The guard lets the helper assign the
 // corrected frame without recursively entering this hook.
@@ -491,20 +521,12 @@ static BOOL sApolloDuoClampingJumpButton;
 
 - (void)setFrame:(CGRect)frame {
     %orig(frame);
-    UIViewController *comments = sApolloDuoActiveComments;
-    if (!comments || sApolloDuoClampingJumpButton) return;
-    sApolloDuoClampingJumpButton = YES;
-    ApolloDuoCoverAdjustJumpButton(comments);
-    sApolloDuoClampingJumpButton = NO;
+    ApolloDuoAdjustFloatingActionButton(self);
 }
 
 - (void)setCenter:(CGPoint)center {
     %orig(center);
-    UIViewController *comments = sApolloDuoActiveComments;
-    if (!comments || sApolloDuoClampingJumpButton) return;
-    sApolloDuoClampingJumpButton = YES;
-    ApolloDuoCoverAdjustJumpButton(comments);
-    sApolloDuoClampingJumpButton = NO;
+    ApolloDuoAdjustFloatingActionButton(self);
 }
 
 %end
