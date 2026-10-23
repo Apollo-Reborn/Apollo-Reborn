@@ -439,8 +439,24 @@ static NSString *ApolloDeletedCommentsLinkFullNameFromRedditURL(NSURL *url) {
     return nil;
 }
 
+// Request observation runs on both callers' threads and NSURLSession queues.
+// Keep the paired link/date state coherent and retain a reader's snapshot
+// before releasing the lock.
+static NSObject *ApolloDeletedCommentsObservedLinkLock(void) {
+    static NSObject *lock = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ lock = [NSObject new]; });
+    return lock;
+}
+
 static NSString *ApolloDeletedCommentsRecentObservedLinkFullName(void) {
-    if (sApolloDeletedCommentsLastObservedLinkFullName.length == 0 || !sApolloDeletedCommentsLastObservedLinkDate) return nil;
+    NSString *fullName = nil;
+    NSDate *observedDate = nil;
+    @synchronized (ApolloDeletedCommentsObservedLinkLock()) {
+        fullName = sApolloDeletedCommentsLastObservedLinkFullName;
+        observedDate = sApolloDeletedCommentsLastObservedLinkDate;
+    }
+    if (fullName.length == 0 || !observedDate) return nil;
     // 30 minutes, was 45 seconds. morechildren URLs carry no link id, so this
     // fallback is the ONLY thread attribution "load more comments" ever gets —
     // and on a long AskHistorians read the user easily sits in one thread past
@@ -453,8 +469,8 @@ static NSString *ApolloDeletedCommentsRecentObservedLinkFullName(void) {
     // no transform), never a false one. Observation of any newer thread
     // re-stamps this immediately, and morechildren observations below slide the
     // window while the user keeps loading.
-    if ([[NSDate date] timeIntervalSinceDate:sApolloDeletedCommentsLastObservedLinkDate] > 1800.0) return nil;
-    return sApolloDeletedCommentsLastObservedLinkFullName;
+    if ([[NSDate date] timeIntervalSinceDate:observedDate] > 1800.0) return nil;
+    return fullName;
 }
 
 // morechildren requests carry no link id in the URL — but their POST body does
@@ -565,9 +581,12 @@ void ApolloDeletedCommentsHandleRequestObservation(NSURLRequest *request, NSStri
         // Without this, back-to-back "load more" taps spaced past the TTL each
         // arrive unattributed and skip the transform.
         if (ApolloDeletedCommentsRequestLooksLikeCommentsPayload(request) &&
-            ApolloDeletedCommentsIsRedditHost(request.URL.host) &&
-            sApolloDeletedCommentsLastObservedLinkFullName.length > 0) {
-            sApolloDeletedCommentsLastObservedLinkDate = [NSDate date];
+            ApolloDeletedCommentsIsRedditHost(request.URL.host)) {
+            @synchronized (ApolloDeletedCommentsObservedLinkLock()) {
+                if (sApolloDeletedCommentsLastObservedLinkFullName.length > 0) {
+                    sApolloDeletedCommentsLastObservedLinkDate = [NSDate date];
+                }
+            }
         }
         return;
     }
@@ -577,9 +596,12 @@ void ApolloDeletedCommentsHandleRequestObservation(NSURLRequest *request, NSStri
     // always points at the thread the user is actually in — otherwise a
     // non-overridden thread's "load more comments" (whose URL has no link id)
     // would be misattributed to a previously overridden thread.
-    BOOL changed = ![sApolloDeletedCommentsLastObservedLinkFullName isEqualToString:fullName];
-    sApolloDeletedCommentsLastObservedLinkFullName = [fullName copy];
-    sApolloDeletedCommentsLastObservedLinkDate = [NSDate date];
+    BOOL changed = NO;
+    @synchronized (ApolloDeletedCommentsObservedLinkLock()) {
+        changed = ![sApolloDeletedCommentsLastObservedLinkFullName isEqualToString:fullName];
+        sApolloDeletedCommentsLastObservedLinkFullName = [fullName copy];
+        sApolloDeletedCommentsLastObservedLinkDate = [NSDate date];
+    }
     if (changed) {
         ApolloLog(@"[DeletedComments] Observed Reddit comments request %@ (%@)", fullName, source ?: @"unknown");
     }

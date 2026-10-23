@@ -13,6 +13,7 @@
 #import "ApolloState.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloMediaMetadata.h"
+#import "ApolloTextureDecls.h"
 #import "ApolloMarkdownToolbarGif.h"
 #import "Tweak.h"
 #import "ApolloClasses.h"
@@ -1166,8 +1167,47 @@ static NSString *ApolloRewriteNativeGiphyTokens(NSString *text, NSDictionary *me
 
 %end
 
+// Hide legacy Reddit upload labels before title/flair measurement.
+static Ivar sTitleURLNodeIvar;
+static Ivar sURLTextNodeIvar;
+
+static void ApolloHideUploadLabel(id titleNode) {
+    id URLNode = object_getIvar(titleNode, sTitleURLNodeIvar);
+    if (!URLNode) return;
+    ASTextNode *textNode = object_getIvar(URLNode, sURLTextNodeIvar);
+    NSString *label = textNode.attributedText.string;
+    NSString *host = @"reddit-uploaded-media.s3-accelerate.amazonaws.com";
+    NSString *videoHost = @"reddit-uploaded-video.s3-accelerate.amazonaws.com";
+    for (NSString *candidate in @[host, videoHost]) {
+        if ([label isEqualToString:candidate] ||
+            [label isEqualToString:[NSString stringWithFormat:@"(%@)", candidate]]) {
+            textNode.attributedText = [[NSAttributedString alloc] initWithString:@""];
+            return;
+        }
+    }
+}
+
+%group ApolloPostTitleUploadLabelHooks
+%hook _TtC6Apollo13PostTitleNode
+
+- (CGSize)calculateSizeThatFits:(CGSize)constrainedSize {
+    ApolloHideUploadLabel(self);
+    return %orig;
+}
+
+%end
+%end
+
 %ctor {
     %init;
     ApolloLog(@"[ShareMediaTmp] download cleanup hook installed");
     ApolloLog(@"[MediaPagerGuard] swipe-end hook installed");
+    Class titleClass = objc_getClass("_TtC6Apollo13PostTitleNode");
+    Class URLClass = objc_getClass("_TtC6Apollo16PostTitleURLNode");
+    sTitleURLNodeIvar = titleClass ? class_getInstanceVariable(titleClass, "urlNode") : NULL;
+    sURLTextNodeIvar = URLClass ? class_getInstanceVariable(URLClass, "textNode") : NULL;
+    if (sTitleURLNodeIvar && sURLTextNodeIvar) {
+        %init(ApolloPostTitleUploadLabelHooks);
+        ApolloLog(@"[PostTitleUploadLabel] Reddit upload label hook installed");
+    }
 }

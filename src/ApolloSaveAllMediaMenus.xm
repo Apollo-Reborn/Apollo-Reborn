@@ -218,19 +218,37 @@ static char kApolloFullScreenImageMenuKey;
 - (void)userInteractionCancelled;
 @end
 
+static id<ApolloMediaMenuFeedback> ApolloMediaMenuFeedbackForView(UIView *view) {
+    Class generator = objc_getClass("_UIClickPresentationFeedbackGenerator");
+    if ([generator instancesRespondToSelector:@selector(initWithView:)] &&
+        [generator instancesRespondToSelector:@selector(userInteractionStarted)] &&
+        [generator instancesRespondToSelector:@selector(previewedAtLocation:)] &&
+        [generator instancesRespondToSelector:@selector(userInteractionEnded)] &&
+        [generator instancesRespondToSelector:@selector(userInteractionCancelled)]) {
+        return [(id<ApolloMediaMenuFeedback>)[generator alloc] initWithView:view];
+    }
+    return nil;
+}
+
+// Programmatic menus have no native hold recognizer to own this generator.
+// Their presenter retains the returned end block for the menu's lifetime.
+extern "C" dispatch_block_t ApolloMediaMenuBeginPreviewFeedback(UIView *source, CGPoint point) {
+    id<ApolloMediaMenuFeedback> feedback = ApolloMediaMenuFeedbackForView(source);
+    if (!feedback) {
+        [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleHeavy] impactOccurred];
+        return ^{};
+    }
+    [feedback userInteractionStarted];
+    [feedback previewedAtLocation:point];
+    return ^{ [feedback userInteractionEnded]; };
+}
+
 static char kApolloFullScreenHoldFeedbackKey;
 static void ApolloFullScreenMediaHoldFeedback(UIGestureRecognizer *recognizer) {
     id<ApolloMediaMenuFeedback> feedback = objc_getAssociatedObject(recognizer, &kApolloFullScreenHoldFeedbackKey);
     if (recognizer.state == UIGestureRecognizerStateBegan) {
         if (feedback || !recognizer.view.window) return;
-        Class generator = objc_getClass("_UIClickPresentationFeedbackGenerator");
-        if ([generator instancesRespondToSelector:@selector(initWithView:)] &&
-            [generator instancesRespondToSelector:@selector(userInteractionStarted)] &&
-            [generator instancesRespondToSelector:@selector(previewedAtLocation:)] &&
-            [generator instancesRespondToSelector:@selector(userInteractionEnded)] &&
-            [generator instancesRespondToSelector:@selector(userInteractionCancelled)]) {
-            feedback = [(id<ApolloMediaMenuFeedback>)[generator alloc] initWithView:recognizer.view];
-        }
+        feedback = ApolloMediaMenuFeedbackForView(recognizer.view);
         if (feedback) {
             // Keep the generator active for the hold, as UIKit does. Releasing
             // it immediately can cut short asynchronously delivered feedback.

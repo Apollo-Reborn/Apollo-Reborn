@@ -66,7 +66,6 @@
                 UDKeyInfoRowTapTranslation: @(enhanced),
                 UDKeyScrollReturnButton: @(enhanced),
                 UDKeyLiveCommentsFollow: @(enhanced),
-                UDKeyShowRecentlyReadThumbnails: @(enhanced),
             };
             [result addObject:[[self alloc] initWithIdentifier:identifiers[index] title:titles[index]
                 subtitle:subtitles[index] highlights:highlights[index] values:values]];

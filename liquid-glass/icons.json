@@ -22,6 +22,58 @@
       "description": "A mix of standalone icon concepts, including small thematic sets too short for their own pack."
     }
   ],
+  "seasons": [
+    {
+      "id": "valentines", "title": "Valentine's Day", "start": "02-01", "end": "02-14",
+      "colorMatchIconIDs": ["LG-pink", "LG-crimson", "LG-peachy"]
+    },
+    {
+      "id": "st-patricks", "title": "St. Patrick's Day", "start": "03-10", "end": "03-17",
+      "colorMatchIconIDs": ["LG-green", "LG-gold"]
+    },
+    {
+      "id": "may-the-4th", "title": "May the 4th", "start": "05-04", "end": "05-04",
+      "iconIDs": ["LG-chosen-one", "LG-rule-of-two"]
+    },
+    {
+      "id": "pride", "title": "Pride Month", "start": "06-01", "end": "06-30",
+      "iconIDs": ["LG-pride", "LG-trans", "LG-stonewall"],
+      "colorMatchIconIDs": ["LG-six-colors", "LG-atp"]
+    },
+    {
+      "id": "canada-day", "title": "Canada Day", "start": "07-01", "end": "07-01",
+      "iconIDs": ["LG-canada"]
+    },
+    {
+      "id": "independence-day", "title": "Independence Day", "start": "07-04", "end": "07-04",
+      "iconIDs": ["murica", "usa2"]
+    },
+    {
+      "id": "halloween", "title": "Halloween", "start": "10-01", "end": "10-31",
+      "iconIDs": ["witching-hour", "helios-count", "jackopollo", "apolloween", "frankenpollo",
+                  "gordon-ramesses", "demogorgon", "poe-the-space-ghost"]
+    },
+    {
+      "id": "christmas", "title": "Christmas", "start": "12-01", "end": "12-25",
+      "iconIDs": ["ye-snow-guardian", "sir-yule-treemas", "george", "santapollo", "under-the-tree",
+                  "under-the-tree-ii", "under-the-tree-iii"]
+    }
+  ],
+  "nativeIcons": [
+    { "id": "ye-snow-guardian",    "displayName": "Ye Snow Guardian",    "designer": "Qi Sandor",                         "standardPack": "ultra",     "nativeRow": 2 },
+    { "id": "jackopollo",          "displayName": "Jack-o'-pollo",       "designer": "Anthony Piraino (The Iconfactory)", "standardPack": "ultra",     "nativeRow": 11 },
+    { "id": "sir-yule-treemas",    "displayName": "Sir Yule Treemas",    "designer": "Anthony Piraino (The Iconfactory)", "standardPack": "ultra",     "nativeRow": 13 },
+    { "id": "demogorgon",          "displayName": "Demogorgon",          "designer": "Matthew Skiles",                    "standardPack": "ultra",     "nativeRow": 21 },
+    { "id": "apolloween",          "displayName": "Apollowe'en",         "designer": "Anthony Piraino (The Iconfactory)", "standardPack": "ultra",     "nativeRow": 23 },
+    { "id": "george",              "displayName": "Gingerbread George",  "designer": "Qi Sandor",                         "standardPack": "ultra",     "nativeRow": 25 },
+    { "id": "gordon-ramesses",     "displayName": "Gordon Ramesses",     "designer": "Matthew Skiles",                    "standardPack": "ultra",     "nativeRow": 35 },
+    { "id": "santapollo",          "displayName": "Santapollo",          "designer": "Matthew Skiles",                    "standardPack": "ultra",     "nativeRow": 37 },
+    { "id": "frankenpollo",        "displayName": "Frankenpollo",        "designer": "Matthew Skiles",                    "standardPack": "ultra",     "nativeRow": 54 },
+    { "id": "under-the-tree",      "displayName": "Under the Tree",      "designer": "Qi Sandor",                         "standardPack": "ultra",     "nativeRow": 56 },
+    { "id": "poe-the-space-ghost", "displayName": "Poe the Space Ghost", "designer": "hinkeroniarts",                     "standardPack": "community", "nativeRow": 2 },
+    { "id": "murica",              "displayName": "America!",            "designer": "",                                  "standardPack": "sekrit",    "nativeRow": 4 },
+    { "id": "usa2",                "displayName": "Super America",       "designer": "",                                  "standardPack": "sekrit",    "nativeRow": 5 }
+  ],
   "icons": [
     { "id": "apollo",                   "displayName": "Apollo",              "designer": "IllIIllIllIllII", "group": "original" },
     { "id": "AppIcon",                  "displayName": "Apollo Glass",        "designer": "IllIIllIllIllII", "group": "original" },
