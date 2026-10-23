@@ -56,9 +56,12 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/Tweak.xm \
     $(SRC_DIR)/ApolloCommon.m \
     $(SRC_DIR)/ApolloLogRedaction.m \
+    $(SRC_DIR)/ApolloSessionState.m \
+    $(SRC_DIR)/ApolloSessionRestoration.xm \
     $(SRC_DIR)/ApolloInlineImageMetadata.m \
     $(SRC_DIR)/ApolloProfilePagination.xm \
     $(SRC_DIR)/ApolloListEmptyState.xm \
+    $(SRC_DIR)/ApolloEmptyFeedNextPage.xm \
     $(SRC_DIR)/ApolloWebTextDecoding.m \
     $(SRC_DIR)/ApolloNitterInstances.m \
     $(SRC_DIR)/ApolloMemoryDiagnostics.m \
@@ -88,6 +91,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloUsageHeartbeat.m \
     $(SRC_DIR)/ApolloAppIcon.m \
     $(SRC_DIR)/ApolloUpdateManifest.m \
+    $(SRC_DIR)/ApolloUpdateManifestCache.m \
     $(SRC_DIR)/ApolloUpdatePromptViewController.m \
     $(SRC_DIR)/ApolloUpdateChecker.m \
     $(SRC_DIR)/ApolloPushNotifications.m \
@@ -116,9 +120,12 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloSubredditHeaders.xm \
     $(SRC_DIR)/ApolloSubredditHighlights.xm \
     $(SRC_DIR)/ApolloGalleryFeed.m \
+    $(SRC_DIR)/ApolloGallerySource.xm \
     $(SRC_DIR)/ApolloGalleryImageLoader.m \
+    $(SRC_DIR)/ApolloGalleryMediaActions.m \
     $(SRC_DIR)/ApolloGalleryImageViewer.m \
     $(SRC_DIR)/ApolloGalleryViewController.m \
+    $(SRC_DIR)/ApolloGalleryPinchIntroduction.m \
     $(SRC_DIR)/ApolloGalleryVideoExport.xm \
     $(SRC_DIR)/ApolloSaveAllMediaItems.m \
     $(SRC_DIR)/ApolloSaveAllMedia.xm \
@@ -181,6 +188,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloInterruptibleNavTransition.xm \
     $(SRC_DIR)/ApolloSystemBackSwipeGuard.xm \
     $(SRC_DIR)/ApolloLiquidGlassIconPicker.xm \
+    $(SRC_DIR)/ApolloLiquidGlassSpotlight.m \
     $(SRC_DIR)/ApolloModmailLayout.xm \
     $(SRC_DIR)/ApolloModmailSubjectCounter.xm \
     $(SRC_DIR)/ApolloCrosspostTitle.xm \
@@ -380,6 +388,7 @@ ApolloReborn_FILES = \
 ApolloReborn_FRAMEWORKS = UIKit Security AVFoundation AVKit OSLog NaturalLanguage ImageIO StoreKit Photos PhotosUI SafariServices SystemConfiguration WebKit AuthenticationServices CoreImage Vision LinkPresentation SwiftUI UniformTypeIdentifiers Metal QuartzCore CoreMotion
 # The YouTube caption guard reads the per-app subtitle setting (ApolloYouTubeCaptions.xm).
 ApolloReborn_FRAMEWORKS += MediaAccessibility
+ApolloReborn_WEAK_FRAMEWORKS += Symbols
 ApolloReborn_LIBRARIES = z iconv
 # FoundationModels (Apple on-device AI) only ships in the iOS 26+ SDK. Weak-link
 # it so the dylib still loads on older OSes (the Swift bridge guards every call

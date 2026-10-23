@@ -74,6 +74,9 @@ NS_ASSUME_NONNULL_BEGIN
 // The grid tier: a single downsampled still frame, cached separately from the
 // full decode of the same URL. Cells use this so a reused tile never pays for
 // a multi-frame GIF decode or a full-resolution bitmap it will draw at 185pt.
+// Reuses an exact-URL hit in Apollo's native image cache before downloading;
+// cache reads and thumbnail preparation never perform disk/decode work on the
+// main thread. Reused native images never populate the full tier or its bytes.
 - (ApolloGalleryImageRequest *)loadThumbnailAtURL:(NSURL *)url
                                        completion:(void (^)(UIImage *_Nullable image))completion;
 

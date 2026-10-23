@@ -49,6 +49,14 @@ NS_ASSUME_NONNULL_BEGIN
                 inheritedSortValue:(nullable NSNumber *)sortValue
            inheritedTopWindowValue:(nullable NSNumber *)topWindowValue;
 
+// While the source menu is opening, fill and warm the initial viewport on a
+// short-lived gallery. Presentation reuses it only if source/account/sort still
+// match; selecting Gallery never waits for an unfinished request.
++ (void)prepareGalleryForSubreddit:(NSString *)subreddit
+               fromViewController:(UIViewController *)sourceViewController
+               inheritedSortValue:(nullable NSNumber *)sortValue
+          inheritedTopWindowValue:(nullable NSNumber *)topWindowValue;
+
 // `multiredditPath` is Reddit's canonical `/user/<owner>/m/<name>` path. It is
 // kept intact so public multireddits load from their actual owner rather than
 // being incorrectly rebuilt under the active account.

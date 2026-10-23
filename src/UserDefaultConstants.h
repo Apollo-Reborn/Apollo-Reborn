@@ -152,7 +152,6 @@ static NSString *const UDKeyEnableFlairColors = @"EnableFlairColors";
 static NSString *const UDKeyBoldPostTitles = @"BoldPostTitles";
 static NSString *const ApolloFlairColorsChangedNotification = @"ApolloFlairColorsChangedNotification";
 static NSString *const UDKeyReadPostMaxCount = @"ReadPostMaxCount";
-static NSString *const UDKeyShowRecentlyReadThumbnails = @"ShowRecentlyReadThumbnails";
 static NSString *const UDKeyPreferredGIFFallbackFormat = @"PreferredGIFFallbackFormat";
 static NSString *const UDKeyUnmuteCommentsVideos = @"UnmuteCommentsVideos";
 // "Unmute Videos in Feed": how feed videos behave when they autoplay while
@@ -231,6 +230,8 @@ static NSString *const UDKeyTapToRevealDeletedComments = @"TapToRevealDeletedCom
 // resets when that thread is left. See ApolloDeletedCommentsMenu.xm.
 static NSString *const UDKeyPassiveDeletedComments = @"PassiveDeletedComments";
 static NSString *const UDKeyFilterNSFWRecentlyRead = @"FilterNSFWRecentlyRead";
+// Recently Read's own post size (BOOL, compact when YES); unset follows Apollo's.
+static NSString *const UDKeyRecentlyReadCompactPosts = @"RecentlyReadCompactPosts";
 static NSString *const UDKeyProxyImgurDDG = @"ProxyImgurDDG";
 // Allow non-DDG public text proxies (r.jina.ai, allorigins, codetabs) as a
 // last resort for album metadata when Imgur is unreachable — DDG itself cannot
@@ -291,6 +292,8 @@ static NSString *const UDKeyShowSubredditHeaders = @"ShowSubredditHeaders";
 // flat) — mirrors UDKeyProfileHeaderImmersive's semantics for subreddits.
 static NSString *const UDKeySubredditHeaderImmersive = @"SubredditHeaderImmersive";
 static NSString *const UDKeySubredditShowBanner = @"SubredditShowBanner";
+// Show the community icon in Compact and Immersive headers (default YES).
+static NSString *const UDKeySubredditShowIcon = @"SubredditShowIcon";
 static NSString *const UDKeySubredditShowJoinButton = @"SubredditShowJoinButton";
 // Show direct actions beside Join in Apollo Reborn's subreddit header.
 // Both default to NO; User Flair is also hidden when the subreddit disallows it.
@@ -702,16 +705,21 @@ static NSString *const UDKeyBarkSelectedIconName = @"BarkSelectedIconName";
 // on-by-default). See ApolloUsageHeartbeat.{h,m}.
 static NSString *const UDKeyDisableUsageHeartbeat = @"DisableUsageHeartbeat";
 
-// In-app update check (ApolloUpdateChecker.{h,m}). Once a day it reads
+// In-app update check (ApolloUpdateChecker.{h,m}). Every 15 active minutes it reads
 // release-manifest.json from GitHub and offers to hand off to the user's
 // sideloader. Default ON; the Manual "Check for Updates" row works either way.
 static NSString *const UDKeyAutomaticUpdateChecks = @"AutomaticUpdateChecks";
 // Internal bookkeeping (not user-facing).
 static NSString *const UDKeyUpdateLastCheck = @"UpdateLastCheck";           // NSDate of the last good fetch
+static NSString *const UDKeyUpdateLastFailure = @"UpdateLastFailure";       // NSDate; short automatic retry backoff
+static NSString *const UDKeyUpdateDeferredReminder = @"UpdateDeferredReminder"; // {version, date}; Later snoozes for 24h
 static NSString *const UDKeyUpdateSkippedVersion = @"UpdateSkippedVersion"; // "3.9.0" the user chose to skip
 
 // Feed thumbnails for text posts with embedded images (off = native behavior).
 static NSString *const UDKeyFeedTextPostThumbnails = @"FeedTextPostThumbnails";
+// Restores the last feed, open post and reading position after process eviction.
+// Default YES. Turning it off deletes any saved or pending reading session.
+static NSString *const UDKeyRestoreReadingSession = @"RestoreReadingSession";
 // Replaces Apollo's fixed two/three-tile Reddit-gallery mosaic in large feed
 // cards with a horizontally paging image carousel. Default YES. See
 // ApolloFeedGalleryCarousel.xm.

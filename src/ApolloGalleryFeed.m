@@ -10,10 +10,6 @@
 #import "ApolloWebSessionStore.h"
 #import <objc/message.h>
 
-// How many pictures one "batch" should try to gather before the UI is told to
-// stop. Reddit listings mix text/link/video posts in, so a batch usually spans
-// more than one listing page.
-static NSInteger const kApolloGalleryBatchSize = 24;
 // Listing page size asked of Reddit (its hard cap is 100).
 static NSInteger const kApolloGalleryListingLimit = 100;
 // Safety valve: never walk more than this many listing pages for one batch, so
@@ -82,6 +78,10 @@ static BOOL ApolloGalleryURLLooksLikeImage(NSURL *url) {
 @property (nonatomic, readwrite, getter=isHostedVideoResolving) BOOL hostedVideoResolving;
 @property (nonatomic) BOOL hostedVideoResolutionAttempted;
 @property (nonatomic) BOOL hostedVideoResolvedOriginal;
+// The lookup in flight has a viewer waiting on it, so its failure is final
+// (the viewer reports it). A grid-only failure just sets the flag below.
+@property (nonatomic) BOOL hostedVideoLookupHasViewer;
+@property (nonatomic) BOOL hostedVideoGridLookupFailed;
 @property (nonatomic, copy, nullable) NSURL *hostedVideoFallbackDownloadURL;
 @property (nonatomic, strong) NSMutableArray *hostedVideoResolveCompletions;
 @end
@@ -105,7 +105,24 @@ static BOOL ApolloGalleryURLLooksLikeImage(NSURL *url) {
     return self.hostedVideoPageURL != nil && !self.hostedVideoResolutionAttempted;
 }
 
+- (BOOL)canResolveHostedVideoForGrid {
+    if (!self.needsHostedVideoResolution || self.hostedVideoGridLookupFailed) return NO;
+    // Re-read per call: switching Sports Clip Links Play Inline off turns
+    // these back into plain links (kind None), and then nothing is looked up.
+    ApolloHostedVideoKind kind = ApolloHostedVideoKindForURL(self.hostedVideoPageURL);
+    return kind == ApolloHostedVideoSportsClip || kind == ApolloHostedVideoStreamable;
+}
+
 - (void)resolveHostedVideoWithCompletion:(void (^)(BOOL resolvedOriginal))completion {
+    [self apollo_resolveHostedVideoForViewer:YES completion:completion];
+}
+
+- (void)resolveHostedVideoForGridWithCompletion:(void (^)(BOOL resolvedOriginal))completion {
+    [self apollo_resolveHostedVideoForViewer:NO completion:completion];
+}
+
+- (void)apollo_resolveHostedVideoForViewer:(BOOL)forViewer
+                                completion:(void (^)(BOOL resolvedOriginal))completion {
     if (!self.hostedVideoPageURL) {
         if (completion) completion(NO);
         return;
@@ -114,16 +131,26 @@ static BOOL ApolloGalleryURLLooksLikeImage(NSURL *url) {
         if (completion) completion(self.hostedVideoResolvedOriginal);
         return;
     }
+    // The grid asks once per visit. A viewer request after a grid-only failure
+    // is a real second try (the clip may simply have been slow to answer).
+    if (!forViewer && self.hostedVideoGridLookupFailed && !self.hostedVideoResolving) {
+        if (completion) completion(NO);
+        return;
+    }
 
     if (!self.hostedVideoResolveCompletions) {
         self.hostedVideoResolveCompletions = [NSMutableArray array];
     }
     if (completion) [self.hostedVideoResolveCompletions addObject:[completion copy]];
+    // A viewer joining a lookup the grid started makes that lookup's outcome
+    // final, exactly as if the viewer had started it.
+    if (forViewer) self.hostedVideoLookupHasViewer = YES;
     if (self.hostedVideoResolving) return;
 
     self.hostedVideoResolving = YES;
     NSURL *pageURL = self.hostedVideoPageURL;
-    ApolloLog(@"[Gallery] resolving original hosted video for %@", pageURL.host ?: @"unknown host");
+    ApolloLog(@"[Gallery] resolving original hosted video for %@ (%@)", pageURL.host ?: @"unknown host",
+              forViewer ? @"viewer" : @"grid tile");
     __weak typeof(self) weakSelf = self;
     ApolloHostedVideoResolve(pageURL, ^(NSURL *mp4URL, NSURL *posterURL,
                                         CGSize pixelSize, BOOL hasAudio) {
@@ -131,6 +158,7 @@ static BOOL ApolloGalleryURLLooksLikeImage(NSURL *url) {
         if (!strongSelf) return;
 
         BOOL resolved = (mp4URL != nil);
+        BOOL isFinal = resolved || strongSelf.hostedVideoLookupHasViewer;
         if (resolved) {
             // Hosted MP4s are self-contained, including their audio track.
             strongSelf.videoURL = mp4URL;
@@ -140,18 +168,23 @@ static BOOL ApolloGalleryURLLooksLikeImage(NSURL *url) {
                 pixelSize.width > 0.0 && pixelSize.height > 0.0) {
                 strongSelf.pixelSize = pixelSize;
             }
-        } else {
+        } else if (isFinal) {
             // Keep playback working even if the host API is unavailable. The
             // Reddit preview may be silent, but it is still better than a dead
             // tile; saving follows the same fallback after this attempt.
             strongSelf.videoDownloadURL = strongSelf.hostedVideoFallbackDownloadURL;
+        } else {
+            // Only a grid tile was waiting: it keeps its poster and stops
+            // asking, and the viewer still makes its own attempt when opened.
+            strongSelf.hostedVideoGridLookupFailed = YES;
         }
         strongSelf.hostedVideoResolvedOriginal = resolved;
-        strongSelf.hostedVideoResolutionAttempted = YES;
+        if (isFinal) strongSelf.hostedVideoResolutionAttempted = YES;
+        strongSelf.hostedVideoLookupHasViewer = NO;
         strongSelf.hostedVideoResolving = NO;
 
         ApolloLog(@"[Gallery] hosted video %@ (original=%d audio=%d)",
-                  resolved ? @"ready" : @"fell back to Reddit preview",
+                  resolved ? @"ready" : (isFinal ? @"fell back to Reddit preview" : @"unavailable to the grid tile"),
                   (int)resolved, (int)hasAudio);
         NSArray *callbacks = [strongSelf.hostedVideoResolveCompletions copy];
         [strongSelf.hostedVideoResolveCompletions removeAllObjects];
@@ -752,7 +785,10 @@ static NSString *ApolloGalleryBearerForClient(id client) {
             NSUInteger gainedThisBatch = strongSelf.filteredItems.count - startIndex;
             BOOL noMorePages = (nextCursor.length == 0);
             BOOL tooManyEmptyPages = (strongSelf.consecutiveEmptyPages >= kApolloGalleryEmptyPageLimit);
-            BOOL batchSatisfied = (gainedThisBatch >= (NSUInteger)kApolloGalleryBatchSize);
+            // Publish every useful page immediately, including continuations
+            // of a seeded gallery. Small tiles can expose the end of the seed
+            // before another multi-page batch would have finished collecting.
+            BOOL batchSatisfied = gainedThisBatch > 0;
             BOOL outOfPageBudget = (pagesLeft <= 1);
 
             if (noMorePages || tooManyEmptyPages) {
@@ -779,7 +815,8 @@ static NSString *ApolloGalleryBearerForClient(id client) {
                 return;
             }
 
-            // Not enough pictures yet and pages left in the budget — keep going.
+            // No media admitted by the current filter yet; keep walking only
+            // within the existing empty-page and request-count bounds.
             [strongSelf continueBatchFromIndex:startIndex
                                     generation:generation
                                      pagesLeft:pagesLeft - 1
@@ -789,6 +826,23 @@ static NSString *ApolloGalleryBearerForClient(id client) {
 }
 
 #pragma mark Listing -> items
+
+- (BOOL)seedFromListing:(NSDictionary *)listing {
+    NSAssert(NSThread.isMainThread, @"Gallery snapshots must be applied on the main thread");
+    if (self.loading || self.mutableItems.count > 0 || self.afterCursor || self.exhausted) return NO;
+    if (!ApolloGalleryArray(listing[@"children"])) return NO;
+    [self appendItemsFromListing:listing];
+    [self rebuildFilteredItems];
+    if (self.filteredItems.count == 0) {
+        [self.mutableItems removeAllObjects];
+        [self.seenImageKeys removeAllObjects];
+        return NO;
+    }
+    self.afterCursor = ApolloGalleryString(listing[@"after"]);
+    self.exhausted = self.afterCursor.length == 0;
+    self.lastErrorMessage = nil;
+    return YES;
+}
 
 - (void)appendItemsFromListing:(NSDictionary *)listing {
     for (id child in ApolloGalleryArray(listing[@"children"]) ?: @[]) {
@@ -1016,6 +1070,8 @@ static NSURL *ApolloGalleryDirectVideoURL(NSURL *url) {
     // reddit_video_preview, but that preview is deliberately silent and
     // re-encoded. Keep it only as an instant fallback; the viewer lazily asks
     // ApolloHostedVideo for the host's original combined MP4 when opened.
+    // Sports-clip links (streamin, streamff, ...) usually carry no preview, so
+    // `stream` stays nil and an on-screen tile looks the host up instead.
     if (!stream && !isHostedVideo) return nil;
 
     ApolloGalleryItem *item = [[ApolloGalleryItem alloc] init];
@@ -1033,8 +1089,8 @@ static NSURL *ApolloGalleryDirectVideoURL(NSURL *url) {
     item.duration = duration;
     // The poster frame. Reddit usually supplies preview.images; external hosts
     // can instead put the still under oembed.thumbnail_url. Never resolve the
-    // host API just to populate the scrolling grid—that would fan one listing
-    // page out into dozens of requests.
+    // host API while parsing—that would fan one listing page out into dozens
+    // of requests. Only tiles that come to rest on screen look a host up.
     NSURL *poster = previewSource ? ApolloGalleryURL(previewSource[@"url"]) : nil;
     NSDictionary *oembed = ApolloGalleryDict(ApolloGalleryDict(post[@"secure_media"])[@"oembed"])
         ?: ApolloGalleryDict(ApolloGalleryDict(post[@"media"])[@"oembed"]);
