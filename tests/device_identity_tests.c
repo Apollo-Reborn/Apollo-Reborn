@@ -54,6 +54,12 @@ int main(void) {
               && major == 17 && minor == 5,
           "parses iPhone17,5");
 
+    Check(ApolloMachineIsIPhoneDuo("iPhone19,4"), "iPhone Duo is detected by model");
+    Check(!ApolloMachineIsIPhoneDuo("iPhone19,1"), "other iPhone19 models are not Duo");
+    Check(!ApolloMachineIsIPhoneDuo("iPhone15,2"), "remapped island identity is not Duo");
+    Check(!ApolloMachineIsIPhoneDuo("arm64"), "host arch is not Duo");
+    Check(!ApolloMachineIsIPhoneDuo(NULL), "null machine is not Duo");
+
     Check(ApolloMachineIsRecognizedByApollo("iPhone14,7"), "iPhone 14 is recognized");
     Check(ApolloMachineIsRecognizedByApollo("iPhone15,2"), "iPhone 14 Pro is recognized");
     Check(ApolloMachineIsRecognizedByApollo("iPhone15,3"), "iPhone 14 Pro Max is recognized");

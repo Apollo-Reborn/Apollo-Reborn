@@ -75,6 +75,17 @@ static inline bool ApolloMachineIsKnownNotchException(int major, int minor) {
         || (major == 18 && minor == 5);  // iPhone 17e
 }
 
+// iPhone Duo hardware. MGGetLogicalDeviceDisplayCount() reports 2 in the
+// Device Hub simulator but 1 on real hardware, so the model identifier is
+// the reliable signal. Callers must pass the raw hw.machine value: the
+// tweak's uname hook remaps unknown models to an island identity.
+static inline bool ApolloMachineIsIPhoneDuo(const char *machine) {
+    int major = 0;
+    int minor = 0;
+    if (!ApolloParseIPhoneMachine(machine, &major, &minor)) return false;
+    return major == 19 && minor == 4;
+}
+
 // geometryAvailable/hasIslandCutout come from the current screen's
 // -[UIScreen _exclusionArea] when the caller has one. A live island always
 // wins (hardware truth). A missing island on the current screen does NOT

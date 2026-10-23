@@ -14,6 +14,8 @@
 #include <stdatomic.h>
 #import <Security/Security.h>
 #import "ApolloClasses.h"
+#import "ApolloDeviceIdentity.h"
+#include <sys/sysctl.h>
 
 #pragma mark - Security dictionaries
 
@@ -637,9 +639,23 @@ static NSInteger ApolloLogicalDeviceDisplayCount(void) {
         }
         void *gestalt = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_LAZY | RTLD_LOCAL);
         CFIndex (*displayCount)(void) = gestalt ? dlsym(gestalt, "MGGetLogicalDeviceDisplayCount") : NULL;
-        count = displayCount ? displayCount() : 0;
+        CFIndex gestaltCount = displayCount ? displayCount() : 0;
         if (gestalt) dlclose(gestalt);
-        ApolloLog(@"[DeviceDuo] logical displays=%ld duo=%d", (long)count, count > 1);
+        // Real Duo hardware reports one logical display here, so also check
+        // the model. sysctl reads the raw identifier (uname is remapped by
+        // the tweak); the simulator reports the host arch instead.
+        char machine[64] = {0};
+        size_t length = sizeof(machine) - 1;
+        if (sysctlbyname("hw.machine", machine, &length, NULL, 0) != 0) machine[0] = '\0';
+        const char *model = machine;
+        if (strncmp(machine, "iPhone", 6) != 0) {
+            const char *simModel = getenv("SIMULATOR_MODEL_IDENTIFIER");
+            if (simModel) model = simModel;
+        }
+        BOOL duoModel = ApolloMachineIsIPhoneDuo(model);
+        count = duoModel ? MAX(gestaltCount, 2) : gestaltCount;
+        ApolloLog(@"[DeviceDuo] model=%s logical displays=%ld duo=%d",
+                  model, (long)gestaltCount, count > 1);
     });
     return count;
 }
