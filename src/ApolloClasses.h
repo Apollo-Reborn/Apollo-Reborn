@@ -54,6 +54,7 @@ extern Class ApolloClassCommentCellNode;
 extern Class ApolloClassCommentsHeaderCellNode;
 extern Class ApolloClassCommentsHeaderSectionController;
 extern Class ApolloClassCommentsViewController;
+extern Class ApolloClassMoreCommentsCellNode;
 extern Class ApolloClassCompactPostCellNode;
 extern Class ApolloClassComposePostViewController;
 extern Class ApolloClassComposeViewController;

@@ -329,7 +329,7 @@ NSDictionary<NSString *, id> *ApolloSessionStateNormalize(NSDictionary *candidat
         if (value) normalized[key] = value;
     }
     NSDictionary<NSString *, NSArray<NSNumber *> *> *integerRanges = @{
-        ApolloSessionStateFeedPageKey: @[@0, @20],
+        ApolloSessionStateFeedPageKey: @[@0, @5],
         ApolloSessionStateFeedSortKey: @[@1, @6],
         ApolloSessionStateFeedTimeSortKey: @[@1, @7],
         ApolloSessionStateDetailSortKey: @[@1, @7],
@@ -346,19 +346,10 @@ NSDictionary<NSString *, id> *ApolloSessionStateNormalize(NSDictionary *candidat
     NSString *detailURL = ApolloSessionBoundedString(candidate[ApolloSessionStateDetailURLKey]);
     if (detailURL && ApolloSessionStateDetailURLIsAllowed(detailURL)) {
         id contextual = candidate[ApolloSessionStateDetailContextualKey];
-        BOOL hasContextMarker = [contextual isKindOfClass:NSNumber.class] &&
-            ([contextual integerValue] == 0 || [contextual integerValue] == 1);
-        if (!hasContextMarker) {
-            // Builds 352-354 accidentally promoted the visible comment anchor
-            // into route context. Legacy snapshots cannot distinguish that
-            // from intentional context, so safely restore the full post.
-            detailURL = ApolloSessionStateDetailURLByRemovingCommentID(detailURL);
-        } else {
-            normalized[ApolloSessionStateDetailContextualKey] = @([contextual boolValue]);
-            if (![contextual boolValue]) {
-                detailURL = ApolloSessionStateDetailURLByRemovingCommentID(detailURL);
-            }
-        }
+        BOOL keepsContext = [contextual isKindOfClass:NSNumber.class] &&
+            [contextual integerValue] == 1;
+        normalized[ApolloSessionStateDetailContextualKey] = @(keepsContext);
+        if (!keepsContext) detailURL = ApolloSessionStateDetailURLByRemovingCommentID(detailURL);
         normalized[ApolloSessionStateDetailURLKey] = detailURL;
     }
     return normalized;

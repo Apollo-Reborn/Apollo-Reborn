@@ -307,10 +307,10 @@ int main(void) {
               @"unrelated more-comments branches are not expanded during restore");
 
         NSMutableDictionary *excessivePage = [valid mutableCopy];
-        excessivePage[ApolloSessionStateFeedPageKey] = @21;
+        excessivePage[ApolloSessionStateFeedPageKey] = @6;
         normalized = ApolloSessionStateNormalize(excessivePage, now, 7 * 86400);
         Check(normalized != nil && normalized[ApolloSessionStateFeedPageKey] == nil,
-              @"excessive page depth discarded");
+              @"page depth past the five-page replay cap is discarded");
 
         NSLog(@"PASS: %lu session-state checks", (unsigned long)checks);
     }

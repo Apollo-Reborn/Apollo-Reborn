@@ -32,6 +32,7 @@
 #import "ApolloFavoritesSorting.h"
 #import "ApolloState.h"
 #import "ApolloScrollToTop.h"
+#import "ApolloSessionRestoration.h"
 #import "ApolloTabBarHideStyle.h"
 #import "ApolloTagFilters.h"
 #import "ApolloBadgeBookScraper.h"   // ApolloBadgeBookInvalidate() — Clear Tweak Caches
@@ -2598,6 +2599,12 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 - (ApolloSettingsSection *)buildMediaBrowsingSection {
     __weak typeof(self) weakSelf = self;
 
+    ApolloSettingsRow *restoreReadingSession =
+        [ApolloSettingsRow switchRowWithID:@"media.restoreReadingSession"
+                                     title:@"Restore Reading Session"
+                                      isOn:^BOOL { return sRestoreReadingSession; }
+                                  onToggle:^(UISwitch *sender) { [weakSelf restoreReadingSessionSwitchToggled:sender]; }];
+
     ApolloSettingsRow *feedGalleries =
         [ApolloSettingsRow switchRowWithID:@"media.feedGalleryCarousel"
                                      title:@"Swipe Through Feed Galleries"
@@ -2630,8 +2637,8 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                   onToggle:^(UISwitch *sender) { [weakSelf galleryAutoplayGIFsSwitchToggled:sender]; }];
 
     return [ApolloSettingsSection sectionWithTitle:@"Browsing"
-                                            footer:@"Swipe Through Feed Galleries: page through a gallery post's images without leaving the feed.\n\nSwipe Past Gallery to Navigate: at the first or last image, keep swiping to use your normal post swipes (vote, save, back or forward) instead of bouncing. From any image, a swipe that starts at the screen edge goes back or forward. Off by default.\n\nSwipe Up for Comments: in the fullscreen media viewer, swipe up or tap the comments button to open comments over the media. Off by default.\n\nPlay Videos / GIFs in Gallery View: video and GIF tiles play silently while they're on screen; tap one for the full-size viewer with sound. Paused in Low Power Mode."
-                                              rows:@[ feedGalleries, edgeSwipeNav, swipeComments, galleryAutoplayVideos, galleryAutoplayGIFs ]];
+                                            footer:@"Restore Reading Session: after iOS evicts Apollo, reopen the last feed, post and reading position on the next normal launch. Turn it off to delete the saved session immediately.\n\nSwipe Through Feed Galleries: page through a gallery post's images without leaving the feed.\n\nSwipe Past Gallery to Navigate: at the first or last image, keep swiping to use your normal post swipes (vote, save, back or forward) instead of bouncing. From any image, a swipe that starts at the screen edge goes back or forward. Off by default.\n\nSwipe Up for Comments: in the fullscreen media viewer, swipe up or tap the comments button to open comments over the media. Off by default.\n\nPlay Videos / GIFs in Gallery View: video and GIF tiles play silently while they're on screen; tap one for the full-size viewer with sound. Paused in Low Power Mode."
+                                              rows:@[ restoreReadingSession, feedGalleries, edgeSwipeNav, swipeComments, galleryAutoplayVideos, galleryAutoplayGIFs ]];
 }
 
 // NSFW Media. Lives here rather than in Apollo's native Filters & Blocks screen:
@@ -4797,6 +4804,12 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
     [[NSNotificationCenter defaultCenter] postNotificationName:ApolloFeedGalleryCarouselChangedNotification object:nil];
     // The edge-swipe navigation row is only shown while the carousel is on.
     [self visibilityDidChange];
+}
+
+- (void)restoreReadingSessionSwitchToggled:(UISwitch *)sender {
+    sRestoreReadingSession = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyRestoreReadingSession];
+    ApolloSessionRestorationSetEnabled(sender.isOn);
 }
 
 - (void)galleryAutoplayVideosSwitchToggled:(UISwitch *)sender {
