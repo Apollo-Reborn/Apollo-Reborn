@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <NaturalLanguage/NaturalLanguage.h>
+#import <CommonCrypto/CommonDigest.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #include <dlfcn.h>
@@ -288,6 +289,20 @@ static inline void ApolloMirrorRemoveLink(NSString *key) {
 static NSMutableDictionary<NSString *, NSString *> *sRawTranslationMirror = nil;
 static NSMutableArray<NSString *> *sRawTranslationMirrorOrder = nil;
 static const NSUInteger kApolloRawTranslationMirrorCap = 4096;
+// The language each provider REPORTED translating a text from (Google's
+// detected source, Azure's and LibreTranslate's detectedLanguage, the source
+// we hand Apple), keyed by ApolloTranslationSourceLanguageKey(). The
+// "Translated from …" line and the compact "🌐 PT" marker name this language.
+// They used to re-run NLLanguageRecognizer on the original instead, which on
+// short or slangy text confidently names a language the provider never saw:
+// "Hi Victoria" read "Translated from Catalan" and "Romanceslop" "Translated
+// from Romanian", while Google had recognised both as English and handed them
+// back unchanged (#1345). Written on main (provider completions) and read from
+// ASDK layout threads too (load more builds marker strings there), so every
+// access is @synchronized on the dictionary; insertion-order capped like the
+// mirrors above.
+static NSMutableDictionary<NSString *, NSString *> *sTranslationSourceLanguages = nil;
+static NSMutableArray<NSString *> *sTranslationSourceLanguagesOrder = nil;
 
 static void ApolloRawTranslationCacheSet(NSString *cacheKey, NSString *value) {
     if (cacheKey.length == 0 || value.length == 0) return;
@@ -371,6 +386,10 @@ static void ApolloClearAllTranslationCaches(void) {
         [sLinkTranslationMirror removeAllObjects];
         [sLinkTranslationMirrorOrder removeAllObjects];
     }
+    @synchronized (sTranslationSourceLanguages) {
+        [sTranslationSourceLanguages removeAllObjects];
+        [sTranslationSourceLanguagesOrder removeAllObjects];
+    }
 }
 static NSMutableDictionary<NSString *, NSMutableArray *> *sPendingTranslationCallbacks;
 static __weak UIViewController *sVisibleCommentsViewController = nil;
@@ -423,6 +442,10 @@ static void ApolloToggleTranslationForCommentTextNode(id textNode);
 static void ApolloEnsureMarkerTappableOnNode(id textNode);
 static void ApolloEnsureCommentsTableBreathingRoom(void);
 static void ApolloAppendTranslateAffordanceForCellNode(id cellNode, RDKComment *comment);
+static void ApolloRemoveTranslateAffordanceForCellNode(id cellNode, RDKComment *comment);
+static void ApolloReleaseTapHoldForUnchangedTranslation(id markerAnchorNode, id textNode, NSString *sourceText);
+static void ApolloInstallHeaderMarkerFromTranslatedTitle(id headerCellNode);
+static id ApolloCommentsHeaderCellNodeForNode(id node);
 static void ApolloShowOriginalWithRetranslateAffordanceForCellNode(id cellNode, RDKComment *comment, id textNode);
 static BOOL ApolloAttributedStringEndsWithMarker(NSAttributedString *attr);
 static void ApolloApplyTranslationToTitleNode(id titleNode, id textNode, NSString *sourceText, NSString *translatedText);
@@ -1231,10 +1254,26 @@ static void ApolloLogPostBodySkipOnce(RDKLink *link, NSString *reason) {
     ApolloLog(@"[Translation] Skipping post body fullName=%@ — %@", fullName, reason);
 }
 
+static NSString *ApolloStripInlineMediaTokens(NSString *text);
+
+// NO when the "translation" is the original handed back: the provider saw the
+// target language, or a name / emoji / slang word with nothing to translate.
+// Inline media-id tokens (![gif](giphy|…)) never reach the provider, so they
+// are dropped from both sides — a one-word reply with a gif would otherwise
+// never compare equal to its own echo.
 static BOOL ApolloTranslatedTextDiffersFromSource(NSString *sourceText, NSString *translatedText) {
-    NSString *sourceNorm = ApolloNormalizeTextForCompare(sourceText ?: @"");
-    NSString *translatedNorm = ApolloNormalizeTextForCompare(translatedText ?: @"");
+    NSString *sourceNorm = ApolloNormalizeTextForCompare(ApolloStripInlineMediaTokens(sourceText ?: @""));
+    NSString *translatedNorm = ApolloNormalizeTextForCompare(ApolloStripInlineMediaTokens(translatedText ?: @""));
     return sourceNorm.length > 0 && translatedNorm.length > 0 && ![sourceNorm isEqualToString:translatedNorm];
+}
+
+// YES when the cached reply for `cacheKey` is just `sourceText` handed back. The
+// tap-to-translate passes put their "Translate" control up on DETECTION, before
+// the request answers; for text already known to come back unchanged that
+// control would translate nothing, so they skip it (#1345).
+static BOOL ApolloCachedTranslationLeavesTextUnchanged(NSString *cacheKey, NSString *sourceText) {
+    NSString *cached = ApolloRawTranslationCacheGet(cacheKey);
+    return cached.length > 0 && !ApolloTranslatedTextDiffersFromSource(sourceText, cached);
 }
 
 static void ApolloMarkVisibleTranslationApplied(NSString *sourceText, NSString *translatedText) {
@@ -1401,6 +1440,48 @@ static NSString *ApolloStripInlineMediaTokens(NSString *text) {
         stripped = [stripped stringByReplacingOccurrencesOfString:@"\n\n\n" withString:@"\n\n"];
     }
     return [stripped stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+}
+
+// Key into sTranslationSourceLanguages: a digest of the compare-normalized
+// source with media tokens dropped, so the trimmed text a request was made
+// from and the raw body a marker is later drawn for land on the same entry,
+// and the on-disk copy stays small.
+static NSString *ApolloTranslationSourceLanguageKey(NSString *sourceText) {
+    NSString *norm = ApolloNormalizeTextForCompare(ApolloStripInlineMediaTokens(sourceText));
+    if (norm.length == 0) return nil;
+    NSData *bytes = [norm dataUsingEncoding:NSUTF8StringEncoding];
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256(bytes.bytes, (CC_LONG)bytes.length, digest);
+    NSMutableString *key = [NSMutableString stringWithCapacity:32];
+    for (int i = 0; i < 16; i++) [key appendFormat:@"%02x", digest[i]];
+    return key;
+}
+
+// Fold a provider-reported language ("es", "zh-CN", "pt-PT", "zh-Hans", the
+// legacy "iw") to the base code the markers, the target compare and the
+// "Don't Translate" list use. Non-answers ("und", empty, junk) come back nil.
+static NSString *ApolloNormalizedReportedSourceLanguage(NSString *reported) {
+    NSString *code = ApolloNormalizeLanguageCode(reported);
+    if (code.length < 2 || code.length > 3 || [code isEqualToString:@"und"]) return nil;
+    NSCharacterSet *letters = [NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyz"];
+    if ([code rangeOfCharacterFromSet:letters.invertedSet].location != NSNotFound) return nil;
+    // Google still answers with ISO 639's withdrawn codes for these.
+    NSDictionary<NSString *, NSString *> *legacy = @{ @"iw": @"he", @"jw": @"jv", @"in": @"id", @"ji": @"yi" };
+    return legacy[code] ?: code;
+}
+
+static void ApolloRecordTranslationSourceLanguage(NSString *sourceText, NSString *code) {
+    NSString *key = ApolloTranslationSourceLanguageKey(sourceText);
+    if (key.length == 0 || code.length == 0 || !sTranslationSourceLanguages) return;
+    ApolloMirrorSetCapped(sTranslationSourceLanguages, sTranslationSourceLanguagesOrder, key, code);
+}
+
+static NSString *ApolloRecordedTranslationSourceLanguage(NSString *sourceText) {
+    NSString *key = ApolloTranslationSourceLanguageKey(sourceText);
+    if (key.length == 0 || !sTranslationSourceLanguages) return nil;
+    @synchronized (sTranslationSourceLanguages) {
+        return sTranslationSourceLanguages[key];
+    }
 }
 
 static NSString *ApolloProtectTranslationLinks(NSString *sourceText, NSDictionary<NSString *, NSString *> **protectedLinksOut) {
@@ -2606,6 +2687,11 @@ static void ApolloApplyTranslationToCellNode(id commentCellNode, RDKComment *com
             if (ApolloTranslatedTextDiffersFromSource(comment.body, translatedText)) {
                 ApolloAppendTranslateAffordanceForCellNode(commentCellNode, comment);
                 ApolloTranslationHealCellDisplaySync(commentCellNode);
+            } else {
+                // The detection pass put "🌐 Translate" up before the provider
+                // answered; the answer is the original back, so it would
+                // translate nothing (#1345).
+                ApolloRemoveTranslateAffordanceForCellNode(commentCellNode, comment);
             }
             return;
         }
@@ -2639,6 +2725,16 @@ static void ApolloApplyTranslationToCellNode(id commentCellNode, RDKComment *com
                 ApolloShowOriginalWithRetranslateAffordanceForCellNode(commentCellNode, comment, pinnedNode);
             }
         }
+        return;
+    }
+
+    // The provider handed the original back (it recognised the target
+    // language, or a name / emoji / slang word it left alone). Leave the body
+    // as Apollo drew it: no ownership, no rewrite, and no "Translated from …"
+    // line naming a language nothing was translated from (#1345).
+    if (!ApolloTranslatedTextDiffersFromSource(comment.body, translatedText)) {
+        ApolloTranslationVerboseLog("[Translation] comment %{public}@ came back unchanged — no marker", pinName ?: @"(none)");
+        if (sTapToTranslate) ApolloRemoveTranslateAffordanceForCellNode(commentCellNode, comment);
         return;
     }
 
@@ -3348,18 +3444,30 @@ static void ApolloApplyTranslationToHeaderCellNode(id headerCellNode, RDKLink *l
          [translatedNorm containsString:currentNorm]);
     if (!textMatchesBody && !textMatchesTranslation) return;
 
+    // A body the provider handed back unchanged was not translated: it gets no
+    // marker, no hold and no rewrite (#1345).
+    BOOL translationChangesBody = ApolloTranslatedTextDiffersFromSource(body, translatedText);
+
     // Update the post's metadata-row banner ("🌐 Translated from <Language>")
     // whenever the post is (or is about to be) showing its translation. This
     // MUST run before the no-op return below, because on reopen the header body
     // already shows the cached translation and the write is skipped.
     if (textMatchesTranslation || textMatchesBody) {
         NSString *postSourceCode = nil;
-        BOOL shouldShowMarker = (sShowTranslationDetails || sTapToTranslate) && ApolloShouldShowTranslationMarkerForSource(body, &postSourceCode);
+        BOOL shouldShowMarker = (sShowTranslationDetails || sTapToTranslate) && translationChangesBody &&
+            ApolloShouldShowTranslationMarkerForSource(body, &postSourceCode);
         // Compact "🌐 PT" marker on the post's metadata row (PostInfoNode). Always
         // call so the marker is hidden when the flag is off or source==target.
         // The body text node is the tap-toggle handle: tapping the marker flips
         // the header (title + body + card) translated⇄original, like the feed.
         ApolloUpdatePostInfoMarkerForNode(headerCellNode, postSourceCode, shouldShowMarker, textNode);
+    }
+
+    if (!translationChangesBody) {
+        ApolloReleaseTapHoldForUnchangedTranslation(nil, textNode, body);
+        // The title may still be translated (or held): let it drive the marker.
+        ApolloInstallHeaderMarkerFromTranslatedTitle(headerCellNode);
+        return;
     }
 
     if (textMatchesTranslation && !textMatchesBody) return;
@@ -3371,11 +3479,9 @@ static void ApolloApplyTranslationToHeaderCellNode(id headerCellNode, RDKLink *l
 
     // TAP-TO-TRANSLATE: hold the header swap until the marker is tapped. Stash
     // the tap's inputs (content assocs, auto-pin, the link + body-node handles
-    // the toggle routes through) and show the TARGET-code marker. A no-op
-    // translation (same-language / "Don't Translate" language) gets no hold and
-    // no marker — but STILL returns: tap mode must never auto-swap.
+    // the toggle routes through) and show the TARGET-code marker. (A no-op
+    // translation already returned above, releasing any detection-time hold.)
     if (sTapToTranslate && !ApolloTapModeIsTranslatedKey(body)) {
-        if (!ApolloTranslatedTextDiffersFromSource(body, translatedText)) return;
         objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, body, OBJC_ASSOCIATION_COPY_NONATOMIC);
         objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, translatedText, OBJC_ASSOCIATION_COPY_NONATOMIC);
         objc_setAssociatedObject(textNode, kApolloTitlePinnedOriginalKey, @2, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // @2 = tap-mode auto-pin
@@ -3471,11 +3577,20 @@ static void ApolloApplyTranslationToPostTextNode(id owner, id textNode, NSString
             objc_setAssociatedObject(textNode, kApolloTitlePinnedSourceKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
         }
     }
+    // The provider handed the original back: nothing to swap, and a hold the
+    // detection pass put up (with its "🌐 EN" marker) would translate nothing
+    // (#1345).
+    if (!ApolloTranslatedTextDiffersFromSource(sourceText, translatedText)) {
+        ApolloReleaseTapHoldForUnchangedTranslation(textNode, textNode, sourceText);
+        // Same handoff as the header-cell apply: that hide also took down a
+        // translated or held title's marker on the shared info row.
+        id headerCellNode = ApolloCommentsHeaderCellNodeForNode(textNode);
+        if (headerCellNode) ApolloInstallHeaderMarkerFromTranslatedTitle(headerCellNode);
+        return;
+    }
     // TAP-TO-TRANSLATE: hold the swap; stash + auto-pin so the marker tap works.
-    // A no-op translation (same-language / skipped language) gets no hold — but
-    // STILL returns: tap mode must never auto-swap.
+    // Still returns: tap mode must never auto-swap.
     if (sTapToTranslate && !ApolloTapModeIsTranslatedKey(sourceText)) {
-        if (!ApolloTranslatedTextDiffersFromSource(sourceText, translatedText)) return;
         objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, sourceText, OBJC_ASSOCIATION_COPY_NONATOMIC);
         objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, translatedText, OBJC_ASSOCIATION_COPY_NONATOMIC);
         objc_setAssociatedObject(textNode, kApolloTitlePinnedOriginalKey, @2, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // @2 = tap-mode auto-pin
@@ -3608,6 +3723,24 @@ static NSString *ApolloExtractGoogleTranslation(id jsonObject) {
     return nil;
 }
 
+// The language Google says it translated FROM. gtx (translate_a/single) puts it
+// third at the top level — [[segments…], null, "es", …] — and the clients5
+// dict-chrome-ex endpoint pairs it with the text: [["<translation>", "es"]].
+static NSString *ApolloExtractGoogleSourceLanguage(id jsonObject) {
+    if (![jsonObject isKindOfClass:[NSArray class]]) return nil;
+    NSArray *array = (NSArray *)jsonObject;
+    if (array.count > 2 && [array[2] isKindOfClass:[NSString class]]) return array[2];
+    NSArray *pair = [array.firstObject isKindOfClass:[NSArray class]] ? array.firstObject : nil;
+    if (pair.count > 1 && [pair[0] isKindOfClass:[NSString class]] && [pair[1] isKindOfClass:[NSString class]]) {
+        return pair[1];
+    }
+    return nil;
+}
+
+// Completion for one provider leg: the translation plus the source language the
+// provider reports translating FROM (nil when it gave none).
+typedef void (^ApolloTranslationLegCompletion)(NSString *translated, NSString *sourceLanguage, NSError *error);
+
 // The primary free Google endpoint (what the feature has always used).
 static NSURL *ApolloGoogleTranslatePrimaryURL(NSString *text, NSString *targetLanguage) {
     NSURLComponents *components = [[NSURLComponents alloc] init];
@@ -3648,13 +3781,13 @@ static NSURL *ApolloGoogleTranslateFallbackURL(NSString *text, NSString *targetL
 // `endpointLabel` only feeds the local diagnostic log.
 static void ApolloGoogleTranslateFetch(NSURL *url,
                                        NSString *endpointLabel,
-                                       void (^completion)(NSString *translated, NSError *error)) {
+                                       ApolloTranslationLegCompletion completion) {
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:12.0];
     request.HTTPMethod = @"GET";
 
     NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         if (error) {
-            dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, error); });
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, nil, error); });
             return;
         }
 
@@ -3676,7 +3809,7 @@ static void ApolloGoogleTranslateFetch(NSURL *url,
             NSMutableDictionary *info = [NSMutableDictionary dictionaryWithObject:message forKey:NSLocalizedDescriptionKey];
             if (quota) info[kApolloTranslationQuotaErrorKey] = @YES;
             NSError *statusError = [NSError errorWithDomain:@"ApolloTranslation" code:101 userInfo:info];
-            dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, statusError); });
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, nil, statusError); });
             return;
         }
 
@@ -3684,7 +3817,7 @@ static void ApolloGoogleTranslateFetch(NSURL *url,
         id jsonObject = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
         if (jsonError) {
             ApolloLog(@"[Translation] Google(%@) response not JSON: %@", endpointLabel, jsonError.localizedDescription);
-            dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, jsonError); });
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, nil, jsonError); });
             return;
         }
 
@@ -3692,11 +3825,12 @@ static void ApolloGoogleTranslateFetch(NSURL *url,
         if (![translated isKindOfClass:[NSString class]] || translated.length == 0) {
             ApolloLog(@"[Translation] Google(%@) response parse failed (unrecognized shape)", endpointLabel);
             NSError *parseError = [NSError errorWithDomain:@"ApolloTranslation" code:102 userInfo:@{NSLocalizedDescriptionKey: @"Google Translate response parse error"}];
-            dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, parseError); });
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, nil, parseError); });
             return;
         }
 
-        dispatch_async(dispatch_get_main_queue(), ^{ completion(translated, nil); });
+        NSString *sourceLanguage = ApolloExtractGoogleSourceLanguage(jsonObject);
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(translated, sourceLanguage, nil); });
     }];
 
     [task resume];
@@ -3713,7 +3847,7 @@ static const NSTimeInterval kApolloGoogleGtxBackoffInterval = 120.0;
 
 static void ApolloTranslateViaGoogle(NSString *text,
                                      NSString *targetLanguage,
-                                     void (^completion)(NSString *translated, NSError *error)) {
+                                     ApolloTranslationLegCompletion completion) {
     // One clients5 attempt, delivering `primaryError`'s quota tag even when the
     // fallback fails for a DIFFERENT reason — the gtx 429 is what the user
     // needs explained, and dropping it here would turn the purpose-built
@@ -3721,12 +3855,12 @@ static void ApolloTranslateViaGoogle(NSString *text,
     void (^runClients5)(NSError *) = ^(NSError *primaryError) {
         NSURL *fallbackURL = ApolloGoogleTranslateFallbackURL(text, targetLanguage);
         if (!fallbackURL) {
-            completion(nil, primaryError);
+            completion(nil, nil, primaryError);
             return;
         }
-        ApolloGoogleTranslateFetch(fallbackURL, @"clients5", ^(NSString *retried, NSError *fallbackError) {
+        ApolloGoogleTranslateFetch(fallbackURL, @"clients5", ^(NSString *retried, NSString *retriedSource, NSError *fallbackError) {
             if ([retried isKindOfClass:[NSString class]] && retried.length > 0) {
-                completion(retried, nil);
+                completion(retried, retriedSource, nil);
                 return;
             }
             NSError *delivered = fallbackError ?: primaryError;
@@ -3736,7 +3870,7 @@ static void ApolloTranslateViaGoogle(NSString *text,
                 info[kApolloTranslationQuotaErrorKey] = @YES;
                 delivered = [NSError errorWithDomain:delivered.domain code:delivered.code userInfo:info];
             }
-            completion(nil, delivered);
+            completion(nil, nil, delivered);
         });
     };
 
@@ -3748,12 +3882,12 @@ static void ApolloTranslateViaGoogle(NSString *text,
     NSURL *primaryURL = ApolloGoogleTranslatePrimaryURL(text, targetLanguage);
     if (!primaryURL) {
         NSError *error = [NSError errorWithDomain:@"ApolloTranslation" code:100 userInfo:@{NSLocalizedDescriptionKey: @"Failed to build Google Translate URL"}];
-        dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, error); });
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, nil, error); });
         return;
     }
-    ApolloGoogleTranslateFetch(primaryURL, @"gtx", ^(NSString *translated, NSError *primaryError) {
+    ApolloGoogleTranslateFetch(primaryURL, @"gtx", ^(NSString *translated, NSString *sourceLanguage, NSError *primaryError) {
         if ([translated isKindOfClass:[NSString class]] && translated.length > 0) {
-            completion(translated, nil);
+            completion(translated, sourceLanguage, nil);
             return;
         }
         if ([primaryError.userInfo[kApolloTranslationQuotaErrorKey] boolValue]) {
@@ -3796,11 +3930,11 @@ static NSString *ApolloMicrosoftTargetLanguageCode(NSString *code) {
 // asks Azure to auto-detect, matching every other provider's contract.
 static void ApolloTranslateViaMicrosoft(NSString *text,
                                         NSString *targetLanguage,
-                                        void (^completion)(NSString *translated, NSError *error)) {
+                                        ApolloTranslationLegCompletion completion) {
     if (sMicrosoftTranslateAPIKey.length == 0) {
         NSError *error = [NSError errorWithDomain:@"ApolloTranslation" code:300
                                          userInfo:@{NSLocalizedDescriptionKey: @"Microsoft Translator needs an API key — add one in Translation settings"}];
-        dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, error); });
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, nil, error); });
         return;
     }
 
@@ -3816,7 +3950,7 @@ static void ApolloTranslateViaMicrosoft(NSString *text,
     if (!url) {
         NSError *error = [NSError errorWithDomain:@"ApolloTranslation" code:301
                                          userInfo:@{NSLocalizedDescriptionKey: @"Failed to build Microsoft Translator URL"}];
-        dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, error); });
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, nil, error); });
         return;
     }
 
@@ -3825,7 +3959,7 @@ static void ApolloTranslateViaMicrosoft(NSString *text,
     NSError *jsonError = nil;
     NSData *body = [NSJSONSerialization dataWithJSONObject:@[@{@"Text": text}] options:0 error:&jsonError];
     if (!body) {
-        dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, jsonError); });
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, nil, jsonError); });
         return;
     }
 
@@ -3842,7 +3976,7 @@ static void ApolloTranslateViaMicrosoft(NSString *text,
 
     NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         if (error) {
-            dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, error); });
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, nil, error); });
             return;
         }
 
@@ -3880,19 +4014,20 @@ static void ApolloTranslateViaMicrosoft(NSString *text,
             NSMutableDictionary *info = [NSMutableDictionary dictionaryWithObject:cause forKey:NSLocalizedDescriptionKey];
             if (quota) info[kApolloTranslationQuotaErrorKey] = @YES;
             NSError *statusError = [NSError errorWithDomain:@"ApolloTranslation" code:302 userInfo:info];
-            dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, statusError); });
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, nil, statusError); });
             return;
         }
 
         NSError *parseError = nil;
         id jsonObject = [NSJSONSerialization JSONObjectWithData:data options:0 error:&parseError];
         if (parseError) {
-            dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, parseError); });
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, nil, parseError); });
             return;
         }
 
-        // [{"detectedLanguage":{…},"translations":[{"text":"…","to":"en"}]}]
+        // [{"detectedLanguage":{"language":"es","score":1.0},"translations":[{"text":"…","to":"en"}]}]
         NSString *translated = nil;
+        NSString *detectedLanguage = nil;
         id first = [jsonObject isKindOfClass:[NSArray class]] ? [(NSArray *)jsonObject firstObject] : nil;
         if ([first isKindOfClass:[NSDictionary class]]) {
             id translations = ((NSDictionary *)first)[@"translations"];
@@ -3901,17 +4036,20 @@ static void ApolloTranslateViaMicrosoft(NSString *text,
                 id candidate = ((NSDictionary *)firstTranslation)[@"text"];
                 if ([candidate isKindOfClass:[NSString class]]) translated = candidate;
             }
+            id detected = ((NSDictionary *)first)[@"detectedLanguage"];
+            id detectedCode = [detected isKindOfClass:[NSDictionary class]] ? ((NSDictionary *)detected)[@"language"] : nil;
+            if ([detectedCode isKindOfClass:[NSString class]]) detectedLanguage = detectedCode;
         }
 
         if (translated.length == 0) {
             NSError *shapeError = [NSError errorWithDomain:@"ApolloTranslation" code:303
                                                   userInfo:@{NSLocalizedDescriptionKey: @"Microsoft Translator response parse error"}];
-            dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, shapeError); });
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, nil, shapeError); });
             return;
         }
 
         NSString *result = translated;
-        dispatch_async(dispatch_get_main_queue(), ^{ completion(result, nil); });
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(result, detectedLanguage, nil); });
     }];
 
     [task resume];
@@ -3919,7 +4057,7 @@ static void ApolloTranslateViaMicrosoft(NSString *text,
 
 static void ApolloTranslateViaLibre(NSString *text,
                                     NSString *targetLanguage,
-                                    void (^completion)(NSString *translated, NSError *error)) {
+                                    ApolloTranslationLegCompletion completion) {
     // Normalize at the request site too (not just %ctor/backup load) so a dead
     // default URL can never sneak back in via a later settings write.
     NSString *urlString = ApolloNormalizedLibreTranslateURLSetting(sLibreTranslateURL);
@@ -3932,12 +4070,12 @@ static void ApolloTranslateViaLibre(NSString *text,
     if (ApolloLibreTranslateNeedsAPIKey()) {
         NSError *error = [NSError errorWithDomain:@"ApolloTranslation" code:204
                                          userInfo:@{NSLocalizedDescriptionKey: @"LibreTranslate needs an API key — add one in Translation settings, or use your own self-hosted server"}];
-        dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, error); });
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, nil, error); });
         return;
     }
     if (!url) {
         NSError *error = [NSError errorWithDomain:@"ApolloTranslation" code:200 userInfo:@{NSLocalizedDescriptionKey: @"Invalid LibreTranslate URL"}];
-        dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, error); });
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, nil, error); });
         return;
     }
 
@@ -3955,7 +4093,7 @@ static void ApolloTranslateViaLibre(NSString *text,
     NSError *jsonError = nil;
     NSData *jsonData = [NSJSONSerialization dataWithJSONObject:payload options:0 error:&jsonError];
     if (!jsonData) {
-        dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, jsonError); });
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, nil, jsonError); });
         return;
     }
 
@@ -3966,7 +4104,7 @@ static void ApolloTranslateViaLibre(NSString *text,
 
     NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         if (error) {
-            dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, error); });
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, nil, error); });
             return;
         }
 
@@ -4000,7 +4138,7 @@ static void ApolloTranslateViaLibre(NSString *text,
             NSMutableDictionary *info = [NSMutableDictionary dictionaryWithObject:message forKey:NSLocalizedDescriptionKey];
             if (quota) info[kApolloTranslationQuotaErrorKey] = @YES;
             NSError *statusError = [NSError errorWithDomain:@"ApolloTranslation" code:201 userInfo:info];
-            dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, statusError); });
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, nil, statusError); });
             return;
         }
 
@@ -4020,27 +4158,33 @@ static void ApolloTranslateViaLibre(NSString *text,
                 deliveredError = [NSError errorWithDomain:@"ApolloTranslation" code:203 userInfo:@{NSLocalizedDescriptionKey: message}];
             }
             NSError *finalError = deliveredError;
-            dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, finalError); });
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, nil, finalError); });
             return;
         }
 
+        // {"translatedText":"…","detectedLanguage":{"language":"es","confidence":90}}
+        // (detectedLanguage only comes back for source "auto", which we always send).
         NSString *translated = nil;
+        NSDictionary *resultObject = nil;
         if ([jsonObject isKindOfClass:[NSDictionary class]]) {
-            translated = ((NSDictionary *)jsonObject)[@"translatedText"];
+            resultObject = jsonObject;
         } else if ([jsonObject isKindOfClass:[NSArray class]]) {
             id first = [(NSArray *)jsonObject firstObject];
-            if ([first isKindOfClass:[NSDictionary class]]) {
-                translated = ((NSDictionary *)first)[@"translatedText"];
-            }
+            if ([first isKindOfClass:[NSDictionary class]]) resultObject = first;
         }
+        translated = resultObject[@"translatedText"];
+        id detected = resultObject[@"detectedLanguage"];
+        if ([detected isKindOfClass:[NSArray class]]) detected = [(NSArray *)detected firstObject];
+        id detectedCode = [detected isKindOfClass:[NSDictionary class]] ? ((NSDictionary *)detected)[@"language"] : nil;
+        NSString *detectedLanguage = [detectedCode isKindOfClass:[NSString class]] ? detectedCode : nil;
 
         if (![translated isKindOfClass:[NSString class]] || translated.length == 0) {
             NSError *responseError = [NSError errorWithDomain:@"ApolloTranslation" code:202 userInfo:@{NSLocalizedDescriptionKey: @"LibreTranslate response parse error"}];
-            dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, responseError); });
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, nil, responseError); });
             return;
         }
 
-        dispatch_async(dispatch_get_main_queue(), ^{ completion(translated, nil); });
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(translated, detectedLanguage, nil); });
     }];
 
     [task resume];
@@ -4354,7 +4498,7 @@ static NSString *ApolloDetectSourceLanguageForApple(NSString *text) {
 static void ApolloTranslateViaAppleWithSource(NSString *text,
                                               NSString *targetLanguage,
                                               NSString *source,
-                                              void (^completion)(NSString *translated, NSError *error)) {
+                                              ApolloTranslationLegCompletion completion) {
 #if APOLLO_HAS_APPLE_TRANSLATE
     if (source.length == 0) {
         // Could not confidently fingerprint the full input — do not guess (a wrong source
@@ -4362,14 +4506,14 @@ static void ApolloTranslateViaAppleWithSource(NSString *text,
         NSError *err = [NSError errorWithDomain:@"ApolloTranslation" code:301
             userInfo:@{NSLocalizedDescriptionKey: @"Apple: source language undetected",
                        kApolloTranslationAppleLegErrorKey: @YES}];
-        if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, err); });
+        if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, nil, err); });
         return;
     }
 
     NSString *normTarget = ApolloNormalizeLanguageCode(targetLanguage) ?: targetLanguage;
     if ([source isEqualToString:[normTarget lowercaseString]]) {
         // Already in the target language — no-op success (Apple can't translate X->X).
-        if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(text, nil); });
+        if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(text, source, nil); });
         return;
     }
 
@@ -4386,20 +4530,21 @@ static void ApolloTranslateViaAppleWithSource(NSString *text,
             info[kApolloTranslationAppleLegErrorKey] = @YES;
             tagged = [NSError errorWithDomain:error.domain code:error.code userInfo:info];
         }
-        if (completion) completion(translated, tagged);
+        // `source` is what Apple translated from: we chose it and handed it over.
+        if (completion) completion(translated, translated.length > 0 ? source : nil, tagged);
     }];
 #else
     NSError *error = [NSError errorWithDomain:@"ApolloTranslation" code:300
         userInfo:@{NSLocalizedDescriptionKey: @"Apple translation backend unavailable in this build"}];
     if (completion) {
-        dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, error); });
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, nil, error); });
     }
 #endif
 }
 
 static void ApolloTranslateViaApple(NSString *text,
                                     NSString *targetLanguage,
-                                    void (^completion)(NSString *translated, NSError *error)) {
+                                    ApolloTranslationLegCompletion completion) {
     ApolloTranslateViaAppleWithSource(text, targetLanguage,
         ApolloDetectSourceLanguageForApple(text), completion);
 }
@@ -4610,13 +4755,15 @@ static NSArray<NSString *> *ApolloSplitTranslationText(NSString *text, NSUIntege
 // then reassemble the results with `separators` between them. Sequential (not parallel) so
 // the output order is deterministic and we never fan out N simultaneous requests at the
 // same public endpoint. Any chunk failing fails the whole translation (nil result) so the
-// caller can fall back to the other provider, matching the single-request behaviour.
+// caller can fall back to the other provider, matching the single-request behaviour. The
+// reported source language is the one the providers named for the most text.
 static void ApolloTranslateChunksSequentially(NSArray<NSString *> *chunks,
                                               NSArray<NSString *> *separators,
                                               NSString *targetLanguage,
-                                              void (^translateOne)(NSString *chunk, NSString *target, void (^cb)(NSString *, NSError *)),
-                                              void (^completion)(NSString *joined, NSError *error)) {
+                                              void (^translateOne)(NSString *chunk, NSString *target, ApolloTranslationLegCompletion cb),
+                                              ApolloTranslationLegCompletion completion) {
     NSMutableArray<NSString *> *results = [NSMutableArray arrayWithCapacity:chunks.count];
+    NSMutableDictionary<NSString *, NSNumber *> *sourceWeights = [NSMutableDictionary dictionary];
     // Recursive async driver. `holder` keeps the step block alive across the network
     // callbacks (a strong local would die when this function returns); re-invocation goes
     // through a __weak ref so there's no compiler-visible retain cycle. Emptying `holder`
@@ -4634,19 +4781,28 @@ static void ApolloTranslateChunksSequentially(NSArray<NSString *> *chunks,
                 }
                 [joined appendString:results[k]];
             }
+            __block NSString *source = nil;
+            __block NSUInteger sourceWeight = 0;
+            [sourceWeights enumerateKeysAndObjectsUsingBlock:^(NSString *language, NSNumber *weight, __unused BOOL *stop) {
+                if (weight.unsignedIntegerValue > sourceWeight) { sourceWeight = weight.unsignedIntegerValue; source = language; }
+            }];
             [holder removeAllObjects];   // finished — release the driver block
-            completion([joined copy], nil);
+            completion([joined copy], source, nil);
             return;
         }
-        translateOne(chunks[idx], targetLanguage, ^(NSString *translated, NSError *error) {
+        NSString *chunk = chunks[idx];
+        translateOne(chunk, targetLanguage, ^(NSString *translated, NSString *sourceLanguage, NSError *error) {
             if (![translated isKindOfClass:[NSString class]] || translated.length == 0) {
                 NSError *chunkError = error ?: [NSError errorWithDomain:@"ApolloTranslation" code:103
                     userInfo:@{NSLocalizedDescriptionKey: @"Chunked translation failed"}];
                 [holder removeAllObjects];   // release on the failure path too
-                completion(nil, chunkError);
+                completion(nil, nil, chunkError);
                 return;
             }
             [results addObject:translated];
+            if (sourceLanguage.length > 0) {
+                sourceWeights[sourceLanguage] = @(sourceWeights[sourceLanguage].unsignedIntegerValue + chunk.length);
+            }
             void (^next)(void) = weakStep;
             if (next) next();
         });
@@ -4658,14 +4814,14 @@ static void ApolloTranslateChunksSequentially(NSArray<NSString *> *chunks,
 
 static void ApolloTranslateTextWithFallback(NSString *text,
                                             NSString *targetLanguage,
-                                            void (^completion)(NSString *translated, NSError *error)) {
+                                            ApolloTranslationLegCompletion completion) {
     // User-controlled skip: if the source language is in the skip list, or already
     // matches the target, return the original text untouched. Downstream callers
     // treat this as a successful no-op (cache will store source==translation,
     // making future hits instant).
     if (ApolloShouldSkipTranslationForText(text, targetLanguage)) {
         if (completion) {
-            dispatch_async(dispatch_get_main_queue(), ^{ completion(text, nil); });
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(text, nil, nil); });
         }
         return;
     }
@@ -4692,7 +4848,7 @@ static void ApolloTranslateTextWithFallback(NSString *text,
         } else {
             NSString *source = ApolloDetectSourceLanguageForApple(text);
             ApolloTranslateChunksSequentially(chunks, separators, targetLanguage,
-                ^(NSString *chunk, NSString *target, void (^cb)(NSString *, NSError *)) {
+                ^(NSString *chunk, NSString *target, ApolloTranslationLegCompletion cb) {
                     ApolloTranslateViaAppleWithSource(chunk, target, source, cb);
                 }, completion);
         }
@@ -4709,8 +4865,8 @@ static void ApolloTranslateTextWithFallback(NSString *text,
     }
 
     // Run one whole (possibly multi-chunk) translation through the named provider.
-    void (^runProvider)(NSString *, void (^)(NSString *, NSError *)) = ^(NSString *provider, void (^done)(NSString *, NSError *)) {
-        void (^one)(NSString *, NSString *, void (^)(NSString *, NSError *)) = ^(NSString *chunk, NSString *target, void (^cb)(NSString *, NSError *)) {
+    void (^runProvider)(NSString *, ApolloTranslationLegCompletion) = ^(NSString *provider, ApolloTranslationLegCompletion done) {
+        void (^one)(NSString *, NSString *, ApolloTranslationLegCompletion) = ^(NSString *chunk, NSString *target, ApolloTranslationLegCompletion cb) {
             if ([provider isEqualToString:@"libre"]) {
                 ApolloTranslateViaLibre(chunk, target, cb);
             } else if ([provider isEqualToString:@"microsoft"]) {
@@ -4727,9 +4883,9 @@ static void ApolloTranslateTextWithFallback(NSString *text,
     };
 
     // If the primary provider fails (including a mid-chunk failure), fall back to the other.
-    runProvider(primaryProvider, ^(NSString *translated, NSError *primaryError) {
+    runProvider(primaryProvider, ^(NSString *translated, NSString *sourceLanguage, NSError *primaryError) {
         if ([translated isKindOfClass:[NSString class]] && translated.length > 0) {
-            completion(translated, nil);
+            completion(translated, sourceLanguage, nil);
             return;
         }
         // Pick the fallback that can actually succeed. A configured Microsoft
@@ -4748,12 +4904,12 @@ static void ApolloTranslateTextWithFallback(NSString *text,
             other = @"libre";
         }
         if (!other) {
-            completion(nil, primaryError);
+            completion(nil, nil, primaryError);
             return;
         }
-        runProvider(other, ^(NSString *fallbackTranslated, NSError *fallbackError) {
+        runProvider(other, ^(NSString *fallbackTranslated, NSString *fallbackSourceLanguage, NSError *fallbackError) {
             if ([fallbackTranslated isKindOfClass:[NSString class]] && fallbackTranslated.length > 0) {
-                completion(fallbackTranslated, nil);
+                completion(fallbackTranslated, fallbackSourceLanguage, nil);
                 return;
             }
             // Both providers failed. Surface BOTH legs' reasons: a Google-primary
@@ -4771,7 +4927,7 @@ static void ApolloTranslateTextWithFallback(NSString *text,
                 [fallbackError.userInfo[kApolloTranslationQuotaErrorKey] boolValue]) {
                 info[kApolloTranslationQuotaErrorKey] = @YES;
             }
-            completion(nil, [NSError errorWithDomain:@"ApolloTranslation" code:110 userInfo:info]);
+            completion(nil, nil, [NSError errorWithDomain:@"ApolloTranslation" code:110 userInfo:info]);
         });
     });
 }
@@ -4855,20 +5011,26 @@ static void ApolloNoteTranslationFailureForToast(NSError *error) {
 // chain), google2 (clients5 fallback endpoint alone), libre, failtoast (drives
 // the consecutive-failure toast with a synthetic error; text = toast detail),
 // anything else = the user-selected provider with cross-provider fallback.
+// `marker` runs the whole comment pipeline (ApolloRequestTranslation, then the
+// apply's changed/marker decision) and logs which language the marker names.
+static void ApolloRequestTranslation(NSString *cacheKey, NSString *sourceText, NSString *targetLanguage,
+                                     void (^completion)(NSString *translated, NSError *error));
 void ApolloTranslationDebugProbe(NSString *spec) {
     NSRange space = [spec rangeOfString:@" "];
     NSString *leg = space.location != NSNotFound ? [spec substringToIndex:space.location] : spec;
     NSString *text = space.location != NSNotFound ? [spec substringFromIndex:NSMaxRange(space)] : @"";
     if (text.length == 0) { ApolloLog(@"[Translation][Probe] no text given"); return; }
     NSString *target = ApolloResolvedTargetLanguageCode() ?: @"en";
-    void (^report)(NSString *, NSError *) = ^(NSString *translated, NSError *error) {
+    void (^report)(NSString *, NSString *, NSError *) = ^(NSString *translated, NSString *sourceLanguage, NSError *error) {
         // quota= is the flag that decides whether the user sees the
         // "Translation Limit Reached" notification rather than a generic
         // failure, so surface it here — it isn't visible in the message text.
-        ApolloLog(@"[Translation][Probe] leg=%@ target=%@ ok=%d quota=%d apple=%d translated='%@' error=%@",
+        // src= is the language the provider reported, nl= the on-device guess.
+        ApolloLog(@"[Translation][Probe] leg=%@ target=%@ ok=%d quota=%d apple=%d src=%@ nl=%@ translated='%@' error=%@",
                   leg, target, translated.length > 0,
                   [error.userInfo[kApolloTranslationQuotaErrorKey] boolValue],
                   [error.userInfo[kApolloTranslationAppleLegErrorKey] boolValue],
+                  sourceLanguage ?: @"(none)", ApolloDetectDominantLanguage(text) ?: @"(none)",
                   translated ?: @"(nil)",
                   error ? [NSString stringWithFormat:@"%@/%ld %@", error.domain, (long)error.code, error.localizedDescription] : @"none");
     };
@@ -4886,6 +5048,17 @@ void ApolloTranslationDebugProbe(NSString *spec) {
         ApolloTranslateViaMicrosoft(text, target, report);
     } else if ([leg isEqualToString:@"apple"]) {
         ApolloTranslateViaApple(text, target, report);
+    } else if ([leg isEqualToString:@"marker"]) {
+        ApolloRequestTranslation(ApolloTranslationCacheKey(text, target), text, target, ^(NSString *translated, NSError *error) {
+            NSString *code = nil;
+            BOOL changed = ApolloTranslatedTextDiffersFromSource(text, translated);
+            BOOL marker = changed && ApolloShouldShowTranslationMarkerForSource(text, &code);
+            ApolloLog(@"[Translation][Probe] marker text='%@' changed=%d marker=%@ recorded=%@ nl=%@ translated='%@' error=%@",
+                      text, changed, marker ? code : @"(none)",
+                      ApolloRecordedTranslationSourceLanguage(text) ?: @"(none)",
+                      ApolloDetectDominantLanguage(text) ?: @"(none)",
+                      translated ?: @"(nil)", error ? @(error.code) : @"none");
+        });
     } else if ([leg isEqualToString:@"appletoast"]) {
         // Drives the noter with an Apple-leg-tagged error: the counter must NOT
         // move (regression check for the English-feed false "Translation Failed").
@@ -5030,7 +5203,23 @@ static void ApolloRequestTranslation(NSString *cacheKey,
             callback(restoredTranslation, error);
         }
     };
-    void (^deliverTranslation)(NSString *, NSError *) = ^(NSString *translated, NSError *error) {
+    void (^deliverTranslation)(NSString *, NSString *, NSError *) = ^(NSString *translated, NSString *reportedSource, NSError *error) {
+        // Keep the language the provider says it translated FROM, before any
+        // callback builds a marker: the markers name it instead of re-guessing
+        // on-device (#1345).
+        NSString *sourceLanguage = ApolloNormalizedReportedSourceLanguage(reportedSource);
+        if (sourceLanguage.length > 0 && [translated isKindOfClass:[NSString class]] && translated.length > 0) {
+            ApolloRecordTranslationSourceLanguage(sourceText, sourceLanguage);
+            // "Don't Translate" is about the language the text is IN, and the
+            // provider knows that better than the on-device guess that let this
+            // request through. Hand the original back: the marker gate already
+            // hides a skipped language, so applying this would be a silent
+            // translation of exactly what the user asked to keep.
+            if (ApolloLanguageCodeIsInSkipList(sourceLanguage)) {
+                deliverTranslationInternal(requestText, nil, YES);
+                return;
+            }
+        }
         deliverTranslationInternal(translated, error, YES);
     };
 
@@ -5208,6 +5397,8 @@ static void ApolloMaybeTranslateCommentCellNode(id commentCellNode, BOOL forceTr
         }
     }
 
+    NSString *cacheKey = ApolloTranslationCacheKey(sourceText, targetLanguage);
+
     if (!forceTranslation) {
         // Detect on link-stripped text so URLs / markdown link targets don't
         // pollute the signal. A comment like "[title](https://record.pt/...)
@@ -5222,7 +5413,8 @@ static void ApolloMaybeTranslateCommentCellNode(id commentCellNode, BOOL forceTr
         // instant when it succeeded; on a miss the tap fetches on demand.
         if (sTapToTranslate && detected.length > 0 && ![detected isEqualToString:targetLanguage] &&
             !ApolloLanguageCodeIsInSkipList(detected) &&
-            fullName.length > 0 && !ApolloTapModeIsTranslatedKey(fullName)) {
+            fullName.length > 0 && !ApolloTapModeIsTranslatedKey(fullName) &&
+            !ApolloCachedTranslationLeavesTextUnchanged(cacheKey, sourceText)) {
             ApolloAppendTranslateAffordanceForCellNode(commentCellNode, comment);
         }
         if ([detected isEqualToString:targetLanguage]) {
@@ -5247,7 +5439,6 @@ static void ApolloMaybeTranslateCommentCellNode(id commentCellNode, BOOL forceTr
         }
     }
 
-    NSString *cacheKey = ApolloTranslationCacheKey(sourceText, targetLanguage);
     objc_setAssociatedObject(commentCellNode, kApolloCellTranslationKeyKey, cacheKey, OBJC_ASSOCIATION_COPY_NONATOMIC);
 
     __weak id weakCellNode = commentCellNode;
@@ -5385,7 +5576,6 @@ static NSString *ApolloPostBodyTextFromLink(RDKLink *link);
 static NSString *ApolloVisiblePostCacheKey(RDKLink *link, NSString *sourceText, NSString *targetLanguage);
 static NSString *ApolloResolvedTargetLanguageCode(void);
 static RDKLink *ApolloLinkFromHeaderCellNode(id cellNode);
-static void ApolloInstallHeaderMarkerFromTranslatedTitle(id headerCellNode);
 
 static BOOL ApolloReapplyCachedTranslationForHeaderCellNode(id headerCellNode) {
     if (!headerCellNode) return NO;
@@ -5860,6 +6050,8 @@ static void ApolloMaybeTranslatePostHeaderCellNode(id headerCellNode, RDKLink *f
         }
     }
 
+    NSString *cacheKey = ApolloTranslationCacheKey(trimmed, targetLanguage);
+
     if (!forceTranslation) {
         // Strip links so URLs don't pollute language detection.
         NSString *detectionText = ApolloProtectTranslationLinks(trimmed, NULL);
@@ -5869,7 +6061,8 @@ static void ApolloMaybeTranslatePostHeaderCellNode(id headerCellNode, RDKLink *f
         // hide the control). The request below still prefetches.
         if (sTapToTranslate && detected.length > 0 && ![detected isEqualToString:targetLanguage] &&
             !ApolloLanguageCodeIsInSkipList(detected) &&
-            !ApolloTapModeIsTranslatedKey(trimmed)) {
+            !ApolloTapModeIsTranslatedKey(trimmed) &&
+            !ApolloCachedTranslationLeavesTextUnchanged(cacheKey, trimmed)) {
             id heldNode = ApolloBestPostBodyTextNode(headerCellNode, link, trimmed);
             if (heldNode) {
                 @try {
@@ -5894,7 +6087,6 @@ static void ApolloMaybeTranslatePostHeaderCellNode(id headerCellNode, RDKLink *f
         if ([detected isEqualToString:targetLanguage]) return;
     }
 
-    NSString *cacheKey = ApolloTranslationCacheKey(trimmed, targetLanguage);
     objc_setAssociatedObject(headerCellNode, kApolloHeaderCellTranslationKeyKey, cacheKey, OBJC_ASSOCIATION_COPY_NONATOMIC);
 
     __weak id weakHeader = headerCellNode;
@@ -5956,6 +6148,8 @@ static void ApolloMaybeTranslateVisiblePostBodyForController(UIViewController *v
         }
     }
 
+    NSString *cacheKey = ApolloTranslationCacheKey(sourceText, targetLanguage);
+
     if (!forceTranslation) {
         // Strip links so URLs don't pollute language detection.
         NSString *detectionText = ApolloProtectTranslationLinks(sourceText, NULL);
@@ -5966,7 +6160,8 @@ static void ApolloMaybeTranslateVisiblePostBodyForController(UIViewController *v
         // prefetch below.
         if (sTapToTranslate && detected.length > 0 && ![detected isEqualToString:targetLanguage] &&
             !ApolloLanguageCodeIsInSkipList(detected) &&
-            !ApolloTapModeIsTranslatedKey(sourceText)) {
+            !ApolloTapModeIsTranslatedKey(sourceText) &&
+            !ApolloCachedTranslationLeavesTextUnchanged(cacheKey, sourceText)) {
             @try {
                 NSAttributedString *cur = ((id (*)(id, SEL))objc_msgSend)(textNode, @selector(attributedText));
                 if ([cur isKindOfClass:[NSAttributedString class]] && cur.length > 0 &&
@@ -5983,7 +6178,6 @@ static void ApolloMaybeTranslateVisiblePostBodyForController(UIViewController *v
         if ([detected isEqualToString:targetLanguage]) return;
     }
 
-    NSString *cacheKey = ApolloTranslationCacheKey(sourceText, targetLanguage);
     objc_setAssociatedObject(viewController.view, kApolloHeaderCellTranslationKeyKey, cacheKey, OBJC_ASSOCIATION_COPY_NONATOMIC);
     __weak UIViewController *weakVC = viewController;
     __weak id weakTextNode = textNode;
@@ -6422,7 +6616,12 @@ static NSAttributedString *ApolloTranslationMarkerContentAttributedString(NSStri
 // check the visibility toggles — each surface gates on its own flag
 // (sShowTranslationDetails for comments/posts, sShowTranslationTitleDetails for titles).
 static BOOL ApolloShouldShowTranslationMarkerForSource(NSString *sourceText, NSString **outCode) {
-    NSString *sourceCode = ApolloDetectDominantLanguage(sourceText);
+    // Name the language the provider reported translating FROM. On-device
+    // detection is only the fallback for a translation with no record (one
+    // restored from a cache written before the provider's answer was kept); on
+    // short or slangy text it names languages the provider never saw (#1345).
+    NSString *sourceCode = ApolloRecordedTranslationSourceLanguage(sourceText);
+    if (sourceCode.length == 0) sourceCode = ApolloDetectDominantLanguage(sourceText);
     if (sourceCode.length == 0) return NO;
     NSString *targetCode = ApolloResolvedTargetLanguageCode();
     if (targetCode.length > 0 && [sourceCode isEqualToString:targetCode]) return NO;
@@ -6491,6 +6690,21 @@ static void ApolloEnsureMarkerTappableOnNode(id textNode) {
         NSArray *updated = [names arrayByAddingObject:ApolloTranslationMarkerLinkAttributeName];
         ((void (*)(id, SEL, id))objc_msgSend)(textNode, @selector(setLinkAttributeNames:), updated);
     } @catch (__unused NSException *e) {}
+}
+
+// Walk up from a node to the thread's CommentsHeaderCellNode (the post title,
+// body and info row live under it).
+static id ApolloCommentsHeaderCellNodeForNode(id node) {
+    SEL supernodeSel = @selector(supernode);
+    id current = node;
+    for (int hops = 0; current && hops < 12; hops++) {
+        const char *cn = class_getName([current class]);
+        if (cn && strstr(cn, "CommentsHeaderCellNode")) return current;
+        if (![current respondsToSelector:supernodeSel]) break;
+        @try { current = ((id (*)(id, SEL))objc_msgSend)(current, supernodeSel); }
+        @catch (__unused NSException *e) { break; }
+    }
+    return nil;
 }
 
 // Walk up from a text node to its enclosing *CommentCellNode (ASDK).
@@ -6697,6 +6911,45 @@ static void ApolloAppendTranslateAffordanceForCellNode(id cellNode, RDKComment *
     ApolloEnsureMarkerTappableOnNode(textNode);
     ApolloForceRelayoutForTextNodeAndOwner(cellNode, textNode);
     ApolloEnsureCommentsTableBreathingRoom();
+}
+
+// Tap-to-translate puts "🌐 Translate" under a comment as soon as it is
+// DETECTED as foreign, before the provider answers. When the answer is the
+// original handed back, that control would translate nothing: take it off.
+static void ApolloRemoveTranslateAffordanceForCellNode(id cellNode, RDKComment *comment) {
+    id textNode = ApolloBestCommentTextNode(cellNode, comment);
+    if (!textNode) return;
+    // A node showing a translation ends with its "Translated from" line, not
+    // the affordance — never strip that one here.
+    if ([objc_getAssociatedObject(textNode, kApolloTranslationOwnedTextNodeKey) boolValue]) return;
+    NSAttributedString *current = nil;
+    @try { current = ((id (*)(id, SEL))objc_msgSend)(textNode, @selector(attributedText)); }
+    @catch (__unused NSException *e) { return; }
+    NSAttributedString *clean = ApolloTranslationTextByRemovingTrailingMarker(current);
+    if (clean.length == 0) return;
+    @try { ((void (*)(id, SEL, id))objc_msgSend)(textNode, @selector(setAttributedText:), clean); }
+    @catch (__unused NSException *e) { return; }
+    ApolloForceRelayoutForTextNodeAndOwner(cellNode, textNode);
+}
+
+// Titles and post bodies get a tap-to-translate HOLD (auto-pin @2 plus a
+// target-code "🌐 EN" marker) as soon as they are DETECTED as foreign. When
+// the provider then hands the original back there is nothing to translate:
+// drop the hold so the marker can't offer a translation that changes nothing,
+// and hide that marker on `markerAnchorNode` (nil when the caller already
+// decided the marker itself). A hold left by another post on a reused node
+// (different pinned source) is not ours to touch.
+static void ApolloReleaseTapHoldForUnchangedTranslation(id markerAnchorNode, id textNode, NSString *sourceText) {
+    if (!textNode) return;
+    id pin = objc_getAssociatedObject(textNode, kApolloTitlePinnedOriginalKey);
+    if (![pin isKindOfClass:[NSNumber class]] || [(NSNumber *)pin integerValue] != 2) return;
+    NSString *pinnedSource = objc_getAssociatedObject(textNode, kApolloTitlePinnedSourceKey);
+    if (![pinnedSource isKindOfClass:[NSString class]] || ![pinnedSource isEqualToString:sourceText]) return;
+    objc_setAssociatedObject(textNode, kApolloTitlePinnedOriginalKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloTitlePinnedSourceKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    if (markerAnchorNode) ApolloUpdatePostInfoMarkerForNode(markerAnchorNode, nil, NO, nil);
 }
 
 // Toggle a single comment between translated (with "Translated from X" marker)
@@ -9575,12 +9828,17 @@ static id ApolloFindPostTitleNodeInSubtree(id node, int depth) {
 // to YES: the post is almost always a title-only media post, and even if it has
 // a body, the body apply drives the SAME single per-PostInfoNode label with the
 // same source language, so a title-driven install is harmless (no duplicate UI).
+// A body the provider handed back unchanged drives no marker at all (#1345), so
+// the title takes over there too. The body apply hands off to the title when its
+// answer lands; this covers a title that's translated or held after that.
 static BOOL ApolloCommentsHeaderTitleDrivesMarker(UIViewController *enclosingVC) {
     RDKLink *link = ApolloLinkFromController(enclosingVC);
     if (!link) return YES;  // link unreadable → assume title-only; body apply (if any) drives the same label
     NSString *body = ApolloPostBodyTextFromLink(link);
     NSString *trimmed = [body stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    return trimmed.length == 0;
+    if (trimmed.length == 0) return YES;
+    NSString *cachedBody = ApolloCachedLinkTranslationForKey(ApolloVisiblePostCacheKey(link, trimmed, ApolloResolvedTargetLanguageCode()));
+    return cachedBody.length > 0 && !ApolloTranslatedTextDiffersFromSource(trimmed, cachedBody);
 }
 
 // Title-only posts (image/link posts, no selftext): the header BODY apply — the
@@ -9706,6 +9964,32 @@ static void ApolloApplyTranslationToTitleNode(id titleNode, id textNode, NSStrin
     if (!textMatchesSource && !textMatchesTranslation) return;
     if (textMatchesTranslation && !textMatchesSource) return;
 
+    // FEED titles get a compact "🌐 PT" marker on the post's metadata row
+    // (PostInfoNode) — NOT appended under the title (that collided with flair
+    // pills). The comments-header post is normally excluded (its own body apply
+    // drives the marker) — EXCEPT title-only posts (image/link, no selftext),
+    // whose body apply never runs: there the translated TITLE must drive the
+    // marker or the thread shows no language marker at all. Only the real
+    // PostTitleNode drives this — the feed also routes the body-preview text
+    // node through here (titleNode == textNode).
+    UIViewController *enclosingVC = ApolloEnclosingViewControllerForNode(titleNode);
+    BOOL isCommentsHeaderTitle = ApolloClassLooksLikeCommentsViewController([enclosingVC class]);
+    const char *titleNodeClass = class_getName([titleNode class]);
+    BOOL titleNodeIsPostTitle = titleNodeClass && strstr(titleNodeClass, "PostTitleNode") != NULL;
+    BOOL titleDrivesMarker = titleNodeIsPostTitle &&
+        (!isCommentsHeaderTitle || ApolloCommentsHeaderTitleDrivesMarker(enclosingVC));
+
+    // The provider handed the title back unchanged (a name, slang, or text it
+    // recognised as the target language): nothing to swap and no marker —
+    // neither one naming a language nothing came from, nor a tap-to-translate
+    // hold's "🌐 EN" that would translate nothing (#1345).
+    if (!ApolloTranslatedTextDiffersFromSource(sourceText, translatedText)) {
+        ApolloTranslationVerboseLog("[Translation] title came back unchanged — no marker (drives=%d)", titleDrivesMarker);
+        ApolloReleaseTapHoldForUnchangedTranslation(nil, textNode, sourceText);
+        if (titleDrivesMarker) ApolloUpdatePostInfoMarkerForNode(titleNode, nil, NO, nil);
+        return;
+    }
+
     // Save original on first apply for this node so toggle-off / restore can
     // recover. Subsequent applies for the same node keep the first-seen
     // original.
@@ -9717,22 +10001,16 @@ static void ApolloApplyTranslationToTitleNode(id titleNode, id textNode, NSStrin
     // TAP-TO-TRANSLATE: hold the swap until the user taps the marker. Stash
     // everything the tap needs (source/translated + auto-pin so every reapply
     // path and the unowned-preempt hook respect the held state), show the
-    // marker with the TARGET code ("EN" = tap for English), and bail. A no-op
-    // translation (same-language / skipped language) gets no hold and no
-    // marker — but STILL returns: tap mode must never auto-swap.
+    // marker with the TARGET code ("EN" = tap for English), and bail — tap
+    // mode must never auto-swap.
     if (sTapToTranslate && !ApolloTapModeIsTranslatedKey(sourceText)) {
-        if (!ApolloTranslatedTextDiffersFromSource(sourceText, translatedText)) return;
         objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, sourceText, OBJC_ASSOCIATION_COPY_NONATOMIC);
         objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, translatedText, OBJC_ASSOCIATION_COPY_NONATOMIC);
         objc_setAssociatedObject(textNode, kApolloTitlePinnedOriginalKey, @2, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // @2 = tap-mode auto-pin
         objc_setAssociatedObject(textNode, kApolloTitlePinnedSourceKey, sourceText, OBJC_ASSOCIATION_COPY_NONATOMIC);
         ApolloTapModeRegisterTouchedNode(textNode);
-        UIViewController *tapVC = ApolloEnclosingViewControllerForNode(titleNode);
-        BOOL tapIsHeaderTitle = ApolloClassLooksLikeCommentsViewController([tapVC class]);
-        const char *tapTitleClass = class_getName([titleNode class]);
-        BOOL tapIsPostTitle = tapTitleClass && strstr(tapTitleClass, "PostTitleNode") != NULL;
         // Title-only posts: the header title drives the marker (no body apply).
-        if ((!tapIsHeaderTitle || ApolloCommentsHeaderTitleDrivesMarker(tapVC)) && tapIsPostTitle) {
+        if (titleDrivesMarker) {
             NSString *targetCode = ApolloResolvedTargetLanguageCode();
             if (targetCode.length > 0) {
                 ApolloUpdatePostInfoMarkerForNode(titleNode, targetCode, YES, textNode);
@@ -9743,23 +10021,7 @@ static void ApolloApplyTranslationToTitleNode(id titleNode, id textNode, NSStrin
 
     NSAttributedString *translatedAttr = ApolloTranslatedAttributedStringPreservingVisualLinks(current, translatedText);
 
-    // FEED titles get a compact "🌐 Spanish" marker line under the title. The
-    // comments-header post is excluded here because it shows the metadata-row
-    // banner instead (avoids a double marker on the post you're viewing).
-    UIViewController *enclosingVC = ApolloEnclosingViewControllerForNode(titleNode);
-    BOOL isCommentsHeaderTitle = ApolloClassLooksLikeCommentsViewController([enclosingVC class]);
-    // Feed titles get a compact "🌐 PT" marker on the post's metadata row
-    // (PostInfoNode) — NOT appended under the title (that collided with flair
-    // pills). The comments-header post is normally excluded (its own body apply
-    // drives the marker) — EXCEPT title-only posts (image/link, no selftext),
-    // whose body apply never runs: there the translated TITLE must drive the
-    // marker or the thread shows no language marker at all. Only the real
-    // PostTitleNode drives this — the feed also routes the body-preview text
-    // node through here (titleNode == textNode).
-    const char *titleNodeClass = class_getName([titleNode class]);
-    BOOL titleNodeIsPostTitle = titleNodeClass && strstr(titleNodeClass, "PostTitleNode") != NULL;
-    BOOL headerTitleDrivesMarker = isCommentsHeaderTitle && ApolloCommentsHeaderTitleDrivesMarker(enclosingVC);
-    if ((!isCommentsHeaderTitle || headerTitleDrivesMarker) && titleNodeIsPostTitle) {
+    if (titleDrivesMarker) {
         NSString *titleSourceCode = nil;
         // Thread-header markers follow the Comments & Posts details flag (same
         // convention as the body-apply install); feed titles keep the Titles flag.
@@ -10004,11 +10266,14 @@ static void ApolloMaybeTranslatePostTitleNode(id titleNode) {
     }
     if ([detected isEqualToString:targetLanguage]) return;
 
+    NSString *cacheKey = ApolloTranslationCacheKey(titleText, targetLanguage);
+
     // TAP-TO-TRANSLATE: marker + hold as soon as the title is detectably
     // foreign (detection-driven — see the comment/header equivalents). A title
     // in a "Don't Translate" language gets no marker (it can't be translated).
     if (sTapToTranslate && detected.length > 0 && !ApolloLanguageCodeIsInSkipList(detected) &&
-        !ApolloTapModeIsTranslatedKey(titleText)) {
+        !ApolloTapModeIsTranslatedKey(titleText) &&
+        !ApolloCachedTranslationLeavesTextUnchanged(cacheKey, titleText)) {
         @try {
             NSAttributedString *cur = ((id (*)(id, SEL))objc_msgSend)(textNode, @selector(attributedText));
             if ([cur isKindOfClass:[NSAttributedString class]] && cur.length > 0 &&
@@ -10030,7 +10295,6 @@ static void ApolloMaybeTranslatePostTitleNode(id titleNode) {
         }
     }
 
-    NSString *cacheKey = ApolloTranslationCacheKey(titleText, targetLanguage);
     __weak id weakTitleNode = titleNode;
     __weak id weakTextNode = textNode;
     ApolloRequestTranslation(cacheKey, titleText, targetLanguage, ^(NSString *translated, NSError *error) {
@@ -10814,11 +11078,15 @@ static void ApolloPersistTranslationCachesToDisk(void) {
     // alongside the caches that hold the same data while the app is alive.
     NSDictionary *commentSnapshot = nil;
     NSDictionary *linkSnapshot = nil;
+    NSDictionary *sourceSnapshot = nil;
     @synchronized (sCommentTranslationMirror) {
         commentSnapshot = [sCommentTranslationMirror copy];
     }
     @synchronized (sLinkTranslationMirror) {
         linkSnapshot = [sLinkTranslationMirror copy];
+    }
+    @synchronized (sTranslationSourceLanguages) {
+        sourceSnapshot = [sTranslationSourceLanguages copy];
     }
 
     // Nothing cached: drop the file instead of serializing an empty one. It has
@@ -10847,11 +11115,22 @@ static void ApolloPersistTranslationCachesToDisk(void) {
         if (![key isKindOfClass:[NSString class]] || ![text isKindOfClass:[NSString class]]) continue;
         [linkEntries addObject:@{ @"k": key, @"v": text, @"t": now, @"tag": tag }];
     }
+    // The provider-reported source languages, so a restored translation's
+    // marker still names what the provider translated from (#1345).
+    NSMutableArray *sourceEntries = [NSMutableArray array];
+    written = 0;
+    for (NSString *key in sourceSnapshot) {
+        if (written++ >= kApolloTranslationDiskCacheMaxEntries) break;
+        NSString *code = sourceSnapshot[key];
+        if (![key isKindOfClass:[NSString class]] || ![code isKindOfClass:[NSString class]]) continue;
+        [sourceEntries addObject:@{ @"k": key, @"v": code, @"t": now, @"tag": tag }];
+    }
 
     NSDictionary *root = @{
         @"version": kApolloTranslationDiskCacheVersion,
         @"comments": commentEntries,
         @"links": linkEntries,
+        @"sources": sourceEntries,
     };
     NSError *err = nil;
     NSData *data = [NSPropertyListSerialization dataWithPropertyList:root format:NSPropertyListBinaryFormat_v1_0 options:0 error:&err];
@@ -10927,6 +11206,7 @@ static void ApolloHydrateTranslationCachesFromDisk(void) {
     dispatch_async(ApolloTranslationDiskQueue(), ^{
         NSDictionary<NSString *, NSString *> *comments = nil;
         NSDictionary<NSString *, NSString *> *links = nil;
+        NSDictionary<NSString *, NSString *> *sources = nil;
         NSData *data = [NSData dataWithContentsOfURL:url];
         if (data) {
             NSError *err = nil;
@@ -10937,6 +11217,7 @@ static void ApolloHydrateTranslationCachesFromDisk(void) {
                 NSDate *now = [NSDate date];
                 comments = ApolloTranslationEntriesStillValid(root[@"comments"], currentTag, now);
                 links = ApolloTranslationEntriesStillValid(root[@"links"], currentTag, now);
+                sources = ApolloTranslationEntriesStillValid(root[@"sources"], currentTag, now);
             }
         }
 
@@ -10963,6 +11244,12 @@ static void ApolloHydrateTranslationCachesFromDisk(void) {
                 [sLinkTranslationByFullName setObject:links[key] forKey:key];
                 ApolloMirrorSetLink(key, links[key]);
                 restoredLinks++;
+            }
+            // Never over a language this run already recorded for the same text.
+            for (NSString *key in sources) {
+                BOOL known = NO;
+                @synchronized (sTranslationSourceLanguages) { known = sTranslationSourceLanguages[key] != nil; }
+                if (!known) ApolloMirrorSetCapped(sTranslationSourceLanguages, sTranslationSourceLanguagesOrder, key, sources[key]);
             }
             ApolloLog(@"[translation/hydrate] restored %lu comments + %lu links (tag=%@)",
                       (unsigned long)restoredComments, (unsigned long)restoredLinks, currentTag);
@@ -11375,6 +11662,8 @@ static void ApolloDbgPurgeNSCaches(CFNotificationCenterRef c, void *o, CFStringR
     sLinkTranslationMirrorOrder = [NSMutableArray array];
     sRawTranslationMirror = [NSMutableDictionary dictionary];
     sRawTranslationMirrorOrder = [NSMutableArray array];
+    sTranslationSourceLanguages = [NSMutableDictionary dictionary];
+    sTranslationSourceLanguagesOrder = [NSMutableArray array];
     sPendingTranslationCallbacks = [NSMutableDictionary dictionary];
     sRichPreviewTranslationInFlightKeys = [NSMutableSet set];
     sFeedTitleModeByFeedKey = [NSMutableDictionary dictionary];

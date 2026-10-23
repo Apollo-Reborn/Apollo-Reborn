@@ -63,6 +63,65 @@ previous lineup and the icon active when it is generated, and deliberately
 represents at least three packs. This is entirely local: it requires no network
 request, remote configuration, or separate registry field.
 
+### Holiday seasons
+
+The top-level `"seasons"` list in `icons.json` gives the Spotlight a holiday
+lean. It is still five icons a day, but while a holiday window is open its icons
+lead the lineup and the header reads e.g. "Daily Spotlight · Halloween":
+
+| Days until the window's `end` | Holiday slots (of 5) |
+|-------------------------------|----------------------|
+| 14 or more                    | 2                    |
+| 7–13                          | 3                    |
+| 0–6 (final week)              | all 5                |
+
+A holiday with fewer icons than slots fills the rest with everyday picks, and
+while a holiday is on, the everyday picks never include another holiday's
+icons.
+
+```json
+{ "id": "halloween", "title": "Halloween", "start": "10-01", "end": "10-31",
+  "iconIDs": ["witching-hour", "helios-count"],
+  "colorMatchIconIDs": ["LG-andru", "LG-burnt-orange"] }
+```
+
+- `start`/`end` — inclusive `MM-DD` dates in one year (no wrap past Dec 31,
+  no Feb 29). Windows may not overlap.
+- `iconIDs` — icons made for the holiday. They fill the slots first.
+- `colorMatchIconIDs` — icons that only share the holiday's colors. They fill
+  whatever slots the made-for icons leave open.
+- Holiday icons may repeat from yesterday, so even a two-icon holiday has one
+  in the Spotlight every day of its window; within a tier, icons not shown
+  yesterday go first. The other slots keep the normal rotation.
+- A season can list Liquid Glass `group` icons, the tweak's `standardPack`
+  additions (e.g. `under-the-tree-ii`), and Apollo's own icons described under
+  `"nativeIcons"`. Standard-pack icons are holiday-only: they never join the
+  everyday rotation, and tapping one in the Spotlight selects it in its own
+  pack (checkmark included), the same as choosing it there.
+
+`"nativeIcons"` describes the Apollo icons a season uses:
+
+```json
+{ "id": "santapollo", "displayName": "Santapollo", "designer": "Matthew Skiles",
+  "standardPack": "ultra", "nativeRow": 37 }
+```
+
+- `id` — Apollo's alternate icon name (its `CFBundleAlternateIcons` key).
+- `standardPack` — `originals`, `community`, `ultra` or `sekrit`.
+- `nativeRow` — the icon's row in Apollo's own list for that pack. For Ultra,
+  don't count the tweak's inserted sequels (Under the Tree is row 56 although it
+  shows 61st). Apollo's list is fixed at 1.15.11, the same assumption
+  `insertAfterNativeRow` makes.
+
+**When you add icons, check them against the seasons.** A new holiday icon
+goes in that season's `iconIDs` (ahead of the color matches); a new color
+match goes in `colorMatchIconIDs`. A holiday with no list yet gets a new
+season entry. Apollo's own icons count too: Easter (Eggius Cuniculus, Waving
+Yolkstronaut) and Lunar New Year (Roary the Dragon, Year of the Tiger/Rabbit)
+are waiting on support for holidays whose date moves each year. `make lg-previews` rejects unknown IDs, overlaps, and bad dates,
+and `tests/run_liquid_glass_spotlight_tests.sh` fails while the generated
+header is out of date (`--calendar` prints sample lineups).
+
 After editing `icons.json`:
 
 ```bash
@@ -87,7 +146,7 @@ is not needed — the preview PNGs for existing icons are already in Assets.car.
    ```
    liquid-glass/icons/<id>/<id>.icon/        # paste the .icon package here
    ```
-3. Append the icon to **`liquid-glass/icons.json`** — set `id`, `displayName`, `designer`, and `group` (required, must name one of the ids in `"groups"`). This is the only registration step — the generated header, the icon picker, and `patch.sh` all read from this file.
+3. Append the icon to **`liquid-glass/icons.json`** — set `id`, `displayName`, `designer`, and `group` (required, must name one of the ids in `"groups"`). This is the only registration step — the generated header, the icon picker, and `patch.sh` all read from this file. If the icon belongs to a holiday (or matches its colors), add it to that entry in `"seasons"` too (see [Holiday seasons](#holiday-seasons)).
 4. Generate the 104×104 @2x PNG previews from the `.icon` package:
    ```bash
    python3 liquid-glass/scripts/generate_icon_previews.py --icons <id>

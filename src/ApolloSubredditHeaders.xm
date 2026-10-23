@@ -651,7 +651,17 @@ static UIImage *ApolloSubredditSizedActionIcon(UIImage *image) {
 }
 
 - (ApolloIdentityHeaderLayout)apollo_identityForWidth:(CGFloat)width {
-    return ApolloIdentityHeaderLayoutMakeWithBanner(width, sSubredditShowBanner ? ApolloSubredditBannerHeight : 0.0);
+    ApolloIdentityHeaderLayout identity = ApolloIdentityHeaderLayoutMakeWithBanner(
+        width, sSubredditShowBanner ? ApolloSubredditBannerHeight : 0.0);
+    if (!sSubredditShowIcon) {
+        CGFloat nameY = CGRectGetMaxY(identity.bannerFrame) + 14.0;
+        CGFloat shift = nameY - CGRectGetMinY(identity.nameFrame);
+        identity.avatarFrame = CGRectZero;
+        identity.nameFrame.origin.y += shift;
+        identity.subnameFrame.origin.y += shift;
+        identity.bodyY += shift;
+    }
+    return identity;
 }
 
 // Y of the action cluster: right below the name/subname stack and above the
@@ -665,7 +675,7 @@ static UIImage *ApolloSubredditSizedActionIcon(UIImage *image) {
     }
     if (displayNameShown) return CGRectGetMaxY(identity.nameFrame) + 10.0;
     if (subtitleShown) return CGRectGetMaxY([self apollo_subtitleFrameForLayout:identity]) + 10.0;
-    return CGRectGetMaxY(identity.avatarFrame) + 8.0;
+    return CGRectGetMinY(identity.nameFrame);
 }
 
 - (BOOL)apollo_userFlairButtonShown {
@@ -833,7 +843,7 @@ static UIImage *ApolloSubredditSizedActionIcon(UIImage *image) {
         }
     }
     self.bannerImageView.hidden = !sSubredditShowBanner;
-    self.iconImageView.hidden = NO;
+    self.iconImageView.hidden = !sSubredditShowIcon;
     self.displayNameLabel.hidden = ![self apollo_displayNameShown];
     self.nameLabel.hidden = ![self apollo_subtitleShown];
     self.aboutLabel.hidden = !sSubredditShowDescription || self.aboutLabel.text.length == 0;
@@ -2751,7 +2761,9 @@ static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewControlle
                 repairedInner = YES;
             }
             if (child && child.hidden && child != header.aboutLabel && child != header.nameLabel) {
-                if (child == header.bannerImageView || child == header.iconImageView || child == header.displayNameLabel) {
+                if ((child == header.bannerImageView && sSubredditShowBanner) ||
+                    (child == header.iconImageView && sSubredditShowIcon) ||
+                    (child == header.displayNameLabel && [header apollo_displayNameShown])) {
                     child.hidden = NO;
                     repairedInner = YES;
                 }

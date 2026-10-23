@@ -17,6 +17,9 @@ NS_ASSUME_NONNULL_BEGIN
 // Runs when the user picks "Skip This Version" (the sheet dismisses itself).
 @property (nonatomic, copy, nullable) void (^onSkip)(void);
 
+// Runs for Later, chooser Cancel, or an interactive dismissal, to snooze this version.
+@property (nonatomic, copy, nullable) void (^onLater)(void);
+
 // Presents `presenter` -> this sheet with the same page-sheet setup What's New uses.
 - (void)presentOverViewController:(UIViewController *)presenter;
 

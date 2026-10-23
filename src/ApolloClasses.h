@@ -13,6 +13,7 @@
 __BEGIN_DECLS
 
 extern Class ApolloClassASBackgroundLayoutSpec;
+extern Class ApolloClassASBatchContext;
 extern Class ApolloClassASButtonNode;
 extern Class ApolloClassASCellNode;
 extern Class ApolloClassASCenterLayoutSpec;
@@ -52,7 +53,9 @@ extern Class ApolloClassCAFilter;
 extern Class ApolloClassCommentCellNode;
 extern Class ApolloClassCommentsHeaderCellNode;
 extern Class ApolloClassCommentsHeaderSectionController;
+extern Class ApolloClassRichMediaHeaderCellNode;
 extern Class ApolloClassCommentsViewController;
+extern Class ApolloClassMoreCommentsCellNode;
 extern Class ApolloClassCompactPostCellNode;
 extern Class ApolloClassComposePostViewController;
 extern Class ApolloClassComposeViewController;
@@ -93,6 +96,7 @@ extern Class ApolloClassRDKFlairOption;
 extern Class ApolloClassRDKGallery;
 extern Class ApolloClassRDKGalleryItemImage;
 extern Class ApolloClassRDKLink;
+extern Class ApolloClassRDKPagination;
 extern Class ApolloClassRDKMessage;
 extern Class ApolloClassRDKMultireddit;
 extern Class ApolloClassRDKMultiredditDescription;

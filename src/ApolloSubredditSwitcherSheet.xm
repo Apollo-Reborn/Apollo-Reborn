@@ -1,6 +1,9 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
+#import "ApolloClasses.h"
+#import "ApolloSwiftRuntime.h"
+#import "ApolloSubredditSwitcherSheet.h"
 #import "ApolloThemeRuntime.h"
 #import "settings/ApolloSettingsTableViewController.h"
 #import "ApolloDuoUIKitCompatibility.h"
@@ -10,14 +13,18 @@
 - (BOOL)textFieldShouldReturn:(UITextField *)field;
 @end
 
+static const CGFloat ApolloSubredditSearchBarHeight = 56.0;
+
 // Keep Apollo's search model and its feed-switching delegate. Only replace the
 // old floating table/editor presentation; no Swift storage or URL routing is
 // synthesized here. The hidden native table receives local and remote results.
-@interface ApolloSubredditSwitcherSheet : UITableViewController <UISearchBarDelegate>
+@interface ApolloSubredditSwitcherSheet : UIViewController <UISearchBarDelegate, UITableViewDataSource, UITableViewDelegate>
 @property(nonatomic, weak) _TtC6Apollo7JumpBar *jumpBar;
 @property(nonatomic, weak) UITableView *nativeTable;
+@property(nonatomic, weak) UIViewController *feedToRestore;
 @property(nonatomic, strong) UITextField *queryField;
 @property(nonatomic, strong) UISearchBar *searchBar;
+@property(nonatomic, strong) UITableView *tableView;
 @property(nonatomic, copy) NSArray<NSArray<NSString *> *> *sections;
 @property(nonatomic, copy) NSArray<NSString *> *sectionTitles;
 @property(nonatomic, copy) NSString *selectedName;
@@ -33,12 +40,14 @@
 @end
 @implementation ApolloSubredditSheetReference @end
 static char kApolloSubredditSheetReference;
+static char kApolloActiveSubredditSheetReference;
+
+static BOOL ApolloSubredditSheetIsActive(UITabBarController *tabs) {
+    ApolloSubredditSheetReference *reference = objc_getAssociatedObject(tabs, &kApolloActiveSubredditSheetReference);
+    return reference.sheet != nil;
+}
 
 @implementation ApolloSubredditSwitcherSheet
-
-- (instancetype)init {
-    return [super initWithStyle:UITableViewStyleInsetGrouped];
-}
 
 - (void)viewDidLoad {
     [super viewDidLoad];
@@ -50,8 +59,8 @@ static char kApolloSubredditSheetReference;
         self.navigationItem.rightBarButtonItem.axisBehavior = UIBarButtonItemAxisBehaviorHorizontalOnly;
     }
 
-    UISearchBar *search = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 0, 540, 56)];
-    search.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    UISearchBar *search = [UISearchBar new];
+    search.translatesAutoresizingMaskIntoConstraints = NO;
     search.searchBarStyle = UISearchBarStyleMinimal;
     search.placeholder = @"Subreddit";
     search.autocapitalizationType = UITextAutocapitalizationTypeNone;
@@ -59,10 +68,32 @@ static char kApolloSubredditSheetReference;
     search.returnKeyType = UIReturnKeyGo;
     search.delegate = self;
     self.searchBar = search;
-    self.tableView.tableHeaderView = search;
-    self.tableView.rowHeight = 52.0;
-    self.tableView.estimatedRowHeight = 0.0;
-    self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeInteractive;
+    [self.view addSubview:search];
+
+    UITableView *table = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStyleInsetGrouped];
+    table.translatesAutoresizingMaskIntoConstraints = NO;
+    table.dataSource = self;
+    table.delegate = self;
+    table.rowHeight = 52.0;
+    table.estimatedRowHeight = 0.0;
+    table.keyboardDismissMode = UIScrollViewKeyboardDismissModeInteractive;
+    self.tableView = table;
+    [self.view addSubview:table];
+
+    // Search stays above the scrolling results. UIKit moves only the list's
+    // bottom edge with the keyboard, including interactive dismissal.
+    NSLayoutYAxisAnchor *bottom = self.view.safeAreaLayoutGuide.bottomAnchor;
+    if (@available(iOS 15.0, *)) bottom = self.view.keyboardLayoutGuide.topAnchor;
+    [NSLayoutConstraint activateConstraints:@[
+        [search.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
+        [search.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor],
+        [search.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor],
+        [search.heightAnchor constraintEqualToConstant:ApolloSubredditSearchBarHeight],
+        [table.topAnchor constraintEqualToAnchor:search.bottomAnchor],
+        [table.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [table.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [table.bottomAnchor constraintEqualToAnchor:bottom]
+    ]];
     [self applyTheme];
 
     ApolloSubredditSheetReference *reference = [ApolloSubredditSheetReference new];
@@ -108,7 +139,7 @@ static char kApolloSubredditSheetReference;
     CGFloat navigationHeight = CGRectGetHeight(navigation.navigationBar.bounds);
     CGFloat chromeHeight = navigationHeight + navigation.view.safeAreaInsets.top
         + navigation.view.safeAreaInsets.bottom;
-    CGFloat contentHeight = ceil(self.tableView.contentSize.height + chromeHeight);
+    CGFloat contentHeight = ceil(self.tableView.contentSize.height + ApolloSubredditSearchBarHeight + chromeHeight);
     CGFloat height = MIN(availableHeight, MAX(200.0, contentHeight));
     CGSize size = CGSizeMake(540.0, height);
     if (!CGSizeEqualToSize(self.preferredContentSize, size)) self.preferredContentSize = size;
@@ -118,6 +149,7 @@ static char kApolloSubredditSheetReference;
 - (void)applyTheme {
     UIColor *page = ApolloThemePageBackgroundColor() ?: UIColor.systemGroupedBackgroundColor;
     self.view.backgroundColor = page;
+    self.tableView.backgroundColor = page;
     self.navigationController.view.backgroundColor = page;
     self.view.tintColor = ApolloThemeAccentColor() ?: self.view.tintColor;
     self.navigationController.view.tintColor = self.view.tintColor;
@@ -228,11 +260,17 @@ static char kApolloSubredditSheetReference;
     self.choosing = YES;
     [self.view endEditing:YES];
     _TtC6Apollo7JumpBar *jump = self.jumpBar;
+    UIViewController *feed = self.feedToRestore;
     UITextField *field = [UITextField new];
     field.text = name;
     // Native Return handles both subreddit and multireddit titles and performs
     // the normal in-place feed switch. Wait until the sheet is out of the way.
-    [self dismissViewControllerAnimated:YES completion:^{ [jump textFieldShouldReturn:field]; }];
+    [self dismissViewControllerAnimated:YES completion:^{
+        if (feed && feed.navigationController.topViewController != feed) {
+            [feed.navigationController popToViewController:feed animated:NO];
+        }
+        [jump textFieldShouldReturn:field];
+    }];
 }
 
 - (void)closeSheet {
@@ -242,31 +280,19 @@ static char kApolloSubredditSheetReference;
 
 @end
 
-static BOOL ApolloPresentSubredditSheet(_TtC6Apollo7JumpBar *jump) {
+static BOOL ApolloPresentSubredditSheetForFeed(UIViewController *owner, UIViewController *presenter) {
     if (@available(iOS 15.0, *)) {
-        UINavigationBar *bar = nil;
-        for (UIView *view = jump.superview; view; view = view.superview) {
-            if ([view isKindOfClass:UINavigationBar.class]) { bar = (id)view; break; }
-        }
-        UINavigationController *navigation = nil;
-        for (UIResponder *responder = bar; responder; responder = responder.nextResponder) {
-            if ([responder isKindOfClass:UINavigationController.class]) { navigation = (id)responder; break; }
-        }
-        UIViewController *owner = navigation.topViewController;
-        if (![NSStringFromClass(owner.class) isEqualToString:@"Apollo.PostsViewController"]) return NO;
-        if (owner.presentedViewController || navigation.presentedViewController) return YES;
-        UITableView *native = nil;
-        for (UIView *view in owner.view.subviews) {
-            if ([view isKindOfClass:UITableView.class] &&
-                [NSStringFromClass([(NSObject *)[(UITableView *)view dataSource] class]) isEqualToString:@"Apollo.DropDownDataSource"]) {
-                native = (id)view;
-                break;
-            }
-        }
-        if (!native) return NO;
+        if (![owner isKindOfClass:ApolloClassPostsViewController] || !presenter) return NO;
+        if (presenter.presentedViewController || presenter.navigationController.presentedViewController ||
+            presenter.tabBarController.presentedViewController) return NO;
+        [owner loadViewIfNeeded];
+        _TtC6Apollo7JumpBar *jump = ApolloObjectIvar(owner, "jumpBar");
+        UITableView *native = ApolloObjectIvar(owner, "dropDownTableView");
+        if (![jump isKindOfClass:ApolloClassJumpBar] || ![native isKindOfClass:UITableView.class]) return NO;
         ApolloSubredditSwitcherSheet *picker = [ApolloSubredditSwitcherSheet new];
         picker.jumpBar = jump;
         picker.nativeTable = native;
+        picker.feedToRestore = owner;
         picker.selectedName = owner.navigationItem.title;
         UINavigationController *sheetNavigation = [[UINavigationController alloc] initWithRootViewController:picker];
         // Keep UIKit's centered, content-sized form on the unfolded display.
@@ -282,11 +308,71 @@ static BOOL ApolloPresentSubredditSheet(_TtC6Apollo7JumpBar *jump) {
         // Resolve the initial favorites height before the presentation starts.
         [picker loadViewIfNeeded];
         [picker updatePreferredContentSize];
-        [owner presentViewController:sheetNavigation animated:YES completion:nil];
+        // The tab button and bar can both recognize the same hold. Register
+        // before presentation starts; the weak reference clears on dismissal.
+        UITabBarController *tabs = owner.tabBarController;
+        if (tabs) {
+            ApolloSubredditSheetReference *reference = [ApolloSubredditSheetReference new];
+            reference.sheet = picker;
+            objc_setAssociatedObject(tabs, &kApolloActiveSubredditSheetReference,
+                                     reference, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        [presenter presentViewController:sheetNavigation animated:YES completion:nil];
+        ApolloLog(@"[SubredditSheet] presented from %@", NSStringFromClass(presenter.class));
         return YES;
     }
     return NO;
 }
+
+static BOOL ApolloPresentSubredditSheet(_TtC6Apollo7JumpBar *jump) {
+    UIViewController *owner = ApolloReadSwiftWeakObjectIvar(jump, "delegate");
+    if (![owner isKindOfClass:ApolloClassPostsViewController]) return NO;
+    if (owner.presentedViewController || owner.navigationController.presentedViewController) return YES;
+    return ApolloPresentSubredditSheetForFeed(owner, owner);
+}
+
+static UITabBarController *ApolloSubredditTabsInController(UIViewController *controller) {
+    if ([controller isKindOfClass:UITabBarController.class]) return (id)controller;
+    for (UIViewController *child in controller.childViewControllers) {
+        UITabBarController *tabs = ApolloSubredditTabsInController(child);
+        if (tabs) return tabs;
+    }
+    return nil;
+}
+
+BOOL ApolloPresentPostsTabSubredditSheet(UIWindow *sourceWindow) {
+    UITabBarController *tabs = ApolloSubredditTabsInController((sourceWindow ?: ApolloKeyWindow()).rootViewController);
+    if (!tabs || ApolloSubredditSheetIsActive(tabs) || tabs.presentedViewController) return NO;
+    UIViewController *postsTab = tabs.viewControllers.firstObject;
+    if (![postsTab isKindOfClass:UINavigationController.class]) return NO;
+    UINavigationController *navigation = (id)postsTab;
+    if (navigation.presentedViewController || navigation.topViewController.presentedViewController) return NO;
+    // Preserve the active feed when the tab is showing comments. Cancel keeps
+    // that stack intact; choosing a subreddit returns to the feed first.
+    UIViewController *feed = nil;
+    for (UIViewController *candidate in navigation.viewControllers.reverseObjectEnumerator) {
+        if ([candidate isKindOfClass:ApolloClassPostsViewController]) { feed = candidate; break; }
+    }
+    if (!feed) return NO;
+    tabs.selectedViewController = navigation;
+    return ApolloPresentSubredditSheetForFeed(feed, navigation.topViewController);
+}
+
+@interface _TtC6Apollo22ApolloTabBarController : UITabBarController
+@end
+
+%hook _TtC6Apollo22ApolloTabBarController
+- (void)tabBarLongPressedWithLongPressGestureRecognizer:(UILongPressGestureRecognizer *)recognizer {
+    if (recognizer.state == UIGestureRecognizerStateBegan) {
+        UITabBarItem *posts = self.tabBar.items.firstObject;
+        UIView *button = ApolloObjectIvar(posts, "_view") ?: ApolloSendObject(posts, @selector(_tabBarButton));
+        if ([button isKindOfClass:UIView.class] &&
+            [button pointInside:[recognizer locationInView:button] withEvent:nil] &&
+            (ApolloSubredditSheetIsActive(self) || ApolloPresentPostsTabSubredditSheet(self.view.window))) return;
+    }
+    %orig(recognizer);
+}
+%end
 
 %hook _TtC6Apollo7JumpBar
 - (void)endTrackingWithTouch:(UITouch *)touch withEvent:(UIEvent *)event {

@@ -21,6 +21,7 @@ static const ApolloWhatsNewReleaseEntry kWhatsNewReleases[] = {
     { "3.7.1", "What's New in Apollo Reborn" },
     { "3.8.0", "What's New in Apollo Reborn" },
     { "3.8.5", "What's New in Apollo Reborn" },
+    { "3.9.0", "What's New in Apollo Reborn" },
 };
 
 static const ApolloWhatsNewItemEntry kWhatsNewItems[] = {
@@ -72,6 +73,15 @@ static const ApolloWhatsNewItemEntry kWhatsNewItems[] = {
     { "3.8.5", "speaker.wave.2.fill", "Video Sound Behaves", "Feed sound stays on one video, doesn't start on screens you've left, and mutes while another video is fullscreen." },
     { "3.8.5", "person.2.fill", "Accounts and Sign-In", "API-Key-Free feeds stop stalling on a spinner, avatars load for the right account, and Add Account uses your Settings key." },
     { "3.8.5", "text.bubble.fill", "Comments", "A comment that can't post now says why, image comments post cleanly, and inline images don't jump when they load." },
+    { "3.9.0", "dock.rectangle", "Liquid Glass, Your Way", "Switch to the classic look under Interface \342\206\222 Appearance, or shrink the tab bar into a small pill as you scroll." },
+    { "3.9.0", "speedometer", "Fewer Rate Limits", "API-Key-Free accounts send fewer Reddit requests, and the new Reduce Rate Limiting setting cuts them further." },
+    { "3.9.0", "arrow.left.arrow.right.circle.fill", "Subreddit Switcher", "Tap a feed's title for a native sheet with search, your favorites, and live results." },
+    { "3.9.0", "keyboard", "True Black Keyboard", "Make the keyboard pure black on OLED screens, in dark mode, light mode, or always." },
+    { "3.9.0", "arrow.down.app.fill", "Update Alerts", "Apollo Reborn now lets you know when an update is out and hands it to your sideloader." },
+    { "3.9.0", "link.circle.fill", "X Links on Nitter", "Open X and Twitter links on a Nitter instance you choose, no X account needed." },
+    { "3.9.0", "magnifyingglass.circle.fill", "Search With Kagi", "Kagi subscribers can search Reddit through Kagi from the Search tab's magnifier." },
+    { "3.9.0", "person.crop.circle.fill", "Profiles", "Edit your Reddit profile right in Apollo, and find profile settings on a new User Profiles page." },
+    { "3.9.0", "checkmark.shield.fill", "Fixes Across the App", "Crash fixes, Google and Apple sign-in, moderator tools without an API key, and no forced YouTube captions on iOS 27." },
 };
 
 static NSString *S(const char *value) { return [NSString stringWithUTF8String:value]; }

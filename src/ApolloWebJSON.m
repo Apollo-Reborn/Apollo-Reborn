@@ -1840,13 +1840,40 @@ static BOOL ApolloWebJSONPathExpectsListingDictionary(NSString *path) {
 id ApolloWebJSONGuardListingTaskResponse(NSString *method, NSString *path,
                                         NSHTTPURLResponse *response, id responseObject,
                                         NSError **error) {
-    if (responseObject == nil || [responseObject isKindOfClass:[NSDictionary class]]) return responseObject;
+    BOOL nonDictionary = responseObject && ![responseObject isKindOfClass:[NSDictionary class]];
+    // A refusal RedditKit doesn't report (#1420). RDKResponseSerializer answers
+    // anything that isn't application/json with no object AND no error (Reddit's
+    // HTML 429 and 403 block pages, an empty 429, an HTML 5xx), and RedditKit
+    // maps no error for a 429 even when its body is JSON. A listing then reads as
+    // a page with nothing after it: Apollo sets a feed's cursor to nil and never
+    // asks for the next page again. API-Key-Free accounts get these from
+    // www.reddit.com all the time; oauth.reddit.com answers in JSON.
+    NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]] ? response.statusCode : 0;
+    BOOL unreportedFailure = !(error && *error) && (responseObject == nil || status >= 400);
+    if (!nonDictionary && !unreportedFailure) return responseObject;
     if (!method || [method caseInsensitiveCompare:@"GET"] != NSOrderedSame) return responseObject;
     // RDKClient supplies relative paths (with or without a leading slash).
     if (![path isKindOfClass:[NSString class]] || path.length == 0) return responseObject;
     NSString *requestPath = [[path componentsSeparatedByString:@"?"] firstObject];
     if (![requestPath hasPrefix:@"/"]) requestPath = [@"/" stringByAppendingString:requestPath];
     if (!ApolloWebJSONPathExpectsListingDictionary(requestPath)) return responseObject;
+
+    if (!nonDictionary) {
+        // Report the failure and drop any body: RedditKit parses a non-nil
+        // object as the listing and never looks at the error. With an error,
+        // Apollo keeps the feed's cursor and asks for the page again on the
+        // next scroll (a 429 also gets the rate-limit toast).
+        ApolloLog(@"[WebJSON] Listing request came back HTTP %ld with %@ and no error; reporting a failed load, not an empty page",
+                  (long)status, responseObject ? @"an error body" : @"no JSON body");
+        if (error) {
+            *error = [NSError errorWithDomain:@"ApolloReborn.WebJSON.Response"
+                                         code:1420
+                                     userInfo:@{ NSLocalizedDescriptionKey: status == 429
+                                                 ? @"Reddit is limiting requests right now. Try again in a minute."
+                                                 : @"Reddit didn't send this page. Try again in a moment." }];
+        }
+        return nil;
+    }
 
     // Never log response bodies or query parameters: redirected bodies can
     // contain account/session data. Preserve any existing transport error,

@@ -214,6 +214,58 @@ static void ApolloSimDebugSendTouch(UITouch *touch) {
     [app sendEvent:event];
 }
 
+// "pinch cx cy startDistance endDistance [seconds]": two real touches in a
+// single event, exercising UIKit's recognizer and interactive layout rather
+// than invoking the gallery's action directly. Distances are screen points.
+static void ApolloSimDebugPerformPinch(CGPoint center, CGFloat startDistance,
+                                       CGFloat endDistance, NSTimeInterval duration) {
+    UIWindow *window = ApolloKeyWindow() ?: ApolloAllWindows().firstObject;
+    if (!window || startDistance <= 0 || endDistance <= 0) return;
+    NSMutableArray<UITouch *> *touches = [NSMutableArray array];
+    for (NSInteger index = 0; index < 2; index++) {
+        CGPoint point = CGPointMake(center.x + (index ? 0.5 : -0.5) * startDistance, center.y);
+        UIView *hitView = [window hitTest:point withEvent:nil];
+        if (!hitView) return;
+        UITouch *touch = [UITouch new];
+        [touch setWindow:window];
+        [touch setView:hitView];
+        [touch setTapCount:1];
+        [touch _setIsFirstTouchForView:index == 0];
+        [touch _setLocationInWindow:point resetPrevious:YES];
+        [touch setPhase:UITouchPhaseBegan];
+        [touches addObject:touch];
+    }
+    void (^send)(void) = ^{
+        UIApplication *app = UIApplication.sharedApplication;
+        UIEvent *event = [app _touchesEvent];
+        NSTimeInterval timestamp = NSProcessInfo.processInfo.systemUptime;
+        [event _clearTouches];
+        [event _setTimestamp:timestamp];
+        for (UITouch *touch in touches) {
+            [touch setTimestamp:timestamp];
+            [event _addTouch:touch forDelayedDelivery:NO];
+        }
+        [app sendEvent:event];
+    };
+    send();
+    NSInteger steps = MAX(2, (NSInteger)(duration * 60.0));
+    for (NSInteger step = 1; step <= steps + 1; step++) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(step * duration / steps * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            CGFloat fraction = MIN(1.0, (CGFloat)step / steps);
+            CGFloat distance = startDistance + (endDistance - startDistance) * fraction;
+            for (NSInteger index = 0; index < 2; index++) {
+                UITouch *touch = touches[index];
+                [touch _setLocationInWindow:CGPointMake(center.x + (index ? 0.5 : -0.5) * distance, center.y)
+                              resetPrevious:NO];
+                [touch setPhase:step > steps ? UITouchPhaseEnded : UITouchPhaseMoved];
+            }
+            send();
+            if (step > steps) ApolloLog(@"[SimDebugTap] pinch delivered %.0f -> %.0f", startDistance, endDistance);
+        });
+    }
+}
+
 static void ApolloSimDebugPerformTap(CGPoint point) {
     // Hit-test every visible window from topmost down, not just the key
     // window: alert/overlay windows sit above it, and key-window-only taps
@@ -2633,6 +2685,13 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
             ApolloSimDebugVisiblePresenterProbe(operation);
             return;
         }
+        // Re-test the first-use guide on the next gallery entry without
+        // deleting account credentials or other simulator preferences.
+        if ([contents hasPrefix:@"galleryintroreset"]) {
+            [NSUserDefaults.standardUserDefaults removeObjectForKey:@"ApolloGalleryPinchIntroductionAcknowledged"];
+            ApolloLog(@"[SimDebugTap] gallery pinch introduction reset");
+            return;
+        }
         // "headerdump" command: log every visible scroll view's topEdgeEffect
         // state (pointer, hidden, style, tweak stamps) for header debugging.
         if ([contents hasPrefix:@"headerdump"]) {
@@ -3032,9 +3091,10 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
             return;
         }
         BOOL isSwipe = [contents hasPrefix:@"swipe "];
+        BOOL isPinch = [contents hasPrefix:@"pinch "];
         BOOL isHold = [contents hasPrefix:@"hold "];
         BOOL isPress = [contents hasPrefix:@"press "];
-        NSString *coordString = isSwipe ? [contents substringFromIndex:6]
+        NSString *coordString = (isSwipe || isPinch) ? [contents substringFromIndex:6]
                               : isHold  ? [contents substringFromIndex:5]
                               : isPress ? [contents substringFromIndex:6]
                                         : contents;
@@ -3042,6 +3102,13 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
             NSCharacterSet.whitespaceAndNewlineCharacterSet];
         NSMutableArray<NSString *> *numbers = [NSMutableArray array];
         for (NSString *part in parts) if (part.length > 0) [numbers addObject:part];
+        if (isPinch) {
+            if (numbers.count < 4) { ApolloLog(@"[SimDebugTap] malformed pinch"); return; }
+            ApolloSimDebugPerformPinch(CGPointMake(numbers[0].doubleValue, numbers[1].doubleValue),
+                                       numbers[2].doubleValue, numbers[3].doubleValue,
+                                       numbers.count >= 5 ? MAX(0.1, MIN(5.0, numbers[4].doubleValue)) : 0.6);
+            return;
+        }
         if (isSwipe) {
             if (numbers.count < 4) { ApolloLog(@"[SimDebugTap] malformed swipe: %@", contents); return; }
             // Optional 5th/6th/7th numbers: step count, per-step interval in

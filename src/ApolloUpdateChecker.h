@@ -10,9 +10,11 @@ NS_ASSUME_NONNULL_BEGIN
 
 __BEGIN_DECLS
 
-// Call on every foreground. Once a day at most (and only if automatic checks are
-// on and this is a sideloaded release variant) fetches the manifest; if a newer,
-// not-skipped version exists it prompts once per launch, only over the base app UI.
+// Call on every foreground and after changing the automatic-check setting. Checks
+// every 15 minutes while active, using conditional requests; stops on inactivity.
+// Failed checks retry after 5 minutes. Only eligible sideloaded builds check automatically.
+// Prompts only over the base UI, once per version per launch unless Later is chosen:
+// Later snoozes that version for 24 hours across launches; Skip hides it indefinitely.
 void ApolloUpdateCheckIfNeeded(void);
 
 // Manual "Check for Updates": always fetches and always reports the outcome.
