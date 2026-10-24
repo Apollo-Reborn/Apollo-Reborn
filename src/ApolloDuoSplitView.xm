@@ -2652,10 +2652,21 @@ BOOL ApolloDuoSplitReturnFromVisitedProfile(UINavigationController *navigation) 
     return YES;
 }
 
+// Comments beside the feed: their native Back begins at the comments column's
+// own leading edge, mid-screen. Let the screen's leading edge close them too,
+// so repeated swipes walk back comments -> feed -> subreddit list.
+static BOOL ApolloDuoSplitLeadingSwipeClosesComments(ApolloDuoSplitHost *host, ApolloDuoSplitState *state) {
+    return state.split && state.feed && !state.changing && !host.listVisible
+        && host.postsShowingDetail && host.postsColumnsPaired
+        && state.secondary.viewControllers.count >= 2
+        && !state.secondary.transitionCoordinator && !state.feed.transitionCoordinator;
+}
+
 static BOOL ApolloDuoSplitLeadingSwipeShouldBegin(ApolloDuoSplitHost *host) {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(host.navigationController, NO);
     if (state.host != host || state.outer.presentedViewController) return NO;
     if (ApolloDuoSplitCanReturnFromVisitedProfile(state)) return YES;
+    if (ApolloDuoSplitLeadingSwipeClosesComments(host, state)) return YES;
     // Only a bare feed root. Apollo's native Back owns pushed pages and the
     // comments column, so those keep popping exactly as before.
     return state.split && state.feed && !state.changing && host.subredditList && !host.listVisible
@@ -2670,6 +2681,13 @@ static void ApolloDuoSplitLeadingSwipeFinished(ApolloDuoSplitHost *host) {
     if (ApolloDuoSplitCanReturnFromVisitedProfile(state)) {
         ApolloLog(@"[DuoSplit] leading swipe returned from visited profile");
         ApolloDuoSplitNavigateProfile(state, nil, NO);
+        return;
+    }
+    if (ApolloDuoSplitLeadingSwipeClosesComments(host, state)) {
+        // The secondary pop override collapses a single thread back to the
+        // full-width feed; deeper pages inside the column pop one level.
+        ApolloLog(@"[DuoSplit] leading swipe closed paired comments");
+        [state.secondary popViewControllerAnimated:!UIAccessibilityIsReduceMotionEnabled()];
         return;
     }
     ApolloLog(@"[DuoSplit] leading swipe revealed subreddit list");
