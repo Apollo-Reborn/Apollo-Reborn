@@ -23,6 +23,7 @@
 #import "ApolloFollowingSection.h"
 #import "ApolloSwiftRuntime.h"
 #import "settings/CustomAPIViewController.h"
+#import <AVFoundation/AVFoundation.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 
@@ -2389,6 +2390,7 @@ static void ApolloDuoAccountSelect(ApolloDuoSplitState *state, NSString *title) 
 }
 
 static void ApolloDuoSplitClose(ApolloDuoSplitState *state, BOOL preserveDetail);
+static void ApolloDuoResumeVideosAfterMove(NSArray<UIViewController *> *controllers);
 static void ApolloDuoSplitNavigateProfile(ApolloDuoSplitState *state, UIViewController *profile, BOOL forward);
 
 static void ApolloDuoSearchRestoreBackItem(ApolloDuoSplitState *state) {
@@ -2641,7 +2643,10 @@ static void ApolloDuoSplitOpen(ApolloDuoSplitState *state) {
     NSArray *stack = [outer.viewControllers copy];
     // Pages moving into the columns (not a bare root at launch) keep Apollo's
     // native transitions; see ApolloNavUseNativeTransitionsForControllers.
-    if (stack.count > 1) ApolloNavUseNativeTransitionsForControllers(stack);
+    if (stack.count > 1) {
+        ApolloNavUseNativeTransitionsForControllers(stack);
+        ApolloDuoResumeVideosAfterMove(stack);
+    }
     NSUInteger rootIndex = 0;
     // Only landscape has a profile dashboard. Portrait keeps visited profiles
     // on the Posts navigation stack; promoting one to Account here would make
@@ -2802,10 +2807,51 @@ static void ApolloDuoSplitOpen(ApolloDuoSplitState *state) {
     dispatch_async(dispatch_get_main_queue(), ^{ ApolloDuoSplitOpenDefault(state); });
 }
 
+// Folding or unfolding re-hosts the open pages. UIKit reports that as the
+// thread disappearing and reappearing, and Apollo pauses its video exactly as
+// when the reader leaves the post. Resume what was playing before the move.
+static void ApolloDuoResumeVideosAfterMove(NSArray<UIViewController *> *controllers) {
+    Class videoClass = objc_getClass("ASVideoNode");
+    if (!videoClass || !controllers.count) return;
+    NSMutableArray *playing = [NSMutableArray array];
+    for (UIViewController *controller in controllers) {
+        UIView *root = controller.viewIfLoaded;
+        if (!root.window) continue;
+        NSMutableArray<UIView *> *views = [NSMutableArray arrayWithObject:root];
+        for (NSUInteger index = 0; index < views.count && index < 4000; index++) {
+            UIView *view = views[index];
+            [views addObjectsFromArray:view.subviews];
+            id node = [view respondsToSelector:@selector(asyncdisplaykit_node)]
+                ? ((id (*)(id, SEL))objc_msgSend)(view, @selector(asyncdisplaykit_node)) : nil;
+            if (![node isKindOfClass:videoClass] || ![node respondsToSelector:@selector(player)]) continue;
+            AVPlayer *player = ((id (*)(id, SEL))objc_msgSend)(node, @selector(player));
+            if (player.rate > 0) [playing addObject:node];
+        }
+    }
+    if (!playing.count) return;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        NSUInteger resumed = 0;
+        for (id node in playing) {
+            AVPlayer *player = ((id (*)(id, SEL))objc_msgSend)(node, @selector(player));
+            UIView *view = ((id (*)(id, SEL))objc_msgSend)(node, @selector(view));
+            if (!player || player.rate > 0 || !view.window) continue;
+            ((void (*)(id, SEL))objc_msgSend)(node, @selector(play));
+            resumed++;
+        }
+        if (resumed) ApolloLog(@"[DuoSplit] resumed %lu video(s) paused by the fold rebuild", (unsigned long)resumed);
+    });
+}
+
 static void ApolloDuoSplitClose(ApolloDuoSplitState *state, BOOL preserveDetail) {
     [sDuoSplitDeferredPresentations removeObject:state];
     if (!state.split || state.changing) return;
     state.changing = YES;
+    NSMutableArray<UIViewController *> *moving = [NSMutableArray array];
+    for (UINavigationController *nav in @[state.primary ?: (id)NSNull.null, state.feed ?: (id)NSNull.null,
+                                          state.secondary ?: (id)NSNull.null]) {
+        if ([nav isKindOfClass:UINavigationController.class]) [moving addObjectsFromArray:nav.viewControllers];
+    }
+    ApolloDuoResumeVideosAfterMove(moving);
     ApolloDuoPostsStopGeometry(state.host.searchNavigation.viewIfLoaded);
     ApolloDuoSearchRestoreBackItem(state);
     NSArray *detail = [state.secondary.viewControllers copy];

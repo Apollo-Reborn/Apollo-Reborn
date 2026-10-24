@@ -127,6 +127,7 @@ static void ApolloDuoSplitNavigateProfile(__unused ApolloDuoSplitState *state,
 }
 
 static void ApolloNavUseNativeTransitionsForControllers(__unused NSArray *controllers) {}
+static void ApolloDuoResumeVideosAfterMove(__unused NSArray *controllers) {}
 static NSUInteger PromoteProfile(ApolloDuoSplitState *state) {
     UINavigationController *outer = state.outer;
     NSArray *stack = outer.viewControllers;
