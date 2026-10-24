@@ -190,7 +190,7 @@ static const void *kApolloProfileTabAvatarImageMarkerKey = &kApolloProfileTabAva
 // banner (no details backdrop). This page-colored wash keeps them readable on
 // busy banner art; it lives inside the banner so the fade mask applies too.
 @property(nonatomic, strong) CAGradientLayer *duoTextScrim;
-@property(nonatomic, strong) UIImageView *bannerImageView;
+@property(nonatomic, strong) ApolloTopAnchoredImageView *bannerImageView;
 @property(nonatomic, strong) id bannerPreviewFeedback;
 @property(nonatomic, strong) UIView *detailsBackgroundView;
 @property(nonatomic, strong) UIImageView *avatarImageView;
@@ -560,7 +560,8 @@ static NSString *ApolloProfileSettingsPreviewYearClubTitle(NSTimeInterval create
         // background (any custom theme, dark, or light) shows through directly.
         self.backgroundColor = [UIColor clearColor];
 
-        _bannerImageView = [[UIImageView alloc] init];
+        _bannerImageView = [[ApolloTopAnchoredImageView alloc] init];
+        _bannerImageView.anchorsTop = YES;
         _bannerImageView.backgroundColor = [UIColor colorWithWhite:0.5 alpha:0.12];
         _bannerImageView.contentMode = UIViewContentModeScaleAspectFill;
         _bannerImageView.clipsToBounds = YES;
@@ -1278,12 +1279,12 @@ static UIFont *ApolloProfileClassicNameFont(void) {
 // same content column as the stat cards, or the name/bio centre on the full
 // width and the bio's last words run under the rail.
 - (CGFloat)apollo_contentWidthForWidth:(CGFloat)width {
-    if (!ApolloDuoSplitIsUnfolded() && ApolloDuoCurrentMode() == ApolloDuoModePhone) return width;
+    // Only beside a visible rail, and only from a live measurement: a stale
+    // inset from another pose would squeeze the header everywhere else.
+    if (!ApolloDuoRailHasVisibleSideBar() || CGRectGetWidth(self.bounds) <= 0.0) return width;
     CGFloat liveRight = ApolloProfileDuoContentRightEdgeInView(self);
-    if (isfinite(liveRight) && CGRectGetWidth(self.bounds) > 0.0) {
-        self.statCardsTrailingInset = MAX(0.0, CGRectGetWidth(self.bounds) - liveRight);
-    }
-    CGFloat inset = self.statCardsTrailingInset;
+    if (!isfinite(liveRight)) return width;
+    CGFloat inset = MAX(0.0, CGRectGetWidth(self.bounds) - liveRight);
     if (!(inset > 0.0) || inset >= width * 0.5) return width;
     return width - inset;
 }
@@ -1436,6 +1437,7 @@ static UIFont *ApolloProfileClassicNameFont(void) {
         CGFloat width = self.bounds.size.width;
         BOOL native = !sShowDetailedProfiles;
         if (!native && !sProfileHeaderImmersive) {
+            self.duoTextScrim.hidden = YES;
             [self apollo_layoutDuoCompactForWidth:width apply:YES];
             return;
         }
@@ -1508,18 +1510,21 @@ static UIFont *ApolloProfileClassicNameFont(void) {
         self.duoBannerMask.frame = self.bannerImageView.bounds;
         if (!self.duoTextScrim) {
             self.duoTextScrim = [CAGradientLayer layer];
-            // Horizontal: strongest behind the name/social column, still a
-            // solid wash under the stat cards on the right.
+            // Behind the name/social column only, clear by the stat cards
+            // (they carry their own glass), so the banner art stays visible.
             self.duoTextScrim.startPoint = CGPointMake(0, 0.5);
             self.duoTextScrim.endPoint = CGPointMake(1, 0.5);
-            self.duoTextScrim.locations = @[@0, @0.5, @1];
+            self.duoTextScrim.locations = @[@0, @0.3, @0.55];
             [self.bannerImageView.layer addSublayer:self.duoTextScrim];
         }
         UIColor *page = [(ApolloThemePageBackgroundColor() ?: UIColor.systemBackgroundColor)
             resolvedColorWithTraitCollection:self.traitCollection];
-        self.duoTextScrim.colors = @[(id)[page colorWithAlphaComponent:0.82].CGColor,
-                                     (id)[page colorWithAlphaComponent:0.7].CGColor,
-                                     (id)[page colorWithAlphaComponent:0.55].CGColor];
+        // A light page washes art out much faster than a dark one darkens it.
+        BOOL lightPage = ApolloColorIsLight(page);
+        CGFloat strongest = lightPage ? 0.15 : 0.3, middle = lightPage ? 0.06 : 0.15;
+        self.duoTextScrim.colors = @[(id)[page colorWithAlphaComponent:strongest].CGColor,
+                                     (id)[page colorWithAlphaComponent:middle].CGColor,
+                                     (id)[page colorWithAlphaComponent:0.0].CGColor];
         self.duoTextScrim.hidden = native || self.bannerImageView.hidden;
         self.duoTextScrim.frame = self.bannerImageView.bounds;
         [CATransaction commit];

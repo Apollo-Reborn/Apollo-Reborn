@@ -3,6 +3,12 @@
 // Shared immersive backdrop. Subreddits use the original sharp banner strip
 // below the chrome with an ambient continuation. Profiles opt into the
 // full-height artwork and appearance-specific fades via usesProfileHero.
+// Aspect-fill image view that crops above center, so profile banners show more
+// of the upper artwork (faces, titles) without pinning to the very top edge.
+@interface ApolloTopAnchoredImageView : UIImageView
+@property(nonatomic, assign) BOOL anchorsTop;
+@end
+
 @interface ApolloImmersiveHeaderBackgroundView : UIView
 
 @property(nonatomic, assign) CGFloat contentTranslation;
