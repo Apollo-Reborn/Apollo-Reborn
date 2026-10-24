@@ -254,7 +254,7 @@ static void ApolloDuoSlideView(UIView *view, CGFloat from, CGFloat to, NSTimeInt
 @property(nonatomic, strong) UIButton *moreButton;
 @property(nonatomic, strong) UINavigationBar *sidebarNavigationBar;
 @property(nonatomic, strong) UIButton *profileBackButton;
-@property(nonatomic, strong) UIScreenEdgePanGestureRecognizer *leadingSwipe;
+@property(nonatomic, strong) UIPanGestureRecognizer *leadingSwipe;
 @property(nonatomic, strong) UIPanGestureRecognizer *listPan;
 @property(nonatomic, weak) UITableView *listPanPrioritizedTable;
 @end
@@ -416,10 +416,25 @@ static void ApolloDuoSplitLeadingSwipeFinished(ApolloDuoSplitHost *host);
     // profile dashboard, whose Back pages live outside its one-page stack.
     // Continue the regular phone's gesture there: reveal the subreddit list
     // (the page beneath the feed on a phone), or leave the visited profile.
-    self.leadingSwipe = [[UIScreenEdgePanGestureRecognizer alloc] initWithTarget:self action:@selector(leadingSwipeChanged:)];
-    self.leadingSwipe.edges = UIRectEdgeLeft;
+    // A screen-edge recognizer never fires in the unfolded canvas (the native
+    // edge pans above need a faked location there too), so this is a plain
+    // pan that only receives touches starting in the host's leading strip.
+    self.leadingSwipe = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(leadingSwipeChanged:)];
     self.leadingSwipe.delegate = self;
     [self.view addGestureRecognizer:self.leadingSwipe];
+}
+// Width of the leading strip that starts the swipe, beyond any safe area.
+static const CGFloat kApolloDuoLeadingSwipeEdge = 24.0;
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldReceiveTouch:(UITouch *)touch {
+    if (gesture != self.leadingSwipe) return YES;
+    CGFloat x = [touch locationInView:self.view].x - CGRectGetMinX(self.view.bounds);
+    return x <= self.view.safeAreaInsets.left + kApolloDuoLeadingSwipeEdge;
+}
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)other {
+    // Like a system edge swipe, a drag that starts in the leading strip goes
+    // to this gesture before feed rows, swipe actions or scrolling. Touches
+    // outside the strip never reach it, so nothing else waits on it there.
+    return gesture == self.leadingSwipe && other != self.listPan;
 }
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gesture {
     if (gesture == self.listPan) {
@@ -430,7 +445,12 @@ static void ApolloDuoSplitLeadingSwipeFinished(ApolloDuoSplitHost *host);
             && velocity.x < 0 && fabs(velocity.x) > fabs(velocity.y);
     }
     if (gesture != self.leadingSwipe) return YES;
-    return ApolloDuoSplitLeadingSwipeShouldBegin(self);
+    // A rightward, mostly horizontal drag, as the native Back swipe.
+    CGPoint velocity = [self.leadingSwipe velocityInView:self.view];
+    if (velocity.x <= 0 || fabs(velocity.x) < fabs(velocity.y)) return NO;
+    BOOL begin = ApolloDuoSplitLeadingSwipeShouldBegin(self);
+    ApolloLog(@"[DuoSplit] leading swipe %@", begin ? @"began" : @"declined (nothing to reveal or return from)");
+    return begin;
 }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
     // The list's vertical scroll pan may already be tracking; the drawer drag
@@ -474,7 +494,7 @@ static void ApolloDuoSplitLeadingSwipeFinished(ApolloDuoSplitHost *host);
     ApolloDuoSlideView(self.listContainer, dx, 0, 0.2, nil);
     [UIView animateWithDuration:0.2 animations:^{ self.listDismiss.alpha = 1; }];
 }
-- (void)leadingSwipeChanged:(UIScreenEdgePanGestureRecognizer *)gesture {
+- (void)leadingSwipeChanged:(UIPanGestureRecognizer *)gesture {
     if (gesture.state != UIGestureRecognizerStateEnded) return;
     // Require a deliberate swipe, as a completed native Back does, so brushing
     // the screen edge while holding the device does not open anything.
