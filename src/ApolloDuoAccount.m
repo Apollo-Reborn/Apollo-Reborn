@@ -123,7 +123,7 @@ static void ApolloDuoCollectProfileIcons(id node, NSMutableDictionary *images) {
     }
     // Other profiles expose a different native menu (for example Multireddits
     // instead of private Saved/vote history). Keep only their real actions.
-    NSArray *order = @[@"Posts", @"Comments", @"Saved", @"Hidden & Deleted", @"Upvoted", @"Downvoted", @"Friends", @"Hidden", @"Multireddits"];
+    NSArray *order = @[@"Posts", @"Comments", @"Saved", @"Hidden & Deleted", @"Upvoted", @"Downvoted", @"Recently Read", @"Friends", @"Hidden", @"Multireddits"];
     NSMutableArray *available = [NSMutableArray array];
     for (NSString *title in order) if (_images[title]) [available addObject:title];
     _shortcuts = available;
@@ -324,7 +324,7 @@ BOOL ApolloDuoAccountHidesProfileRow(UITableView *table, NSIndexPath *path) {
 // not offer for this account are skipped; unknown native ones are appended.
 static NSArray<NSString *> *ApolloDuoAccountGridOrder(void) {
     return @[@"Posts", @"Saved", @"Comments", @"Hidden", @"Upvoted", @"Hidden & Deleted",
-             @"Downvoted", @"Friends", @"Trophies", @"Moderator Zone"];
+             @"Downvoted", @"Recently Read", @"Friends", @"Trophies", @"Moderator Zone"];
 }
 
 // Matches the native ProfileFeatureCellNode card: 15pt side insets, 10pt
@@ -377,7 +377,7 @@ static BOOL ApolloDuoAccountNodeIsShortcut(id node) {
 static NSArray<NSNumber *> *ApolloDuoGridRowHeights(NSArray<NSString *> *titles, UIFont *font, CGFloat width) {
     CGFloat card = MAX(0, width - 2 * kApolloDuoGridInset);
     CGFloat column = floor(card / 2);
-    CGFloat textWidth = MAX(20, column - kApolloDuoGridIconColumn - kApolloDuoGridTrailing);
+    CGFloat textWidth = MAX(20, column - kApolloDuoGridIconColumn - kApolloDuoGridTrailing - 22.0); // chevron + gap
     NSMutableArray *heights = [NSMutableArray array];
     for (NSUInteger i = 0; i < titles.count; i += 2) {
         CGFloat row = kApolloDuoGridMinRow;
@@ -390,6 +390,24 @@ static NSArray<NSNumber *> *ApolloDuoGridRowHeights(NSArray<NSString *> *titles,
         [heights addObject:@(row)];
     }
     return heights;
+}
+
+// Moderator Zone keeps its own small card below the grid (left column, after
+// the native group gap), as it has its own group on the closed display.
+static const CGFloat kApolloDuoGridGroupGap = 20.0;
+static NSString *const kApolloDuoGridSeparateTitle = @"Moderator Zone";
+
+static NSArray<NSString *> *ApolloDuoGridMainTitles(NSArray<NSString *> *titles) {
+    if (titles.count < 2 || ![titles containsObject:kApolloDuoGridSeparateTitle]) return titles;
+    NSMutableArray *main = [titles mutableCopy];
+    [main removeObject:kApolloDuoGridSeparateTitle];
+    return main;
+}
+
+static CGFloat ApolloDuoGridSeparateHeight(NSArray<NSString *> *titles, UIFont *font, CGFloat width) {
+    if (ApolloDuoGridMainTitles(titles).count == titles.count) return 0;
+    return kApolloDuoGridGroupGap
+        + ApolloDuoGridRowHeights(@[kApolloDuoGridSeparateTitle], font, width).firstObject.doubleValue;
 }
 
 static char kApolloDuoGridLayoutKey, kApolloDuoGridAppliedKey, kApolloDuoGridViewKey;
@@ -456,8 +474,8 @@ static ApolloDuoAccountGridLayout *ApolloDuoAccountGridLayoutForTable(UITableVie
         layout.titles = ordered;
         layout.images = images;
         layout.font = attributes[NSFontAttributeName] ?: [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
-        CGFloat height = 0;
-        for (NSNumber *row in ApolloDuoGridRowHeights(ordered, layout.font, width)) height += row.doubleValue;
+        CGFloat height = ApolloDuoGridSeparateHeight(ordered, layout.font, width);
+        for (NSNumber *row in ApolloDuoGridRowHeights(ApolloDuoGridMainTitles(ordered), layout.font, width)) height += row.doubleValue;
         layout.height = height;
     } else {
         layout.anchorRow = -1;
@@ -482,6 +500,7 @@ CGFloat ApolloDuoAccountGridRowHeight(UITableView *table, NSIndexPath *path) {
 @property(nonatomic, strong) UIImageView *icon;
 @property(nonatomic, strong) UILabel *label;
 @property(nonatomic, strong) UIView *separator;
+@property(nonatomic, strong) UIImageView *chevron;
 @property(nonatomic, strong) UIColor *highlightColor;
 @end
 @implementation ApolloDuoAccountGridButton
@@ -493,7 +512,13 @@ CGFloat ApolloDuoAccountGridRowHeight(UITableView *table, NSIndexPath *path) {
         _label = [UILabel new];
         _label.numberOfLines = 0;
         _separator = [UIView new];
-        for (UIView *view in @[_icon, _label, _separator]) {
+        // Matches the native rows' disclosure chevron.
+        UIImageSymbolConfiguration *chevronConfig =
+            [UIImageSymbolConfiguration configurationWithPointSize:14 weight:UIImageSymbolWeightSemibold];
+        _chevron = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right" withConfiguration:chevronConfig]];
+        _chevron.contentMode = UIViewContentModeCenter;
+        _chevron.tintColor = UIColor.tertiaryLabelColor;
+        for (UIView *view in @[_icon, _label, _separator, _chevron]) {
             view.userInteractionEnabled = NO;
             [self addSubview:view];
         }
@@ -511,7 +536,9 @@ CGFloat ApolloDuoAccountGridRowHeight(UITableView *table, NSIndexPath *path) {
     CGSize size = self.bounds.size;
     self.icon.frame = CGRectMake(0, 0, kApolloDuoGridIconColumn, size.height);
     CGFloat textX = kApolloDuoGridIconColumn;
-    self.label.frame = CGRectMake(textX, 0, MAX(0, size.width - textX - kApolloDuoGridTrailing), size.height);
+    CGFloat chevronWidth = 14.0;
+    self.chevron.frame = CGRectMake(size.width - kApolloDuoGridTrailing - chevronWidth, 0, chevronWidth, size.height);
+    self.label.frame = CGRectMake(textX, 0, MAX(0, size.width - textX - kApolloDuoGridTrailing - chevronWidth - 8.0), size.height);
     CGFloat hairline = 1.0 / MAX(1.0, self.traitCollection.displayScale);
     self.separator.frame = CGRectMake(textX, size.height - hairline,
                                       MAX(0, size.width - textX - kApolloDuoGridTrailing), hairline);
@@ -521,6 +548,7 @@ CGFloat ApolloDuoAccountGridRowHeight(UITableView *table, NSIndexPath *path) {
 @interface ApolloDuoAccountShortcutGrid : UIView
 @property(nonatomic, weak) UITableView *table;
 @property(nonatomic, strong) UIView *card;
+@property(nonatomic, strong) UIView *separateCard;
 @property(nonatomic, strong) NSArray<ApolloDuoAccountGridButton *> *buttons;
 @property(nonatomic, strong) ApolloDuoAccountGridLayout *layout;
 @end
@@ -534,6 +562,11 @@ CGFloat ApolloDuoAccountGridRowHeight(UITableView *table, NSIndexPath *path) {
         _card.layer.cornerCurve = kCACornerCurveContinuous;
         _card.clipsToBounds = YES;
         [self addSubview:_card];
+        _separateCard = [UIView new];
+        _separateCard.layer.cornerRadius = 10.0;
+        _separateCard.layer.cornerCurve = kCACornerCurveContinuous;
+        _separateCard.clipsToBounds = YES;
+        [self addSubview:_separateCard];
         self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     }
     return self;
@@ -549,7 +582,8 @@ CGFloat ApolloDuoAccountGridRowHeight(UITableView *table, NSIndexPath *path) {
             button.title = title;
             button.accessibilityLabel = title;
             [button addTarget:self action:@selector(open:) forControlEvents:UIControlEventTouchUpInside];
-            [self.card addSubview:button];
+            [[title isEqualToString:kApolloDuoGridSeparateTitle] && layout.titles.count > 1
+                ? self.separateCard : self.card addSubview:button];
             [buttons addObject:button];
         }
         self.buttons = buttons;
@@ -561,6 +595,7 @@ CGFloat ApolloDuoAccountGridRowHeight(UITableView *table, NSIndexPath *path) {
     UIColor *page = ApolloThemePageBackgroundColor() ?: self.table.backgroundColor ?: UIColor.systemBackgroundColor;
     self.backgroundColor = page;
     self.card.backgroundColor = ApolloThemeCardBackgroundColor() ?: UIColor.secondarySystemGroupedBackgroundColor;
+    self.separateCard.backgroundColor = self.card.backgroundColor;
     // Resolve the text color live (as the landscape dashboard does). The
     // native title color captured at layout time belongs to the appearance
     // that was active then and would stay gray after a light/dark switch.
@@ -583,17 +618,34 @@ CGFloat ApolloDuoAccountGridRowHeight(UITableView *table, NSIndexPath *path) {
 }
 - (void)layoutSubviews {
     [super layoutSubviews];
-    CGRect card = CGRectInset(self.bounds, kApolloDuoGridInset, 0);
+    NSArray<NSString *> *main = ApolloDuoGridMainTitles(self.layout.titles);
+    NSMutableArray<ApolloDuoAccountGridButton *> *mainButtons = [NSMutableArray array];
+    ApolloDuoAccountGridButton *separate = nil;
+    for (ApolloDuoAccountGridButton *button in self.buttons) {
+        if (button.superview == self.separateCard) separate = button;
+        else [mainButtons addObject:button];
+    }
+    NSArray<NSNumber *> *heights = ApolloDuoGridRowHeights(main, self.layout.font, self.bounds.size.width);
+    CGFloat mainHeight = 0;
+    for (NSNumber *row in heights) mainHeight += row.doubleValue;
+    CGRect card = CGRectMake(kApolloDuoGridInset, 0, MAX(0, self.bounds.size.width - 2 * kApolloDuoGridInset), mainHeight);
     self.card.frame = card;
     CGFloat column = floor(card.size.width / 2);
-    NSArray<NSNumber *> *heights = ApolloDuoGridRowHeights(self.layout.titles, self.layout.font, self.bounds.size.width);
+    self.separateCard.hidden = separate == nil;
+    if (separate) {
+        CGFloat height = MAX(0, ApolloDuoGridSeparateHeight(self.layout.titles, self.layout.font, self.bounds.size.width)
+                                - kApolloDuoGridGroupGap);
+        self.separateCard.frame = CGRectMake(kApolloDuoGridInset, mainHeight + kApolloDuoGridGroupGap, column, height);
+        separate.frame = self.separateCard.bounds;
+        separate.separator.hidden = YES;
+    }
     CGFloat y = 0;
     for (NSUInteger row = 0; row < heights.count; row++) {
         CGFloat height = heights[row].doubleValue;
         for (NSUInteger col = 0; col < 2; col++) {
             NSUInteger index = row * 2 + col;
-            if (index >= self.buttons.count) break;
-            ApolloDuoAccountGridButton *button = self.buttons[index];
+            if (index >= mainButtons.count) break;
+            ApolloDuoAccountGridButton *button = mainButtons[index];
             CGFloat x = col * column;
             CGFloat w = col == 0 ? column : card.size.width - column;
             button.frame = CGRectMake(x, y, w, height);

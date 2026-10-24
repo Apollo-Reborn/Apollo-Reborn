@@ -1905,8 +1905,14 @@ static BOOL ApolloDuoSplitSelectRow(UIViewController *root, NSSet<NSString *> *l
 }
 
 extern void ApolloHiddenContentPresentFromProfile(UIViewController *profile);
+extern void ApolloRecentlyReadPresentFromViewController(UIViewController *fromViewController);
 void ApolloDuoAccountOpenShortcut(UIViewController *profile, NSString *title) {
     if (!profile || !title.length) return;
+    // Recently Read is a tweak row sharing Friends' native row.
+    if ([title isEqualToString:@"Recently Read"]) {
+        ApolloRecentlyReadPresentFromViewController(profile);
+        return;
+    }
     // Hidden & Deleted is a tweak-owned row nested beside Saved; every other
     // shortcut is the native row with this label, selected through Apollo.
     if ([title isEqualToString:@"Hidden & Deleted"]) {
@@ -2046,6 +2052,7 @@ static void ApolloDuoAccountSelect(ApolloDuoSplitState *state, NSString *title) 
     }
     state.selectingAccountShortcut = YES;
     if ([title isEqualToString:@"Hidden & Deleted"]) ApolloHiddenContentPresentFromProfile(state.root);
+    else if ([title isEqualToString:@"Recently Read"]) ApolloRecentlyReadPresentFromViewController(state.root);
     else ApolloDuoSplitSelectRow(state.root, [NSSet setWithObject:title]);
     state.selectingAccountShortcut = NO;
     [state.host.view setNeedsLayout];
