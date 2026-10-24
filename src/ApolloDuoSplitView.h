@@ -18,10 +18,11 @@ BOOL ApolloDuoSplitIsSubredditOverlayView(UIView *view);
 BOOL ApolloDuoSplitIsGlassSubredditOverlayView(UIView *view);
 BOOL ApolloDuoSplitIsSidebarController(UIViewController *controller);
 BOOL ApolloDuoSplitRevealPostsList(UINavigationController *navigation);
-/// Excludes containment controllers, the open drawer, and adapting columns.
+/// Only the detail column of a non-Posts split (Settings, Inbox, Account,
+/// Search); never adapting columns, the Posts panes, or a folded stack.
 BOOL ApolloDuoSplitAllowsNavigationSwipe(UINavigationController *navigation);
-/// Only the Posts feed root can open its closed drawer with an edge swipe.
-BOOL ApolloDuoSplitCanRevealPostsListWithSwipe(UINavigationController *navigation);
+/// Closes the Posts subreddit drawer when it is open; NO when it was not.
+BOOL ApolloDuoSplitDismissPostsList(UINavigationController *navigation);
 /// Returns from a visited profile dashboard to its retained Posts Back stack.
 BOOL ApolloDuoSplitReturnFromVisitedProfile(UINavigationController *navigation);
 BOOL ApolloDuoSplitShowSidebar(UINavigationController *navigation);

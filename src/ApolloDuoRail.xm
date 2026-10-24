@@ -34,6 +34,12 @@ struct ApolloDuoSizeRange { CGSize min; CGSize max; };
 @interface _TtC6Apollo19PostsViewController : UIViewController
 @end
 
+@interface _TtC6Apollo23RichMediaHeaderCellNode : NSObject
+@end
+
+@interface _TtC6Apollo17LargePostCellNode : NSObject
+@end
+
 @interface _TtC6Apollo20FloatingActionButton : UIButton
 @end
 
@@ -541,6 +547,38 @@ static void ApolloDuoAdjustFloatingActionButton(UIView *button) {
     ApolloDuoAdjustFloatingActionButton(self);
 }
 
+%end
+
+// Apollo starts a post's video from its cell visibility event once the video's
+// midpoint lies between the selected navigation bar and the window bottom less
+// tabBar.bounds.height. On Duo the tab bar is the trailing vertical rail, as
+// tall as the window, so that area is empty: post and Large-card videos never
+// start (Original-phone layouts are unaffected). While Apollo measures, a rail
+// reports no height; it occludes the side, not the bottom.
+static NSUInteger sApolloDuoVideoVisibilityDepth;
+
+%hook UITabBar
+- (CGRect)bounds {
+    CGRect bounds = %orig;
+    if (sApolloDuoVideoVisibilityDepth && bounds.size.height > bounds.size.width) bounds.size.height = 0;
+    return bounds;
+}
+%end
+
+%hook _TtC6Apollo23RichMediaHeaderCellNode
+- (void)cellNodeVisibilityEvent:(NSInteger)event inScrollView:(UIScrollView *)scrollView withCellFrame:(CGRect)frame {
+    sApolloDuoVideoVisibilityDepth++;
+    %orig;
+    sApolloDuoVideoVisibilityDepth--;
+}
+%end
+
+%hook _TtC6Apollo17LargePostCellNode
+- (void)cellNodeVisibilityEvent:(NSInteger)event inScrollView:(UIScrollView *)scrollView withCellFrame:(CGRect)frame {
+    sApolloDuoVideoVisibilityDepth++;
+    %orig;
+    sApolloDuoVideoVisibilityDepth--;
+}
 %end
 
 %hook UINavigationController

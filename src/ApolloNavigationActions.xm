@@ -1080,6 +1080,22 @@ static UIBarButtonItem *ApolloActionsNativeItemForDuoButton(UIButton *button, NS
     return item;
 }
 
+BOOL ApolloNavigationActionsDuoUsesRail(UINavigationItem *item) {
+    if (!item) return NO;
+    NSArray *generated = objc_getAssociatedObject(item, &kActionsDuoNativeItemsKey);
+    int duoMode = ApolloDuoCurrentMode();
+    // UIKit briefly publishes Phone while replacing a feed's navigation model.
+    // Keep native items across that transient. Portrait restores the compact
+    // composite so its original glyph spacing survives the axis change.
+    return !ApolloDuoSplitIsUnfoldedPortrait()
+        && (duoMode == ApolloDuoModeClosed || ApolloActionsHasTrailingTabRail()
+            || (duoMode == ApolloDuoModePhone && generated != nil));
+}
+
+BOOL ApolloNavigationActionsItemMirrorsButton(UIBarButtonItem *barItem, UIView *button) {
+    return button && objc_getAssociatedObject(barItem, &kActionsDuoSourceButtonKey) == button;
+}
+
 BOOL ApolloNavigationActionsDuoMirrorsButton(UINavigationItem *item, UIView *button) {
     if (!item || !button) return NO;
     // The live items, plus the generated set: a collapsed rail publishes only
@@ -1129,14 +1145,7 @@ static NSArray<UIBarButtonItem *> *ApolloActionsDuoNativeItems(UINavigationItem 
     if ([NSStringFromClass(box.controller.class) isEqualToString:@"Apollo.InboxViewController"]) return items;
     NSArray *generated = objc_getAssociatedObject(item, &kActionsDuoNativeItemsKey);
     NSArray *original = objc_getAssociatedObject(item, &kActionsDuoOriginalItemsKey);
-    int duoMode = ApolloDuoCurrentMode();
-    // UIKit briefly publishes Phone while replacing a feed's navigation model.
-    // Keep native items across that transient. Portrait restores the compact
-    // composite so its original glyph spacing survives the axis change.
-    BOOL closedDuo = !ApolloDuoSplitIsUnfoldedPortrait()
-        && (duoMode == ApolloDuoModeClosed || ApolloActionsHasTrailingTabRail()
-            || (duoMode == ApolloDuoModePhone && generated != nil));
-    if (!closedDuo) {
+    if (!ApolloNavigationActionsDuoUsesRail(item)) {
         ApolloNavigationActionsOwner *owner = ApolloActionsOwner(item, NO);
         // A collapsed rail publishes only its generated More item, retaining
         // the remaining actions in the owner. It is still our native model:

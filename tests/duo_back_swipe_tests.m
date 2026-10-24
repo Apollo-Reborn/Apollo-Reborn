@@ -90,7 +90,6 @@
 @end
 @implementation ApolloDuoSplitState @end
 static BOOL duo = YES, disabled, resizing, reduceMotion;
-static NSUInteger drawerReveals;
 @interface TestDefaults : NSObject
 + (instancetype)standardUserDefaults;
 - (BOOL)boolForKey:(NSString *)key;
@@ -104,11 +103,6 @@ static BOOL ApolloDeviceIsDuo(void) { return duo; }
 static BOOL ApolloDuoSplitIsResizing(void) { return resizing; }
 static ApolloDuoSplitState *ApolloDuoSplitStateForNavigation(UINavigationController *nav, __unused BOOL create) { return nav.duoState; }
 // INCLUDE_PRODUCTION_SPLIT_POLICIES
-static BOOL ApolloDuoSplitRevealPostsList(UINavigationController *nav) {
-    nav.duoState.host.listVisible = YES;
-    drawerReveals++;
-    return YES;
-}
 static CGRect ApolloDuoSplitContentFrame(UINavigationController *nav, __unused UIView *view) { return nav.pane; }
 static BOOL UIAccessibilityIsReduceMotionEnabled(void) { return reduceMotion; }
 enum { UISwipeGestureRecognizerDirectionRight = 1, UIGestureRecognizerStateRecognized = 3 };
@@ -128,6 +122,11 @@ static UINavigationController *Navigation(void) {
     nav.view.safeAreaLayoutGuide = [UILayoutGuide new];
     nav.view.safeAreaLayoutGuide.layoutFrame = CGRectMake(0, 80, 1100, 720);
     nav.pane = CGRectNull;
+    // The detail column of a non-Posts split (Settings, Inbox, Account).
+    ApolloDuoSplitState *state = [ApolloDuoSplitState new];
+    state.split = [NSObject new]; state.host = [TestDuoHost new]; state.secondary = nav;
+    nav.duoState = state;
+    objc_setAssociatedObject(nav, "state", state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return nav;
 }
 int main(void) {
@@ -168,7 +167,7 @@ int main(void) {
         split.split = [NSObject new]; split.host = [TestDuoHost new]; split.secondary = detail;
         nav.duoState = split;
         Check(!ApolloDuoBackSwipeCanNavigate(nav), @"outer containment cannot compete with the real pane");
-        nav.duoState = nil;
+        nav.duoState = objc_getAssociatedObject(nav, "state");
         ApolloDuoInstallBackSwipe(nav); ApolloDuoInstallBackSwipe(nav);
         Check(ApolloDuoHasBackSwipe(nav) && nav.view.gestureRecognizers.count == 1, @"recognizer installation is idempotent");
         ApolloDuoBackSwipe *owner = objc_getAssociatedObject(nav, &kApolloDuoBackSwipe);
@@ -214,23 +213,20 @@ int main(void) {
         split.host.postsShowingDetail = NO;
         Check(ApolloDuoSplitDetailNavigation(nav) == feed, @"shared rail Back targets feed after thread closes");
         Check(!ApolloDuoSplitAllowsNavigationSwipe(nav), @"outer shell cannot swipe even when its stack has history");
-        Check(ApolloDuoBackSwipeCanNavigate(feed) && ApolloDuoBackSwipeCanNavigate(detail), @"each pane can go Back independently");
-        Check(!ApolloDuoSplitCanRevealPostsListWithSwipe(feed), @"feed history takes precedence over menu");
-        feed.viewControllers = @[feed.viewControllers.firstObject];
-        Check(ApolloDuoSplitCanRevealPostsListWithSwipe(feed) && ApolloDuoBackSwipeCanNavigate(feed), @"feed root enables menu swipe even with right thread open");
-        detail.viewControllers = @[detail.viewControllers.firstObject];
-        Check(!ApolloDuoBackSwipeCanNavigate(detail), @"right pane placeholder cannot open menu or pop");
+        Check(!ApolloDuoBackSwipeCanNavigate(feed) && !ApolloDuoBackSwipeCanNavigate(detail),
+              @"the Posts feed and thread belong to the host's back swipe");
         ApolloDuoInstallBackSwipe(feed); owner = objc_getAssociatedObject(feed, &kApolloDuoBackSwipe);
-        owner.swipe.state = UIGestureRecognizerStateRecognized;
-        [owner swiped:owner.swipe]; [owner swiped:owner.swipe];
-        Check(drawerReveals == 1 && feed.pops == 0 && split.host.listVisible, @"root swipe reveals menu once without popping root or toggling closed");
-        Check(!ApolloDuoBackSwipeCanNavigate(feed), @"open drawer blocks underlying feed swipe");
-        split.host.listVisible = NO; split.changing = YES;
-        Check(!ApolloDuoBackSwipeCanNavigate(feed), @"column migration blocks menu swipe");
-        split.changing = NO; disabled = YES;
-        Check(!ApolloDuoBackSwipeCanNavigate(feed), @"navigation gesture opt-out applies to root menu");
-        disabled = NO; split.split = nil;
-        Check(!ApolloDuoBackSwipeCanNavigate(feed), @"folded feed root keeps native root behavior");
+        owner.swipe.state = UIGestureRecognizerStateRecognized; [owner swiped:owner.swipe];
+        Check(feed.pops == 0 && !ApolloDuoBackSwipeOwnsBack(feed), @"a Posts pane never pops and leaves Apollo's Back pan in place");
+        UINavigationController *settings = Navigation();
+        Check(ApolloDuoBackSwipeCanNavigate(settings), @"a Settings detail column can go Back a page");
+        ApolloDuoInstallBackSwipe(settings);
+        Check(ApolloDuoBackSwipeOwnsBack(settings), @"there the pane swipe owns Back instead of Apollo's pan");
+        settings.duoState.changing = YES;
+        Check(!ApolloDuoBackSwipeCanNavigate(settings), @"column migration blocks the pane swipe");
+        settings.duoState.changing = NO; settings.duoState.split = nil;
+        Check(!ApolloDuoBackSwipeCanNavigate(settings) && !ApolloDuoBackSwipeOwnsBack(settings),
+              @"a folded stack keeps Apollo's interactive Back pan");
         nav = Navigation(); nav.parentViewController = [UIViewController new];
         nav.parentViewController.presentedViewController = [UIViewController new];
         Check(!ApolloDuoBackSwipeCanNavigate(nav), @"modal presented by containing split blocks underlying swipe");

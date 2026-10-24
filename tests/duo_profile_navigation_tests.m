@@ -126,6 +126,9 @@ static void ApolloDuoSplitNavigateProfile(__unused ApolloDuoSplitState *state,
     dashboardNavigations++;
 }
 
+static void ApolloNavUseNativeTransitionsForControllers(__unused NSArray *controllers) {}
+static BOOL ApolloDuoSplitRouteSettingsRedditContent(__unused ApolloDuoSplitState *state, __unused UIViewController *page, __unused BOOL animated) { return NO; }
+static void ApolloDuoResumeVideosAfterMove(__unused NSArray *controllers) {}
 static NSUInteger PromoteProfile(ApolloDuoSplitState *state) {
     UINavigationController *outer = state.outer;
     NSArray *stack = outer.viewControllers;
