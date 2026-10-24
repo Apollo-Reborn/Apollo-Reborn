@@ -39,6 +39,14 @@ int main(void) {
                 @"a delayed callback cannot clear a newer gesture's state");
         Require(!ApolloLiquidGlassTabGestureCanClearLifecycleState(7, 7, NO),
                 @"cleanup waits while the app is inactive");
+        Require(ApolloLiquidGlassTabGestureShouldBlockSelection(YES, YES, NO, NO),
+                @"a rejected Liquid Lens gesture blocks its own nonstarting selection");
+        Require(!ApolloLiquidGlassTabGestureShouldBlockSelection(YES, YES, NO, YES),
+                @"an explicit warm navigation may select another tab during gesture cleanup");
+        Require(!ApolloLiquidGlassTabGestureShouldBlockSelection(YES, YES, YES, NO),
+                @"restoring the starting tab remains allowed");
+        Require(!ApolloLiquidGlassTabGestureShouldBlockSelection(YES, NO, NO, NO),
+                @"another tab controller is outside the tracked gesture");
         Require(ApolloLiquidGlassTabBarFrameIsBottom(CGRectMake(0.0, 760.0, 390.0, 84.0),
                                                       CGRectMake(0.0, 0.0, 390.0, 844.0)),
                 @"an iPhone bottom tab bar is eligible");

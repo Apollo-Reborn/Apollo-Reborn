@@ -1,6 +1,7 @@
 #import "ApolloCommon.h"
 #import "settings/ApolloBackupDocument.h"
 #import "ApolloDirectChatWeb.h"
+#import "ApolloLiquidGlassTabGesture.h"
 #import "settings/ApolloSettingsRouter.h"
 #import <UserNotifications/UserNotifications.h>
 #import <objc/message.h>
@@ -233,6 +234,7 @@ static BOOL ApolloQuickActionsHandleURL(NSURL *url, UIWindowScene *originatingSc
     if (ApolloBackupDocumentHandleURL(url)) return YES;
     NSDictionary<NSString *, NSString *> *mailboxRoute = ApolloModernMailboxRouteFromURL(url);
     if (mailboxRoute) {
+        ApolloLiquidGlassTabGesturePrepareForExplicitNavigation();
         dispatch_async(dispatch_get_main_queue(), ^{
             ApolloQuickActionsRetry(@"opening modern mailbox notification destination", ^BOOL{
                 return ApolloQuickActionsOpenModernMailboxNow(mailboxRoute, originatingScene);
@@ -244,6 +246,7 @@ static BOOL ApolloQuickActionsHandleURL(NSURL *url, UIWindowScene *originatingSc
     NSString *action = ApolloQuickActionNameFromURL(url);
     if (!action) return NO;
 
+    ApolloLiquidGlassTabGesturePrepareForExplicitNavigation();
     dispatch_async(dispatch_get_main_queue(), ^{
         ApolloQuickActionsRetry([@"performing " stringByAppendingString:action], ^BOOL{
             return ApolloQuickActionsPerformNow(action, originatingScene);

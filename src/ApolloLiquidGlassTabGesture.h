@@ -22,4 +22,12 @@ ApolloLiquidGlassTabGestureCanClearLifecycleState(NSUInteger scheduledGeneration
                                                    BOOL applicationActive);
 
 FOUNDATION_EXPORT BOOL
+ApolloLiquidGlassTabGestureShouldBlockSelection(BOOL preservationArmed,
+                                                 BOOL matchingTabController,
+                                                 BOOL selectsStartingTab,
+                                                 BOOL explicitNavigation);
+
+FOUNDATION_EXPORT void ApolloLiquidGlassTabGesturePrepareForExplicitNavigation(void);
+
+FOUNDATION_EXPORT BOOL
 ApolloLiquidGlassTabBarFrameIsBottom(CGRect tabBarFrame, CGRect windowBounds);

@@ -35,6 +35,7 @@ static __weak UITabBarController *sApolloLiquidLensTabController;
 static __weak UIViewController *sApolloLiquidLensPreviousTab;
 static BOOL sApolloLiquidLensPreservesSelection;
 static NSUInteger sApolloLiquidLensTouchGeneration;
+static NSUInteger sApolloLiquidLensExplicitNavigationDepth;
 
 static void ApolloCancelLiquidLensGesture(UITabBar *tabBar);
 
@@ -551,8 +552,34 @@ static void ApolloBeginTrackingLiquidLensTouch(UITouch *touch, UIWindow *window)
 
 static BOOL ApolloLiquidLensBlocksSelection(UITabBarController *tabs,
                                             UIViewController *candidate) {
-    return sApolloLiquidLensPreservesSelection && tabs == sApolloLiquidLensTabController
-        && candidate != sApolloLiquidLensPreviousTab;
+    return ApolloLiquidGlassTabGestureShouldBlockSelection(
+        sApolloLiquidLensPreservesSelection,
+        tabs == sApolloLiquidLensTabController,
+        candidate == sApolloLiquidLensPreviousTab,
+        sApolloLiquidLensExplicitNavigationDepth > 0);
+}
+
+static void ApolloBeginExplicitLiquidLensTabNavigation(void) {
+    sApolloLiquidLensExplicitNavigationDepth++;
+    UITabBarController *tabs = sApolloLiquidLensTabController;
+    if (tabs) {
+        ApolloCancelLiquidLensGesture(tabs.tabBar);
+        ApolloRestoreLiquidLensStartingTab();
+    }
+}
+
+static void ApolloEndExplicitLiquidLensTabNavigation(void) {
+    if (sApolloLiquidLensExplicitNavigationDepth > 0) {
+        sApolloLiquidLensExplicitNavigationDepth--;
+    }
+    if (sApolloLiquidLensExplicitNavigationDepth == 0) {
+        ApolloClearTrackedLiquidLensTouch();
+    }
+}
+
+void ApolloLiquidGlassTabGesturePrepareForExplicitNavigation(void) {
+    ApolloBeginExplicitLiquidLensTabNavigation();
+    ApolloEndExplicitLiquidLensTabNavigation();
 }
 
 static void ApolloFinishTrackedLiquidLensTouch(void) {
@@ -779,6 +806,66 @@ static void ApolloInsetLiquidGlassTabBadges(UIView *tabButton) {
             break;
         default:
             break;
+    }
+}
+
+%end
+
+// URL, notification, activity, and shortcut callbacks are explicit navigation
+// intents. They must win over cleanup from the interrupted system gesture even
+// when Apollo selects the destination tab synchronously inside the callback.
+%hook _TtC6Apollo11AppDelegate
+
+- (BOOL)application:(UIApplication *)application openURL:(NSURL *)url options:(NSDictionary *)options {
+    ApolloBeginExplicitLiquidLensTabNavigation();
+    @try {
+        return %orig(application, url, options);
+    } @finally {
+        ApolloEndExplicitLiquidLensTabNavigation();
+    }
+}
+
+- (void)userNotificationCenter:(id)center
+ didReceiveNotificationResponse:(id)response
+         withCompletionHandler:(void (^)(void))completionHandler {
+    ApolloBeginExplicitLiquidLensTabNavigation();
+    @try {
+        %orig(center, response, completionHandler);
+    } @finally {
+        ApolloEndExplicitLiquidLensTabNavigation();
+    }
+}
+
+%end
+
+%hook _TtC6Apollo13SceneDelegate
+
+- (void)scene:(UIScene *)scene openURLContexts:(NSSet *)URLContexts {
+    ApolloBeginExplicitLiquidLensTabNavigation();
+    @try {
+        %orig(scene, URLContexts);
+    } @finally {
+        ApolloEndExplicitLiquidLensTabNavigation();
+    }
+}
+
+- (void)scene:(UIScene *)scene continueUserActivity:(NSUserActivity *)userActivity {
+    ApolloBeginExplicitLiquidLensTabNavigation();
+    @try {
+        %orig(scene, userActivity);
+    } @finally {
+        ApolloEndExplicitLiquidLensTabNavigation();
+    }
+}
+
+- (void)windowScene:(UIWindowScene *)windowScene
+ performActionForShortcutItem:(UIApplicationShortcutItem *)shortcutItem
+   completionHandler:(void (^)(BOOL succeeded))completionHandler {
+    ApolloBeginExplicitLiquidLensTabNavigation();
+    @try {
+        %orig(windowScene, shortcutItem, completionHandler);
+    } @finally {
+        ApolloEndExplicitLiquidLensTabNavigation();
     }
 }
 
