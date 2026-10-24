@@ -562,6 +562,56 @@ static UIImage *ApolloNativeActionMenuSizedIcon(UIImage *image) {
     return [resized imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
 }
 
+// The opaque bounds of `image`, in points. Some option-* assets carry wide
+// transparent margins, so fitting the canvas alone leaves the glyph small.
+static CGRect ApolloNativeActionMenuOpaqueBounds(UIImage *image) {
+    CGImageRef cg = image.CGImage;
+    CGRect full = CGRectMake(0.0, 0.0, image.size.width, image.size.height);
+    if (!cg) return full;
+    size_t width = CGImageGetWidth(cg), height = CGImageGetHeight(cg);
+    if (width == 0 || height == 0 || width > 512 || height > 512) return full;
+    NSMutableData *pixels = [NSMutableData dataWithLength:width * height];
+    CGContextRef context = CGBitmapContextCreate(pixels.mutableBytes, width, height, 8, width, NULL,
+                                                 (CGBitmapInfo)kCGImageAlphaOnly);
+    if (!context) return full;
+    CGContextDrawImage(context, CGRectMake(0, 0, width, height), cg);
+    CGContextRelease(context);
+    const uint8_t *alpha = (const uint8_t *)pixels.bytes;
+    size_t minX = width, minY = height, maxX = 0, maxY = 0;
+    for (size_t y = 0; y < height; y++) {
+        for (size_t x = 0; x < width; x++) {
+            if (alpha[y * width + x] < 8) continue;
+            minX = MIN(minX, x); maxX = MAX(maxX, x);
+            minY = MIN(minY, y); maxY = MAX(maxY, y);
+        }
+    }
+    if (minX > maxX || minY > maxY) return full;
+    CGFloat scale = image.scale > 0.0 ? image.scale : 1.0;
+    // Bitmap rows run top-down here, matching UIKit's coordinate space.
+    return CGRectMake(minX / scale, minY / scale, (maxX - minX + 1) / scale, (maxY - minY + 1) / scale);
+}
+
+UIImage *ApolloNativeActionMenuAssetIcon(NSString *assetName, CGFloat side) {
+    UIImage *image = [UIImage imageNamed:assetName];
+    CGRect glyph = image ? ApolloNativeActionMenuOpaqueBounds(image) : CGRectZero;
+    if (glyph.size.width <= 0.0 || glyph.size.height <= 0.0) return ApolloNativeActionMenuSizedIcon(image);
+    // Unlike the native rows' helper, trim the transparent margin and scale UP:
+    // option-moderator's shield otherwise reads visibly smaller than its
+    // neighbors. Fit the glyph to a `side`-point box.
+    CGFloat scale = MIN(side / glyph.size.width, side / glyph.size.height);
+    CGRect drawRect = CGRectMake((side - glyph.size.width * scale) / 2.0 - glyph.origin.x * scale,
+                                 (side - glyph.size.height * scale) / 2.0 - glyph.origin.y * scale,
+                                 image.size.width * scale, image.size.height * scale);
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    format.opaque = NO;
+    format.scale = MAX(image.scale, UIScreen.mainScreen.scale);
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(side, side) format:format];
+    UIImage *fitted = [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
+        [[image imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal] drawInRect:drawRect];
+    }];
+    return [fitted imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+}
+
 static UIImage *ApolloNativeActionDefaultImage(uint16_t actionKind) {
     NSUInteger count = sizeof(kApolloNativeActionDefaultAssetNames) / sizeof(kApolloNativeActionDefaultAssetNames[0]);
     if (actionKind >= count) return nil;

@@ -3,6 +3,9 @@
 FOUNDATION_EXPORT NSString * const ApolloRichPreviewTranslationDidUpdateNotification;
 
 BOOL ApolloRichPreviewTranslationShouldTranslateForNode(id node);
+// YES while `navItem` carries the nav-bar translation globe (merged, standalone
+// or on the Duo rail) and it is not being removed.
+BOOL ApolloTranslationNavigationItemHasGlobe(UINavigationItem *navItem);
 NSString *ApolloRichPreviewTranslatedTextIfAvailable(NSURL *url, NSString *field, NSString *sourceText, id ownerNode);
 
 // Settles a vote-reconfigured comment/header cell's body back to its cached
