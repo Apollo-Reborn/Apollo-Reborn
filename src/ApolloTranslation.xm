@@ -20,6 +20,7 @@
 #import "ApolloThemeRuntime.h"
 #import "ApolloTranslation.h"
 #import "ApolloFindInCommentsGlass.h"
+#import "ApolloDuoUIKitCompatibility.h"
 #import "Tweak.h"
 #import "settings/ApolloSettingsGeneralTable.h"
 #import "ApolloClasses.h"
@@ -104,6 +105,8 @@ static const void *kApolloGlobeStandaloneItemKey = &kApolloGlobeStandaloneItemKe
 // The right-shift the merge applied to Apollo's buttons, stored on the container
 // so removal can undo it exactly.
 static const void *kApolloGlobeMergeShiftKey = &kApolloGlobeMergeShiftKey;
+// On Duo's vertical rail: a native item standing in for the globe button.
+static const void *kApolloGlobeRailItemKey = &kApolloGlobeRailItemKey;
 static BOOL sApplyingGlobeMerge = NO;
 // Globe slot width inside Apollo's container. ~34pt centers the ~26pt glyph with
 // the same modest padding Apollo's own icons use, so spacing reads even.
@@ -8089,6 +8092,68 @@ static void ApolloMergeGlobeIntoContainer(UIButton *globe, UIView *container) {
 }
 
 // Merge into the trailing cluster, or retain a standalone item when absent.
+// On Duo's vertical rail, ApolloNavigationActions splits Apollo's composite
+// into native rail items, and UIKit keeps the replaced composite in the bar.
+// A globe merged into it stayed visible there, beside the standalone fallback,
+// and adding/dropping that standalone glass item as pages changed flashed it
+// in transitions. On the rail the globe is a native item of its own instead,
+// sharing the rail's glass; the button itself stays out of the bar and only
+// forwards taps. Off the rail the item is removed and merging resumes.
+static UIBarButtonItem *ApolloGlobeRailItem(UINavigationItem *navItem, UIButton *globe) {
+    UIBarButtonItem *item = objc_getAssociatedObject(navItem, kApolloGlobeRailItemKey);
+    if (!item) {
+        UIImage *image = [[UIImage systemImageNamed:@"globe"] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+        __weak UIButton *weakGlobe = globe;
+        item = [[UIBarButtonItem alloc] initWithPrimaryAction:
+            [UIAction actionWithTitle:@"Translate" image:image identifier:nil handler:^(__unused UIAction *action) {
+                [weakGlobe sendActionsForControlEvents:UIControlEventTouchUpInside];
+            }]];
+        if (@available(iOS 26.0, *)) {
+            item.identifier = @"ApolloReborn.duo-translation-globe";
+            item.hidesSharedBackground = NO;
+            item.sharesBackground = YES;
+        }
+        if (@available(iOS 27.1, *)) {
+            item.axisBehavior = UIBarButtonItemAxisBehaviorVerticalPreferred;
+        }
+        objc_setAssociatedObject(navItem, kApolloGlobeRailItemKey, item, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    item.accessibilityLabel = globe.accessibilityLabel;
+    return item;
+}
+
+// Returns `items` with the globe published for the current axis: on the rail,
+// as the native item (no standalone, no mirror of a merged globe); elsewhere,
+// without the rail item.
+static NSArray<UIBarButtonItem *> *ApolloGlobeRailItems(UINavigationItem *navItem, NSArray<UIBarButtonItem *> *items) {
+    UIButton *globe = objc_getAssociatedObject(navItem, kApolloGlobeMergeButtonKey);
+    UIBarButtonItem *railItem = objc_getAssociatedObject(navItem, kApolloGlobeRailItemKey);
+    BOOL rail = globe && IsLiquidGlass() && ApolloNavigationActionsDuoUsesRail(navItem)
+        && ![objc_getAssociatedObject(navItem, kApolloGlobeRemovalPendingKey) boolValue]
+        && !ApolloFindInCommentsGlassOwnsRightItems(navItem);
+    if (!rail && !railItem) return items;
+    UIBarButtonItem *standalone = objc_getAssociatedObject(navItem, kApolloGlobeStandaloneItemKey);
+    NSMutableArray<UIBarButtonItem *> *result = [NSMutableArray arrayWithCapacity:items.count + 1];
+    for (UIBarButtonItem *candidate in items) {
+        if (candidate == railItem) continue;
+        if (rail && (candidate == standalone || ApolloNavigationActionsItemMirrorsButton(candidate, globe))) continue;
+        [result addObject:candidate];
+    }
+    if (rail) {
+        // Unpack a composite we merged into before the rail took over; the
+        // split that follows then mirrors only Apollo's own buttons.
+        ApolloDetachGlobeFromContainer(globe);
+        if (standalone) {
+            if (ApolloStandaloneItemHostsGlobe(standalone, globe)) standalone.customView = nil;
+            objc_setAssociatedObject(navItem, kApolloGlobeStandaloneItemKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        [globe removeFromSuperview];
+        // The last item is the leading one: the top of the rail's group.
+        [result addObject:ApolloGlobeRailItem(navItem, globe)];
+    }
+    return [result isEqualToArray:items] ? items : result;
+}
+
 static void ApolloApplyGlobeMergeForNavItem(UINavigationItem *navItem) {
     if (!navItem) return;
     if ([objc_getAssociatedObject(navItem, kApolloGlobeRemovalPendingKey) boolValue]) return;
@@ -8100,6 +8165,18 @@ static void ApolloApplyGlobeMergeForNavItem(UINavigationItem *navItem) {
     if (ApolloFindInCommentsGlassOwnsRightItems(navItem)) return;
     UIButton *globe = objc_getAssociatedObject(navItem, kApolloGlobeMergeButtonKey);
     if (!globe) return;
+
+    if (IsLiquidGlass() && (ApolloNavigationActionsDuoUsesRail(navItem)
+                            || objc_getAssociatedObject(navItem, kApolloGlobeRailItemKey))) {
+        NSArray<UIBarButtonItem *> *current = navItem.rightBarButtonItems ?: @[];
+        NSArray<UIBarButtonItem *> *railed = ApolloGlobeRailItems(navItem, current);
+        if (railed != current) {
+            sApplyingGlobeMerge = YES;
+            navItem.rightBarButtonItems = railed;
+            sApplyingGlobeMerge = NO;
+        }
+        if (ApolloNavigationActionsDuoUsesRail(navItem)) return;
+    }
 
     UIView *container = ApolloFindTrailingButtonContainer(navItem, globe);
     __weak UINavigationItem *weakItem = navItem;
@@ -8242,6 +8319,15 @@ static void ApolloRemoveGlobeMergeForNavItem(UINavigationItem *navItem) {
             sApplyingGlobeMerge = NO;
         }
     }
+    UIBarButtonItem *railItem = objc_getAssociatedObject(navItem, kApolloGlobeRailItemKey);
+    if (railItem && [navItem.rightBarButtonItems containsObject:railItem]) {
+        NSMutableArray *its = [navItem.rightBarButtonItems mutableCopy];
+        [its removeObject:railItem];
+        sApplyingGlobeMerge = YES;
+        navItem.rightBarButtonItems = its;
+        sApplyingGlobeMerge = NO;
+    }
+    objc_setAssociatedObject(navItem, kApolloGlobeRailItemKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     // The globe is gone for good on this nav item: make sure no host (a
     // standalone item's wrapper included) keeps drawing it.
     [globe removeFromSuperview];
@@ -11385,6 +11471,8 @@ static NSArray<UIBarButtonItem *> *ApolloSearchItemsWithGlobe(UINavigationItem *
     // Settle the button allocation first; the title capsule owns its resize.
     if (prepared != items) animated = NO;
     items = ApolloRestoreGlobeBeforeSearchDismissal(self, prepared);
+    // Publish the rail globe in this same update, not in a second set after it.
+    items = ApolloGlobeRailItems(self, items);
     %orig(items, animated);
     // Subreddit headers size this nav item's title against the trailing
     // cluster. The owner association makes this a small, local invalidation.
@@ -11408,7 +11496,7 @@ static NSArray<UIBarButtonItem *> *ApolloSearchItemsWithGlobe(UINavigationItem *
         [self setRightBarButtonItems:prepared animated:NO];
         return;
     }
-    NSArray *restored = ApolloRestoreGlobeBeforeSearchDismissal(self, items);
+    NSArray *restored = ApolloGlobeRailItems(self, ApolloRestoreGlobeBeforeSearchDismissal(self, items));
     if (restored != items) {
         [self setRightBarButtonItems:restored animated:animated];
         return;

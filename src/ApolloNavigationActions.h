@@ -11,6 +11,11 @@ UIView *ApolloNavigationActionsMenuSourceView(UIView *action);
 // YES while the trailing Duo rail publishes `button` (a control inside Apollo's
 // composite actions) as one of its generated native items.
 BOOL ApolloNavigationActionsDuoMirrorsButton(UINavigationItem *item, UIView *button);
+// YES when this item's trailing actions are published on Duo's vertical rail
+// as separate native items rather than as Apollo's composite custom view.
+BOOL ApolloNavigationActionsDuoUsesRail(UINavigationItem *item);
+// YES when `barItem` is a generated rail mirror of `button`.
+BOOL ApolloNavigationActionsItemMirrorsButton(UIBarButtonItem *barItem, UIView *button);
 
 // Defers measurement, so calling from a layout callback is safe.
 void ApolloNavigationActionsRefresh(UINavigationBar *navigationBar);
