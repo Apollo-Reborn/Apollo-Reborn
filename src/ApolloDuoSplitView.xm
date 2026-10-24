@@ -3492,7 +3492,10 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     BOOL back = leftIvar && object_getIvar(self, leftIvar) == gesture;
     // One owner for backward navigation, including when folded. Apollo's old
     // edge pan otherwise competes with the pane-aware swipe and can pop twice.
-    if (back && ApolloDuoHasBackSwipe(nav)) return NO;
+    // Only veto it for touches the edge strip claimed: away from the strip the
+    // Duo swipe rejects the touch, so Apollo's own pan is the sole owner and
+    // its swipe-anywhere setting (Disable Right Swipes) must keep working.
+    if (back && ApolloDuoHasBackSwipe(nav) && ApolloDuoBackSwipeClaimedCurrentTouch(nav)) return NO;
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(self, NO);
     if (!state.split || state.changing) return %orig(gesture);
     Ivar rightIvar = class_getInstanceVariable(nav.class, "rightScreenEdgePanGestureRecognizer");

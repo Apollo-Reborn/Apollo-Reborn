@@ -46,12 +46,19 @@ static BOOL ApolloDuoBackSwipeAcceptsPoint(UINavigationController *navigation, C
 @interface ApolloDuoBackSwipe : NSObject <UIGestureRecognizerDelegate>
 @property(nonatomic, weak) UINavigationController *navigation;
 @property(nonatomic, strong) UISwipeGestureRecognizer *swipe;
+// Whether the most recent touch-down was claimed by the edge-strip Back swipe.
+// Apollo's own back pan is vetoed only for touches this recognizer owns, so
+// Apollo's swipe-anywhere navigation (Settings > Gestures > Disable Right
+// Swipes) keeps working away from the strip.
+@property(nonatomic) BOOL lastTouchClaimed;
 @end
 
 @implementation ApolloDuoBackSwipe
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldReceiveTouch:(UITouch *)touch {
-    return gesture == self.swipe
-        && ApolloDuoBackSwipeAcceptsPoint(self.navigation, [touch locationInView:self.navigation.view]);
+    if (gesture != self.swipe) return NO;
+    BOOL claimed = ApolloDuoBackSwipeAcceptsPoint(self.navigation, [touch locationInView:self.navigation.view]);
+    self.lastTouchClaimed = claimed;
+    return claimed;
 }
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gesture {
     return gesture == self.swipe && ApolloDuoBackSwipeCanNavigate(self.navigation);
@@ -86,6 +93,11 @@ static BOOL ApolloDuoBackSwipeAcceptsPoint(UINavigationController *navigation, C
 static char kApolloDuoBackSwipe;
 BOOL ApolloDuoHasBackSwipe(UINavigationController *navigation) {
     return objc_getAssociatedObject(navigation, &kApolloDuoBackSwipe) != nil;
+}
+
+BOOL ApolloDuoBackSwipeClaimedCurrentTouch(UINavigationController *navigation) {
+    ApolloDuoBackSwipe *owner = objc_getAssociatedObject(navigation, &kApolloDuoBackSwipe);
+    return owner.lastTouchClaimed;
 }
 
 void ApolloDuoInstallBackSwipe(UINavigationController *navigation) {

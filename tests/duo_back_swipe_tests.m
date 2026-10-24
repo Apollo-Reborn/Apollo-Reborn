@@ -176,8 +176,14 @@ int main(void) {
               @"Back uses a one-finger right swipe");
         UITouch *touch = [UITouch new]; touch.point = CGPointMake(5, 300);
         Check([owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch], @"real delegate accepts the content-edge touch");
+        Check(ApolloDuoBackSwipeClaimedCurrentTouch(nav), @"edge touch is owned by the Duo swipe (Apollo's back pan vetoed)");
         touch.point = CGPointMake(200, 300);
         Check(![owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch], @"real delegate rejects interior touches");
+        Check(!ApolloDuoBackSwipeClaimedCurrentTouch(nav),
+              @"interior touch leaves Back to Apollo's own pan (swipe-anywhere navigation)");
+        touch.point = CGPointMake(5, 300);
+        [owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch];
+        Check(ApolloDuoBackSwipeClaimedCurrentTouch(nav), @"claim follows the latest touch, not the first");
         UIScrollView *scroll = [UIScrollView new]; scroll.panGestureRecognizer = [UIPanGestureRecognizer new];
         scroll.panGestureRecognizer.view = scroll;
         Check([owner gestureRecognizer:owner.swipe shouldRecognizeSimultaneouslyWithGestureRecognizer:scroll.panGestureRecognizer],
