@@ -1999,17 +1999,28 @@ static BOOL ApolloDuoSplitOpenStartupFeed(ApolloDuoSplitState *state) {
     } else if ([kind isEqualToString:@"all"]) {
         path = @"/r/all";
     }
-    if ([path isEqualToString:@"/"]) {
-        // Home is a native feed row, but the enhanced list presents it in a
-        // separate shortcut control. Searching visible row labels misses it.
-        // Use the same visible-index mapping as the shortcut's tap handler.
+    // Home, Popular and All are native feed rows, not subreddits. Routing
+    // /r/all as a URL opened a separate lowercase "all" subreddit page, and a
+    // paired split placed it in the comments column beside the native feed.
+    // The enhanced list presents these rows in a separate shortcut control, so
+    // searching visible row labels misses them. Use the same visible-index
+    // mapping as the shortcut's tap handler.
+    NSNumber *feedIndex = [path isEqualToString:@"/"] ? @0
+        : [path isEqualToString:@"/r/popular"] ? @1
+        : [path isEqualToString:@"/r/all"] ? @2 : nil;
+    if (feedIndex) {
         UITableView *table = ApolloDuoSplitFindTable(state.root.view);
-        NSUInteger row = [ApolloFeedShortcutVisibleIndexes() indexOfObject:@0];
-        if (row == NSNotFound || table.numberOfSections == 0 ||
-            row >= (NSUInteger)[table numberOfRowsInSection:0] ||
-            ![table.delegate respondsToSelector:@selector(tableView:didSelectRowAtIndexPath:)]) return NO;
-        [table.delegate tableView:table didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:row inSection:0]];
-        return (state.feed ?: state.secondary).viewControllers.firstObject.class != UIViewController.class;
+        NSUInteger row = [ApolloFeedShortcutVisibleIndexes() indexOfObject:feedIndex];
+        if (row != NSNotFound) {
+            // Leave the default pending until the list has loaded its rows.
+            if (table.numberOfSections == 0 || row >= (NSUInteger)[table numberOfRowsInSection:0] ||
+                ![table.delegate respondsToSelector:@selector(tableView:didSelectRowAtIndexPath:)]) return NO;
+            [table.delegate tableView:table didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:row inSection:0]];
+            return (state.feed ?: state.secondary).viewControllers.firstObject.class != UIViewController.class;
+        }
+        // Home is always listed. A hidden Popular/All shortcut has no row, so
+        // its URL is the only way to open that feed.
+        if ([feedIndex isEqualToNumber:@0]) return NO;
     }
     NSURLComponents *url = [NSURLComponents componentsWithString:@"https://www.reddit.com"];
     url.path = path;
