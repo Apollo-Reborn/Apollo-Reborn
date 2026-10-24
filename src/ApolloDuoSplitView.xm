@@ -2387,12 +2387,18 @@ static void ApolloDuoSplitOpen(ApolloDuoSplitState *state) {
     if (posts) {
         state.feed = [[outer.class alloc] init];
         ApolloDuoSplitLink(state.feed, state);
-        NSArray *feedPages = detail.count ? @[detail.firstObject] : @[[UIViewController new]];
+        // Leading subreddit/feed pages stay on the left; only what follows
+        // them (posts, comments) belongs in the thread pane.
+        NSUInteger feedCount = detail.count ? 1 : 0;
+        while (feedCount < detail.count && ApolloClassPostsViewController
+               && [detail[feedCount] isKindOfClass:ApolloClassPostsViewController]) feedCount++;
+        NSArray *feedPages = feedCount ? [detail subarrayWithRange:NSMakeRange(0, feedCount)] : @[[UIViewController new]];
         [state.secondary setViewControllers:@[] animated:NO];
         [state.feed setViewControllers:feedPages animated:NO];
         UIViewController *backstop = [UIViewController new];
         backstop.title = @"Feed";
-        NSArray *comments = detail.count > 1 ? [detail subarrayWithRange:NSMakeRange(1, detail.count - 1)] : @[];
+        NSArray *comments = detail.count > feedCount
+            ? [detail subarrayWithRange:NSMakeRange(feedCount, detail.count - feedCount)] : @[];
         [state.secondary setViewControllers:[@[backstop] arrayByAddingObjectsFromArray:comments] animated:NO];
         // The host may already have loaded while the outer stack was changed.
         // Recreate it with the overlay configured before viewDidLoad.
