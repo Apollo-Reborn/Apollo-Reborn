@@ -283,7 +283,6 @@ static void ApolloDuoSplitLeadingSwipeFinished(ApolloDuoSplitHost *host);
         self.listDismiss.hidden = YES;
         [self.view addSubview:self.listDismiss];
         self.listGlass = [[UIVisualEffectView alloc] initWithEffect:nil];
-        self.listGlass.layer.cornerRadius = 28;
         self.listGlass.clipsToBounds = YES;
         // Move a plain container so the material and list travel together.
         // UIVisualEffectView manages its own compositor geometry.
@@ -296,6 +295,19 @@ static void ApolloDuoSplitLeadingSwipeFinished(ApolloDuoSplitHost *host);
         [self.listContainer addGestureRecognizer:self.listPan];
         self.listGlass.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         [self.listContainer addSubview:self.listGlass];
+        // The drawer's leading corners sit 12pt inside the display's rounded
+        // corners. Follow them concentrically, as system sheets do, instead of
+        // a fixed radius the display clips. The container resolves against the
+        // window; the material, sharing its bounds, takes the same radius.
+        if (@available(iOS 26.0, *)) {
+            UICornerConfiguration *corners = [UICornerConfiguration configurationWithUniformRadius:
+                [UICornerRadius containerConcentricRadiusWithMinimum:28]];
+            self.listContainer.cornerConfiguration = corners;
+            self.listGlass.cornerConfiguration = corners;
+        } else {
+            self.listGlass.layer.cornerRadius = 28;
+            self.listGlass.layer.cornerCurve = kCACornerCurveContinuous;
+        }
         // A managed bar joins Duo's global vertical navigation rail even
         // inside this narrow drawer. A standalone native bar keeps Apollo's
         // actual items horizontal and derives its height from UIKit.
