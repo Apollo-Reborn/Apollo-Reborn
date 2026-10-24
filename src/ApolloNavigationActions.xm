@@ -3,6 +3,8 @@
 #import "ApolloNavigationActions.h"
 #import "ApolloNavigationActionsDiscovery.h"
 #import "ApolloNativeActionMenus.h"
+#import "ApolloActionMenu.h"
+#import "ApolloTranslation.h"
 #import "ApolloCommon.h"
 #import "ApolloDuoCompatibility.h"
 #import "ApolloDuoRail.h"
@@ -55,6 +57,7 @@ static char kActionsApprovedLayoutKey;
 static char kActionsDuoOriginalItemsKey;
 static char kActionsDuoNativeItemsKey;
 static char kActionsDuoSourceButtonKey;
+static char kActionsDuoBuiltFoldKey;
 static char kActionsDuoMirroredItemsKey;
 static char kActionsDuoRefreshScheduledKey;
 static char kActionsDuoProfileAppliedKey;
@@ -1120,6 +1123,183 @@ static NSArray<UIBarButtonItem *> *ApolloActionsWithoutDuoMirrors(UINavigationIt
     return kept;
 }
 
+// The closed Duo's rail fits three items above the tab bar. Translation's globe
+// joins Apollo's moderator / sort / More strip, so a moderator with Translation
+// on gets four, and UIKit spills the extras into an icon-only overflow menu
+// (More then takes two taps). In that case keep the globe on the rail and offer
+// the moderator shield as a row in More instead. Without the globe, or on the
+// opened display (which fits all four), nothing moves.
+static BOOL ApolloActionsButtonActionContains(UIButton *button, NSString *needle) {
+    for (id target in button.allTargets) {
+        for (NSString *action in [button actionsForTarget:target forControlEvent:UIControlEventTouchUpInside]) {
+            if ([action.lowercaseString containsString:needle]) return YES;
+        }
+    }
+    return NO;
+}
+
+// Closed Duo with Translation's globe on this page, wherever the globe sits:
+// merged in Apollo's strip, or added to the rail as its own item afterwards.
+static BOOL ApolloActionsDuoFoldWanted(UINavigationItem *item) {
+    if (!ApolloActionsHasTrailingTabRail() || !ApolloTranslationNavigationItemHasGlobe(item)) return NO;
+    // Decide from live geometry: the cached Duo mode still reads Closed for a
+    // moment after unfolding. The rail beside a portrait window is the closed
+    // display; the opened display shows it only in landscape.
+    UIView *root = ((UIViewController *)ApolloMainTabBarController()).view;
+    return root && CGRectGetHeight(root.bounds) > CGRectGetWidth(root.bounds);
+}
+
+static UIButton *ApolloActionsDuoFoldedModerator(UINavigationItem *item, NSArray<UIButton *> *buttons) {
+    // Opened portrait and landscape fit all four; only the closed rail overflows.
+    if (!ApolloActionsDuoFoldWanted(item)) return nil;
+    for (UIButton *button in buttons) {
+        if ([button.accessibilityLabel.lowercaseString containsString:@"moderator"]
+            || ApolloActionsButtonActionContains(button, @"moderator")) return button;
+    }
+    return nil;
+}
+
+// Armed by the rail's More tap; claimed by the More sheet built right after.
+static __weak UIButton *sDuoFoldedModerator;
+static __weak UIBarButtonItem *sDuoFoldedModeratorAnchor;
+static CFAbsoluteTime sDuoFoldedModeratorArmedAt;
+static char kActionsDuoFoldedModeratorKey;
+static char kActionsDuoFoldedAnchorKey;
+
+static void ApolloActionsOpenFoldedModerator(UIButton *moderator, UIBarButtonItem *anchor) {
+    if (!moderator) return;
+    for (id target in moderator.allTargets) {
+        NSString *action = [moderator actionsForTarget:target forControlEvent:UIControlEventTouchUpInside].firstObject;
+        if (!action) continue;
+        // Send from the visible More item: the shield's own button is off-screen
+        // while the rail shows, and Apollo anchors its sheet to the sender.
+        [UIApplication.sharedApplication sendAction:NSSelectorFromString(action)
+                                                 to:target
+                                               from:anchor ?: moderator
+                                           forEvent:nil];
+        return;
+    }
+    [moderator sendActionsForControlEvents:UIControlEventTouchUpInside];
+}
+
+// Apollo's own Moderator row icon (the starred shield), not an SF Symbol. A
+// row titled "Moderator" is tinted green as an original-rendered image, which
+// UIMenu draws at its natural size while it enlarges the template icons of
+// the other rows; a larger box makes the shield read at their size.
+static UIImage *ApolloActionsFoldedModeratorIcon(void) {
+    return ApolloNativeActionMenuAssetIcon(@"option-moderator", 30.0) ?: [UIImage systemImageNamed:@"shield"];
+}
+
+static void ApolloActionsArmFoldedModerator(UIBarButtonItem *more, UIButton *moreButton, UIButton *moderator) {
+    __weak UIBarButtonItem *weakMore = more;
+    __weak UIButton *weakModerator = moderator;
+    if (more.menu) {
+        // A UIMenu-backed More has no sheet to inject into; append directly.
+        UIAction *row = [UIAction actionWithTitle:@"Moderator"
+                                            image:ApolloActionsFoldedModeratorIcon()
+                                       identifier:@"ApolloReborn.duo-rail.moderator"
+                                          handler:^(__unused UIAction *action) {
+            ApolloActionsOpenFoldedModerator(weakModerator, weakMore);
+        }];
+        more.menu = [more.menu menuByReplacingChildren:[more.menu.children arrayByAddingObject:row]];
+        return;
+    }
+    id target = more.target;
+    SEL action = more.action;
+    __weak UIButton *weakMoreButton = moreButton;
+    more.primaryAction = [UIAction actionWithTitle:more.accessibilityLabel ?: @""
+                                             image:more.image
+                                        identifier:nil
+                                           handler:^(__unused UIAction *nativeAction) {
+        sDuoFoldedModerator = weakModerator;
+        sDuoFoldedModeratorAnchor = weakMore;
+        sDuoFoldedModeratorArmedAt = CFAbsoluteTimeGetCurrent();
+        if (target && action) {
+            [UIApplication.sharedApplication sendAction:action to:target from:weakMore forEvent:nil];
+        } else {
+            [weakMoreButton sendActionsForControlEvents:UIControlEventTouchUpInside];
+        }
+    }];
+}
+
+static void ApolloActionsOpenFoldedModeratorAfterMenu(id actionController) {
+    UIButton *moderator = objc_getAssociatedObject(actionController, &kActionsDuoFoldedModeratorKey);
+    UIBarButtonItem *anchor = objc_getAssociatedObject(actionController, &kActionsDuoFoldedAnchorKey);
+    dispatch_block_t open = ^{ ApolloActionsOpenFoldedModerator(moderator, anchor); };
+    // Apollo presents the moderator sheet from the same anchor; wait for the
+    // More menu to finish dismissing. The legacy sheet already dismissed.
+    if (!ApolloNativeActionMenuPerformAfterDismissal(actionController, open)) open();
+}
+
+// The closed-Duo fold is decided when the rail is built. After a fold change,
+// re-publish each visible page's items so a stale build is rebuilt (see the
+// fold check in ApolloActionsDuoNativeItems).
+static void ApolloActionsRebuildRailsForController(UIViewController *controller) {
+    if (!controller || !controller.isViewLoaded) return;
+    UINavigationItem *item = controller.navigationItem;
+    if (objc_getAssociatedObject(item, &kActionsDuoNativeItemsKey)) {
+        [item setRightBarButtonItems:item.rightBarButtonItems ?: @[] animated:NO];
+    }
+    for (UIViewController *child in controller.childViewControllers) ApolloActionsRebuildRailsForController(child);
+}
+
+static void ApolloActionsObserveDuoModeChanges(void) {
+    [NSNotificationCenter.defaultCenter addObserverForName:ApolloDuoModeDidChangeNotification
+                                                    object:nil
+                                                     queue:NSOperationQueue.mainQueue
+                                                usingBlock:^(NSNotification *note) {
+        // Outside the sync that posted it, so no setter is mid-flight.
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ApolloActionsRebuildRailsForController((UIViewController *)ApolloMainTabBarController());
+        });
+    }];
+}
+
+static void ApolloActionsRegisterFoldedModeratorRow(void) {
+    ApolloActionMenuSpec *spec = [ApolloActionMenuSpec new];
+    spec.identifier = @"DuoRailModerator";
+    spec.order = -100;
+    spec.legacyDismissesSheet = YES;
+    spec.matches = ^BOOL(id actionController, __unused NSString *menuTitle) {
+        UIButton *moderator = sDuoFoldedModerator;
+        BOOL armed = moderator && CFAbsoluteTimeGetCurrent() - sDuoFoldedModeratorArmedAt < 2.0;
+        if (armed) {
+            objc_setAssociatedObject(actionController, &kActionsDuoFoldedModeratorKey, moderator,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(actionController, &kActionsDuoFoldedAnchorKey, sDuoFoldedModeratorAnchor,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            ApolloLog(@"[NavigationActions] Duo rail: Moderator row added to More");
+        }
+        // One More tap arms exactly one sheet.
+        sDuoFoldedModerator = nil;
+        sDuoFoldedModeratorAnchor = nil;
+        return armed;
+    };
+    spec.title = ^NSString *(__unused id actionController, __unused UITableViewCell *donor) {
+        return @"Moderator";
+    };
+    spec.image = ^UIImage *(__unused id actionController, __unused UITableViewCell *donor) {
+        return ApolloActionsFoldedModeratorIcon();
+    };
+    spec.buildElement = ^(id actionController, NSMutableArray<UIMenuElement *> *children) {
+        __weak id weakController = actionController;
+        UIAction *row = [UIAction actionWithTitle:@"Moderator"
+                                            image:ApolloActionsFoldedModeratorIcon()
+                                       identifier:@"ApolloReborn.duo-rail.moderator"
+                                          handler:^(__unused UIAction *action) {
+            ApolloActionsOpenFoldedModeratorAfterMenu(weakController);
+        }];
+        // First, in its own section, where the shield sat above More.
+        [children insertObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil
+                                             options:UIMenuOptionsDisplayInline children:@[row]]
+                       atIndex:0];
+    };
+    spec.perform = ^(id actionController) {
+        ApolloActionsOpenFoldedModeratorAfterMenu(actionController);
+    };
+    ApolloActionMenuRegister(spec);
+}
+
 static NSArray<UIBarButtonItem *> *ApolloActionsDuoNativeItems(UINavigationItem *item,
                                                                NSArray<UIBarButtonItem *> *items) {
     items = ApolloNativeFeedSearchDuoTrailingItems(item, items);
@@ -1173,7 +1353,17 @@ static NSArray<UIBarButtonItem *> *ApolloActionsDuoNativeItems(UINavigationItem 
         objc_setAssociatedObject(item, &kActionsDuoOriginalItemsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return items;
     }
-    if (generated && ApolloActionsArraysIdentical(items, generated)) return items;
+    // The closed-Duo fold is decided when the rail is built. When that decision
+    // changes (fold/unfold, or the globe arriving after the split), rebuild the
+    // rail from Apollo's own strip instead of keeping the stale mirrors.
+    NSNumber *builtFold = objc_getAssociatedObject(item, &kActionsDuoBuiltFoldKey);
+    BOOL foldWanted = ApolloActionsDuoFoldWanted(item);
+    if (generated && original && builtFold && builtFold.boolValue != foldWanted) {
+        ApolloLog(@"[NavigationActions] Duo rail fold %@: rebuilding from Apollo's strip", foldWanted ? @"needed" : @"no longer needed");
+        items = ApolloActionsWithoutDuoMirrors(item, items, original);
+    } else if (generated && ApolloActionsArraysIdentical(items, generated)) {
+        return items;
+    }
 
     NSMutableArray<UIBarButtonItem *> *result = [NSMutableArray array];
     BOOL converted = NO;
@@ -1203,12 +1393,20 @@ static NSArray<UIBarButtonItem *> *ApolloActionsDuoNativeItems(UINavigationItem 
             [result addObject:barItem];
             continue;
         }
+        UIButton *foldedModerator = ApolloActionsDuoFoldedModerator(item, buttons);
+        if (foldedModerator) {
+            [buttons removeObjectIdenticalTo:foldedModerator];
+            ApolloLog(@"[NavigationActions] Closed Duo rail: translation globe present, moderator moved into More");
+        }
 
         // rightBarButtonItems[0] is the trailing item. On a vertical platter
         // UIKit maps that edge to the bottom, so reverse the visual left-to-
         // right order to keep moderator/sort above More.
         for (NSUInteger reverse = buttons.count; reverse > 0; reverse--) {
-            [result addObject:ApolloActionsNativeItemForDuoButton(buttons[reverse - 1], reverse - 1)];
+            UIButton *button = buttons[reverse - 1];
+            UIBarButtonItem *native = ApolloActionsNativeItemForDuoButton(button, reverse - 1);
+            if (foldedModerator && button == more) ApolloActionsArmFoldedModerator(native, button, foldedModerator);
+            [result addObject:native];
         }
         converted = YES;
     }
@@ -1219,6 +1417,7 @@ static NSArray<UIBarButtonItem *> *ApolloActionsDuoNativeItems(UINavigationItem 
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(item, &kActionsDuoNativeItemsKey, native,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(item, &kActionsDuoBuiltFoldKey, @(foldWanted), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloLog(@"[NavigationActions] Split composite actions into %lu native Duo items on %@",
               (unsigned long)native.count,
               NSStringFromClass([objc_getAssociatedObject(item, &kActionsControllerKey) controller].class));
@@ -2366,6 +2565,8 @@ static void ApolloActionsUpdateBackGlass(UIView *button, UIBarButtonItem *item) 
         if (IsLiquidGlass()) {
             %init(ApolloNavigationActionsChromeHooks);
         }
+        ApolloActionsRegisterFoldedModeratorRow();
+        ApolloActionsObserveDuoModeChanges();
         ApolloLog(@"[NavigationActions] Page-owned native strip hooks installed");
     }
 }
