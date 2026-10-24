@@ -553,6 +553,13 @@ static NSString *ApolloProfileSettingsPreviewYearClubTitle(NSTimeInterval create
 
 @implementation ApolloProfileHeaderView
 
+// The closed Duo rail arrives as a safe-area change; re-center the identity
+// on the content column right away rather than on the next scroll.
+- (void)safeAreaInsetsDidChange {
+    [super safeAreaInsetsDidChange];
+    if (ApolloDuoDeviceDetected()) [self setNeedsLayout];
+}
+
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
@@ -1281,10 +1288,18 @@ static UIFont *ApolloProfileClassicNameFont(void) {
 - (CGFloat)apollo_contentWidthForWidth:(CGFloat)width {
     // Only beside a visible rail, and only from a live measurement: a stale
     // inset from another pose would squeeze the header everywhere else.
-    if (!ApolloDuoRailHasVisibleSideBar() || CGRectGetWidth(self.bounds) <= 0.0) return width;
-    CGFloat liveRight = ApolloProfileDuoContentRightEdgeInView(self);
-    if (!isfinite(liveRight)) return width;
-    CGFloat inset = MAX(0.0, CGRectGetWidth(self.bounds) - liveRight);
+    if (CGRectGetWidth(self.bounds) <= 0.0) return width;
+    CGFloat inset = 0.0;
+    CGFloat liveRight = ApolloDuoRailHasVisibleSideBar() ? ApolloProfileDuoContentRightEdgeInView(self) : NAN;
+    if (isfinite(liveRight)) {
+        inset = MAX(0.0, CGRectGetWidth(self.bounds) - liveRight);
+    } else if (ApolloDuoCurrentMode() == ApolloDuoModeClosed && !ApolloDuoSplitIsUnfolded()
+               && self.statCardsTrailingInset >= 40.0) {
+        // First layout on the closed screen can run before the rail is
+        // attached; use the install-time rail measurement instead of
+        // centering on the full width until the next scroll.
+        inset = self.statCardsTrailingInset;
+    }
     if (!(inset > 0.0) || inset >= width * 0.5) return width;
     return width - inset;
 }
