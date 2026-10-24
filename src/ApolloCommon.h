@@ -244,6 +244,9 @@ void ApolloNavigationTitleGlassSetContentAlpha(UIView *contentView, CGFloat alph
 void ApolloNavigationTitleGlassRefreshNavigationBar(UINavigationBar *bar);
 // YES through interactive push/pop setup and UIKit's completion cleanup (Liquid Glass only).
 BOOL ApolloNavTransitionInFlight(void);
+// Pages the Duo moved between navigation stacks on a fold or unfold keep
+// Apollo's native push/pop animator; see ApolloInterruptibleNavTransition.xm.
+void ApolloNavUseNativeTransitionsForControllers(NSArray<UIViewController *> *controllers);
 
 // Apollo's main ApolloTabBarController, found via the scene/app delegate's
 // tabBarController ivar or by walking window root VCs. Returns nil while the

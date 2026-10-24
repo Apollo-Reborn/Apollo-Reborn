@@ -127,6 +127,28 @@ static UIViewPropertyAnimator *ApolloNavAnimatorForContext(id animatorObject,
 BOOL ApolloNavTransitionInFlight(void) {
     return sApolloNavTransitionsInFlight > 0;
 }
+
+// On iPhone Duo, folding or unfolding moves the open pages between the split's
+// column stacks and the tab's single stack. The first interruptible pop after
+// such a move leaves the revealed page unable to receive touches: the system
+// stops delivering them to the app (UIApplication sendEvent: sees none) while
+// in-app hit-testing, interaction flags and layer state all read normal, until
+// a tab switch rebuilds the stack. Apollo's native animator is unaffected, so
+// transitions from or to a moved page use it instead.
+static NSHashTable<UIViewController *> *sApolloNavNativeControllers;
+
+void ApolloNavUseNativeTransitionsForControllers(NSArray<UIViewController *> *controllers) {
+    if (!controllers.count) return;
+    if (!sApolloNavNativeControllers) sApolloNavNativeControllers = [NSHashTable weakObjectsHashTable];
+    for (UIViewController *controller in controllers) [sApolloNavNativeControllers addObject:controller];
+}
+
+static BOOL ApolloNavTransitionUsesNativeAnimator(id<UIViewControllerContextTransitioning> ctx) {
+    UIViewController *fromVC = [ctx viewControllerForKey:UITransitionContextFromViewControllerKey];
+    UIViewController *toVC = [ctx viewControllerForKey:UITransitionContextToViewControllerKey];
+    return (fromVC && [sApolloNavNativeControllers containsObject:fromVC])
+        || (toVC && [sApolloNavNativeControllers containsObject:toVC]);
+}
 static const CGFloat kApolloNavParallaxDivisor = 3.0;
 static const NSTimeInterval kApolloNavInteractiveDuration = 0.225;
 static const NSTimeInterval kApolloNavNonInteractiveDuration = 0.5;
@@ -422,7 +444,7 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
 
 %new
 - (id<UIViewImplicitlyAnimating>)interruptibleAnimatorForTransition:(id<UIViewControllerContextTransitioning>)ctx {
-    if (!ctx) return nil;
+    if (!ctx || ApolloNavTransitionUsesNativeAnimator(ctx)) return nil;
     UIViewPropertyAnimator *animator = ApolloNavAnimatorForContext(self, ctx);
     if (animator) return animator;
     // Starting an interactive transition, UIKit pauses the animator as soon as this returns,

@@ -2639,6 +2639,9 @@ static void ApolloDuoSplitOpen(ApolloDuoSplitState *state) {
         && outer.tabBarController.selectedViewController == outer && outer.viewIfLoaded.window;
     [sDuoSplitDeferredPresentations removeObject:state];
     NSArray *stack = [outer.viewControllers copy];
+    // Pages moving into the columns (not a bare root at launch) keep Apollo's
+    // native transitions; see ApolloNavUseNativeTransitionsForControllers.
+    if (stack.count > 1) ApolloNavUseNativeTransitionsForControllers(stack);
     NSUInteger rootIndex = 0;
     // Only landscape has a profile dashboard. Portrait keeps visited profiles
     // on the Posts navigation stack; promoting one to Account here would make
@@ -2849,6 +2852,7 @@ static void ApolloDuoSplitClose(ApolloDuoSplitState *state, BOOL preserveDetail)
     NSArray *restored = overviewOnCover ? @[state.root] : [@[state.root] arrayByAddingObjectsFromArray:detail];
     if (state.profilePrefix.count) restored = [state.profilePrefix arrayByAddingObjectsFromArray:restored];
     [state.outer setViewControllers:restored animated:NO];
+    if (restored.count > 1) ApolloNavUseNativeTransitionsForControllers(restored);
     [state.outer setNavigationBarHidden:state.navigationBarWasHidden animated:NO];
     // Account switches update the native profile title while the split is open.
     // Restoring its entry-time title would repoint the cover header at the old user.

@@ -126,6 +126,7 @@ static void ApolloDuoSplitNavigateProfile(__unused ApolloDuoSplitState *state,
     dashboardNavigations++;
 }
 
+static void ApolloNavUseNativeTransitionsForControllers(__unused NSArray *controllers) {}
 static NSUInteger PromoteProfile(ApolloDuoSplitState *state) {
     UINavigationController *outer = state.outer;
     NSArray *stack = outer.viewControllers;
