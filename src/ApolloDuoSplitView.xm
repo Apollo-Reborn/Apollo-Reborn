@@ -255,6 +255,8 @@ static void ApolloDuoSlideView(UIView *view, CGFloat from, CGFloat to, NSTimeInt
 @property(nonatomic, strong) UINavigationBar *sidebarNavigationBar;
 @property(nonatomic, strong) UIButton *profileBackButton;
 @property(nonatomic, strong) UIScreenEdgePanGestureRecognizer *leadingSwipe;
+@property(nonatomic, strong) UIPanGestureRecognizer *listPan;
+@property(nonatomic, weak) UITableView *listPanPrioritizedTable;
 @end
 static BOOL ApolloDuoSplitLeadingSwipeShouldBegin(ApolloDuoSplitHost *host);
 static void ApolloDuoSplitLeadingSwipeFinished(ApolloDuoSplitHost *host);
@@ -288,6 +290,10 @@ static void ApolloDuoSplitLeadingSwipeFinished(ApolloDuoSplitHost *host);
         self.listContainer = [UIView new];
         self.listContainer.hidden = YES;
         [self.view addSubview:self.listContainer];
+        // Dragging the drawer back toward the edge it came from closes it.
+        self.listPan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(listPanChanged:)];
+        self.listPan.delegate = self;
+        [self.listContainer addGestureRecognizer:self.listPan];
         self.listGlass.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         [self.listContainer addSubview:self.listGlass];
         // A managed bar joins Duo's global vertical navigation rail even
@@ -416,8 +422,57 @@ static void ApolloDuoSplitLeadingSwipeFinished(ApolloDuoSplitHost *host);
     [self.view addGestureRecognizer:self.leadingSwipe];
 }
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gesture {
+    if (gesture == self.listPan) {
+        // Only a leftward, mostly horizontal drag of an open drawer. Edit mode
+        // keeps its native row swipe-to-delete.
+        CGPoint velocity = [self.listPan velocityInView:self.view];
+        return self.listVisible && !self.subredditList.viewControllers.firstObject.isEditing
+            && velocity.x < 0 && fabs(velocity.x) > fabs(velocity.y);
+    }
     if (gesture != self.leadingSwipe) return YES;
     return ApolloDuoSplitLeadingSwipeShouldBegin(self);
+}
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
+    // The list's vertical scroll pan may already be tracking; the drawer drag
+    // cancels it once it begins (listPanChanged:).
+    return gesture == self.listPan && other == ApolloDuoSplitFindTable(self.subredditList.view).panGestureRecognizer;
+}
+// Outside Edit mode a leftward row swipe would otherwise reveal Unsubscribe
+// while the user is closing the drawer. Let the drawer drag win; row swipe
+// actions run only when it fails (vertical drags, Edit mode).
+- (void)prioritizeListPan {
+    UITableView *table = ApolloDuoSplitFindTable(self.subredditList.view);
+    if (!table || table == self.listPanPrioritizedTable) return;
+    for (UIGestureRecognizer *recognizer in table.gestureRecognizers) {
+        if ([NSStringFromClass(recognizer.class) containsString:@"SwipeAction"]) {
+            [recognizer requireGestureRecognizerToFail:self.listPan];
+        }
+    }
+    self.listPanPrioritizedTable = table;
+}
+- (void)listPanChanged:(UIPanGestureRecognizer *)gesture {
+    CGFloat width = self.listGlass.bounds.size.width + 12;
+    CGFloat dx = MIN(0, [gesture translationInView:self.view].x);
+    if (gesture.state == UIGestureRecognizerStateBegan) {
+        UIPanGestureRecognizer *scroll = ApolloDuoSplitFindTable(self.subredditList.view).panGestureRecognizer;
+        scroll.enabled = NO;
+        scroll.enabled = YES;
+        [self.listContainer.layer removeAnimationForKey:@"ApolloDuoSlide"];
+    }
+    if (gesture.state == UIGestureRecognizerStateBegan || gesture.state == UIGestureRecognizerStateChanged) {
+        self.listContainer.transform = CGAffineTransformMakeTranslation(dx, 0);
+        self.listDismiss.alpha = width > 0 ? MAX(0, 1 + dx / width) : 1;
+        return;
+    }
+    if (gesture.state != UIGestureRecognizerStateEnded && gesture.state != UIGestureRecognizerStateCancelled) return;
+    CGFloat velocity = [gesture velocityInView:self.view].x;
+    if (gesture.state == UIGestureRecognizerStateEnded && (dx < -width * 0.35 || velocity < -600)) {
+        // setListVisible: continues the slide from the current offset.
+        [self setListVisible:NO animated:YES];
+        return;
+    }
+    ApolloDuoSlideView(self.listContainer, dx, 0, 0.2, nil);
+    [UIView animateWithDuration:0.2 animations:^{ self.listDismiss.alpha = 1; }];
 }
 - (void)leadingSwipeChanged:(UIScreenEdgePanGestureRecognizer *)gesture {
     if (gesture.state != UIGestureRecognizerStateEnded) return;
@@ -592,6 +647,7 @@ static void ApolloDuoSplitLeadingSwipeFinished(ApolloDuoSplitHost *host);
                                            -table.adjustedContentInset.top) animated:NO];
         [table layoutIfNeeded];
         [self updateListAppearance];
+        [self prioritizeListPan];
     }
     self.listDismiss.hidden = NO;
     self.listContainer.hidden = NO;
