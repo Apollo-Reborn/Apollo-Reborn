@@ -15,6 +15,7 @@
 #import "ApolloFindInCommentsGlass.h"
 #import "ApolloDuoRail.h"
 #import "ApolloClasses.h"
+#import "ApolloLiquidGlassTabGesture.h"
 #import "ApolloSubredditSwitcherSheet.h"
 
 /// Helpers for the Posts and account tab long-press shortcuts in Liquid Glass.
@@ -28,6 +29,11 @@ static __weak UITouch *sApolloAccountRailPressTouch;
 static __weak UITabBarController *sApolloAccountRailTabController;
 static __weak UIViewController *sApolloAccountRailPreviousTab;
 static BOOL sApolloAccountRailSuppressesSelection;
+static CGPoint sApolloLiquidLensTouchOrigin;
+static __weak UITouch *sApolloLiquidLensTouch;
+static __weak UITabBarController *sApolloLiquidLensTabController;
+static __weak UIViewController *sApolloLiquidLensPreviousTab;
+static BOOL sApolloLiquidLensPreservesSelection;
 
 static void ApolloCancelLiquidLensGesture(UITabBar *tabBar);
 
@@ -489,6 +495,77 @@ static void ApolloCancelLiquidLensGesture(UITabBar *tabBar) {
     liquidLens.enabled = YES;
 }
 
+static void ApolloClearTrackedLiquidLensTouch(void) {
+    sApolloLiquidLensTouch = nil;
+    sApolloLiquidLensTabController = nil;
+    sApolloLiquidLensPreviousTab = nil;
+    sApolloLiquidLensPreservesSelection = NO;
+}
+
+static void ApolloRestoreLiquidLensStartingTab(void) {
+    UITabBarController *tabs = sApolloLiquidLensTabController;
+    UIViewController *previous = sApolloLiquidLensPreviousTab;
+    if (tabs && previous && tabs.selectedViewController != previous
+        && [tabs.viewControllers containsObject:previous]) {
+        tabs.selectedViewController = previous;
+    }
+}
+
+static void ApolloRejectTrackedLiquidLensTouch(NSString *reason) {
+    UITabBarController *tabs = sApolloLiquidLensTabController;
+    if (!tabs || !sApolloLiquidLensPreviousTab) return;
+
+    BOOL firstRejection = !sApolloLiquidLensPreservesSelection;
+    sApolloLiquidLensPreservesSelection = YES;
+    ApolloCancelLiquidLensGesture(tabs.tabBar);
+    ApolloRestoreLiquidLensStartingTab();
+    if (firstRejection) {
+        ApolloLog(@"[LiquidGlassTabBar] Preserving tab during %@", reason);
+    }
+}
+
+static void ApolloBeginTrackingLiquidLensTouch(UITouch *touch, UIWindow *window) {
+    if (!touch || !window || ApolloDuoRailHasVisibleSideBar()
+        || UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
+
+    UITabBarController *tabs = (id)ApolloMainTabBarController();
+    if (![tabs isKindOfClass:UITabBarController.class]
+        || tabs.viewIfLoaded.window != window || tabs.presentedViewController) return;
+
+    UITabBar *tabBar = tabs.tabBar;
+    CGPoint tabPoint = [touch locationInView:tabBar];
+    CGRect tabBarFrame = [tabBar convertRect:tabBar.bounds toView:window];
+    if (!tabBar.window || tabBar.hidden || tabBar.alpha < 0.01
+        || !tabBar.userInteractionEnabled || ![tabBar pointInside:tabPoint withEvent:nil]
+        || !ApolloLiquidGlassTabBarFrameIsBottom(tabBarFrame, window.bounds)
+        || !ApolloFindLiquidLensGesture(tabBar)) return;
+
+    sApolloLiquidLensTouch = touch;
+    sApolloLiquidLensTouchOrigin = [touch locationInView:window];
+    sApolloLiquidLensTabController = tabs;
+    sApolloLiquidLensPreviousTab = tabs.selectedViewController;
+    sApolloLiquidLensPreservesSelection = NO;
+}
+
+static BOOL ApolloLiquidLensBlocksSelection(UITabBarController *tabs,
+                                            UIViewController *candidate) {
+    return sApolloLiquidLensPreservesSelection && tabs == sApolloLiquidLensTabController
+        && candidate != sApolloLiquidLensPreviousTab;
+}
+
+static void ApolloFinishTrackedLiquidLensTouch(void) {
+    if (!ApolloLiquidGlassTabGestureNeedsLifecycleCleanup(
+            sApolloLiquidLensTabController != nil, sApolloLiquidLensPreviousTab != nil)) return;
+    if (sApolloLiquidLensPreservesSelection) ApolloRestoreLiquidLensStartingTab();
+    if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (UIApplication.sharedApplication.applicationState == UIApplicationStateActive) {
+            ApolloClearTrackedLiquidLensTouch();
+        }
+    });
+}
+
 // Opt-in (sTabBarSwipeNavigation): Apollo's tab-bar swipe-to-navigate and
 // Liquid Glass's native "Liquid Lens" drag-to-switch-tab both arm on the same
 // touch-down + horizontal drag, and Liquid Lens wins by default, silencing
@@ -620,10 +697,36 @@ static void ApolloInsetLiquidGlassTabBadges(UIView *tabButton) {
 %hook UIApplication
 
 - (void)sendEvent:(UIEvent *)event {
+    NSSet<UITouch *> *touches = event.type == UIEventTypeTouches ? event.allTouches : nil;
+    UITouch *liquidLensTouch = sApolloLiquidLensTouch && [touches containsObject:sApolloLiquidLensTouch]
+        ? sApolloLiquidLensTouch : touches.anyObject;
+    BOOL finishLiquidLensTouch = NO;
+    if (IsLiquidGlass() && liquidLensTouch) {
+        if (liquidLensTouch.phase == UITouchPhaseBegan && touches.count == 1) {
+            ApolloBeginTrackingLiquidLensTouch(liquidLensTouch, liquidLensTouch.window);
+        }
+        if (liquidLensTouch == sApolloLiquidLensTouch) {
+            CGPoint current = [liquidLensTouch locationInView:liquidLensTouch.window];
+            CGVector translation = CGVectorMake(current.x - sApolloLiquidLensTouchOrigin.x,
+                                                current.y - sApolloLiquidLensTouchOrigin.y);
+            BOOL cancelled = liquidLensTouch.phase == UITouchPhaseCancelled;
+            ApolloLiquidGlassTabGestureDecision decision =
+                ApolloLiquidGlassTabGestureDecisionForTranslation(
+                    translation, self.applicationState == UIApplicationStateActive, cancelled);
+            if (decision == ApolloLiquidGlassTabGestureDecisionPreserveSelection) {
+                ApolloRejectTrackedLiquidLensTouch(cancelled ? @"a cancelled gesture"
+                                                              : @"a vertical or inactive gesture");
+            }
+            finishLiquidLensTouch = liquidLensTouch.phase == UITouchPhaseEnded || cancelled;
+        }
+    }
+
     %orig(event);
     if (!IsLiquidGlass() || event.type != UIEventTypeTouches) return;
 
-    NSSet<UITouch *> *touches = event.allTouches;
+    if (sApolloLiquidLensPreservesSelection) ApolloRestoreLiquidLensStartingTab();
+    if (finishLiquidLensTouch) ApolloFinishTrackedLiquidLensTouch();
+
     UITouch *trackedTouch = sApolloAccountRailPressTouch;
     UITouch *touch = trackedTouch && [touches containsObject:trackedTouch]
         ? trackedTouch : touches.anyObject;
@@ -679,6 +782,10 @@ static void ApolloInsetLiquidGlassTabBadges(UIView *tabButton) {
 %hook UITabBarController
 
 - (void)setSelectedViewController:(UIViewController *)selectedViewController {
+    if (ApolloLiquidLensBlocksSelection(self, selectedViewController)) {
+        ApolloLog(@"[LiquidGlassTabBar] Ignored selection from a vertical, cancelled, or inactive drag");
+        return;
+    }
     if (sApolloAccountRailSuppressesSelection && self == sApolloAccountRailTabController
         && self.viewControllers.count > 2 && selectedViewController == self.viewControllers[2]
         && selectedViewController != sApolloAccountRailPreviousTab) {
@@ -691,6 +798,10 @@ static void ApolloInsetLiquidGlassTabBadges(UIView *tabButton) {
 - (void)setSelectedIndex:(NSUInteger)selectedIndex {
     UIViewController *candidate = selectedIndex < self.viewControllers.count
         ? self.viewControllers[selectedIndex] : nil;
+    if (ApolloLiquidLensBlocksSelection(self, candidate)) {
+        ApolloLog(@"[LiquidGlassTabBar] Ignored index from a vertical, cancelled, or inactive drag");
+        return;
+    }
     if (sApolloAccountRailSuppressesSelection && self == sApolloAccountRailTabController
         && selectedIndex == 2 && candidate != sApolloAccountRailPreviousTab) {
         os_log_debug(ApolloFixLog(), "[ApolloFix] [LiquidGlassTabBar] Ignored Profile index after account long press");
@@ -2560,6 +2671,25 @@ void ApolloNavigationTitlesRefresh(void) {
 
 %ctor {
     %init;
+    NSNotificationCenter *notificationCenter = NSNotificationCenter.defaultCenter;
+    [notificationCenter addObserverForName:UIApplicationWillResignActiveNotification
+                                    object:nil queue:NSOperationQueue.mainQueue
+                                usingBlock:^(__unused NSNotification *notification) {
+        if (ApolloLiquidGlassTabGestureNeedsLifecycleCleanup(
+                sApolloLiquidLensTabController != nil, sApolloLiquidLensPreviousTab != nil)) {
+            ApolloRejectTrackedLiquidLensTouch(@"app inactivity");
+        }
+    }];
+    [notificationCenter addObserverForName:UIApplicationDidBecomeActiveNotification
+                                    object:nil queue:NSOperationQueue.mainQueue
+                                usingBlock:^(__unused NSNotification *notification) {
+        if (!ApolloLiquidGlassTabGestureNeedsLifecycleCleanup(
+                sApolloLiquidLensTabController != nil, sApolloLiquidLensPreviousTab != nil)) return;
+        ApolloRestoreLiquidLensStartingTab();
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ApolloClearTrackedLiquidLensTouch();
+        });
+    }];
     // Programmatic entry also needs a refresh, but editing starts before Apollo
     // finishes replacing the trailing buttons. Measure after that setup returns.
     [[NSNotificationCenter defaultCenter] addObserverForName:UITextFieldTextDidBeginEditingNotification
