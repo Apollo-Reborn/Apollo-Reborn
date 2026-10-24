@@ -843,6 +843,12 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
 @property(nonatomic, strong) UINavigationController *secondary;
 @property(nonatomic, strong) UINavigationController *feed;
 @property(nonatomic, copy) NSArray *feedActions;
+// The feed page whose actions feedActions were taken from: the stack can hold
+// several feeds (split links push them), and only the visible one is hidden.
+@property(nonatomic, weak) UINavigationItem *feedActionsItem;
+// A pushed feed whose Back is hidden while paired: the rail's Back already
+// closes the thread first, so a second Back in the feed pane is redundant.
+@property(nonatomic, weak) UINavigationItem *feedBackHiddenItem;
 @property(nonatomic, strong) NSArray<UIViewController *> *lastSettings;
 @property(nonatomic, copy) NSString *kind;
 @property(nonatomic, copy) NSString *sidebarTitle;
@@ -1034,13 +1040,17 @@ BOOL ApolloDuoSplitIsOwnAccountController(UIViewController *controller) {
     return NO;
 }
 
+static NSUInteger ApolloDuoFeedStackKeptCount(UINavigationController *feed);
+
 BOOL ApolloDuoSplitSuppressesFeedActions(UIViewController *controller) {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(controller.navigationController, NO);
     // Portrait moves the comments stack onto this navigation controller.
-    // Suppression belongs to its Posts root, not every page temporarily
-    // sharing that controller during a rotation or fold transition.
-    return state.feed && state.host.postsColumnsPaired
-        && controller == state.feed.viewControllers.firstObject;
+    // Suppression belongs to the visible feed page (the Posts root, or a feed
+    // a split link pushed), not every page temporarily sharing that controller
+    // during a rotation or fold transition.
+    if (!state.feed || !state.host.postsColumnsPaired) return NO;
+    NSUInteger feedPages = ApolloDuoFeedStackKeptCount(state.feed);
+    return feedPages && controller == state.feed.viewControllers[feedPages - 1];
 }
 
 static ApolloDuoSplitHost *ApolloDuoSubredditOverlayHost(UIView *view) {
@@ -1247,14 +1257,17 @@ static BOOL ApolloDuoPostsUsesSplit(ApolloDuoSplitState *state) {
 }
 
 
-// Feeds opened from a split link (ApolloDuoPostsRouteFeedLink) belong on the
-// feed stack; only the pages above the last of them are thread pages.
+// Feed pages (subreddits and multireddits, whether opened from a split link or
+// pushed while the split was off) belong on the feed stack; only the pages
+// above the last of them are thread pages for the right pane.
 static char kDuoFeedLinkPage;
 static NSUInteger ApolloDuoFeedStackKeptCount(UINavigationController *feed) {
     NSArray *pages = feed.viewControllers;
     NSUInteger kept = MIN(pages.count, (NSUInteger)1);
     for (NSUInteger index = 1; index < pages.count; index++) {
-        if ([objc_getAssociatedObject(pages[index], &kDuoFeedLinkPage) boolValue]) kept = index + 1;
+        UIViewController *page = pages[index];
+        if ([objc_getAssociatedObject(page, &kDuoFeedLinkPage) boolValue]
+            || (ApolloClassPostsViewController && [page isKindOfClass:ApolloClassPostsViewController])) kept = index + 1;
     }
     return kept;
 }
@@ -1315,7 +1328,21 @@ static void ApolloDuoPostsSyncColumnsWithAnimation(ApolloDuoSplitState *state, B
     // The stack was just merged in portrait, so its top item can now belong
     // to comments. Restore the cached trophy/feed actions only to the Posts
     // root; assigning them to the top item replaces the thread's own actions.
-    UINavigationItem *feedItem = state.feed.viewControllers.firstObject.navigationItem;
+    // The last feed page, not the top one: the merged stack can end in comments.
+    NSUInteger feedPages = ApolloDuoFeedStackKeptCount(state.feed);
+    UINavigationItem *feedItem = feedPages ? state.feed.viewControllers[feedPages - 1].navigationItem : nil;
+    UINavigationItem *backItem = paired && feedPages > 1 ? feedItem : nil;
+    if (state.feedBackHiddenItem != backItem) {
+        state.feedBackHiddenItem.hidesBackButton = NO;
+        backItem.hidesBackButton = YES;
+        state.feedBackHiddenItem = backItem;
+    }
+    if (paired && state.feedActions && state.feedActionsItem != feedItem) {
+        // A different feed page is showing now; give the previous one back
+        // its actions before hiding this one's.
+        state.feedActionsItem.rightBarButtonItems = state.feedActions;
+        state.feedActions = nil;
+    }
     if (paired) {
         if (!state.feedActions) {
             // Cache Apollo's actions only. Host controls are owned by the
@@ -1329,11 +1356,13 @@ static void ApolloDuoPostsSyncColumnsWithAnimation(ApolloDuoSplitState *state, B
                 [actions addObject:item];
             }
             state.feedActions = actions;
+            state.feedActionsItem = feedItem;
         }
         feedItem.rightBarButtonItems = @[];
     } else if (state.feedActions) {
-        feedItem.rightBarButtonItems = state.feedActions;
+        (state.feedActionsItem ?: feedItem).rightBarButtonItems = state.feedActions;
         state.feedActions = nil;
+        state.feedActionsItem = nil;
     }
     if (detail) {
         BOOL retainedColumns = [split viewControllerForColumn:UISplitViewControllerColumnPrimary] == state.feed
@@ -2443,8 +2472,13 @@ static void ApolloDuoSplitClose(ApolloDuoSplitState *state, BOOL preserveDetail)
         // Stop suppressing the feed before its item setter runs, then discard
         // this presentation's snapshot so reopening cannot reuse stale items.
         state.host.postsColumnsPaired = NO;
-        if (state.feedActions) state.feed.viewControllers.firstObject.navigationItem.rightBarButtonItems = state.feedActions;
+        if (state.feedActions) {
+            (state.feedActionsItem ?: state.feed.viewControllers.firstObject.navigationItem).rightBarButtonItems = state.feedActions;
+        }
         state.feedActions = nil;
+        state.feedActionsItem = nil;
+        state.feedBackHiddenItem.hidesBackButton = NO;
+        state.feedBackHiddenItem = nil;
         NSArray *comments = detail.count > 1 ? [detail subarrayWithRange:NSMakeRange(1, detail.count - 1)] : @[];
         detail = [state.feed.viewControllers arrayByAddingObjectsFromArray:comments];
         [state.feed setViewControllers:@[] animated:NO];
