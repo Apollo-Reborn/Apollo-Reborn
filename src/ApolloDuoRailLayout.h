@@ -146,6 +146,13 @@ static inline double ApolloDuoAnchoredOffset(double rowMinY, double rowHeight, d
     return offset;
 }
 
+// A feed resting at its top (the offset at -adjustedContentInset.top) keeps
+// its top instead of a row: anchoring would scroll the first post under the
+// search bar, and UIKit collapses a bar the list has scrolled into.
+static inline int ApolloDuoFeedRestsAtTop(double offset, double minimum) {
+    return offset <= minimum + 1.0;
+}
+
 #ifdef __cplusplus
 }
 #endif
