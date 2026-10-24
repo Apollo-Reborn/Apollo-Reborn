@@ -16,6 +16,7 @@
 #import "UserDefaultConstants.h"
 #import "ApolloDuoRail.h"
 #import "ApolloDuoCompatibility.h"
+#import "ApolloDuoRailLayout.h"
 #import "ApolloDuoUIKitCompatibility.h"
 #import "ApolloSearchNativeBar.h"
 #import "ApolloFeedShortcutsAppearance.h"
@@ -200,6 +201,34 @@ static void ApolloDuoSlideView(UIView *view, CGFloat from, CGFloat to, NSTimeInt
     [view.layer addAnimation:slide forKey:@"ApolloDuoSlide"];
 }
 
+// The subreddit drawer follows a finger, so it settles on a spring that keeps
+// the release's speed rather than restarting from rest on an ease-in curve.
+static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat velocity,
+                                 BOOL animated, dispatch_block_t completion) {
+    [view.layer removeAnimationForKey:@"ApolloDuoSlide"];
+    view.transform = CGAffineTransformMakeTranslation(to, 0);
+    if (!animated || UIAccessibilityIsReduceMotionEnabled() || fabs(to - from) < 0.5) {
+        if (completion) completion();
+        return;
+    }
+    double omega = ApolloDuoDrawerSpringOmega();
+    CASpringAnimation *slide = [CASpringAnimation animationWithKeyPath:@"transform"];
+    slide.fromValue = [NSValue valueWithCATransform3D:CATransform3DMakeTranslation(from, 0, 0)];
+    slide.toValue = [NSValue valueWithCATransform3D:CATransform3DMakeTranslation(to, 0, 0)];
+    slide.mass = 1;
+    slide.stiffness = omega * omega;
+    slide.damping = 2 * omega;
+    slide.initialVelocity = ApolloDuoDrawerSpringInitialVelocity(from, to, velocity);
+    slide.duration = slide.settlingDuration;
+    ApolloDuoSlideCompletion *delegate = [ApolloDuoSlideCompletion new];
+    delegate.completion = completion;
+    delegate.started = CACurrentMediaTime();
+    slide.delegate = delegate;
+    ApolloLog(@"[DuoSplit] drawer from=%.1f to=%.1f velocity=%.0f duration=%.2f",
+              from, to, velocity, slide.duration);
+    [view.layer addAnimation:slide forKey:@"ApolloDuoSlide"];
+}
+
 @interface ApolloDuoSplitHost : UIViewController <UISplitViewControllerDelegate, UIGestureRecognizerDelegate, ApolloDuoLayoutControl>
 @property(nonatomic, strong) UISplitViewController *split;
 @property(nonatomic, strong) UINavigationController *subredditList;
@@ -239,6 +268,7 @@ static void ApolloDuoSlideView(UIView *view, CGFloat from, CGFloat to, NSTimeInt
 - (void)repairSplitSafeAreaNow;
 - (void)restoreListBackgrounds;
 - (void)setListVisible:(BOOL)visible animated:(BOOL)animated;
+- (void)setListVisible:(BOOL)visible animated:(BOOL)animated velocity:(CGFloat)velocity;
 @property(nonatomic, strong) UIView *accountHeader;
 @property(nonatomic, strong) UIView *accountHeaderClip;
 @property(nonatomic, strong) ApolloDuoAccountColumn *accountPrimary;
@@ -259,7 +289,7 @@ static void ApolloDuoSlideView(UIView *view, CGFloat from, CGFloat to, NSTimeInt
 @property(nonatomic, weak) UITableView *listPanPrioritizedTable;
 @end
 static BOOL ApolloDuoSplitLeadingSwipeShouldBegin(ApolloDuoSplitHost *host);
-static void ApolloDuoSplitLeadingSwipeFinished(ApolloDuoSplitHost *host);
+static void ApolloDuoSplitLeadingSwipeFinished(ApolloDuoSplitHost *host, CGFloat velocity);
 @implementation ApolloDuoSplitHost
 - (void)viewDidLoad {
     [super viewDidLoad];
@@ -500,18 +530,18 @@ static const CGFloat kApolloDuoLeadingSwipeEdge = 24.0;
     CGFloat velocity = [gesture velocityInView:self.view].x;
     if (gesture.state == UIGestureRecognizerStateEnded && (dx < -width * 0.35 || velocity < -600)) {
         // setListVisible: continues the slide from the current offset.
-        [self setListVisible:NO animated:YES];
+        [self setListVisible:NO animated:YES velocity:velocity];
         return;
     }
-    ApolloDuoSlideView(self.listContainer, dx, 0, 0.2, nil);
-    [UIView animateWithDuration:0.2 animations:^{ self.listDismiss.alpha = 1; }];
+    ApolloDuoSlideDrawer(self.listContainer, dx, 0, velocity, YES, nil);
+    [UIView animateWithDuration:0.25 animations:^{ self.listDismiss.alpha = 1; }];
 }
 - (void)leadingSwipeChanged:(UIPanGestureRecognizer *)gesture {
     if (gesture.state != UIGestureRecognizerStateEnded) return;
     // Require a deliberate swipe, as a completed native Back does, so brushing
     // the screen edge while holding the device does not open anything.
     if ([gesture translationInView:self.view].x < 40.0 && [gesture velocityInView:self.view].x < 400.0) return;
-    ApolloDuoSplitLeadingSwipeFinished(self);
+    ApolloDuoSplitLeadingSwipeFinished(self, [gesture velocityInView:self.view].x);
 }
 - (void)viewDidDisappear:(BOOL)animated {
     [super viewDidDisappear:animated];
@@ -659,6 +689,9 @@ static const CGFloat kApolloDuoLeadingSwipeEdge = 24.0;
 - (void)toggleList { [self setListVisible:!self.listVisible animated:YES]; }
 - (void)dismissList { [self setListVisible:NO animated:YES]; }
 - (void)setListVisible:(BOOL)visible animated:(BOOL)animated {
+    [self setListVisible:visible animated:animated velocity:0];
+}
+- (void)setListVisible:(BOOL)visible animated:(BOOL)animated velocity:(CGFloat)velocity {
     if (!self.subredditList) return;
     if (!visible) [self endListEditing];
     if (self.listVisible == visible) return;
@@ -682,12 +715,16 @@ static const CGFloat kApolloDuoLeadingSwipeEdge = 24.0;
         [self prioritizeListPan];
     }
     self.listDismiss.hidden = NO;
+    // The spring's tail is visually settled; let taps reach the feed then.
+    self.listDismiss.userInteractionEnabled = visible;
     self.listContainer.hidden = NO;
     NSUInteger generation = ++self.listAnimationGeneration;
-    NSTimeInterval duration = animated && !UIAccessibilityIsReduceMotionEnabled() ? 0.32 : 0;
-    [UIView animateWithDuration:duration animations:^{ self.listDismiss.alpha = visible ? 1 : 0; }];
+    NSTimeInterval duration = animated && !UIAccessibilityIsReduceMotionEnabled() ? 0.25 : 0;
+    [UIView animateWithDuration:duration delay:0 options:UIViewAnimationOptionCurveEaseOut
+                     animations:^{ self.listDismiss.alpha = visible ? 1 : 0; } completion:nil];
     __weak typeof(self) weakSelf = self;
-    ApolloDuoSlideView(self.listContainer, start, visible ? 0 : -self.listGlass.bounds.size.width - 12, duration, ^{
+    ApolloDuoSlideDrawer(self.listContainer, start, visible ? 0 : -self.listGlass.bounds.size.width - 12,
+                         velocity, animated, ^{
         if (weakSelf.listAnimationGeneration != generation) return;
         weakSelf.listContainer.hidden = !weakSelf.listVisible;
         weakSelf.listDismiss.hidden = !weakSelf.listVisible;
@@ -2762,7 +2799,7 @@ static BOOL ApolloDuoSplitLeadingSwipeShouldBegin(ApolloDuoSplitHost *host) {
         && !state.feed.transitionCoordinator;
 }
 
-static void ApolloDuoSplitLeadingSwipeFinished(ApolloDuoSplitHost *host) {
+static void ApolloDuoSplitLeadingSwipeFinished(ApolloDuoSplitHost *host, CGFloat velocity) {
     // Re-check: the page can change between the swipe's start and its end.
     if (!ApolloDuoSplitLeadingSwipeShouldBegin(host)) return;
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(host.navigationController, NO);
@@ -2779,7 +2816,7 @@ static void ApolloDuoSplitLeadingSwipeFinished(ApolloDuoSplitHost *host) {
         return;
     }
     ApolloLog(@"[DuoSplit] leading swipe revealed subreddit list");
-    [host setListVisible:YES animated:!UIAccessibilityIsReduceMotionEnabled()];
+    [host setListVisible:YES animated:YES velocity:velocity];
 }
 
 static void ApolloDuoSplitUpdate(void) {

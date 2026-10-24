@@ -116,6 +116,26 @@ static inline int ApolloDuoSubsChromeShouldNudgeFrame(double haveX,
     return dx > 0.5 || dy > 0.5;
 }
 
+// The subreddit drawer settles with a critically damped spring (UIKit's
+// no-bounce default) so it starts moving immediately instead of easing in.
+static inline double ApolloDuoDrawerSpringOmega(void) {
+    return 2.0 * 3.14159265358979323846 / 0.35;
+}
+
+// CASpringAnimation takes initial velocity in travel fractions per second.
+// A release away from the target starts at rest; one faster than omega would
+// carry a critically damped spring past the target, so it is capped there.
+static inline double ApolloDuoDrawerSpringInitialVelocity(double from,
+                                                          double to,
+                                                          double velocity) {
+    double travel = to - from;
+    if (travel > -1.0 && travel < 1.0) return 0;
+    double fraction = velocity / travel;
+    if (fraction <= 0) return 0;
+    double omega = ApolloDuoDrawerSpringOmega();
+    return fraction < omega ? fraction : omega;
+}
+
 #ifdef __cplusplus
 }
 #endif
