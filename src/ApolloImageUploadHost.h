@@ -20,6 +20,10 @@ NSURLRequest *ApolloRedditMaybeRewriteSubmitRequest(NSURLRequest *request);
 NSURLRequest *ApolloRedditMaybeRewriteCommentRequest(NSURLRequest *request);
 NSData *ApolloRedditSyntheticImgurAlbumResponseDataForRequest(NSURLRequest *request);
 
+// Resolve only recorded adapter-owned album links; ordinary Imgur links pass through.
+NSString *ApolloImageUploadResolveAlbumText(NSString *text);
+NSString *ApolloImageUploadResolveAlbumTextWithSelection(NSString *text, NSRange *selection);
+
 // Task identification (matches against original/current request).
 BOOL ApolloRedditIsSubmitTask(NSURLSessionTask *task);
 BOOL ApolloRedditIsCommentTask(NSURLSessionTask *task);

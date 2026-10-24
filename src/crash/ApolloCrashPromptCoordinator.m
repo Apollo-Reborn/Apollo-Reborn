@@ -3,6 +3,7 @@
 #import <UIKit/UIKit.h>
 
 #import "ApolloCommon.h"
+#import "settings/ApolloSetupAssistant.h"
 #import "UserDefaultConstants.h"
 #import "crash/ApolloCrashManager.h"
 #import "crash/ApolloCrashReviewViewController.h"
@@ -53,6 +54,7 @@
 #pragma mark - Presentation
 
 - (void)applicationDidBecomeActive {
+    if (ApolloSetupAssistantBlocksLaunchPrompts()) return;
     if (self.presentingCrashUI) return;
 
     NSArray<NSNumber *> *reportIDs = ApolloCrashManager.sharedManager.pendingReportIDs;
@@ -70,6 +72,10 @@
 // already be presented — in that case we simply skip this activation and try
 // again on the next one (presentingCrashUI resets so the report isn't lost).
 - (void)attemptPresentationForReportID:(NSNumber *)reportID retryCount:(NSInteger)retryCount {
+    if (ApolloSetupAssistantBlocksLaunchPrompts()) {
+        self.presentingCrashUI = NO;
+        return;
+    }
     UIViewController *presenter = ApolloMainTabBarController();
     if (!presenter || !presenter.view.window) {
         if (retryCount < 10) {

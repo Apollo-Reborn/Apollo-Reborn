@@ -1,5 +1,35 @@
 #import "ApolloState.h"
+#import "ApolloSignInSplash.h"
+#import "ApolloCommon.h"
+#import <objc/message.h>
 #import "ApolloWebSessionLoginViewController.h"
+
+// The setup assistant already chose the API-key path. Scope this bypass to a
+// synchronous main-thread selector call, never across an async auth session.
+static BOOL sStartingAPIKeySignIn;
+
+BOOL ApolloStartAPIKeySignIn(void) {
+    UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
+    if (![tabs isKindOfClass:UITabBarController.class]) return NO;
+    SEL action = @selector(signInSplashViewSignInButtonTappedWithSender:);
+    for (UIViewController *tab in tabs.viewControllers) {
+        NSArray *controllers = [tab isKindOfClass:UINavigationController.class]
+            ? [(UINavigationController *)tab viewControllers] : @[tab];
+        for (UIViewController *controller in controllers) {
+            if (![NSStringFromClass(controller.class) isEqualToString:@"Apollo.ProfileViewController"] ||
+                ![controller respondsToSelector:action]) continue;
+            [controller loadViewIfNeeded];
+            sStartingAPIKeySignIn = YES;
+            @try {
+                ((void (*)(id, SEL, id))objc_msgSend)(controller, action, nil);
+            } @finally {
+                sStartingAPIKeySignIn = NO;
+            }
+            return YES;
+        }
+    }
+    return NO;
+}
 
 // Both ProfileViewController and InboxViewController host a SignInSplashView
 // when no account is signed in. Their "Sign In with Reddit" button fires
@@ -15,6 +45,10 @@
 %hook _TtC6Apollo21ProfileViewController
 
 - (void)signInSplashViewSignInButtonTappedWithSender:(id)sender {
+    if (sStartingAPIKeySignIn) {
+        %orig(sender);
+        return;
+    }
     UIViewController *host = (UIViewController *)self;
     void (^originalSignIn)(void) = ^{
         %orig;

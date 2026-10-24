@@ -18,6 +18,17 @@ extern NSArray<UIBarButtonItem *> *ApolloDuoCommentsLayoutItems(UINavigationItem
 
 // Use the pill's spring for glyphs without changing button frames,
 // which translation measures when inserting its globe.
+// UIBarButtonItem.hidden is iOS 16 / macCatalyst 16 API. The explicit
+// macCatalyst clause keeps the Mac build (macCatalyst 15 floor) from sending
+// a selector macOS 12 does not implement; iOS 16+ behaviour is unchanged.
+static inline BOOL ApolloActionsBarItemHidden(UIBarButtonItem *item) {
+    if (@available(iOS 16.0, macCatalyst 16.0, *)) return item.hidden;
+    return NO;
+}
+static inline void ApolloActionsSetBarItemHidden(UIBarButtonItem *item, BOOL hidden) {
+    if (@available(iOS 16.0, macCatalyst 16.0, *)) item.hidden = hidden;
+}
+
 static const NSTimeInterval kActionsAnimationDuration = 0.36;
 static CASpringAnimation *ApolloActionsSpring(NSString *keyPath) {
     CASpringAnimation *spring = [CASpringAnimation animationWithKeyPath:keyPath];
@@ -59,17 +70,6 @@ static __thread NSUInteger sActionsBackMeasurementDepth;
 static NSUInteger sActionsModelWriteDepth;
 @class ApolloNavigationActionsOwner;
 static void ApolloActionsResetBeforeNavigation(UIViewController *controller);
-
-// The customization is glass-only, but public refresh helpers can still be
-// called on the iOS 14 deployment floor. Keep newer item state access guarded.
-static BOOL ApolloActionsItemHidden(UIBarButtonItem *item) {
-    if (@available(iOS 16.0, *)) return item.hidden;
-    return NO;
-}
-
-static void ApolloActionsSetItemHidden(UIBarButtonItem *item, BOOL hidden) {
-    if (@available(iOS 16.0, *)) item.hidden = hidden;
-}
 
 // The post composer's Post and Done buttons keep Done's prominent style, whose
 // tint is its fill: neutral chrome painted a labelColor (white in dark mode)
@@ -1262,7 +1262,7 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
         if (candidate.customView || [candidate.title isEqualToString:@"Cancel"] ||
             [candidate.title isEqualToString:@"Done"] || [candidate.title isEqualToString:@"Edit"]) return native;
         ApolloNavigationActionsStandardItem *state = objc_getAssociatedObject(candidate, &kActionsStandardItemKey);
-        BOOL nativeHidden = state ? state.hidden : ApolloActionsItemHidden(candidate);
+        BOOL nativeHidden = state ? state.hidden : ApolloActionsBarItemHidden(candidate);
         if (!nativeHidden && (candidate.action || candidate.primaryAction || candidate.menu)) actionable++;
     }
     if (actionable < 2) return native;
@@ -1327,7 +1327,7 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
         UIButton *button = (UIButton *)content.subviews[slot++];
         [button setImage:source.image forState:UIControlStateNormal];
         button.enabled = source.enabled;
-        button.hidden = ApolloActionsItemHidden(source);
+        button.hidden = ApolloActionsBarItemHidden(source);
     }
     return @[owner.inboxCompactItem];
 }
@@ -1364,7 +1364,7 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
 - (void)restoreStandardItems {
     sActionsModelWriteDepth++;
     for (ApolloNavigationActionsStandardItem *state in self.standardItems) {
-        ApolloActionsSetItemHidden(state.item, state.hidden);
+        ApolloActionsSetBarItemHidden(state.item, state.hidden);
         [state restoreRailStyleOfItem:state.item];
         objc_setAssociatedObject(state.item, &kActionsStandardItemKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
@@ -1593,7 +1593,7 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
             objc_setAssociatedObject(more, &kActionsStandardMoreKey, moreState, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             for (NSUInteger i = 1; i < items.count; i++) {
                 ApolloNavigationActionsStandardItem *state = [ApolloNavigationActionsStandardItem new];
-                state.item = items[i]; state.owner = self; state.hidden = ApolloActionsItemHidden(items[i]);
+                state.item = items[i]; state.owner = self; state.hidden = ApolloActionsBarItemHidden(items[i]);
                 objc_setAssociatedObject(items[i], &kActionsStandardItemKey, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 [self.standardItems addObject:state];
             }
@@ -1649,7 +1649,7 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
         // The native Duo path changes the navigation item's membership. Keep
         // included actions visible so UIKit can animate them into the shared
         // vertical glass; ordinary phones still collapse through item.hidden.
-        ApolloActionsSetItemHidden(state.item, state.hidden || (!nativeDuo && !expanded));
+        ApolloActionsSetBarItemHidden(state.item, state.hidden || (!nativeDuo && !expanded));
     }
     UIBarButtonItem *more = self.moreItem;
     if (more) {
@@ -1970,7 +1970,7 @@ CGRect ApolloNavigationActionsExpandedFrame(UINavigationBar *bar) {
     }
     if (owner.moreItem) {
         for (UIBarButtonItem *item in owner.item.rightBarButtonItems) {
-            if (ApolloActionsItemHidden(item)) continue;
+            if (ApolloActionsBarItemHidden(item)) continue;
             UIView *view = ApolloNavigationActionsItemViewCandidates(item).lastObject;
             if (![view isDescendantOfView:bar]) continue;
             CGRect rect = [view convertRect:view.bounds toView:bar];

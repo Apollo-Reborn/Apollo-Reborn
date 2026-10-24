@@ -332,6 +332,14 @@ static ApolloFindInCommentsGlassBridge *FGBridgeOwningNavItem(UINavigationItem *
     return box.object;
 }
 
+void ApolloFindInCommentsTrackSelection(UIViewController *vc, dispatch_block_t selection) {
+    [FGBridge(vc, YES) runApolloSelection:selection];
+}
+
+void ApolloFindInCommentsRestoreHighlights(UIViewController *vc) {
+    [FGBridge(vc, NO) restoreHighlights];
+}
+
 id ApolloFindInCommentsGlassBridgeForController(UIViewController *vc) {
     return FGBridge(vc, YES);
 }
@@ -372,7 +380,7 @@ CGRect ApolloFindInCommentsGlassTrailingFrame(UINavigationItem *navItem, UIView 
 
 static UIScrollView *FGTableForVC(UIViewController *vc) {
     id tableNode = ApolloObjectIvar(vc, "tableNode");
-    UIView *tv = [tableNode respondsToSelector:@selector(view)] ? [tableNode view] : nil;
+    UIView *tv = ApolloNodeView(tableNode);
     return [tv isKindOfClass:[UIScrollView class]] ? (UIScrollView *)tv : nil;
 }
 

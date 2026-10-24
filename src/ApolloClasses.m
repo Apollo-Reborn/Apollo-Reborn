@@ -97,6 +97,7 @@ Class ApolloClassRedditListTableViewCell;
 Class ApolloClassRedditListViewController;
 Class ApolloClassRichMediaNode;
 Class ApolloClassSaveMediaActivity;
+Class ApolloClassSavedPostsCommentsViewController;
 Class ApolloClassSearchViewController;
 Class ApolloClassSettingsViewController;
 Class ApolloClassShareAsImageViewController;
@@ -232,6 +233,7 @@ __attribute__((constructor)) static void ApolloClassesResolve(void) {
     ApolloClassRedditListViewController = objc_getClass("_TtC6Apollo24RedditListViewController");
     ApolloClassRichMediaNode = objc_getClass("_TtC6Apollo13RichMediaNode");
     ApolloClassSaveMediaActivity = objc_getClass("_TtC6Apollo17SaveMediaActivity");
+    ApolloClassSavedPostsCommentsViewController = objc_getClass("_TtC6Apollo32SavedPostsCommentsViewController");
     ApolloClassSearchViewController = objc_getClass("_TtC6Apollo20SearchViewController");
     ApolloClassSettingsViewController = objc_getClass("_TtC6Apollo22SettingsViewController");
     ApolloClassShareAsImageViewController = objc_getClass("_TtC6Apollo26ShareAsImageViewController");

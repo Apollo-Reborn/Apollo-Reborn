@@ -1,4 +1,5 @@
 #import "ApolloDuoSplitView.h"
+#import "ipad/ApolloPaneChrome.h"
 #import <Foundation/Foundation.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
@@ -318,25 +319,29 @@ static void OpenAccountManager(UIWindow *sourceWindow) {
     UIViewController *profileVC = nil;
     if (tabBarController) {
         for (UIViewController *vc in tabBarController.viewControllers) {
-            if ([vc isKindOfClass:UINavigationController.class]) {
-                UINavigationController *navigation = (id)vc;
-                // Unfolding moves the native root out of the outer stack.
+            // Every column: with the iPad pane layout the profile screen can sit
+            // in either the primary or the detail stack.
+            for (UINavigationController *navController in ApolloAllNavigationControllersForTabChild(vc)) {
+                // Unfolding a Duo moves the native root out of the outer stack.
                 // Read the retained root directly: an inactive split host may
                 // not have loaded its child controllers yet. This must not
                 // select Account or load its view just to open the switcher.
-                UIViewController *root = ApolloDuoSplitRootController(navigation);
+                UIViewController *root = ApolloDuoSplitRootController(navController);
                 if ([root isMemberOfClass:profileVCClass]) {
                     profileVC = root;
                     break;
                 }
-                for (UIViewController *stackVC in navigation.viewControllers) {
+                // Search through the entire navigation stack, not just topViewController
+                for (UIViewController *stackVC in navController.viewControllers) {
                     if ([stackVC isMemberOfClass:profileVCClass]) {
                         profileVC = stackVC;
                         break;
                     }
                 }
                 if (profileVC) break;
-            } else if ([vc isMemberOfClass:profileVCClass]) {
+            }
+            if (profileVC) break;
+            if ([vc isMemberOfClass:profileVCClass]) {
                 profileVC = vc;
                 break;
             }
@@ -1509,7 +1514,7 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
         CGFloat targetAlpha = profileTitleLabel ? profileTitleLabel.alpha : 1.0;
         self.glassView.alpha = targetAlpha;
         [hostView insertSubview:self.glassView atIndex:0];
-        BOOL fadeInstall = self.fadeNextInstall && !ownsTitle;
+        BOOL fadeInstall = self.fadeNextInstall && !ownsTitle && !UIAccessibilityIsReduceMotionEnabled();
         self.fadeNextInstall = NO;
         if (fadeInstall) {
             UIVisualEffectView *installed = self.glassView;
@@ -1653,6 +1658,7 @@ BOOL ApolloNavigationTitleContainsNativeSearchSurface(UIView *view) {
         return;
     }
     UIView *jumpBar = ApolloFindJumpBar(self.titleControl);
+    BOOL plainPaneTitle = !jumpBar && ApolloPaneUsesUnifiedChrome(self.titleControl);
     UIView *hostView = jumpBar ?: self.titleControl;
 
     if (ApolloNavigationTitleContainsNativeSearchSurface(self.titleControl)) {
@@ -1689,7 +1695,14 @@ BOOL ApolloNavigationTitleContainsNativeSearchSurface(UIView *view) {
     // observations only after recentering succeeds, so skipped work retries.
     BOOL recenterSettled = ApolloRecenterTitleControl(self);
     if (recenterSettled && jumpBar) ApolloLayoutJumpBarSearchContent(jumpBar);
-    [self updateGlassForHostView:hostView candidateViews:[self titleContentViews]];
+    if (plainPaneTitle) {
+        // A plain pane title still needs safe-area fitting; suppress only its
+        // decorative capsule, not the geometry work that keeps it visible.
+        [self.glassView removeFromSuperview];
+        self.glassView = nil;
+    } else {
+        [self updateGlassForHostView:hostView candidateViews:[self titleContentViews]];
+    }
     if (animateSearch && oldGlass && self.glassView == oldGlass &&
         !CGRectEqualToRect(oldBounds, oldGlass.bounds)) {
         // The host already keeps the capsule centered. Animate only its size;
@@ -1745,7 +1758,7 @@ BOOL ApolloNavigationTitleContainsNativeSearchSurface(UIView *view) {
 
 - (void)scheduleTargetRefreshIfNeeded {
     UIView *titleControl = self.titleControl;
-    if (!titleControl) return;
+    if (!titleControl || self.refreshScheduled) return;
     if (ApolloNavigationTitlePresentationSuppressesControl(titleControl)) {
         if (self.fittedWidthConstraint || self.glassView) [self scheduleTargetRefresh];
         return;
@@ -2024,6 +2037,15 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
     UIEdgeInsets chromeInsets = ApolloDeviceChromeInsetsForView(bar);
     CGFloat leftLimit = CGRectGetMinX(bar.bounds) + chromeInsets.left;
     CGFloat rightLimit = CGRectGetMaxX(bar.bounds) - chromeInsets.right;
+    // A pane's primary navigation bar can extend underneath UIKit's sidebar.
+    // Its physical midpoint is then inside the occluded region, not the middle
+    // of the visible feed. Fit/center in the usable header, including RTL's
+    // trailing sidebar. iPhone keeps its existing whole-bar centering policy.
+    CGRect titleBounds = bar.bounds;
+    if (ApolloPaneUsesUnifiedChrome(bar)) {
+        titleBounds.origin.x = leftLimit;
+        titleBounds.size.width = MAX(0, rightLimit - leftLimit);
+    }
     UIView *jumpBar = ApolloFindJumpBar(titleControl);
     BOOL searching = jumpBar && ApolloJumpBarIsSearching(jumpBar);
     BOOL searchActions = NO;
@@ -2054,7 +2076,7 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
     }
     CGRect collapsedActions = ApolloNavigationActionsCollapsedFrame(bar);
     if (!searchActions && !CGRectIsNull(collapsedActions)) {
-        if (CGRectGetMidX(collapsedActions) >= CGRectGetMidX(bar.bounds)) {
+        if (CGRectGetMidX(collapsedActions) >= CGRectGetMidX(titleBounds)) {
             rightLimit = MIN(rightLimit, CGRectGetMinX(collapsedActions));
         } else {
             leftLimit = MAX(leftLimit, CGRectGetMaxX(collapsedActions));
@@ -2098,7 +2120,7 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
             if (CGRectGetMaxY(sibInBar) <= CGRectGetMinY(titleBand) ||
                 CGRectGetMinY(sibInBar) >= CGRectGetMaxY(titleBand) ||
                 CGRectGetWidth(sibInBar) >= CGRectGetWidth(bar.bounds) - 1.0) continue;
-            if (CGRectGetMidX(sibInBar) < CGRectGetMidX(bar.bounds)) {
+            if (CGRectGetMidX(sibInBar) < CGRectGetMidX(titleBounds)) {
                 leftLimit = MAX(leftLimit, CGRectGetMaxX(sibInBar));
             } else {
                 if (!searchActions) rightLimit = MIN(rightLimit, CGRectGetMinX(sibInBar));
@@ -2108,11 +2130,12 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
 
     const CGFloat kEdgePadding = kApolloTitleButtonSpacing;
 
-    CGFloat capsulePadding = !searching &&
+    CGFloat capsulePadding = !searching && (jumpBar || !ApolloPaneUsesUnifiedChrome(bar)) &&
         ApolloResolvedScrollEdgeEffectStyle() != ApolloScrollEdgeEffectStyleHard
         ? kApolloTitleCapsuleHorizontalPadding : 0.0;
+    // A Duo split column is its own title area.
     CGRect columnBounds = ApolloDuoSplitContentFrame(topVC, bar);
-    CGRect titleBounds = CGRectIsNull(columnBounds) ? bar.bounds : columnBounds;
+    if (!CGRectIsNull(columnBounds)) titleBounds = columnBounds;
     CGRect floatingTabs = ApolloIPadFloatingTabsFrame(bar, topVC);
     BOOL lowerIPadTitle = !CGRectIsNull(floatingTabs);
     // Short bars (e.g. Settings) have no search/large-title space beneath the
@@ -2208,7 +2231,7 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
         CGRect centered = CGRectOffset(contentFrame,
             geometry.center - CGRectGetMidX(contentFrame), 0);
         centered = CGRectInset(centered, -capsulePadding, 0);
-        targetCenter += ApolloNavigationTitleExpandedActionsOffset(bar.bounds,
+        targetCenter += ApolloNavigationTitleExpandedActionsOffset(titleBounds,
             centered, leftLimit, CGRectGetMinX(expandedActions), kEdgePadding);
     }
     CGFloat delta = targetCenter - CGRectGetMidX(contentFrame);

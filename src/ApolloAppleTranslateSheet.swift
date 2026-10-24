@@ -32,13 +32,26 @@
 //  18.0 floor `TranslationSession`/`.translationTask` need in the other file — so
 //  this feature has its own, lower availability gate.
 //
+//  Mac Catalyst is excluded outright rather than version-gated: SwiftUI's
+//  `.translationPresentation` is marked *unavailable* there, not merely
+//  introduced later. `isSupported()` therefore returns NO on macOS and callers
+//  fall back to Apollo's own web view, which is the existing unsupported path.
+//
 
 import Foundation
 
-#if canImport(Translation) && canImport(SwiftUI) && canImport(UIKit)
+// UIKit is imported outside the capability gate below: the unconditional @objc
+// bridge at the bottom of this file takes a UIViewController, so it must resolve
+// even on platforms (Mac Catalyst) where the Translation feature is compiled out.
+#if canImport(UIKit)
 import UIKit
+#endif
+
+#if canImport(Translation) && canImport(SwiftUI) && canImport(UIKit) && !targetEnvironment(macCatalyst)
 import SwiftUI
-import Translation
+// Match the bridge import: Swift's autolinker must not turn this optional
+// framework into a process-launch requirement on older operating systems.
+@_weakLinked import Translation
 import os
 
 @available(iOS 17.4, *)
@@ -130,7 +143,7 @@ public final class ApolloAppleTranslateSheet: NSObject {
     /// Whether the native Translate sheet (Translation.framework's
     /// `.translationPresentation`) can be presented on this OS.
     @objc public static func isSupported() -> Bool {
-        #if canImport(Translation) && canImport(SwiftUI) && canImport(UIKit)
+        #if canImport(Translation) && canImport(SwiftUI) && canImport(UIKit) && !targetEnvironment(macCatalyst)
         if #available(iOS 17.4, *) { return true }
         #endif
         return false
@@ -142,7 +155,7 @@ public final class ApolloAppleTranslateSheet: NSObject {
     /// view in that case.
     @objc public static func present(_ text: String, from presenter: UIViewController) -> Bool {
         guard !text.isEmpty else { return false }
-        #if canImport(Translation) && canImport(SwiftUI) && canImport(UIKit)
+        #if canImport(Translation) && canImport(SwiftUI) && canImport(UIKit) && !targetEnvironment(macCatalyst)
         if #available(iOS 17.4, *) {
             return sharedPresentation.present(text, from: presenter)
         }

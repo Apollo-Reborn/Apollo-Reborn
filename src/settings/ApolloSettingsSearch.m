@@ -8,6 +8,7 @@
 #import "ApolloDuoRail.h"
 #import "settings/ApolloSettingsForm.h"
 #import "settings/ApolloSettingsRouter.h"
+#import "settings/ApolloSetupAssistant.h"
 #import "settings/ApolloSettingsSearchNativeIndex.h"
 #import "settings/ApolloSettingsTableViewController.h"
 
@@ -492,6 +493,10 @@ static void ApolloSettingsSearchOpenEntry(UIViewController *settingsVC, ApolloSe
     if (!nav) return;
     [nav popToViewController:settingsVC animated:NO];
 
+    if ([entry.routeId isEqualToString:@"setup-assistant"]) {
+        ApolloSetupAssistantPresentFrom(nav);
+        return;
+    }
     if (entry.routeId) {
         UIViewController *vc = ApolloSettingsRouteInstantiate(entry.routeId);
         if (!vc) return;

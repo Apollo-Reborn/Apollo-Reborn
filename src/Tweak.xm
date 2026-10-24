@@ -32,6 +32,8 @@
 #import "ApolloRedgifsErrorCards.h"
 #import "Tweak.h"
 #import "settings/CustomAPIViewController.h"
+#import "settings/ApolloSetupAssistant.h"
+#import "settings/ApolloSetupPreset.h"
 #import "settings/ApolloAutomaticBackup.h"
 #import "Version.h"
 #import "UserDefaultConstants.h"
@@ -2824,10 +2826,11 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
     // claimed for Reddit regardless of the Media Upload Host (see
     // ApolloShouldUseCookieRedditUpload), so their multi-image albums must be
     // synthesized into Reddit galleries too. The synthesis only succeeds when
-    // >= 2 of the album's member tokens map to RECORDED Reddit uploads, so a
+    // all of the album's member tokens map to RECORDED Reddit uploads, so a
     // genuine Imgur album (Imgur-hosted member ids) still passes through to
-    // Imgur untouched. ImgChest keeps its own album responder below.
-    NSData *redditAlbumResponseData = sImageUploadProvider != ImageUploadProviderImgChest ? ApolloRedditSyntheticImgurAlbumResponseDataForRequest(request) : nil;
+    // Imgur untouched. Claim by member ownership, since Comment Link Host /
+    // Auto can override Media Upload Host. ImgChest has its own responder below.
+    NSData *redditAlbumResponseData = completionHandler ? ApolloRedditSyntheticImgurAlbumResponseDataForRequest(request) : nil;
     if (redditAlbumResponseData.length > 0) {
         NSHTTPURLResponse *fakeHTTPResponse = [[NSHTTPURLResponse alloc] initWithURL:url
                                                                           statusCode:200
@@ -2842,9 +2845,7 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
     // ImgChest host: combine the member uploads into one multi-image ImgChest
     // post and answer the Imgur album creation with its link.
     ApolloImgChestAlbumResponder imgChestAlbumResponder = nil;
-    if (sImageUploadProvider == ImageUploadProviderImgChest) {
-        imgChestAlbumResponder = ApolloImgChestAlbumCreationResponderForRequest(request);
-    }
+    if (completionHandler) imgChestAlbumResponder = ApolloImgChestAlbumCreationResponderForRequest(request);
     if (completionHandler && imgChestAlbumResponder) {
         __block __weak NSURLSessionDataTask *proxyTask = nil;
         void (^wrappedHandler)(NSData *, NSURLResponse *, NSError *) = ^(NSData *data, NSURLResponse *response, NSError *error) {
@@ -3741,6 +3742,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyTabBarSwipeNavigation: @NO,
                                     UDKeyDuoLandscapeFeedLayout: @0,
                                     UDKeyDuoSubredditPanelGlassEnabled: @NO,
+                                    UDKeyIPadPaneLayout: @NO,
                                     UDKeyLiquidGlassEnabled: @YES,
                                     UDKeyIconRowMagnifier: @YES,
                                     UDKeyInfoRowTapUpvote: @YES,
@@ -4063,6 +4065,9 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
         sDuoLandscapeFeedLayout = 0;
         [standardDefaults setInteger:0 forKey:UDKeyDuoLandscapeFeedLayout];
     }
+    // Read once here: ApolloPaneInstall.xm builds the split controllers during
+    // scene connect, which happens after %ctor and never again for the process.
+    sIPadPaneLayout = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyIPadPaneLayout];
     sIconRowMagnifier = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyIconRowMagnifier];
     sInfoRowTapUpvote = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyInfoRowTapUpvote];
     sInfoRowTapComments = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyInfoRowTapComments];
@@ -4499,17 +4504,31 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     // Mirror the selected app icon for Bark notification icon passthrough.
     ApolloBarkCaptureInitialIconSelection();
 
+    ApolloSetupAssistantStart();
+
     // Redirect user to Custom API settings if no API credentials are set — but not
     // when at least one web-session account is configured (no API key is expected
     // for those). Checked by configured-account count, not the active account, so
     // this doesn't depend on which account happens to be current right now.
-    if ([sRedditClientId length] == 0 && !(sWebJSONEnabled && ApolloWebSessionUsernames().count > 0)) {
+    if ([standardDefaults integerForKey:UDKeySetupAssistantState] == ApolloSetupStateExistingInstall &&
+        !ApolloSetupAssistantBlocksLaunchPrompts() &&
+        [sRedditClientId length] == 0 && !(sWebJSONEnabled && ApolloWebSessionUsernames().count > 0)) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (ApolloSetupAssistantBlocksLaunchPrompts()) return;
             UIWindow *mainWindow = ((UIWindowScene *)UIApplication.sharedApplication.connectedScenes.anyObject).windows.firstObject;
             UITabBarController *tabBarController = (UITabBarController *)mainWindow.rootViewController;
             // Navigate to Settings tab
             tabBarController.selectedViewController = [tabBarController.viewControllers lastObject];
-            UINavigationController *settingsNavController = (UINavigationController *) tabBarController.selectedViewController;
+            // The selected child is the navigation controller in the stock
+            // layout, but a UISplitViewController under the iPad pane layout —
+            // unwrap rather than casting, or this push hits the split
+            // controller and throws.
+            UINavigationController *settingsNavController =
+                ApolloNavigationControllerForTabChild(tabBarController.selectedViewController);
+            if (!settingsNavController) {
+                ApolloLog(@"[Tweak] no navigation controller for the settings tab; skipping Custom API redirect");
+                return;
+            }
 
             // Push Custom API directly
             CustomAPIViewController *vc = [[CustomAPIViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
@@ -4525,6 +4544,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                     object:nil
                      queue:[NSOperationQueue mainQueue]
                 usingBlock:^(NSNotification *note) {
+        if (ApolloSetupAssistantBlocksLaunchPrompts()) return;
         ApolloSendUsageHeartbeatIfNeeded();
         ApolloUpdateCheckIfNeeded();
     }];

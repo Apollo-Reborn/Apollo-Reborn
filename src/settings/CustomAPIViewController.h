@@ -17,6 +17,10 @@
 @interface ApolloAccountsAPIKeysViewController : CustomAPIViewController  // Setup → Accounts & API Keys
 @end
 
+// Setup's focused credential form reuses the existing field handlers.
+@interface ApolloSetupAPIKeyViewController : CustomAPIViewController
+@end
+
 @interface ApolloPostsFeedsViewController : CustomAPIViewController       // Features → Posts & Feeds
 @end
 

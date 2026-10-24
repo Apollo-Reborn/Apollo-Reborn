@@ -36,6 +36,7 @@
 #import "ApolloCommon.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloWhatsNew.h"
+#import "settings/ApolloSetupAssistant.h"
 #import "ApolloWhatsNewHalloween.h"
 #import "ApolloWhatsNewCatalog.gen.h"
 #import "UIWindow+Apollo.h"
@@ -462,6 +463,7 @@ static NSString *ApolloWhatsNewCurrentVersion(void) {
 // A's commit, so B's re-read (plus the sheet-class check, which also covers
 // the markSeen-less debug path) makes the first chain to commit the only one.
 static void ApolloWhatsNewAttemptPresentation(NSString *headline, NSArray<NSDictionary *> *items, NSArray<NSNumber *> *remainingDelays, NSString *versionGate, void (^markSeen)(void)) {
+    if (ApolloSetupAssistantBlocksLaunchPrompts()) return;
     UIViewController *top = ApolloWhatsNewTopViewController();
     if ([top isMemberOfClass:[ApolloWhatsNewViewController class]]) {
         ApolloLog(@"[WhatsNew] A What's New sheet is already up — not stacking another.");

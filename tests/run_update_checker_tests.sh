@@ -28,6 +28,6 @@ xcrun --sdk macosx clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
     "$test_build_dir/tests.m" -o "$test_build_dir/tests"
 
 # Each scenario starts a fresh process, matching the checker's per-launch state.
-for scenario in cadence active-timer failure-backoff manual-share manual-joins-auto manual-inactive prompt-deferred inactive opt-out pending-cancel skip cached-relaunch later later-relaunch later-newer later-offline; do
+for scenario in cadence active-timer failure-backoff manual-share manual-joins-auto manual-inactive prompt-deferred setup-deferred inactive opt-out pending-cancel skip cached-relaunch later later-relaunch later-newer later-offline; do
     "$test_build_dir/tests" "$scenario"
 done
