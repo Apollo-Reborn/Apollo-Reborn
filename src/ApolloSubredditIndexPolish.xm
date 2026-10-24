@@ -22,6 +22,7 @@ static BOOL ApolloSubredditEnhancementsEnabled(void) {
 static char kApolloSubredditIndexTableKey;
 static char kApolloSubredditIndexNotSubredditsTableKey;
 static char kApolloSubredditIndexOverlayKey;
+static char kApolloSubredditNativeIndexInteractionKey;
 static char kApolloSubredditIndexLoggedKey;
 static char kApolloSubredditStarProxyKey;
 static char kApolloSubredditStarProxyLoggedKey;
@@ -105,6 +106,8 @@ static void (*orig_ApolloSubredditHeaderSetFrame)(id self, SEL _cmd, CGRect fram
 static const CGFloat ApolloSubredditIndexSlotHeight = 14.0;
 static const CGFloat ApolloSubredditIndexTouchWidth = 56.0;
 static const CGFloat ApolloSubredditIndexGestureWidth = 34.0;
+// The Duo rail puts the stars closer to the visible letter column.
+static const CGFloat ApolloSubredditIndexDuoGestureWidth = 20.0;
 static const CGFloat ApolloSubredditIndexGlyphWidth = 30.0;
 static const CGFloat ApolloSubredditIndexGlyphRightInset = 10.0;
 static const CGFloat ApolloSubredditIndexTrailingRailGap = 10.0;
@@ -877,12 +880,29 @@ static void ApolloSubredditIndexApplySeparatorInsets(UITableView *tableView) {
     }
 }
 
+static void ApolloSubredditIndexSetNativeIndexReplaced(UITableView *tableView, BOOL replaced) {
+    for (UIView *view in tableView.subviews) {
+        if (![NSStringFromClass(view.class) containsString:@"TableViewIndex"]) continue;
+        NSNumber *original = objc_getAssociatedObject(view, &kApolloSubredditNativeIndexInteractionKey);
+        if (replaced) {
+            if (!original) objc_setAssociatedObject(view, &kApolloSubredditNativeIndexInteractionKey,
+                @(view.userInteractionEnabled), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            // Clear colors leave UIKit's wide native index hit target active.
+            if (view.userInteractionEnabled) view.userInteractionEnabled = NO;
+        } else if (original) {
+            view.userInteractionEnabled = original.boolValue;
+            objc_setAssociatedObject(view, &kApolloSubredditNativeIndexInteractionKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
+}
+
 static void ApolloSubredditIndexHideNativeIndex(UITableView *tableView) {
     ApolloSubredditIndexCaptureTableNativeState(tableView);
     UIColor *clear = UIColor.clearColor;
     if (![tableView.sectionIndexColor isEqual:clear]) tableView.sectionIndexColor = clear;
     if (![tableView.sectionIndexBackgroundColor isEqual:clear]) tableView.sectionIndexBackgroundColor = clear;
     if (![tableView.sectionIndexTrackingBackgroundColor isEqual:clear]) tableView.sectionIndexTrackingBackgroundColor = clear;
+    ApolloSubredditIndexSetNativeIndexReplaced(tableView, YES);
 }
 
 static UIColor *ApolloSubredditIndexResolvedColor(UIColor *color, UITraitCollection *traitCollection) {
@@ -1682,7 +1702,8 @@ static void ApolloSubredditIndexRemoveStarProxyFromCell(UITableViewCell *cell) {
 
 - (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
     if (![super pointInside:point withEvent:event]) return NO;
-    return point.x >= CGRectGetWidth(self.bounds) - ApolloSubredditIndexGestureWidth;
+    CGFloat width = ApolloDeviceIsDuo() ? ApolloSubredditIndexDuoGestureWidth : ApolloSubredditIndexGestureWidth;
+    return point.x >= CGRectGetWidth(self.bounds) - width;
 }
 
 - (NSInteger)indexForPoint:(CGPoint)point {
@@ -2104,6 +2125,7 @@ static void ApolloSubredditIndexInstallOrUpdate(UITableView *tableView) {
 static void ApolloSubredditIndexApplyNativeIndexAccent(UITableView *tableView) {
     if (ApolloSubredditEnhancementsEnabled() || !tableView) return;
     if (![sApolloSubredditKnownTables containsObject:tableView]) return;
+    ApolloSubredditIndexSetNativeIndexReplaced(tableView, NO);
     UIColor *accent = ApolloSubredditIndexResolvedColor(ApolloThemeAccentColor(), tableView.traitCollection);
     if (!accent) return;
     if ([tableView.sectionIndexColor isEqual:accent]) return;
@@ -3389,6 +3411,7 @@ static void ApolloSubredditIndexRefreshVisibleRowGeometry(UITableView *tableView
 // to work in classic mode too.
 static void ApolloSubredditIndexRevertTableToNative(UITableView *tableView) {
     if (!tableView) return;
+    ApolloSubredditIndexSetNativeIndexReplaced(tableView, NO);
 
     if ([objc_getAssociatedObject(tableView, &kApolloSubredditIndexTableKey) boolValue]) {
         objc_setAssociatedObject(tableView, &kApolloSubredditSelectionTableKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
