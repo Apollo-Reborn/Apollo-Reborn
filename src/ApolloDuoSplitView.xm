@@ -1649,14 +1649,52 @@ static NSArray<ApolloDuoPostsGeometry *> *ApolloDuoPostsCaptureGeometry(UIView *
     return geometry;
 }
 
+// A centered bar title (and trailing items) would travel half the screen as
+// its column widens. Fade those in at their destination instead.
+static BOOL ApolloDuoGeometryRecentersBarItem(ApolloDuoPostsGeometry *item, UIView *view, UIView *feed, UIView *surface) {
+    BOOL inBar = NO;
+    for (UIView *ancestor = view.superview; ancestor && ancestor != feed; ancestor = ancestor.superview) {
+        if ([ancestor isKindOfClass:UINavigationBar.class]) { inBar = YES; break; }
+    }
+    if (!inBar || !view.superview) return NO;
+    CGRect now = [view.superview.layer convertRect:view.layer.frame toLayer:surface.layer];
+    return fabs(CGRectGetMidX(now) - CGRectGetMidX(item.surfaceFrame)) > 24.0
+        && fabs(CGRectGetWidth(now) - CGRectGetWidth(item.surfaceFrame)) < 8.0;
+}
+
 static void ApolloDuoAnimateRetainedGeometry(NSArray<ApolloDuoPostsGeometry *> *geometry,
                                              UIView *feed, UIView *surface, NSTimeInterval duration,
-                                             BOOL convertReparentedDescendants) {
+                                             BOOL convertReparentedDescendants, BOOL fadeRecenteredBarItems) {
     NSUInteger count = 0;
+    NSMutableArray<UIView *> *faded = [NSMutableArray array];
     for (ApolloDuoPostsGeometry *item in geometry) {
         UIView *view = item.view;
         if (!view || (view != feed && ![view isDescendantOfView:feed])) continue;
         CALayer *layer = view.layer;
+        BOOL insideFaded = NO;
+        for (UIView *ancestor in faded) if ([view isDescendantOfView:ancestor]) insideFaded = YES;
+        if (insideFaded) continue;
+        if (fadeRecenteredBarItems && view != feed && ApolloDuoGeometryRecentersBarItem(item, view, feed, surface)) {
+            // Crossfade: the old rendering leaves from where it was while the
+            // item fades in at its destination, so the bar is never empty.
+            UIView *old = [view snapshotViewAfterScreenUpdates:NO];
+            if (old) {
+                old.frame = item.surfaceFrame;
+                old.userInteractionEnabled = NO;
+                [surface addSubview:old];
+                [UIView animateWithDuration:duration * 0.6 delay:0 options:UIViewAnimationOptionCurveEaseOut
+                                 animations:^{ old.alpha = 0; }
+                                 completion:^(__unused BOOL finished) { [old removeFromSuperview]; }];
+            }
+            CAKeyframeAnimation *fade = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
+            fade.values = @[@0, @0, @(layer.opacity)];
+            fade.keyTimes = @[@0, @0.2, @1];
+            fade.duration = duration;
+            [layer addAnimation:fade forKey:@"ApolloDuoPostsGeometry"];
+            [faded addObject:view];
+            count++;
+            continue;
+        }
         CGPoint position = item.position;
         if (view == feed || item.parent != view.superview) {
             // A container can keep its direct wrapper while its ancestors
@@ -3389,7 +3427,7 @@ static BOOL ApolloDuoSplitRoutePush(UINavigationController *nav, UIViewControlle
                                                     wrapper.layer.position.y);
                         [geometry addObject:item];
                     }
-                    ApolloDuoAnimateRetainedGeometry(geometry, state.primary.view, surface, 0.32, YES);
+                    ApolloDuoAnimateRetainedGeometry(geometry, state.primary.view, surface, 0.32, YES, NO);
                 }
                 if (travel > 0) ApolloDuoSlideView(state.secondary.view, travel, 0, 0.32, nil);
             }
