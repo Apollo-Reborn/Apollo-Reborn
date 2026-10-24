@@ -110,6 +110,9 @@ static BOOL lastClosePreserved;
 static id mainTabs;
 static id ApolloMainTabBarController(void) { return mainTabs; }
 static BOOL ApolloDuoSplitShouldOpen(__unused id tabs) { return landscape; }
+// Production split-link pushes bypass routing while this is set; the profile
+// paths under test never set it.
+static BOOL sDuoSplitPushingFeedLink;
 static BOOL ApolloDuoSplitIsUnfolded(void) { return unfolded; }
 static NSString *ApolloDuoSplitKind(UIViewController *page) { return page.kind; }
 static ApolloDuoSplitState *ApolloDuoSplitStateForNavigation(UINavigationController *nav,
