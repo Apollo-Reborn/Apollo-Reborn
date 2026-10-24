@@ -2457,6 +2457,39 @@ static BOOL sChatFilterActive = NO;
 static BOOL sChatPagingInProgress = NO;
 static const NSInteger kMaxChatFilterPages = 8;   // cap so a chat-sparse account can't page forever
 
+// Inbox reply parents. Apollo draws an Inbox page only after it has looked up the parent of every
+// comment reply on it: InboxViewController's handleFetchedMessages (sub_10019dde8 in 1.15.11)
+// calls -thingsByFullNames:completion: from inside the -messagesInCategory:... completion, and the
+// lookup's answer handler (sub_10019fad4) runs the "show this page" continuation only when it gets
+// a list back. On an error it logs "Error fetching messages" and returns; on a nil list (what
+// RedditKit makes of a 403 HTML block page) it does nothing. Either way the Inbox sat on its
+// spinner for good, which is what API-Key-Free accounts hit once www.reddit.com started refusing
+// /api/info (ApolloWebJSON now sends those reads to api.reddit.com), and what a 429 or a dropped
+// connection on that one lookup still caused. An empty list takes the stock path and the rows
+// draw without their parent context, so while Apollo handles a page of messages, a failed parent
+// lookup answers with an empty list. Only the Inbox calls -thingsByFullNames: from inside a
+// -messagesInCategory: completion (Hopper: the other nine thingsByFullNames call sites are in
+// other screens, and the only other messagesInCategory caller, sub_1008336b4, calls none of them
+// from its completion, sub_10083bb78), so every other caller keeps its error.
+static NSString *const kApolloInboxPageHandlingKey = @"ApolloInboxPageHandling";
+
+// Runs Apollo's page completion with the thread marked for the reply-parent lookup it starts.
+static id ApolloInboxCompletionMarkingParentLookup(id completion) {
+    void (^pageCompletion)(NSArray *, id, NSError *) = completion;
+    return [^(NSArray *messages, id page, NSError *error) {
+        NSMutableDictionary *threadDictionary = [NSThread currentThread].threadDictionary;
+        // The chat filter's accumulated delivery runs inside its own (wrapped) page completion,
+        // so only the outermost mark clears it.
+        BOOL outermost = threadDictionary[kApolloInboxPageHandlingKey] == nil;
+        threadDictionary[kApolloInboxPageHandlingKey] = @YES;
+        @try {
+            pageCompletion(messages, page, error);
+        } @finally {
+            if (outermost) [threadDictionary removeObjectForKey:kApolloInboxPageHandlingKey];
+        }
+    } copy];
+}
+
 %hook RDKClient
 // NOTE: `category` is an enum (NSInteger), NOT an object — declaring it `id` makes ARC retain
 // the integer value as a pointer (EXC_BAD_ACCESS at 0x2). It MUST be a scalar type.
@@ -2464,8 +2497,11 @@ static const NSInteger kMaxChatFilterPages = 8;   // cap so a chat-sparse accoun
     ChatsFilterLog("messagesInCategory cat=%lld active=%d nested=%d",
                    category, sChatFilterActive, sChatPagingInProgress);
     if (!completion) return %orig;
+    // Every path below hands Apollo's page to this wrapper, so a failed reply-parent lookup can't
+    // strand the Inbox (Inbox reply parents, above).
+    completion = ApolloInboxCompletionMarkingParentLookup(completion);
 
-    if (!sChatFilterActive) return %orig;
+    if (!sChatFilterActive) return %orig(category, pagination, markRead, completion);
 
     // A nested page-pull kicked off by the accumulator below: filter this one page and pass the real
     // pagination token straight through so the accumulator can decide whether to keep going.
@@ -2522,6 +2558,24 @@ static const NSInteger kMaxChatFilterPages = 8;   // cap so a chat-sparse accoun
         step(ApolloChatFilterToChats(messages), page, error);
     };
     return %orig(category, pagination, NO, firstWrapped);   // markRead:NO so the filtered view doesn't mark PMs read
+}
+
+// The Inbox's reply-parent lookup (Inbox reply parents, above): a failure answers with an empty
+// list so the page still draws. Any other caller passes straight through.
+- (id)thingsByFullNames:(id)fullNames completion:(id)completion {
+    if (!completion || ![[NSThread currentThread].threadDictionary[kApolloInboxPageHandlingKey] boolValue]) return %orig;
+    void (^lookupCompletion)(NSArray *, NSError *) = completion;
+    NSUInteger requested = [fullNames isKindOfClass:[NSArray class]] ? [(NSArray *)fullNames count] : 0;
+    id wrapped = ^(NSArray *things, NSError *error) {
+        if (!error && [things isKindOfClass:[NSArray class]]) {
+            lookupCompletion(things, nil);
+            return;
+        }
+        ApolloLog(@"[InboxParents] Lookup of %lu reply parent(s) failed (%@); showing the page without them",
+                  (unsigned long)requested, error.localizedDescription ?: @"no list");
+        lookupCompletion(@[], nil);
+    };
+    return %orig(fullNames, wrapped);
 }
 %end
 
