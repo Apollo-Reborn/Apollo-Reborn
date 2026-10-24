@@ -73,6 +73,24 @@ int main(void) {
           "an already-placed FAB is a no-op");
     Check(ApolloDuoSubsChromeShouldNudgeFrame(fab.x + 8.0, fab.y, fab.x, fab.y),
           "a FAB sitting in the corner is nudged once");
+    /* Subreddit drawer spring: continue a release's speed toward the
+       target without overshooting it. */
+    double omega = ApolloDuoDrawerSpringOmega();
+    Check(omega > 17.9 && omega < 18.0,
+          "drawer spring settles with a 0.35 s response");
+    Check(ApolloDuoDrawerSpringInitialVelocity(-372, 0, 0) == 0,
+          "a programmatic open starts at rest");
+    Check(ApolloDuoDrawerSpringInitialVelocity(-372, 0, 1860) == 5,
+          "an opening flick becomes travel fractions per second");
+    Check(ApolloDuoDrawerSpringInitialVelocity(-100, -372, -1360) == 5,
+          "a closing flick keeps its speed toward the edge");
+    Check(ApolloDuoDrawerSpringInitialVelocity(-100, 0, -800) == 0,
+          "a release away from the target starts at rest");
+    Check(ApolloDuoDrawerSpringInitialVelocity(-20, 0, 4000) == omega,
+          "a fast release near the target is capped so it does not overshoot");
+    Check(ApolloDuoDrawerSpringInitialVelocity(0, 0, 900) == 0,
+          "a zero-distance slide has no velocity");
+
     printf("OK: %u checks\n", checks);
     return 0;
 }
