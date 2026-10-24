@@ -21,7 +21,10 @@ extern NSArray<UIBarButtonItem *> *ApolloDuoCommentsLayoutItems(UINavigationItem
 // UIBarButtonItem.hidden is iOS 16 / macCatalyst 16 API. The explicit
 // macCatalyst clause keeps the Mac build (macCatalyst 15 floor) from sending
 // a selector macOS 12 does not implement; iOS 16+ behaviour is unchanged.
+static char kActionsDuoOverflowHiddenKey;
 static inline BOOL ApolloActionsBarItemHidden(UIBarButtonItem *item) {
+    NSNumber *nativeHidden = objc_getAssociatedObject(item, &kActionsDuoOverflowHiddenKey);
+    if (nativeHidden) return nativeHidden.boolValue;
     if (@available(iOS 16.0, macCatalyst 16.0, *)) return item.hidden;
     return NO;
 }
@@ -56,6 +59,9 @@ static char kActionsDuoOriginalItemsKey;
 static char kActionsDuoNativeItemsKey;
 static char kActionsDuoSourceButtonKey;
 static char kActionsDuoMirroredItemsKey;
+static char kActionsDuoOverflowMenuKey;
+static char kActionsDuoOverflowItemsKey;
+static char kActionsDuoOverflowElementKey;
 static char kActionsDuoRefreshScheduledKey;
 static char kActionsDuoProfileAppliedKey;
 static char kActionsDuoProfileRefreshKey;
@@ -70,6 +76,7 @@ static __thread NSUInteger sActionsBackMeasurementDepth;
 static NSUInteger sActionsModelWriteDepth;
 @class ApolloNavigationActionsOwner;
 static void ApolloActionsResetBeforeNavigation(UIViewController *controller);
+static void ApolloActionsRestoreDuoOverflow(UINavigationItem *item);
 
 // The post composer's Post and Done buttons keep Done's prominent style, whose
 // tint is its fill: neutral chrome painted a labelColor (white in dark mode)
@@ -294,8 +301,6 @@ static void ApolloActionsApplyChromeToView(UIView *view, BOOL blueDone) {
 @property (nonatomic, strong) NSMutableArray<ApolloNavigationActionsStandardItem *> *standardItems;
 @property (nonatomic, weak) UIBarButtonItem *moreItem;
 @property (nonatomic, strong) UIBarButtonItem *inboxDisclosure;
-@property (nonatomic, strong) UIBarButtonItem *inboxCompactItem;
-@property (nonatomic, copy) NSArray<UIBarButtonItem *> *inboxNativeItems;
 @property (nonatomic, copy) UIAction *nativePrimaryAction;
 @property (nonatomic, copy) UIMenu *nativeMenu;
 @property (nonatomic, strong) UIViewPropertyAnimator *animator;
@@ -704,6 +709,25 @@ static BOOL ApolloActionsHasTrailingTabRail(void) {
     CGRect frame = [bar convertRect:bar.bounds toView:tabs.view];
     return CGRectGetWidth(frame) < 100.0 && CGRectGetHeight(frame) > 400.0 &&
         CGRectGetMaxX(frame) >= CGRectGetWidth(tabs.view.bounds) - 2.0;
+}
+
+// Use the target pose as well as live geometry while UIKit replaces the rail.
+static BOOL ApolloActionsUsesDuoOverflow(UIViewController *controller) {
+    return ApolloDeviceIsDuo() && controller && ApolloActionsHasTrailingTabRail()
+        && !ApolloDuoSplitIsUnfoldedPortrait() && !controller.presentingViewController
+        && !ApolloDuoSplitIsSidebarController(controller);
+}
+
+static NSString *ApolloActionsItemTitle(UIBarButtonItem *item) {
+    UIButton *button = objc_getAssociatedObject(item, &kActionsDuoSourceButtonKey);
+    for (NSString *title in @[item.accessibilityLabel ?: @"", item.title ?: @"",
+                              button.accessibilityLabel ?: @"", item.primaryAction.title ?: @""]) {
+        if (title.length) return title;
+    }
+    NSString *action = NSStringFromSelector(item.action);
+    if ([action containsString:@"markAllRead"]) return @"Mark All Read";
+    if ([action containsString:@"newMessage"]) return @"New Message";
+    return @"";
 }
 
 static UIBarButtonItem *ApolloActionsProfileItem(UIViewController *controller,
@@ -1125,7 +1149,7 @@ static NSArray<UIBarButtonItem *> *ApolloActionsDuoNativeItems(UINavigationItem 
     items = ApolloNativeFeedSearchDuoTrailingItems(item, items);
     items = ApolloDuoCommentsLayoutItems(item, items);
     ApolloNavigationActionsControllerBox *box = objc_getAssociatedObject(item, &kActionsControllerKey);
-    // Inbox owns its reversible compact/native mapping below.
+    // Inbox owns its reversible disclosure/expanded mapping below.
     if ([NSStringFromClass(box.controller.class) isEqualToString:@"Apollo.InboxViewController"]) return items;
     NSArray *generated = objc_getAssociatedObject(item, &kActionsDuoNativeItemsKey);
     NSArray *original = objc_getAssociatedObject(item, &kActionsDuoOriginalItemsKey);
@@ -1137,6 +1161,7 @@ static NSArray<UIBarButtonItem *> *ApolloActionsDuoNativeItems(UINavigationItem 
         && (duoMode == ApolloDuoModeClosed || ApolloActionsHasTrailingTabRail()
             || (duoMode == ApolloDuoModePhone && generated != nil));
     if (!closedDuo) {
+        ApolloActionsRestoreDuoOverflow(item);
         ApolloNavigationActionsOwner *owner = ApolloActionsOwner(item, NO);
         // A collapsed rail publishes only its generated More item, retaining
         // the remaining actions in the owner. It is still our native model:
@@ -1234,13 +1259,12 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
     if (owner.preparing) return items;
     // The collapsed native model intentionally contains only the disclosure.
     // Preserve it during lifecycle refreshes instead of treating it as a lone
-    // action to remove. Portrait reconstructs its compact group below.
-    if (!ApolloDuoSplitIsUnfoldedPortrait() && items.count == 1 &&
+    // action to remove.
+    if (ApolloActionsUsesDuoOverflow(box.controller) && items.count == 1 &&
         items.firstObject == owner.inboxDisclosure && owner.standardItems.count) return items;
-    if (items.count == 1 && items.firstObject == owner.inboxCompactItem) items = owner.inboxNativeItems;
-    // A rail collapse publishes only More, retaining the other native actions
-    // in the owner. Recover them before rotating to the compact portrait pill.
-    if (ApolloDuoSplitIsUnfoldedPortrait() && items.count == 1 &&
+    // A collapsed model retains sibling commands in the owner. Recover them
+    // before publishing the expanded items outside the rail.
+    if (!ApolloActionsUsesDuoOverflow(box.controller) && items.count == 1 &&
         items.firstObject == owner.inboxDisclosure && owner.standardItems.count) {
         NSMutableArray *restored = [NSMutableArray arrayWithObject:owner.inboxDisclosure];
         for (ApolloNavigationActionsStandardItem *entry in owner.standardItems) {
@@ -1250,9 +1274,9 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
     }
     NSMutableArray *native = [items mutableCopy] ?: [NSMutableArray array];
     if (owner.inboxDisclosure) [native removeObjectIdenticalTo:owner.inboxDisclosure];
-    // The disclosure only collapses the group. Regular phones with Collapse
-    // Navigation Actions off always stay expanded, so it would do nothing.
-    if (!ApolloDeviceIsDuo() && !sCollapseNavigationActions) return native;
+    // Only a rail needs the synthetic Duo overflow anchor. Other poses expose
+    // the commands directly; regular phones retain their collapse preference.
+    if (ApolloDeviceIsDuo() ? !ApolloActionsUsesDuoOverflow(box.controller) : !sCollapseNavigationActions) return native;
     // Inbox compose/selection modes and lone actions need no added disclosure.
     if (box.controller.isEditing || native.count < 2) return native;
     NSUInteger actionable = 0;
@@ -1287,58 +1311,13 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
         }
     }
     [native insertObject:owner.inboxDisclosure atIndex:0];
-    if (!ApolloDuoSplitIsUnfoldedPortrait()) return native;
-
-    // Standard UIKit items add a 16pt gap between their 40pt slots. Use the
-    // same 36pt slots and glass-owning strip as Apollo's composite post actions.
-    // Keep native item identities/actions so editing and compose still go
-    // through Apollo, and restore these items when the rail returns.
-    [owner restoreStandardItems];
-    if (!owner.inboxCompactItem || !ApolloActionsArraysIdentical(owner.inboxNativeItems, native)) {
-        owner.inboxNativeItems = [native copy];
-        UIView *content = [[UIView alloc] initWithFrame:CGRectMake(0, 0, native.count * 36.0 + 8.0, 44)];
-        NSUInteger slot = 0;
-        for (UIBarButtonItem *source in native.reverseObjectEnumerator) {
-            UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
-            button.frame = CGRectMake(4.0 + slot++ * 36.0, 0, 36, 44);
-            if (source == owner.inboxDisclosure) {
-                __weak ApolloNavigationActionsOwner *weakOwner = owner;
-                [button addAction:[UIAction actionWithHandler:^(__unused UIAction *action) {
-                    [weakOwner setExpanded:NO animated:YES];
-                }] forControlEvents:UIControlEventTouchUpInside];
-            } else if (source.primaryAction) {
-                [button addAction:source.primaryAction forControlEvents:UIControlEventTouchUpInside];
-            } else if (source.action) {
-                [button addAction:[UIAction actionWithHandler:^(__unused UIAction *action) {
-                    [UIApplication.sharedApplication sendAction:source.action to:source.target from:source forEvent:nil];
-                }] forControlEvents:UIControlEventTouchUpInside];
-            }
-            button.menu = source.menu;
-            button.showsMenuAsPrimaryAction = source.menu != nil && source.action == nil && source.primaryAction == nil;
-            button.accessibilityLabel = source.accessibilityLabel ?: (
-                [NSStringFromSelector(source.action) containsString:@"markAllRead"] ? @"Mark All Read" : @"New Message");
-            [content addSubview:button];
-        }
-        owner.inboxCompactItem = [[UIBarButtonItem alloc] initWithCustomView:content];
-    }
-    UIView *content = ApolloNavigationActionsContentView(owner.inboxCompactItem);
-    NSUInteger slot = 0;
-    for (UIBarButtonItem *source in native.reverseObjectEnumerator) {
-        UIButton *button = (UIButton *)content.subviews[slot++];
-        [button setImage:source.image forState:UIControlStateNormal];
-        button.enabled = source.enabled;
-        button.hidden = ApolloActionsBarItemHidden(source);
-    }
-    return @[owner.inboxCompactItem];
+    return native;
 }
 
 @implementation ApolloNavigationActionsOwner
 - (BOOL)collapseEnabled {
-    // On Duo, Inbox's added ellipsis is a disclosure, not an Apollo More menu.
-    // It must remain toggleable even when other pages keep their actions
-    // expanded. Regular phones follow Collapse Navigation Actions, as on main.
-    return sCollapseNavigationActions || (ApolloDeviceIsDuo() &&
-        [NSStringFromClass(self.controller.class) isEqualToString:@"Apollo.InboxViewController"]);
+    // Duo exposes actions directly: in the rail menu or as expanded controls.
+    return ApolloDeviceIsDuo() ? NO : sCollapseNavigationActions;
 }
 - (instancetype)init {
     self = [super init];
@@ -1863,11 +1842,131 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
 }
 @end
 
+static void ApolloActionsRestoreDuoOverflow(UINavigationItem *item) {
+    if (@available(iOS 16.0, *)) {
+        id owned = objc_getAssociatedObject(item, &kActionsDuoOverflowElementKey);
+        if (owned && item.additionalOverflowItems == owned) item.additionalOverflowItems = nil;
+        sActionsModelWriteDepth++;
+        for (UIBarButtonItem *entry in objc_getAssociatedObject(item, &kActionsDuoOverflowItemsKey)) {
+            NSNumber *nativeHidden = objc_getAssociatedObject(entry, &kActionsDuoOverflowHiddenKey);
+            objc_setAssociatedObject(entry, &kActionsDuoOverflowHiddenKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            if (nativeHidden) entry.hidden = nativeHidden.boolValue;
+        }
+        sActionsModelWriteDepth--;
+        objc_setAssociatedObject(item, &kActionsDuoOverflowItemsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(item, &kActionsDuoOverflowMenuKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(item, &kActionsDuoOverflowElementKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
+static UIBarButtonItem *ApolloActionsFindMoreItem(NSArray<UIBarButtonItem *> *items) {
+    UIBarButtonItem *menuFallback = nil;
+    for (UIBarButtonItem *item in items) {
+        if (!item.enabled || ApolloActionsBarItemHidden(item)) continue;
+        if (ApolloActionsMoreName(item.accessibilityLabel) || ApolloActionsMoreName(item.title) ||
+            ApolloActionsMoreName(NSStringFromSelector(item.action)) ||
+            ApolloActionsFindMore(ApolloNavigationActionsContentView(item))) return item;
+        if (!menuFallback && item.menu) menuFallback = item;
+    }
+    return menuFallback;
+}
+
+static void ApolloActionsInvokeItem(UIBarButtonItem *item) API_AVAILABLE(ios(16.0)) {
+    UIButton *button = objc_getAssociatedObject(item, &kActionsDuoSourceButtonKey)
+        ?: ApolloActionsFindMore(ApolloNavigationActionsContentView(item));
+    if (button) [button sendActionsForControlEvents:UIControlEventTouchUpInside];
+    else if (item.primaryAction) [item.primaryAction performWithSender:item target:nil];
+    else if (item.action) [UIApplication.sharedApplication sendAction:item.action to:item.target from:item forEvent:nil];
+}
+
+static UIMenu *ApolloActionsMenuForItem(UIBarButtonItem *item, UIView *source) API_AVAILABLE(ios(16.0)) {
+    UIButton *button = objc_getAssociatedObject(item, &kActionsDuoSourceButtonKey)
+        ?: ApolloActionsFindMore(ApolloNavigationActionsContentView(item));
+    UIMenu *menu = item.menu ?: (button.showsMenuAsPrimaryAction ? button.menu : nil);
+    if (menu) return menu;
+    id captured = ApolloNativeActionMenuCaptureController(source, ^{ ApolloActionsInvokeItem(item); });
+    return captured ? ApolloNativeActionMenuBuildCaptured(captured) : nil;
+}
+
+static NSArray<UIMenuElement *> *ApolloActionsOverflowElements(UINavigationItem *item,
+        UIBarButtonItem *more, UIView *source, ApolloNavigationActionsOwner *owner) API_AVAILABLE(ios(16.0)) {
+    // Inbox's synthetic disclosure publishes sibling commands, not its old toggle.
+    UIMenu *menu = more == owner.inboxDisclosure ? nil : ApolloActionsMenuForItem(more, source);
+    NSMutableArray<UIMenuElement *> *elements = [NSMutableArray array];
+    NSMutableArray<UIMenuElement *> *controls = [NSMutableArray array];
+    for (UIBarButtonItem *entry in ApolloActionsWithoutDuoFeedControls(item, item.rightBarButtonItems)) {
+        if (entry == more || !entry.enabled || ApolloActionsBarItemHidden(entry)) continue;
+        UIButton *button = objc_getAssociatedObject(entry, &kActionsDuoSourceButtonKey);
+        UIMenu *nativeMenu = entry.menu ?: (button.showsMenuAsPrimaryAction ? button.menu : nil);
+        if (nativeMenu) {
+            if (!nativeMenu.title.length && !(nativeMenu.options & UIMenuOptionsDisplayInline)) {
+                nativeMenu = [UIMenu menuWithTitle:ApolloActionsItemTitle(entry) image:entry.image
+                    identifier:nativeMenu.identifier options:nativeMenu.options children:nativeMenu.children];
+            }
+            [controls addObject:nativeMenu];
+        } else if (entry.primaryAction && !button) [controls addObject:entry.primaryAction];
+        else [controls addObject:[UIAction actionWithTitle:ApolloActionsItemTitle(entry)
+            image:entry.image identifier:nil handler:^(__unused UIAction *action) {
+                ApolloActionsInvokeItem(entry);
+            }]];
+    }
+    if (controls.count) [elements addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil
+        options:UIMenuOptionsDisplayInline children:controls]];
+    [elements addObjectsFromArray:menu.children ?: @[]];
+    return elements;
+}
+
+static void ApolloActionsPrepareDuoOverflowMenu(UINavigationItem *item) API_AVAILABLE(ios(16.0)) {
+    if (!ApolloDeviceIsDuo()) return;
+    ApolloNavigationActionsControllerBox *box = objc_getAssociatedObject(item, &kActionsControllerKey);
+    if (!ApolloActionsUsesDuoOverflow(box.controller)) {
+        ApolloActionsRestoreDuoOverflow(item);
+        return;
+    }
+    UIBarButtonItem *more = ApolloActionsFindMoreItem(item.rightBarButtonItems);
+    if (!more) { ApolloActionsRestoreDuoOverflow(item); return; }
+    NSArray *controls = ApolloActionsWithoutDuoFeedControls(item, item.rightBarButtonItems);
+    NSArray *previous = objc_getAssociatedObject(item, &kActionsDuoOverflowItemsKey);
+    if (!ApolloActionsArraysIdentical(controls, previous)) ApolloActionsRestoreDuoOverflow(item);
+    for (UIBarButtonItem *entry in controls) {
+        if (!objc_getAssociatedObject(entry, &kActionsDuoOverflowHiddenKey)) {
+            objc_setAssociatedObject(entry, &kActionsDuoOverflowHiddenKey,
+                @(ApolloActionsBarItemHidden(entry)), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        sActionsModelWriteDepth++;
+        if (!entry.hidden) entry.hidden = YES;
+        sActionsModelWriteDepth--;
+    }
+    objc_setAssociatedObject(item, &kActionsDuoOverflowItemsKey, controls, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (objc_getAssociatedObject(item, &kActionsDuoOverflowMenuKey) == more &&
+        item.additionalOverflowItems == objc_getAssociatedObject(item, &kActionsDuoOverflowElementKey)) return;
+    __weak UIViewController *weakController = box.controller;
+    __weak UINavigationItem *weakItem = item;
+    __weak UIBarButtonItem *weakMore = more;
+    // additionalOverflowItems supplies the actual overflow contents even
+    // for legacy rightBarButtonItems; hidden originals retain their model.
+    UIDeferredMenuElement *element = [UIDeferredMenuElement elementWithUncachedProvider:^(void (^completion)(NSArray<UIMenuElement *> *)) {
+        UIViewController *controller = weakController;
+        id anchor = weakItem.overflowPresentationSource;
+        UIView *source = [anchor isKindOfClass:UIView.class] ? anchor :
+            ([anchor isKindOfClass:UIBarButtonItem.class] ? ApolloNavigationActionsContentView(anchor) : nil);
+        if (!source.window) source = controller.viewIfLoaded;
+        if (!source.window || !weakItem || !weakMore) { completion(@[]); return; }
+        completion(ApolloActionsOverflowElements(weakItem, weakMore, source, ApolloActionsOwner(weakItem, NO)));
+    }];
+    item.additionalOverflowItems = element;
+    objc_setAssociatedObject(item, &kActionsDuoOverflowElementKey, element, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(item, &kActionsDuoOverflowMenuKey, more, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 static void ApolloActionsPrepare(UINavigationItem *item, NSArray *items) {
     if (!IsLiquidGlass()) return;
     ApolloNavigationActionsControllerBox *box = objc_getAssociatedObject(item, &kActionsControllerKey);
     if (!box.controller || !ApolloActionsAppController(box.controller)) return;
-    if (ApolloDuoSplitSuppressesFeedActions(box.controller)) return;
+    if (ApolloDuoSplitSuppressesFeedActions(box.controller)) {
+        ApolloActionsRestoreDuoOverflow(item);
+        return;
+    }
     NSArray *nativeItems = ApolloActionsDuoNativeItems(item, items);
     nativeItems = ApolloActionsInboxItems(item, nativeItems);
     if (!ApolloActionsArraysIdentical(items, nativeItems)) {
@@ -1875,6 +1974,7 @@ static void ApolloActionsPrepare(UINavigationItem *item, NSArray *items) {
         return;
     }
     [ApolloActionsOwner(item, YES) prepareItems:items];
+    if (@available(iOS 16.0, *)) ApolloActionsPrepareDuoOverflowMenu(item);
 }
 
 // Settle Inbox's native floating group before UIKit captures the outgoing
@@ -2241,13 +2341,17 @@ static void ApolloActionsUpdateBackGlass(UIView *button, UIBarButtonItem *item) 
     if (state.owner && !state.owner.expanded) [state.owner applyStandardExpanded:NO];
 }
 - (void)setHidden:(BOOL)hidden {
+    NSNumber *overflowHidden = objc_getAssociatedObject(self, &kActionsDuoOverflowHiddenKey);
+    if (overflowHidden && !sActionsModelWriteDepth) {
+        objc_setAssociatedObject(self, &kActionsDuoOverflowHiddenKey, @(hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     ApolloNavigationActionsStandardItem *state = sActionsModelWriteDepth ? nil : objc_getAssociatedObject(self, &kActionsStandardItemKey);
     if (state) {
         state.hidden = hidden;
-        BOOL effectiveHidden = hidden || !state.owner.expanded;
+        BOOL effectiveHidden = overflowHidden || hidden || !state.owner.expanded;
         %orig(effectiveHidden);
     } else {
-        %orig(hidden);
+        %orig(overflowHidden ? YES : hidden);
     }
 }
 %end
