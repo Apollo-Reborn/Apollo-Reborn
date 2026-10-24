@@ -1,5 +1,6 @@
 #import "ApolloCommon.h"
 #import "ApolloClasses.h"
+#import "ApolloExecutableSDK.h"
 #import "fishhook.h"
 #import <objc/runtime.h>
 #include <dlfcn.h>
@@ -56,16 +57,7 @@ static BOOL ApolloMaintainerSupportedImage(const struct mach_header *header, int
         0x9e, 0x4e, 0xc7, 0xac, 0x92, 0xb8, 0x3a, 0x03,
         0x85, 0x6c, 0xce, 0x36, 0x64, 0xd7, 0x6b, 0x97
     };
-    BOOL matchedUUID = NO;
-    const struct load_command *command = (const void *)((const struct mach_header_64 *)header + 1);
-    for (uint32_t i = 0; i < header->ncmds; i++) {
-        if (command->cmd == LC_UUID) {
-            matchedUUID = memcmp(((const struct uuid_command *)command)->uuid, expectedUUID, sizeof(expectedUUID)) == 0;
-            break;
-        }
-        command = (const void *)((const char *)command + command->cmdsize);
-    }
-    if (!matchedUUID) return NO;
+    if (!ApolloMachOHasUUID(header, expectedUUID)) return NO;
 
     // Post, comment, inbox: each BL targets the same Swift comparison stub.
     const uintptr_t calls[] = {0x10039ddac, 0x100503ee4, 0x10068003c};
