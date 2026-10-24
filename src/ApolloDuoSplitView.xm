@@ -247,6 +247,12 @@ static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat
 @property(nonatomic) BOOL postsSplitEnabled;
 @property(nonatomic) BOOL postsColumnsPaired;
 @property(nonatomic, strong) UIView *postsTransitionSnapshot;
+// A comments pane already dragged partway off by the close swipe. Closing
+// continues it from there instead of taking a fresh snapshot.
+@property(nonatomic, strong) UIView *postsAdoptedSnapshot;
+@property(nonatomic) CGFloat postsAdoptedVelocity;
+@property(nonatomic, strong) UIView *commentsSwipeSnapshot;
+@property(nonatomic, strong) UIView *commentsSwipeBackdrop;
 @property(nonatomic, weak) UINavigationController *searchNavigation;
 @property(nonatomic) NSUInteger listAnimationGeneration;
 @property(nonatomic, strong) UIButton *splitButton;
@@ -290,6 +296,10 @@ static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat
 @end
 static BOOL ApolloDuoSplitLeadingSwipeShouldBegin(ApolloDuoSplitHost *host);
 static void ApolloDuoSplitLeadingSwipeFinished(ApolloDuoSplitHost *host, CGFloat velocity);
+static BOOL ApolloDuoSplitCommentsSwipeOwnsPane(ApolloDuoSplitHost *host);
+static BOOL ApolloDuoSplitLeadingSwipeAcceptsPoint(ApolloDuoSplitHost *host, CGPoint point);
+static BOOL ApolloDuoSplitBeginCommentsSwipe(ApolloDuoSplitHost *host);
+static void ApolloDuoSplitEndCommentsSwipe(ApolloDuoSplitHost *host, BOOL close, CGFloat velocity);
 @implementation ApolloDuoSplitHost
 - (void)viewDidLoad {
     [super viewDidLoad];
@@ -460,22 +470,30 @@ static void ApolloDuoSplitLeadingSwipeFinished(ApolloDuoSplitHost *host, CGFloat
     // (the page beneath the feed on a phone), or leave the visited profile.
     // A screen-edge recognizer never fires in the unfolded canvas (the native
     // edge pans above need a faked location there too), so this is a plain
-    // pan that only receives touches starting in the host's leading strip.
+    // pan that takes rightward drags starting anywhere (shouldReceiveTouch:).
     self.leadingSwipe = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(leadingSwipeChanged:)];
     self.leadingSwipe.delegate = self;
     [self.view addGestureRecognizer:self.leadingSwipe];
 }
-// Width of the leading strip that starts the swipe, beyond any safe area.
-static const CGFloat kApolloDuoLeadingSwipeEdge = 24.0;
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldReceiveTouch:(UITouch *)touch {
     if (gesture != self.leadingSwipe) return YES;
-    CGFloat x = [touch locationInView:self.view].x - CGRectGetMinX(self.view.bounds);
-    return x <= self.view.safeAreaInsets.left + kApolloDuoLeadingSwipeEdge;
+    // A rightward swipe anywhere goes back, like the iOS 26 content swipe:
+    // over the feed it reveals the list (or closes a thread beside it), over
+    // a single thread it drags that thread away. Content that pages back on
+    // its own, such as a gallery past its first image or a slider, keeps it.
+    for (UIView *view = touch.view; view && view != self.view; view = view.superview) {
+        if ([view isKindOfClass:UISlider.class]) return NO;
+        if ([view isKindOfClass:UIScrollView.class]) {
+            UIScrollView *scroll = (id)view;
+            if (scroll.contentSize.width > scroll.bounds.size.width + 1
+                && scroll.contentOffset.x > -scroll.adjustedContentInset.left + 1) return NO;
+        }
+    }
+    return ApolloDuoSplitLeadingSwipeAcceptsPoint(self, [touch locationInView:self.view]);
 }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)other {
-    // Like a system edge swipe, a drag that starts in the leading strip goes
-    // to this gesture before feed rows, swipe actions or scrolling. Touches
-    // outside the strip never reach it, so nothing else waits on it there.
+    // Like a system back swipe, a rightward drag goes to this gesture before
+    // rows, swipe actions or scrolling; any other drag fails it at once.
     return gesture == self.leadingSwipe && other != self.listPan;
 }
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gesture {
@@ -537,11 +555,28 @@ static const CGFloat kApolloDuoLeadingSwipeEdge = 24.0;
     [UIView animateWithDuration:0.25 animations:^{ self.listDismiss.alpha = 1; }];
 }
 - (void)leadingSwipeChanged:(UIPanGestureRecognizer *)gesture {
+    CGFloat dx = MAX(0, [gesture translationInView:self.view].x);
+    CGFloat velocity = [gesture velocityInView:self.view].x;
+    if (gesture.state == UIGestureRecognizerStateBegan) ApolloDuoSplitBeginCommentsSwipe(self);
+    UIView *snapshot = self.commentsSwipeSnapshot;
+    if (snapshot) {
+        // The thread beside the feed follows the finger, like a native Back.
+        if (gesture.state == UIGestureRecognizerStateBegan || gesture.state == UIGestureRecognizerStateChanged) {
+            [snapshot.layer removeAnimationForKey:@"ApolloDuoSlide"];
+            snapshot.transform = CGAffineTransformMakeTranslation(dx, 0);
+            return;
+        }
+        if (gesture.state != UIGestureRecognizerStateEnded && gesture.state != UIGestureRecognizerStateCancelled) return;
+        BOOL close = gesture.state == UIGestureRecognizerStateEnded && velocity > -300.0
+            && (dx > snapshot.bounds.size.width * 0.3 || velocity > 300.0);
+        ApolloDuoSplitEndCommentsSwipe(self, close, velocity);
+        return;
+    }
     if (gesture.state != UIGestureRecognizerStateEnded) return;
     // Require a deliberate swipe, as a completed native Back does, so brushing
     // the screen edge while holding the device does not open anything.
-    if ([gesture translationInView:self.view].x < 40.0 && [gesture velocityInView:self.view].x < 400.0) return;
-    ApolloDuoSplitLeadingSwipeFinished(self, [gesture velocityInView:self.view].x);
+    if (dx < 40.0 && velocity < 400.0) return;
+    ApolloDuoSplitLeadingSwipeFinished(self, velocity);
 }
 - (void)viewDidDisappear:(BOOL)animated {
     [super viewDidDisappear:animated];
@@ -1661,7 +1696,7 @@ static void ApolloDuoAnimateRetainedGeometry(NSArray<ApolloDuoPostsGeometry *> *
 
 static void ApolloDuoPostsAnimateGeometry(NSArray<ApolloDuoPostsGeometry *> *geometry,
                                          UIView *feed, UIView *surface, NSTimeInterval duration) {
-    ApolloDuoAnimateRetainedGeometry(geometry, feed, surface, duration, NO);
+    ApolloDuoAnimateRetainedGeometry(geometry, feed, surface, duration, NO, YES);
 }
 
 @interface ApolloDuoLayoutTransition : NSObject
@@ -1968,13 +2003,24 @@ static void ApolloDuoPostsSetDetail(ApolloDuoSplitState *state, UIViewController
         return;
     }
 
+    UIView *adopted = state.host.postsAdoptedSnapshot;
+    CGFloat adoptedVelocity = state.host.postsAdoptedVelocity;
+    state.host.postsAdoptedSnapshot = nil;
+    if (adopted && (entering || !animate)) {
+        [adopted removeFromSuperview];
+        adopted = nil;
+    }
     [surface layoutIfNeeded];
     NSArray<ApolloDuoPostsGeometry *> *feedGeometry = animate
         ? ApolloDuoPostsCaptureGeometry(state.feed.view, surface) : nil;
     CGRect pane = !entering ? ApolloDuoPostsDetailPane(state) : CGRectNull;
-    UIView *snapshot = !entering && animate && !CGRectIsNull(pane) && !CGRectIsEmpty(pane)
-        ? [surface resizableSnapshotViewFromRect:pane afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero] : nil;
-    if (snapshot) {
+    UIView *snapshot = adopted;
+    if (adopted) {
+        state.host.postsTransitionSnapshot = adopted;
+    } else if (!entering && animate && !CGRectIsNull(pane) && !CGRectIsEmpty(pane)) {
+        snapshot = [surface resizableSnapshotViewFromRect:pane afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero];
+    }
+    if (snapshot && !adopted) {
         snapshot.frame = pane;
         snapshot.userInteractionEnabled = NO;
         [surface insertSubview:snapshot belowSubview:state.host.listDismiss];
@@ -2020,11 +2066,13 @@ static void ApolloDuoPostsSetDetail(ApolloDuoSplitState *state, UIViewController
             ApolloDuoSlideView(state.secondary.view, travel, 0, 0.32, nil);
     } else if (snapshot) {
         CGFloat travel = CGRectGetMaxX(surface.bounds) - CGRectGetMinX(pane);
-        ApolloDuoSlideView(snapshot, 0, travel, 0.32, ^{
+        dispatch_block_t finished = ^{
             [snapshot removeFromSuperview];
             if (weakHost.postsTransitionSnapshot == snapshot) weakHost.postsTransitionSnapshot = nil;
             ApolloDuoSplitScheduleUpdate();
-        });
+        };
+        if (adopted) ApolloDuoSlideDrawer(snapshot, snapshot.transform.tx, travel, adoptedVelocity, YES, finished);
+        else ApolloDuoSlideView(snapshot, 0, travel, 0.32, finished);
     }
     [CATransaction commit];
 }
@@ -2787,6 +2835,82 @@ static BOOL ApolloDuoSplitLeadingSwipeClosesComments(ApolloDuoSplitHost *host, A
         && !state.secondary.transitionCoordinator && !state.feed.transitionCoordinator;
 }
 
+// A single thread beside the feed. Its stack is [backstop, thread], and a
+// native Back would slide the thread off the empty backstop, so the host's
+// swipe closes it instead (and Apollo's Back pan sits out, see below).
+static BOOL ApolloDuoSplitCommentsSwipeOwnsPane(ApolloDuoSplitHost *host) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(host.navigationController, NO);
+    return state.host == host && !state.outer.presentedViewController
+        && !ApolloDuoSplitCanReturnFromVisitedProfile(state)
+        && ApolloDuoSplitLeadingSwipeClosesComments(host, state)
+        && state.secondary.viewControllers.count == 2;
+}
+
+// The feed side always takes the swipe. A thread beside it does only while it
+// is a single page; deeper pages there keep Apollo's own Back pan.
+static BOOL ApolloDuoSplitLeadingSwipeAcceptsPoint(ApolloDuoSplitHost *host, CGPoint point) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(host.navigationController, NO);
+    if (!host.postsShowingDetail || !host.postsColumnsPaired) return YES;
+    CGRect pane = ApolloDuoPostsDetailPane(state);
+    if (CGRectIsNull(pane) || point.x < CGRectGetMinX(pane)) return YES;
+    return ApolloDuoSplitCommentsSwipeOwnsPane(host);
+}
+
+static UIColor *ApolloDuoSplitOpaqueColor(UIView *view) {
+    UIColor *color = view.backgroundColor;
+    return CGColorGetAlpha(color.CGColor) > 0.99 ? color : nil;
+}
+
+static BOOL ApolloDuoSplitBeginCommentsSwipe(ApolloDuoSplitHost *host) {
+    if (host.commentsSwipeSnapshot || UIAccessibilityIsReduceMotionEnabled()
+        || !ApolloDuoSplitCommentsSwipeOwnsPane(host)) return NO;
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(host.navigationController, NO);
+    UIView *surface = host.view;
+    CGRect pane = ApolloDuoPostsDetailPane(state);
+    if (CGRectIsNull(pane) || CGRectIsEmpty(pane)) return NO;
+    UIView *snapshot = [surface resizableSnapshotViewFromRect:pane afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero];
+    if (!snapshot) return NO;
+    // Cover the live thread with the feed's own surface, so the drag reveals
+    // the feed's background rather than the empty backstop page.
+    UIView *feedPage = state.feed.topViewController.viewIfLoaded;
+    UIView *backdrop = [[UIView alloc] initWithFrame:pane];
+    backdrop.backgroundColor = ApolloDuoSplitOpaqueColor(ApolloDuoSplitFindTable(feedPage))
+        ?: ApolloDuoSplitOpaqueColor(feedPage) ?: UIColor.systemBackgroundColor;
+    backdrop.userInteractionEnabled = NO;
+    snapshot.frame = pane;
+    snapshot.userInteractionEnabled = NO;
+    [surface insertSubview:backdrop belowSubview:host.listDismiss];
+    [surface insertSubview:snapshot belowSubview:host.listDismiss];
+    host.commentsSwipeSnapshot = snapshot;
+    host.commentsSwipeBackdrop = backdrop;
+    ApolloLog(@"[DuoSplit] comments swipe began");
+    return YES;
+}
+
+static void ApolloDuoSplitEndCommentsSwipe(ApolloDuoSplitHost *host, BOOL close, CGFloat velocity) {
+    UIView *snapshot = host.commentsSwipeSnapshot, *backdrop = host.commentsSwipeBackdrop;
+    host.commentsSwipeSnapshot = nil;
+    host.commentsSwipeBackdrop = nil;
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(host.navigationController, NO);
+    ApolloLog(@"[DuoSplit] comments swipe %@ at %.0f", close ? @"closed the thread" : @"cancelled", snapshot.transform.tx);
+    if (close && ApolloDuoSplitCommentsSwipeOwnsPane(host)) {
+        // The feed widens underneath as the dragged thread finishes leaving.
+        [backdrop removeFromSuperview];
+        host.postsAdoptedSnapshot = snapshot;
+        host.postsAdoptedVelocity = velocity;
+        [state.secondary popViewControllerAnimated:YES];
+        if (host.postsAdoptedSnapshot == snapshot) {
+            host.postsAdoptedSnapshot = nil;
+            [snapshot removeFromSuperview];
+        }
+        return;
+    }
+    ApolloDuoSlideDrawer(snapshot, snapshot.transform.tx, 0, velocity, YES, ^{
+        [snapshot removeFromSuperview];
+        [backdrop removeFromSuperview];
+    });
+}
+
 static BOOL ApolloDuoSplitLeadingSwipeShouldBegin(ApolloDuoSplitHost *host) {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(host.navigationController, NO);
     if (state.host != host || state.outer.presentedViewController) return NO;
@@ -3414,6 +3538,9 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     // recognizers must not compete with the detail controller's native pans.
     if ((self != state.secondary && !(self == state.feed && !state.host.postsShowingDetail)) || (back && nav.viewControllers.count < 2) ||
         (forward && !ApolloDuoSplitForwardPage(self))) return NO;
+    // Back from a single thread beside the feed would reveal the empty
+    // backstop; the host's leading swipe closes the pane there instead.
+    if (back && self == state.secondary && ApolloDuoSplitCommentsSwipeOwnsPane(state.host)) return NO;
     UIView *view = nav.view;
     CGRect pane = UIEdgeInsetsInsetRect(view.bounds, view.safeAreaInsets);
     CGPoint point = [gesture locationInView:view];
