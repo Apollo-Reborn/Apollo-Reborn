@@ -174,6 +174,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloGalleryOrientation.xm \
     $(SRC_DIR)/ApolloBannedProfile.xm \
     $(SRC_DIR)/ApolloImageUploadHost.xm \
+    $(SRC_DIR)/ApolloNewVideoPost.xm \
     $(SRC_DIR)/ApolloPhotoPostComposerScrollFix.xm \
     $(SRC_DIR)/ApolloMarkdownToolbarGif.xm \
     $(SRC_DIR)/ApolloComposerToolbarTint.xm \
