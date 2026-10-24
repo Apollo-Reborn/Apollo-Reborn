@@ -5,6 +5,7 @@
 #import "ApolloCommon.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloTextureDecls.h"
+#import "ApolloSwiftRuntime.h"
 #import <objc/runtime.h>
 #import <objc/message.h>
 
@@ -53,6 +54,45 @@ static UIViewController *ApolloDuoTableController(UITableView *table) {
     }
     return nil;
 }
+
+// Apollo 1.15.11's CommentsViewController.viewDidLayoutSubviews positions this
+// pinned control at view.height - tabBar.bounds.height - 55 - 10. A Duo rail
+// is almost as tall as the view, so the native Y becomes negative. It is an
+// overlay on rootNode, not a table footer. Use the visible comments safe area
+// for both axes, including the leading inset of the right split pane.
+static CGRect ApolloDuoFullThreadFrame(ASDisplayNode *node, CGRect frame) {
+    if (!NSThread.isMainThread || !ApolloDeviceIsDuo() || !ApolloDuoRailHasVisibleSideBar()) return frame;
+    ASDisplayNode *parentNode = node.supernode;
+    if (!parentNode.isNodeLoaded) return frame;
+    UIView *parent = parentNode.view;
+    UIViewController *comments = nil;
+    for (UIResponder *responder = parent; responder; responder = responder.nextResponder) {
+        if (ApolloClassCommentsViewController && [responder isKindOfClass:ApolloClassCommentsViewController]) {
+            comments = (id)responder;
+            break;
+        }
+    }
+    // Never reposition another control merely because it uses the same class.
+    if (!comments.isViewLoaded || ApolloObjectIvar(comments, "viewFullPostNode") != node) return frame;
+    CGRect pane = [comments.view convertRect:comments.view.safeAreaLayoutGuide.layoutFrame toView:parent];
+    CGFloat height = CGRectGetHeight(frame);
+    if (!isfinite(height) || height <= 0.0 || CGRectIsNull(pane) || CGRectIsInfinite(pane)
+        || CGRectGetWidth(pane) <= 20.0 || CGRectGetHeight(pane) < height + 20.0) return frame;
+    return CGRectMake(CGRectGetMinX(pane) + 10.0, CGRectGetMaxY(pane) - height - 10.0,
+                      CGRectGetWidth(pane) - 20.0, height);
+}
+
+@interface ApolloDuoFullThreadNode : ASDisplayNode
+@end
+%group ApolloDuoFullThreadHooks
+%hook ApolloDuoFullThreadNode
+- (void)setFrame:(CGRect)frame {
+    // Repair the native write at its source rather than scheduling another
+    // layout or modifying the table's size/insets from a layout callback.
+    %orig(ApolloDuoFullThreadFrame((id)self, frame));
+}
+%end
+%end
 
 static BOOL ApolloDuoIsAccountFeedTable(UITableView *table) {
     if (!table) return NO;
@@ -567,6 +607,8 @@ static void ApolloDuoAdjustFloatingActionButton(UIView *button) {
         return;
     }
     %init;
+    Class fullThread = objc_getClass("_TtC6Apollo16ViewFullPostNode");
+    if (fullThread) %init(ApolloDuoFullThreadHooks, ApolloDuoFullThreadNode = fullThread);
     Class tabs = objc_getClass("_TtC6Apollo22ApolloTabBarController");
     if (!tabs) {
         ApolloLog(@"[DuoRail] ApolloTabBarController missing; rail inactive");
