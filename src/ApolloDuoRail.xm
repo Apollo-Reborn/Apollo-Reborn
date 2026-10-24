@@ -189,7 +189,11 @@ static char kApolloDuoFoldAnchorKey;
 static void ApolloDuoCollectVisibleTables(UIView *view, NSMutableArray<UITableView *> *tables, NSUInteger depth) {
     if (!view || view.hidden || view.alpha < 0.01 || depth > 24) return;
     if (ApolloClassASTableView && [view isKindOfClass:ApolloClassASTableView]) {
-        [tables addObject:(UITableView *)view];
+        // Feeds only. The Account page restores its own top after a fold;
+        // anchoring its Overview list here landed the page on Overview.
+        UIViewController *owner = ApolloDuoTableController((UITableView *)view);
+        if (ApolloClassPostsViewController && [owner isKindOfClass:ApolloClassPostsViewController])
+            [tables addObject:(UITableView *)view];
         return;
     }
     for (UIView *subview in view.subviews) ApolloDuoCollectVisibleTables(subview, tables, depth + 1);

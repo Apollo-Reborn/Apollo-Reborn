@@ -3842,6 +3842,17 @@ void ApolloDuoAccountRestoreProfile(UIViewController *profile) {
     objc_setAssociatedObject(profile, &kApolloDuoRestoreProfileTop, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(profile, &kApolloDuoHostedProfileHeader, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloProfileScheduleInstallOrUpdateHeader(profile);
+    // The fold may still be moving the page onto the cover display when the
+    // header install runs; retry the pending top until it applies (a no-op
+    // once it has, or once the user scrolls).
+    __weak UIViewController *weakProfile = profile;
+    for (NSNumber *delay in @[@0.35, @0.8, @1.5]) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            UIViewController *live = weakProfile;
+            if (live) ApolloProfileRestorePendingDuoTop(live);
+        });
+    }
 }
 
 static void ApolloProfileLayoutWrappedHeader(UIView *wrappedHeader,
