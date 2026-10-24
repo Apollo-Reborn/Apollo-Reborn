@@ -720,6 +720,10 @@ extern BOOL sTagFilterSpoiler;
 //   nsfw (NSNumber BOOL), spoiler (NSNumber BOOL), mode (NSString).
 extern NSDictionary<NSString *, NSDictionary *> *sTagFilterSubredditOverrides;
 
+// All+ r/all: NSFW posts blended into r/all (see ApolloAllPlusNSFW.xm / ApolloAllPlusMerge.m).
+extern BOOL sAllPlusNSFWEnabled;   // master toggle (default NO)
+extern double sAllPlusNSFWBoost;   // user boost added to candidate hot-rank ([0,2], default 0)
+
 // Post filters (Reborn) feature — see UserDefaultConstants.h.
 // Lowercased subreddit -> @{ @"keywords": NSArray<NSString*>, @"flairs": NSArray<NSString*> }.
 extern NSDictionary<NSString *, NSDictionary *> *sPostFilterSubreddits;

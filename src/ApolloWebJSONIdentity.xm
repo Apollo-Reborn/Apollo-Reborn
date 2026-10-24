@@ -73,6 +73,7 @@
 #import "ApolloUserProfileCache.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloReduceRateLimiting.h"
+#import "ApolloAllPlusNSFW.h"
 
 // Minimal surface of Apollo's RedditKit classes used here. Real definitions live
 // in Headers/ObjC/{RDKClient,RDKOAuthCredential,RDKAccessToken}.h (not on the
@@ -1100,9 +1101,17 @@ static BOOL ApolloWebJSONKeepSubscriptionListAfterFailedWalk(RDKUser *user, NSAr
 // expects. No-op for the modern shape — see ApolloWebJSONFixupWriteResponseObject.
 %hook RDKResponseSerializer
 - (id)responseObjectForResponse:(id)response data:(id)data error:(id *)error {
+    // All+ r/all: rewrite the raw listing JSON BEFORE the media fixup, so the
+    // blended posts flow through that fixup too and reach full parity with
+    // native ones. Running it afterwards would leave them un-fixed.
+    // nil = leave untouched.
     id serializerData = data;
+    @try {
+        NSData *rewritten = ApolloAllPlusRewriteData(response, serializerData);
+        if (rewritten) serializerData = rewritten;
+    } @catch (NSException *e) { ApolloLog(@"[AllPlus] data rewrite failed: %@", e); }
     if (sWebJSONEnabled) {
-        @try { serializerData = ApolloWebJSONFixupListingMediaResponseData(response, data); }
+        @try { serializerData = ApolloWebJSONFixupListingMediaResponseData(response, serializerData); }
         @catch (NSException *e) { ApolloLog(@"[WebJSON] listing-media fixup failed: %@", e); }
     }
     id obj = %orig(response, serializerData, error);
