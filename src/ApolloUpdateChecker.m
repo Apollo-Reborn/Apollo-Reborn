@@ -1,4 +1,5 @@
 #import "ApolloUpdateChecker.h"
+#import "settings/ApolloSetupAssistant.h"
 #import "ApolloUpdateManifest.h"
 #import "ApolloUpdateManifestCache.h"
 #import "ApolloUpdatePromptViewController.h"
@@ -183,6 +184,7 @@ static void ApolloUpdateApplyResult(ApolloUpdateInfo *latest) {
 // Manual checks present over whatever is on top. Automatic prompts additionally
 // require that nothing modal is showing (What's New, share sheets, composers).
 static UIViewController *ApolloUpdatePresenter(BOOL onlyOverBaseUI) {
+    if (onlyOverBaseUI && ApolloSetupAssistantBlocksLaunchPrompts()) return nil;
     if ([UIApplication sharedApplication].applicationState != UIApplicationStateActive) return nil;
     UIViewController *top = nil;
     for (UIWindow *window in ApolloAllWindows()) {

@@ -2,6 +2,8 @@
 #import "ApolloSettingsShortcutsViewController.h"
 #import "ApolloSearchLandingPreferences.h"
 #import "settings/CustomAPIViewController.h"
+#import "settings/ApolloSetupAssistant.h"
+#import "ApolloSignInSplash.h"
 #import "settings/ApolloSiriSettingsViewController.h"
 #import "ApolloCommon.h"
 #import "ApolloAppIcon.h"
@@ -34,6 +36,9 @@
 #import "ApolloScrollToTop.h"
 #import "ApolloSessionRestoration.h"
 #import "ApolloTabBarHideStyle.h"
+#import "ApolloDuoRail.h"
+#import "ApolloDuoCompatibility.h"
+#import "ApolloDuoSplitView.h"
 #import "ApolloTagFilters.h"
 #import "ApolloBadgeBookScraper.h"   // ApolloBadgeBookInvalidate() — Clear Tweak Caches
 #import "ApolloUserProfileCache.h"
@@ -77,6 +82,8 @@
 #import "settings/TranslationSettingsViewController.h"
 #import "PictureInPictureViewController.h"
 #import "TagFiltersViewController.h"
+#import "ipad/ApolloPaneLayout.h"
+#import "ipad/ApolloIPadLayoutWelcome.h"
 
 // The six speeds the "Hold for Video Speed" picker offers, in display order. They
 // mirror the video player's own speed menu minus 1.0× (holding at normal speed
@@ -132,8 +139,10 @@ static UIButton *ApolloSettingsMenuButton(NSString *menuTitle,
             ? UIMenuElementStateOn : UIMenuElementStateOff;
         [actions addObject:action];
     }];
+    UIMenuOptions options = 0;
+    if (@available(iOS 15.0, *)) options = UIMenuOptionsSingleSelection;
     button.menu = [UIMenu menuWithTitle:menuTitle image:nil identifier:nil
-                                options:UIMenuOptionsSingleSelection children:actions];
+                                options:options children:actions];
     button.showsMenuAsPrimaryAction = YES;
     button.accessibilityLabel = currentTitle;
     [button sizeToFit];
@@ -246,6 +255,17 @@ static UIImage *ApolloAboutGitHubMark(UIImage *artwork) {
         free(pixels);
     });
     return mark;
+}
+
+static NSString *ApolloIPadPaneLayoutSettingDetail(void) {
+    BOOL desired = [NSUserDefaults.standardUserDefaults boolForKey:UDKeyIPadPaneLayout];
+    BOOL active = ApolloPaneLayoutActive();
+    if (desired != active) {
+        return desired
+            ? @"Will turn on after Apollo quits and reopens. The current single-column layout remains active until then."
+            : @"Will turn off after Apollo quits and reopens. The current iPad Layout remains active until then.";
+    }
+    return @"Beta on iPadOS 18 or newer. Keep favourites in the sidebar and read posts and comments side by side. You can switch back anytime. Reopen Apollo to apply changes.";
 }
 
 @interface ApolloFeedShortcutsPreviewState : NSObject
@@ -519,6 +539,16 @@ static CGFloat ApolloFeedShortcutsPreviewSideBySideCenterOffset(ApolloFeedShortc
 - (void)apollo_refreshFeedShortcutsPreviewAnimated:(BOOL)animated;
 @end
 
+static BOOL ApolloInterfaceSupportsPhoneTabBarControls(void) {
+    return ApolloDuoCurrentMode() == ApolloDuoModePhone && !ApolloDuoRailHasVisibleSideBar();
+}
+
+static BOOL ApolloInterfaceSupportsBarScrollSettings(void) {
+    // Duo preferences stay configurable in every pose, even when the bottom
+    // tab bar is currently replaced by the always-visible side rail.
+    return ApolloDuoUsesAdaptiveBars() || ApolloInterfaceSupportsPhoneTabBarControls();
+}
+
 @interface CustomAPIViewController ()
 @property (nonatomic) BOOL resolvingRestoreFolder;
 // Hub only: whether the Setup section last rendered its "add a Reddit key"
@@ -663,9 +693,9 @@ typedef NS_ENUM(NSInteger, Tag) {
     NSInteger sectionCount = self.tableView.numberOfSections;
     for (NSInteger section = 0; section < sectionCount; section++) {
         UIView *footerView = [self.tableView footerViewForSection:section];
-        if (![footerView isKindOfClass:[UITextView class]]) continue;
+        if (![footerView isKindOfClass:[ApolloSettingsLinkFooterView class]]) continue;
 
-        UITextView *textView = (UITextView *)footerView;
+        UITextView *textView = ((ApolloSettingsLinkFooterView *)footerView).linkTextView;
         textView.tintColor = accentColor;
         textView.linkTextAttributes = @{NSForegroundColorAttributeName: accentColor};
         textView.attributedText = [self footerAttributedTextForSection:section];
@@ -1227,6 +1257,12 @@ typedef NS_ENUM(NSInteger, Tag) {
 }
 
 - (ApolloSettingsSection *)buildSetupSection {
+    __weak typeof(self) weakSelf = self;
+    ApolloSettingsRow *assistant =
+        [ApolloSettingsRow buttonRowWithID:@"setup.assistant" title:@"Setup Assistant"
+            action:^{ ApolloSetupAssistantPresentFrom(weakSelf); }];
+    assistant.iconSystemName = @"wand.and.stars";
+    assistant.iconTileColor = UIColor.systemPurpleColor;
     ApolloSettingsRow *apiKeys =
         [self hubDisclosureRowWithID:@"setup.apiKeys"
                                title:@"Accounts & API Keys"
@@ -1238,7 +1274,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     apiKeys.iconTileColor = [UIColor systemGrayColor];
     return [ApolloSettingsSection sectionWithTitle:@"Setup"
                                             footer:@"Your Reddit sign-in credentials, plus optional Imgur, Giphy and Image Chest keys for uploads and GIFs, and a Kagi Session Link for searching Reddit with Kagi."
-                                              rows:@[ apiKeys ]];
+                                              rows:@[ assistant, apiKeys ]];
 }
 
 - (ApolloSettingsSection *)buildFeaturesSection {
@@ -1354,9 +1390,20 @@ typedef NS_ENUM(NSInteger, Tag) {
     loginPersistenceDebug.iconSystemName = @"wrench.and.screwdriver.fill"; loginPersistenceDebug.iconTileColor = [UIColor systemGrayColor];
     whatsNewDebug.iconSystemName = @"sparkles"; whatsNewDebug.iconTileColor = [UIColor systemGrayColor];
 
+    ApolloSettingsRow *iPadWelcomeDebug =
+        [ApolloSettingsRow buttonRowWithID:@"adv.iPadWelcomeDebug"
+                                     title:@"Preview iPad Layout Welcome"
+                                    action:^{ ApolloIPadLayoutWelcomePresentForDebug(weakSelf); }];
+    iPadWelcomeDebug.visible = ^BOOL {
+        return UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad &&
+            ApolloPaneLayoutSupported() && [NSUserDefaults.standardUserDefaults boolForKey:UDKeyEnableFLEX];
+    };
+    iPadWelcomeDebug.iconSystemName = @"ipad.landscape";
+    iPadWelcomeDebug.iconTileColor = UIColor.systemGrayColor;
+
     return [ApolloSettingsSection sectionWithTitle:@"Advanced"
                                             footer:@"Notification backend, developer tools and diagnostics."
-                                              rows:@[ backend, flex, exportLogs, loginPersistenceDebug, whatsNewDebug ]];
+                                              rows:@[ backend, flex, exportLogs, loginPersistenceDebug, whatsNewDebug, iPadWelcomeDebug ]];
 }
 
 - (ApolloSettingsSection *)buildDataSection {
@@ -2099,12 +2146,15 @@ typedef NS_ENUM(NSInteger, Tag) {
 
     ApolloSettingsRow *hideBarsOnScroll =
         [ApolloSettingsRow switchRowWithID:@"interface.hideBarsOnScroll"
-                                     title:@"Hide Bars on Scroll"
+                                     title:ApolloDuoUsesAdaptiveBars() ? @"Hide Tab Bar on Scroll" : @"Hide Bars on Scroll"
                                       isOn:^BOOL { return ApolloTabBarHideBarsEnabled(); }
                                   onToggle:^(UISwitch *sender) {
             ApolloTabBarHideBarsSetEnabled(sender.isOn);
             [weakSelf visibilityDidChange];
         }];
+    hideBarsOnScroll.visible = ^BOOL {
+        return ApolloInterfaceSupportsBarScrollSettings();
+    };
 
     ApolloSettingsRow *hideStyle =
         [ApolloSettingsRow customRowWithID:@"interface.hideStyle"
@@ -2124,10 +2174,12 @@ typedef NS_ENUM(NSInteger, Tag) {
             return cell;
         } onSelect:nil];
     hideStyle.visible = ^BOOL {
-        return ApolloSupportsNativeTabBarScrollBehavior() && ApolloTabBarHideBarsEnabled();
+        return ApolloInterfaceSupportsBarScrollSettings() &&
+            ApolloSupportsNativeTabBarScrollBehavior() && ApolloTabBarHideBarsEnabled();
     };
 
-    // Keep the remembered choice while Hide Bars is off; only its row hides.
+    // On Duo the header has an independent preference in every pose. Phones
+    // keep their existing dependency on Hide Bars, including the stored choice.
     ApolloSettingsRow *hideTopBarToo =
         [ApolloSettingsRow switchRowWithID:@"interface.hideTopBarToo"
                                      title:@"Hide Header on Scroll"
@@ -2140,7 +2192,9 @@ typedef NS_ENUM(NSInteger, Tag) {
                 postNotificationName:ApolloTabBarScrollBehaviorChangedNotification object:nil];
         }];
     hideTopBarToo.visible = ^BOOL {
-        return ApolloSupportsNativeTabBarScrollBehavior() && ApolloTabBarHideBarsEnabled();
+        return ApolloDuoUsesAdaptiveBars() ||
+            (ApolloInterfaceSupportsPhoneTabBarControls() &&
+             ApolloSupportsNativeTabBarScrollBehavior() && ApolloTabBarHideBarsEnabled());
     };
 
     // A single picker keeps the gesture models mutually exclusive and explicit.
@@ -2163,7 +2217,8 @@ typedef NS_ENUM(NSInteger, Tag) {
             return cell;
         } onSelect:nil];
     tabBarScrollBehavior.visible = ^BOOL {
-        return ApolloSupportsNativeTabBarScrollBehavior() && ApolloTabBarHideBarsEnabled();
+        return ApolloInterfaceSupportsBarScrollSettings() &&
+            ApolloSupportsNativeTabBarScrollBehavior() && ApolloTabBarHideBarsEnabled();
     };
 
     // Temporary iPad stopgap (#387): only show it where the option can work.
@@ -2182,7 +2237,8 @@ typedef NS_ENUM(NSInteger, Tag) {
                 });
         }];
     iPadTabBarBottom.visible = ^BOOL {
-        return UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad && IsLiquidGlass();
+        return UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad && IsLiquidGlass() &&
+               !ApolloPaneLayoutActive();
     };
 
     // See ApolloLiquidGlass.xm — either/or with drag-to-switch-tab.
@@ -2191,11 +2247,19 @@ typedef NS_ENUM(NSInteger, Tag) {
                                      title:@"Swipe Tab Bar to Navigate"
                                       isOn:^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyTabBarSwipeNavigation]; }
                                   onToggle:^(UISwitch *sender) { [weakSelf tabBarSwipeNavigationSwitchToggled:sender]; }];
-    tabBarSwipeNavigation.visible = ^BOOL { return IsLiquidGlass(); };
+    tabBarSwipeNavigation.visible = ^BOOL {
+        return IsLiquidGlass() && ApolloInterfaceSupportsBarScrollSettings();
+    };
 
     NSString *footer = IsLiquidGlass()
         ? @"Swipe across the tab bar to navigate between screens."
         : nil;
+    if (ApolloDuoUsesAdaptiveBars()) {
+        NSString *duoFooter = @"On iPhone Duo, Hide Tab Bar on Scroll, Hide Style, Scroll Behavior, and Swipe Tab Bar to Navigate apply only while open in portrait. The side rail always stays visible. Hide Header on Scroll works independently in every pose.";
+        footer = footer.length > 0
+            ? [footer stringByAppendingFormat:@"\n\n%@", duoFooter]
+            : duoFooter;
+    }
     return [ApolloSettingsSection sectionWithTitle:@"Tab Bar"
                                             footer:footer
                                               rows:@[ profileTabAvatar, iconOnlyTabBar, hideUsernameTab,
@@ -2289,6 +2353,31 @@ typedef NS_ENUM(NSInteger, Tag) {
     // "Color Flairs" now rides Appearance → Flair (native injection) —
     // -flairColorsSwitchToggled: below stays as the shared toggle handler.
 
+    // Experimental multi-column iPad layout. Hidden outright on iPhone rather
+    // than shown-disabled: it is a whole-app restructure with nothing to
+    // preview or explain on a device that will never run it.
+    // Installation happens at scene connect, so the handler confirms and
+    // restarts instead of pretending the change is live.
+    ApolloSettingsRow *iPadPaneLayout =
+        [ApolloSettingsRow customRowWithID:@"gen.iPadPaneLayout"
+                                      cell:^UITableViewCell *(__unused UITableView *tableView, __unused ApolloSettingsRow *row) {
+            UITableViewCell *cell = [weakSelf switchCellWithIdentifier:@"Cell_Gen_IPadPaneLayout"
+                                                                 label:@"iPad Layout"
+                                                                detail:ApolloIPadPaneLayoutSettingDetail()
+                                                                    on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyIPadPaneLayout]
+                                                               enabled:YES
+                                                                action:@selector(iPadPaneLayoutSwitchToggled:)];
+            UILabel *title = [cell.contentView viewWithTag:7001];
+            title.attributedText = ApolloIPadLayoutBetaTitle(title.font, weakSelf.traitCollection);
+            title.accessibilityLabel = @"iPad Layout, Beta";
+            [weakSelf apollo_applyPrimaryTextColorToCell:cell];
+            return cell ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+        }
+                                  onSelect:nil];
+    iPadPaneLayout.visible = ^BOOL {
+        return ApolloPaneLayoutSupported();
+    };
+
     // Overrides the top scroll-edge glass under the nav bar (iOS 26+). Liquid
     // Glass only — hidden otherwise rather than shown-disabled, since the row
     // has nothing to preview/explain on a non-Glass device.
@@ -2349,7 +2438,9 @@ typedef NS_ENUM(NSInteger, Tag) {
             [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:UDKeyCenterTitleBetweenButtons];
             ApolloNavigationTitlesRefresh();
         }];
-    centerBetween.visible = ^BOOL { return IsLiquidGlass() && !sCollapseNavigationActions; };
+    centerBetween.visible = ^BOOL {
+        return IsLiquidGlass() && !sCollapseNavigationActions && ApolloInterfaceSupportsPhoneTabBarControls();
+    };
 
     NSArray<NSString *> *trueBlackTitles = @[ @"Off", @"Dark Mode Only", @"Light Mode Only", @"Always" ];
     ApolloSettingsRow *trueBlackKeyboard =
@@ -2375,7 +2466,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     }
     return [ApolloSettingsSection sectionWithTitle:@"Display & Navigation"
                                             footer:footer
-                                              rows:@[ scrollReturnButton, trueBlackKeyboard, collapseActions, centerBetween, scrollEdgeEffect ]];
+                                              rows:@[ scrollReturnButton, trueBlackKeyboard, collapseActions, centerBetween, iPadPaneLayout, scrollEdgeEffect ]];
 }
 
 // Display order differs from stored values; Blur is optional, while Hidden
@@ -2862,6 +2953,27 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
             return ApolloSettingsRouteInstantiate(@"feed-shortcuts");
         }];
 
+    ApolloSettingsRow *panelStyle =
+        [ApolloSettingsRow valueRowWithID:@"sub.panelStyle"
+                                   title:@"Subreddit Panel Style"
+                                  detail:^NSString * {
+            return sDuoSubredditPanelGlassEnabled ? @"Liquid Glass" : @"Standard";
+        }
+                                onSelect:^{
+            ApolloSettingsPresentPicker(weakSelf, [weakSelf cellForRowID:@"sub.panelStyle"],
+                @"Subreddit Panel Style", @[ @"Standard", @"Liquid Glass" ],
+                sDuoSubredditPanelGlassEnabled ? 1 : 0, ^(NSInteger picked) {
+                    BOOL glassEnabled = picked == 1;
+                    if (sDuoSubredditPanelGlassEnabled == glassEnabled) return;
+                    sDuoSubredditPanelGlassEnabled = glassEnabled;
+                    [NSUserDefaults.standardUserDefaults setBool:glassEnabled
+                        forKey:UDKeyDuoSubredditPanelGlassEnabled];
+                    [weakSelf reloadRowWithID:@"sub.panelStyle"];
+                    ApolloDuoSplitScheduleUpdate();
+                });
+        }];
+    panelStyle.visible = ^BOOL { return ApolloDuoUsesAdaptiveBars(); };
+
     // Pushes the dedicated Subreddit Sections screen: the FOLLOWING section
     // for followed users, drag-to-reorder for the special sections, and a
     // live preview of the list layout (see ApolloSubredditSectionsViewController).
@@ -2900,7 +3012,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                   }];
     return [ApolloSettingsSection sectionWithTitle:@"Subreddit List"
                                             footer:nil
-                                              rows:@[ feedShortcuts, subredditSections,
+                                              rows:@[ feedShortcuts, subredditSections, panelStyle,
                                                       perAccountFavorites, sortFavoritesAlphabetically, confirmFavoriteToggle ]];
 }
 
@@ -3429,7 +3541,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                 cell.detailTextLabel.numberOfLines = 0;
             }
             cell.textLabel.text = @"Bug Reports";
-            cell.detailTextLabel.text = @"Report a problem and optionally attach Reborn logs";
+            cell.detailTextLabel.text = @"Report a problem. Your Reborn debug log is attached automatically";
             cell.imageView.image = ApolloEmojiSettingsIcon(@"\U0001F41B", [UIColor systemRedColor], 29.0);
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
             cell.selectionStyle = UITableViewCellSelectionStyleDefault;
@@ -3850,20 +3962,27 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     return text;
 }
 
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
+    // UIKit installs this title on a returned UITableViewHeaderFooterView,
+    // even when that view already has our link-bearing text content.
+    if ([self footerAttributedTextForSection:section]) return nil;
+    return [super tableView:tableView titleForFooterInSection:section];
+}
+
 - (UIView *)tableView:(UITableView *)tableView viewForFooterInSection:(NSInteger)section {
     NSAttributedString *text = [self footerAttributedTextForSection:section];
     if (!text) return nil;
 
-    UITextView *textView = [[ApolloFooterLinkTextView alloc] init];
-    textView.editable = NO;
-    textView.scrollEnabled = NO;
-    textView.backgroundColor = [UIColor clearColor];
-    textView.textContainerInset = UIEdgeInsetsMake(8, 16, 8, 16);
+    static NSString *const reuseID = @"ApolloSettingsLinkFooter";
+    ApolloSettingsLinkFooterView *footer =
+        (ApolloSettingsLinkFooterView *)[tableView dequeueReusableHeaderFooterViewWithIdentifier:reuseID];
+    if (!footer) footer = [[ApolloSettingsLinkFooterView alloc] initWithReuseIdentifier:reuseID];
+    UITextView *textView = footer.linkTextView;
     textView.tintColor = [self apollo_themeAccentColor];
     textView.linkTextAttributes = @{NSForegroundColorAttributeName: [self apollo_themeAccentColor]};
     textView.attributedText = text;
 
-    return textView;
+    return footer;
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section {
@@ -3878,22 +3997,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
         return plainFooter.length > 0 ? [super tableView:tableView heightForFooterInSection:section] : 12.0;
     }
 
-    CGFloat tableWidth = tableView.bounds.size.width;
-    if (tableWidth <= 0) tableWidth = [UIScreen mainScreen].bounds.size.width;
-
-    // Account for insetGrouped horizontal insets — footer is narrower than the table view
-    UIEdgeInsets margins = tableView.layoutMargins;
-    CGFloat footerWidth = tableWidth - margins.left - margins.right;
-    if (footerWidth <= 0) footerWidth = tableWidth - 40.0;
-
-    UITextView *measureView = [[UITextView alloc] initWithFrame:CGRectMake(0, 0, footerWidth, CGFLOAT_MAX)];
-    measureView.editable = NO;
-    measureView.scrollEnabled = NO;
-    measureView.textContainerInset = UIEdgeInsetsMake(8, 16, 8, 16);
-    measureView.attributedText = text;
-
-    CGSize size = [measureView sizeThatFits:CGSizeMake(footerWidth, CGFLOAT_MAX)];
-    return ceil(size.height);
+    return UITableViewAutomaticDimension;
 }
 
 #pragma mark - Row Actions
@@ -4084,6 +4188,33 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
 
 #pragma mark - Export Logs
 
+// A .log file rather than a raw string, so it can be saved to Files and
+// attached to a GitHub bug report or the web report form as a file (GitHub
+// caps issue text at 64K characters, far below a session log). One fixed
+// folder, emptied per export, so repeated exports don't accumulate in tmp.
+// Returns nil if the file couldn't be written.
+static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
+    NSFileManager *fileManager = NSFileManager.defaultManager;
+    NSURL *folder = [[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES]
+                        URLByAppendingPathComponent:@"ApolloRebornLogExport" isDirectory:YES];
+    [fileManager removeItemAtURL:folder error:nil];
+    NSError *error = nil;
+    if (![fileManager createDirectoryAtURL:folder withIntermediateDirectories:YES attributes:nil error:&error]) {
+        ApolloLogError(@"[ExportLogs] couldn't create the export folder: %@", error.localizedDescription);
+        return nil;
+    }
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    formatter.dateFormat = @"yyyy-MM-dd-HHmmss";
+    NSString *filename = [NSString stringWithFormat:@"apollo-reborn-%@.log", [formatter stringFromDate:[NSDate date]]];
+    NSURL *fileURL = [folder URLByAppendingPathComponent:filename isDirectory:NO];
+    if (![logs writeToURL:fileURL atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
+        ApolloLogError(@"[ExportLogs] couldn't write the log file: %@", error.localizedDescription);
+        return nil;
+    }
+    return fileURL;
+}
+
 - (void)exportLogs {
     UIAlertController *spinner = [UIAlertController alertControllerWithTitle:@"Collecting logs…"
                                                                     message:@"\n"
@@ -4100,9 +4231,12 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
     [self presentViewController:spinner animated:YES completion:^{
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             NSString *logs = ApolloCollectLogs();
+            NSURL *logFile = ApolloWriteExportedLogFile(logs);
             dispatch_async(dispatch_get_main_queue(), ^{
                 [spinner dismissViewControllerAnimated:YES completion:^{
-                    UIActivityViewController *activityVC = [[UIActivityViewController alloc] initWithActivityItems:@[logs] applicationActivities:nil];
+                    // Fall back to sharing the text if the file write failed.
+                    NSArray *items = logFile ? @[ logFile ] : @[ logs ];
+                    UIActivityViewController *activityVC = [[UIActivityViewController alloc] initWithActivityItems:items applicationActivities:nil];
 
                     UIPopoverPresentationController *popover = activityVC.popoverPresentationController;
                     if (popover) {
@@ -4758,6 +4892,38 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
     [self presentViewController:alert animated:YES completion:nil];
 }
 
+// The split controllers are built during scene connect, which already happened
+// for this process, so there is no live path — quit & reopen is the honest
+// option. The default is written FIRST so the choice survives either way: quit
+// now, or next time the user relaunches for any reason. `sIPadPaneLayout` is
+// deliberately NOT updated here — it must keep describing the layout this
+// process actually installed, or every module that gates on it starts lying.
+- (void)iPadPaneLayoutSwitchToggled:(UISwitch *)sender {
+    BOOL on = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:on forKey:UDKeyIPadPaneLayout];
+    [NSUserDefaults.standardUserDefaults setBool:YES forKey:UDKeyIPadLayoutWelcomeSeen];
+    // Dependent rows describe the hierarchy that is active in THIS process,
+    // while this switch and its pending subtitle describe the saved choice.
+    [self visibilityDidChange];
+    [self reloadRowWithID:@"gen.iPadPaneLayout"];
+
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:@"Restart to Apply"
+                         message:on
+            ? @"iPad Layout is set up when Apollo launches, so it needs to quit and reopen to take effect."
+            : @"Apollo needs to quit and reopen to return to the single-column layout."
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Quit Apollo"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(__unused UIAlertAction *action) {
+        exit(0);
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Later"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
 - (void)liquidGlassSwitchToggled:(UISwitch *)sender {
     // The current launch keeps its original appearance and hook selection.
     // Only startup consumes this preference; do not refresh row visibility.
@@ -5123,6 +5289,39 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
 }
 @end
 
+@implementation ApolloSetupAPIKeyViewController
+- (NSString *)apollo_screenTitle { return @"Reddit API Key"; }
+- (NSArray<ApolloSettingsSection *> *)buildForm {
+    ApolloSettingsSection *source = [self buildAPIKeysDefaultSection];
+    NSSet *ids = [NSSet setWithArray:@[@"api.redditKey", @"api.redditSecret", @"api.redirectURI"]];
+    NSMutableArray *fields = [NSMutableArray array];
+    for (ApolloSettingsRow *row in source.rows) {
+        if ([ids containsObject:row.rowID]) [fields addObject:row];
+    }
+    __weak typeof(self) weakSelf = self;
+    ApolloSettingsRow *signIn = [ApolloSettingsRow buttonRowWithID:@"setup.apiSignIn" title:@"Sign In with Reddit"
+        action:^{
+            [weakSelf.view endEditing:YES];
+            if (!sRedditClientId.length) {
+                [weakSelf showAlertWithTitle:@"Reddit API Key Required" message:@"Enter your Reddit API key above before signing in."];
+                return;
+            }
+            if (!ApolloStartAPIKeySignIn()) {
+                [weakSelf showAlertWithTitle:@"Unable to Start Sign-In" message:@"Return to setup and try again once Apollo has finished loading."];
+            }
+        }];
+    ApolloSettingsRow *help = [ApolloSettingsRow buttonRowWithID:@"setup.apiHelp" title:@"Help with Reddit Sign-In"
+        action:^{ [weakSelf pushTroubleshootingViewController]; }];
+    return @[
+        [ApolloSettingsSection sectionWithTitle:@"Reddit Credentials"
+            footer:@"Enter the client ID from your Reddit app as the API key. Installed-app clients do not need a secret. Leave Redirect URI empty to use the Apollo default. Credentials are saved as you edit; your feature preset is applied only when you finish setup."
+            rows:fields],
+        [ApolloSettingsSection sectionWithTitle:nil footer:@"After signing in, return to Setup Assistant to choose your preferences. Optional upload and GIF keys can be added later."
+            rows:@[signIn, help]],
+    ];
+}
+@end
+
 @implementation ApolloPostsFeedsViewController
 - (NSString *)apollo_screenTitle { return @"Posts & Feeds"; }
 - (NSArray<ApolloSettingsSection *> *)buildForm {
@@ -5240,6 +5439,7 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
 @property (nonatomic, strong) UIView *previewCardView;
 @property (nonatomic, strong) UIView *scrollBoundaryView;
 @property (nonatomic, strong) NSLayoutConstraint *previewContentHeightConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *previewHostTrailingConstraint;
 @property (nonatomic, strong) ApolloFeedShortcutsPreviewView *currentPreviewView;
 @property (nonatomic, strong) UIViewPropertyAnimator *previewAnimator;
 @property (nonatomic) NSUInteger previewTransitionGeneration;
@@ -5354,10 +5554,13 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
     NSLayoutConstraint *contentHeight =
         [previewCard.heightAnchor constraintEqualToConstant:1.0];
     self.previewContentHeightConstraint = contentHeight;
+    NSLayoutConstraint *previewTrailing =
+        [previewHost.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor];
+    self.previewHostTrailingConstraint = previewTrailing;
     [NSLayoutConstraint activateConstraints:@[
         [previewHost.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
-        [previewHost.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [previewHost.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [previewHost.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor],
+        previewTrailing,
 
         [titleLabel.topAnchor constraintEqualToAnchor:previewHost.topAnchor constant:15.0],
         [titleLabel.leadingAnchor constraintEqualToAnchor:previewHost.layoutMarginsGuide.leadingAnchor constant:16.0],
@@ -5381,6 +5584,26 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
     ]];
 
     [self apollo_applyPreviewTheme];
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    UITabBarController *tabs = self.tabBarController;
+    UITabBar *tabBar = tabs.tabBar;
+    CGFloat trailingInset = 0.0;
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone
+        && tabs.isViewLoaded && tabBar.window && !tabBar.hidden) {
+        CGRect railFrame = [self.view convertRect:tabBar.bounds fromView:tabBar];
+        if (CGRectGetWidth(railFrame) < 100.0
+            && CGRectGetHeight(railFrame) > 400.0
+            && CGRectGetMidX(railFrame) > CGRectGetMidX(self.view.bounds)) {
+            trailingInset = MAX(0.0, CGRectGetWidth(self.view.bounds) - CGRectGetMinX(railFrame));
+        }
+    }
+    CGFloat wantedConstant = -trailingInset;
+    if (fabs(self.previewHostTrailingConstraint.constant - wantedConstant) > 0.5) {
+        self.previewHostTrailingConstraint.constant = wantedConstant;
+    }
 }
 
 - (void)viewWillAppear:(BOOL)animated {

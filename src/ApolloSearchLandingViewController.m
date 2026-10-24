@@ -1,7 +1,12 @@
 #import "ApolloSearchLandingViewController.h"
 #import "ApolloThemeRuntime.h"
+#import "ApolloDuoSplitView.h"
+#import "ApolloDuoRail.h"
 #import "ApolloSearchLandingPreferences.h"
 #import "ApolloState.h"
+#import <objc/message.h>
+#include <math.h>
+
 @interface ApolloSearchLandingRow : UIControl
 @property(nonatomic, strong) UILabel *primaryLabel;
 @property(nonatomic, strong) UIImageView *symbolView;
@@ -184,18 +189,28 @@
 @interface ApolloSearchLandingViewController ()
 @property(nonatomic, strong, readwrite) UIScrollView *scrollView;
 @property(nonatomic, strong, readwrite) UIRefreshControl *refreshControl;
-@property(nonatomic, strong) UIStackView *sectionsStack;
+@property(nonatomic, strong) UIStackView *columns;
+@property(nonatomic, strong) UIStackView *leadingColumn;
+@property(nonatomic, strong) UIStackView *trailingColumn;
 @property(nonatomic, copy) NSArray<NSString *> *arrangedSectionOrder;
 @property(nonatomic, strong) ApolloSearchLandingSection *trendingSection;
 @property(nonatomic, strong) ApolloSearchLandingSection *recentSection;
 @property(nonatomic, strong) ApolloSearchLandingSection *randomSection;
 @property(nonatomic, strong) UIImage *trendingIcon;
 @property(nonatomic, strong) UIImage *randomIcon;
+@property(nonatomic, strong) NSLayoutConstraint *equalColumnWidths;
+@property(nonatomic, strong) NSLayoutConstraint *contentLeading;
+@property(nonatomic, strong) NSLayoutConstraint *contentTrailing;
+@property(nonatomic, strong) NSLayoutConstraint *contentWidth;
 @property(nonatomic, copy) NSArray<NSString *> *trendingNames;
 @property(nonatomic, copy) NSArray<NSString *> *recentNames;
 @property(nonatomic) BOOL showsRandomNSFW;
+@property(nonatomic) BOOL configuredColumns;
+@property(nonatomic) BOOL usesTwoColumns;
+@property(nonatomic) BOOL columnUpdatePending;
+- (void)scheduleColumnArrangement;
 - (NSArray<NSString *> *)visibleSectionOrder;
-- (void)arrangeSections:(NSArray<NSString *> *)order;
+- (void)arrangeSections:(NSArray<NSString *> *)order inTwoColumns:(BOOL)twoColumns;
 @end
 
 @implementation ApolloSearchLandingViewController
@@ -226,7 +241,7 @@
     _scrollView.alwaysBounceVertical = YES;
     _scrollView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
     // Pin the viewport to safe area once. Automatic scroll inset adjustment
-    // would count the native navigation/status reservation twice.
+    // would count the native navigation/status/side-rail reservation twice.
     _scrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
     _scrollView.accessibilityIdentifier = @"ApolloSearchLanding.Scroll";
     _refreshControl = [[UIRefreshControl alloc] init];
@@ -237,32 +252,55 @@
     self.trendingSection = [[ApolloSearchLandingSection alloc] initWithTitle:NSLocalizedString(@"TRENDING SUBREDDITS", nil)];
     self.recentSection = [[ApolloSearchLandingSection alloc] initWithTitle:NSLocalizedString(@"RECENTLY VISITED", nil)];
     self.randomSection = [[ApolloSearchLandingSection alloc] initWithTitle:nil];
-    self.sectionsStack = [[UIStackView alloc] init];
-    self.sectionsStack.translatesAutoresizingMaskIntoConstraints = NO;
-    self.sectionsStack.axis = UILayoutConstraintAxisVertical;
-    self.sectionsStack.spacing = 24;
-    [_scrollView addSubview:self.sectionsStack];
+    self.leadingColumn = [[UIStackView alloc] init];
+    self.trailingColumn = [[UIStackView alloc] init];
+    for (UIStackView *column in @[self.leadingColumn, self.trailingColumn]) {
+        column.axis = UILayoutConstraintAxisVertical;
+        column.spacing = 24;
+    }
+    self.trailingColumn.hidden = YES;
+    self.columns = [[UIStackView alloc] initWithArrangedSubviews:@[self.leadingColumn, self.trailingColumn]];
+    self.columns.translatesAutoresizingMaskIntoConstraints = NO;
+    self.columns.axis = UILayoutConstraintAxisVertical;
+    self.columns.spacing = 20;
+    [_scrollView addSubview:self.columns];
 
     UILayoutGuide *safeArea = self.view.safeAreaLayoutGuide;
     UILayoutGuide *content = _scrollView.contentLayoutGuide;
+    self.contentLeading = [self.columns.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:20];
+    self.contentTrailing = [self.columns.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-20];
+    self.contentWidth = [self.columns.widthAnchor constraintEqualToAnchor:_scrollView.frameLayoutGuide.widthAnchor constant:-40];
+    self.equalColumnWidths = [self.leadingColumn.widthAnchor constraintEqualToAnchor:self.trailingColumn.widthAnchor];
     [NSLayoutConstraint activateConstraints:@[
         [_scrollView.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor],
         [_scrollView.trailingAnchor constraintEqualToAnchor:safeArea.trailingAnchor],
         [_scrollView.topAnchor constraintEqualToAnchor:safeArea.topAnchor],
         [_scrollView.bottomAnchor constraintEqualToAnchor:safeArea.bottomAnchor],
-        [self.sectionsStack.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:20],
-        [self.sectionsStack.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-20],
-        [self.sectionsStack.widthAnchor constraintEqualToAnchor:_scrollView.frameLayoutGuide.widthAnchor constant:-40],
-        [self.sectionsStack.topAnchor constraintEqualToAnchor:content.topAnchor constant:24],
-        [self.sectionsStack.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-24]
+        self.contentLeading, self.contentTrailing, self.contentWidth,
+        [self.columns.topAnchor constraintEqualToAnchor:content.topAnchor constant:24],
+        [self.columns.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-24]
     ]];
     [self refreshTrendingSection];
     [self refreshRecentSection];
     [self refreshRandomSection];
     [self refreshTheme];
-    [self arrangeSections:[self visibleSectionOrder]];
+    [self arrangeSections:[self visibleSectionOrder] inTwoColumns:NO];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(searchSettingsChanged:)
         name:ApolloSearchLandingSettingsDidChangeNotification object:nil];
+    if (@available(iOS 27.1, *)) {
+        Class interactionClass = NSClassFromString(@"UIHingeInteraction");
+        if (interactionClass) {
+            __weak ApolloSearchLandingViewController *weakSelf = self;
+            void (^handler)(id, id) = ^(__unused id interaction, __unused id update) {
+                // Read reserved geometry after UIKit delivers the pose update;
+                // hinge angle itself never drives column widths.
+                [weakSelf scheduleColumnArrangement];
+            };
+            id<UIInteraction> interaction = ((id (*)(id, SEL, id))objc_msgSend)([interactionClass alloc],
+                NSSelectorFromString(@"initWithUpdateHandler:"), handler);
+            [self.view addInteraction:interaction];
+        }
+    }
 }
 
 - (void)updateTrending:(NSArray<NSString *> *)trending recent:(NSArray<NSString *> *)recent randomNSFW:(BOOL)show {
@@ -353,36 +391,115 @@
     return order;
 }
 
-- (void)arrangeSections:(NSArray<NSString *> *)order {
-    if ([self.arrangedSectionOrder isEqualToArray:order]) return;
-    // Reuse the sections when the order or visibility changes. Updating Search
-    // preferences should not recreate rows or reset the current scroll position.
-    for (UIView *section in self.sectionsStack.arrangedSubviews) [section removeFromSuperview];
+- (void)arrangeSections:(NSArray<NSString *> *)order inTwoColumns:(BOOL)twoColumns {
+    // Move the same sections between columns. Sorting preferences and folding
+    // never recreate rows or discard the current Search scroll position.
+    for (UIStackView *column in @[self.leadingColumn, self.trailingColumn]) {
+        for (UIView *section in column.arrangedSubviews) [section removeFromSuperview];
+    }
     NSDictionary<NSString *, UIView *> *sections = @{
         ApolloSearchLandingSectionTrending: self.trendingSection,
         ApolloSearchLandingSectionRandom: self.randomSection,
         ApolloSearchLandingSectionRecent: self.recentSection
     };
-    for (NSString *identifier in order) {
+    NSUInteger leadingCount = twoColumns ? (order.count + 1) / 2 : order.count;
+    [order enumerateObjectsUsingBlock:^(NSString *identifier, NSUInteger index, BOOL *stop) {
         UIView *section = sections[identifier];
-        if (section) [self.sectionsStack addArrangedSubview:section];
-    }
+        UIStackView *column = index < leadingCount ? self.leadingColumn : self.trailingColumn;
+        if (section) [column addArrangedSubview:section];
+    }];
     self.arrangedSectionOrder = order;
+    self.trailingColumn.hidden = !twoColumns;
 }
 
 - (void)searchSettingsChanged:(NSNotification *)notification {
-    [self arrangeSections:[self visibleSectionOrder]];
+    [self scheduleColumnArrangement];
+}
+
+- (void)updateColumnArrangement {
+    if (!self.columns) return;
+    CGRect safeFrame = self.view.safeAreaLayoutGuide.layoutFrame;
+    CGFloat safeWidth = CGRectGetWidth(safeFrame);
+    if (safeWidth <= 0) return;
+    NSArray<NSString *> *order = [self visibleSectionOrder];
+    // A regular phone remains a familiar single list, even in landscape. Open
+    // Duo retains its balanced columns while its narrow panes and large text
+    // sizes collapse naturally to one column.
+    BOOL twoColumns = ApolloDuoSplitIsUnfolded() && safeWidth >= 560 && order.count > 1
+        && !UIContentSizeCategoryIsAccessibilityCategory(self.traitCollection.preferredContentSizeCategory);
+    CGFloat margin = twoColumns ? 24 : 20;
+    CGFloat widthDifference = 0;
+    CGFloat gutter = 20;
+    CGRect fold = twoColumns ? ApolloDuoActiveVerticalDivision(self.view) : CGRectNull;
+    if (!CGRectIsNull(fold)) {
+        CGFloat center = CGRectGetMidX(fold);
+        CGFloat foldGutter = MAX(gutter, CGRectGetWidth(fold));
+        CGFloat leftWidth = center - foldGutter / 2 - CGRectGetMinX(safeFrame) - margin;
+        CGFloat rightWidth = CGRectGetMaxX(safeFrame) - margin - center - foldGutter / 2;
+        // A Search sidebar can occupy only one half of an existing split.
+        // Rebalance only when both fold-separated columns actually fit here.
+        if (leftWidth >= 220 && rightWidth >= 220 && CGRectGetMaxY(fold) > CGRectGetMinY(safeFrame)
+            && CGRectGetMinY(fold) < CGRectGetMaxY(safeFrame)) {
+            widthDifference = leftWidth - rightWidth;
+            if (self.columns.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft)
+                widthDifference = -widthDifference;
+            gutter = foldGutter;
+        }
+    }
+    // Layout callbacks only schedule this pass. Change Auto Layout inputs once
+    // per arrangement/geometry change, leaving normal scrolling untouched.
+    BOOL arrangementChanged = !self.configuredColumns || self.usesTwoColumns != twoColumns
+        || ![self.arrangedSectionOrder isEqualToArray:order];
+    if (arrangementChanged) {
+        self.configuredColumns = YES;
+        self.usesTwoColumns = twoColumns;
+        self.equalColumnWidths.active = NO;
+        [self arrangeSections:order inTwoColumns:twoColumns];
+        self.columns.axis = twoColumns ? UILayoutConstraintAxisHorizontal : UILayoutConstraintAxisVertical;
+        self.columns.alignment = twoColumns ? UIStackViewAlignmentTop : UIStackViewAlignmentFill;
+        self.equalColumnWidths.constant = widthDifference;
+        self.equalColumnWidths.active = twoColumns;
+    } else if (fabs(self.equalColumnWidths.constant - widthDifference) > 0.5) {
+        self.equalColumnWidths.constant = widthDifference;
+    }
+    if (fabs(self.columns.spacing - gutter) > 0.5) self.columns.spacing = gutter;
+    if (self.contentLeading.constant != margin) self.contentLeading.constant = margin;
+    if (self.contentTrailing.constant != -margin) self.contentTrailing.constant = -margin;
+    if (self.contentWidth.constant != -2 * margin) self.contentWidth.constant = -2 * margin;
+}
+
+- (void)scheduleColumnArrangement {
+    if (self.columnUpdatePending) return;
+    self.columnUpdatePending = YES;
+    __weak ApolloSearchLandingViewController *weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ApolloSearchLandingViewController *controller = weakSelf;
+        if (!controller) return;
+        controller.columnUpdatePending = NO;
+        [controller updateColumnArrangement];
+    });
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    [self scheduleColumnArrangement];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self refreshTheme];
-    [self arrangeSections:[self visibleSectionOrder]];
+    [self updateColumnArrangement];
+}
+
+- (void)viewSafeAreaInsetsDidChange {
+    [super viewSafeAreaInsetsDidChange];
+    [self scheduleColumnArrangement];
 }
 
 - (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
     [super traitCollectionDidChange:previousTraitCollection];
     if ([self.traitCollection hasDifferentColorAppearanceComparedToTraitCollection:previousTraitCollection]) [self refreshTheme];
+    if (![self.traitCollection.preferredContentSizeCategory isEqualToString:previousTraitCollection.preferredContentSizeCategory]) [self scheduleColumnArrangement];
 }
 
 - (void)dealloc {

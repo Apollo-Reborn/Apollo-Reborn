@@ -30,3 +30,7 @@ void ApolloSettingsApplySectionHeaderTypography(UIView *view);
 
 @interface ApolloFooterLinkTextView : UITextView
 @end
+
+@interface ApolloSettingsLinkFooterView : UITableViewHeaderFooterView
+@property (nonatomic, strong, readonly) ApolloFooterLinkTextView *linkTextView;
+@end

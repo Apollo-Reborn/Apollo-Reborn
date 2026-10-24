@@ -1185,6 +1185,11 @@ static id (^ApolloRecentlyReadProfileRowBlock(id (^originalBlock)(void), id (^se
         ASDisplayNode *wrapper = [cellNodeClass new];
         wrapper.backgroundColor = UIColor.clearColor;
         wrapper.automaticallyManagesSubnodes = YES;
+        // The wrapper takes Friends' native row: keep its label, and expose
+        // both rows so the Duo portrait shortcut grid includes them.
+        wrapper.accessibilityLabel = friends;
+        objc_setAssociatedObject(wrapper, NSSelectorFromString(@"apollo_profileShortcutChildren"),
+                                 @[row, original], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         wrapper.layoutSpecBlock = ^id(__unused id node, __unused struct ApolloTextureSizeRange range) {
             return [ApolloClassASStackLayoutSpec stackLayoutSpecWithDirection:0 spacing:0 justifyContent:0 alignItems:3
                                                                      children:@[row, separator, original]];

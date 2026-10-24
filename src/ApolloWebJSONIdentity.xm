@@ -100,6 +100,13 @@
           completion:(void (^)(NSHTTPURLResponse *, id, NSError *))completion;
 @end
 
+// Headers/ObjC/RDKUser.h — the two properties the subscription-walk guard
+// below reads and hooks.
+@interface RDKUser : NSObject
+@property (nonatomic, copy) NSString *username;
+@property (nonatomic, copy) NSArray *subscribedSubreddits;
+@end
+
 // ~100 years, so Apollo never considers the token expired and never tries to
 // refresh it.
 static const unsigned long long kApolloWebJSONSyntheticDuration = 100ULL * 365 * 24 * 60 * 60;
@@ -907,6 +914,114 @@ static NSString *ApolloWebJSONWebSessionUsernameForClient(RDKClient *client) {
 // returns.
 static __thread BOOL sApolloWebJSONResendingAfterWebBearerMint = NO;
 
+#pragma mark - Subscription walk (API-Key-Free)
+
+// The path with any query and leading slashes dropped, lowercased.
+static NSString *ApolloWebJSONBarePath(NSString *path) {
+    if (![path isKindOfClass:[NSString class]]) return @"";
+    NSString *p = [path.lowercaseString componentsSeparatedByString:@"?"].firstObject ?: @"";
+    while ([p hasPrefix:@"/"]) p = [p substringFromIndex:1];
+    return p;
+}
+
+// AccountManager loads an account's subscriptions page by page: the first
+// GET subreddits/mine/subscriber.json asks for limit=100, but every later
+// page is built from the listing's own `after` by +[RDKPagination
+// paginationFromListingResponse:], whose -init leaves limit at 25, so Reddit
+// serves 25 per page. On an OAuth account's 1,000-request budget that goes unnoticed;
+// a web session gets roughly 100 requests per ten minutes, and the reporter
+// of issue #1409 (1,900+ subscriptions) spent ~80 of them on the launch walk
+// alone and was refused 43 seconds in. Ask for Reddit's maximum on every page
+// of the account listings instead: the walk follows `after`, so the page size
+// changes nothing else. Returns `parameters` unchanged for anything that isn't
+// a web-session account's GET of subreddits/mine/<where>.
+static id ApolloWebJSONParametersForAccountRead(NSString *username, NSString *method, NSString *path, id parameters) {
+    if (username.length == 0 || ![method.uppercaseString isEqualToString:@"GET"]) return parameters;
+    if (![ApolloWebJSONBarePath(path) hasPrefix:@"subreddits/mine/"]) return parameters;
+    if (parameters && ![parameters isKindOfClass:[NSDictionary class]]) return parameters;
+    id limit = ((NSDictionary *)parameters)[@"limit"];
+    BOOL limitIsNumeric = [limit isKindOfClass:[NSString class]] || [limit isKindOfClass:[NSNumber class]];
+    if (limitIsNumeric && [limit integerValue] >= 100) return parameters;
+    NSMutableDictionary *raised = parameters ? [parameters mutableCopy] : [NSMutableDictionary dictionary];
+    raised[@"limit"] = @"100";
+    ApolloLog(@"[WebJSON] Asking for 100 per page on GET %@ for u/%@ (was %@)",
+              path, username, limitIsNumeric ? limit : @"Reddit's default of 25");
+    return [raised copy];
+}
+
+static BOOL ApolloWebJSONRequestIsSubscriptionWalk(NSString *method, NSString *path) {
+    return [method.uppercaseString isEqualToString:@"GET"]
+        && [ApolloWebJSONBarePath(path) hasPrefix:@"subreddits/mine/subscriber"];
+}
+
+// A walk cut short still reaches AccountManager's completion, which replaces
+// RDKUser.subscribedSubreddits with the pages it had: in issue #1409's log one
+// refused page (HTTP 429, the session's budget spent) turned 1,935 subscriptions
+// into 947, and the sidebar stayed that way until a later walk got through.
+// Noted when a page of the walk fails, in the same completion chain that sets
+// the list (RedditKit's block and AccountManager's closure run synchronously
+// from it), and consumed by the setter hook below: a shorter list arriving
+// right after a failed page is the cut-short walk, so the account keeps the
+// list it had. Lowercased username and the time the page failed, under the
+// lock; the window is short so an unrelated shorter list later (an
+// unsubscribe from Apollo's own code) is never held back.
+static NSObject *ApolloWebJSONSubscriptionWalkLock(void) {
+    static NSObject *lock;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [NSObject new]; });
+    return lock;
+}
+static NSString *sApolloWebJSONFailedWalkUser;
+static NSTimeInterval sApolloWebJSONFailedWalkAt;
+static const NSTimeInterval kApolloWebJSONFailedWalkWindow = 3.0;
+
+static void ApolloWebJSONNoteSubscriptionWalkFailed(NSString *username, NSHTTPURLResponse *response, NSError *error) {
+    if (username.length == 0) return;
+    @synchronized (ApolloWebJSONSubscriptionWalkLock()) {
+        sApolloWebJSONFailedWalkUser = username.lowercaseString;
+        sApolloWebJSONFailedWalkAt = [NSDate timeIntervalSinceReferenceDate];
+    }
+    ApolloLog(@"[WebJSON] A page of u/%@'s subscription refresh failed (HTTP %ld%@); keeping the list it had if the refresh stops here",
+              username, (long)response.statusCode, error ? [@", " stringByAppendingString:error.localizedDescription ?: @"error"] : @"");
+}
+
+// YES when `list` is the remainder of a walk that just failed for this user
+// and the current list is longer: the caller keeps the current list.
+static BOOL ApolloWebJSONKeepSubscriptionListAfterFailedWalk(RDKUser *user, NSArray *list) {
+    NSString *failedUser = nil;
+    @synchronized (ApolloWebJSONSubscriptionWalkLock()) {
+        if (sApolloWebJSONFailedWalkUser &&
+            [NSDate timeIntervalSinceReferenceDate] - sApolloWebJSONFailedWalkAt <= kApolloWebJSONFailedWalkWindow) {
+            failedUser = sApolloWebJSONFailedWalkUser;
+        }
+    }
+    if (!failedUser) return NO;
+    NSString *username = user.username.lowercaseString;
+    NSArray *current = user.subscribedSubreddits;
+    NSString *declined = nil;
+    if (username.length > 0 && ![username isEqualToString:failedUser]) declined = [@"another account: u/" stringByAppendingString:username];
+    else if (![current isKindOfClass:[NSArray class]] || current.count == 0) declined = @"no list to keep";
+    else if ([list isKindOfClass:[NSArray class]] && list.count >= current.count) declined = @"the new list is not shorter";
+    if (declined) {
+        ApolloLog(@"[WebJSON] Subscription list set after u/%@'s failed page, letting it through (%@: %lu -> %lu)",
+                  failedUser, declined, (unsigned long)current.count, (unsigned long)[list isKindOfClass:[NSArray class]] ? list.count : 0);
+        return NO;
+    }
+    @synchronized (ApolloWebJSONSubscriptionWalkLock()) {
+        sApolloWebJSONFailedWalkUser = nil;
+    }
+    ApolloLog(@"[WebJSON] Kept u/%@'s %lu subscriptions: the refresh stopped after %lu because a page failed",
+              failedUser, (unsigned long)current.count, (unsigned long)[list isKindOfClass:[NSArray class]] ? list.count : 0);
+    return YES;
+}
+
+%hook RDKUser
+- (void)setSubscribedSubreddits:(NSArray *)list {
+    if (ApolloWebJSONKeepSubscriptionListAfterFailedWalk(self, list)) return;
+    %orig;
+}
+%end
+
 // Validate at the request completion boundary, where the original endpoint
 // survives redirects and every serializer/cache path has already finished.
 %hook RDKClient
@@ -948,7 +1063,13 @@ static __thread BOOL sApolloWebJSONResendingAfterWebBearerMint = NO;
     NSString *requestPath = [path copy];
     NSString *username = ApolloWebJSONShouldActForClient(self) ? ApolloWebJSONClientUsername(self) : nil;
     ApolloWebJSONCheckAccountSession(username);
+    // API-Key-Free account listings: 100 per page (ApolloWebJSONParametersForAccountRead).
+    parameters = ApolloWebJSONParametersForAccountRead(username, requestMethod, requestPath, parameters);
     void (^wrapped)(NSHTTPURLResponse *, id, NSError *) = ^(NSHTTPURLResponse *response, id object, NSError *error) {
+        if (username && ApolloWebJSONRequestIsSubscriptionWalk(requestMethod, requestPath) &&
+            (error || response.statusCode >= 400)) {
+            ApolloWebJSONNoteSubscriptionWalkFailed(username, response, error);
+        }
         NSError *sessionError = ApolloWebJSONAccountSessionError(username);
         if (sessionError) {
             completion(response, nil, sessionError);

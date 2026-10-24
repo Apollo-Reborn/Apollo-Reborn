@@ -4,6 +4,7 @@
 #import "ApolloGalleryFeed.h"
 #import "ApolloGalleryImageLoader.h"
 #import "ApolloCommon.h"
+#import "ApolloDeviceGeometry.h"
 #import "ApolloGalleryVideoExport.h"
 #import "ApolloGalleryMediaActions.h"
 #import "ApolloNativeActionMenus.h"
@@ -1012,10 +1013,12 @@ static UIInterfaceOrientation ApolloGalleryInterfaceOrientationForDevice(UIDevic
 
     self.rotateOfferTargetOrientation = wanted;
     [self.rotateOfferButton setTitle:title forState:UIControlStateNormal];
-    if (self.rotateOfferButton.configuration) {
-        UIButtonConfiguration *configuration = self.rotateOfferButton.configuration;
-        configuration.title = title;
-        self.rotateOfferButton.configuration = configuration;
+    if (@available(iOS 15.0, *)) {
+        if (self.rotateOfferButton.configuration) {
+            UIButtonConfiguration *configuration = self.rotateOfferButton.configuration;
+            configuration.title = title;
+            self.rotateOfferButton.configuration = configuration;
+        }
     }
     if (self.rotateOfferHost.hidden) {
         self.rotateOfferHost.hidden = NO;
@@ -1117,7 +1120,7 @@ static UIInterfaceOrientation ApolloGalleryInterfaceOrientationForDevice(UIDevic
 
 - (void)apollo_layoutChrome {
     CGRect bounds = self.view.bounds;
-    UIEdgeInsets safe = self.view.safeAreaInsets;
+    UIEdgeInsets safe = ApolloDeviceChromeInsetsForView(self.view);
 
     CGFloat top = safe.top + 12.0;
     CGFloat side = MAX(16.0, safe.left + 16.0);
@@ -1146,7 +1149,7 @@ static UIInterfaceOrientation ApolloGalleryInterfaceOrientationForDevice(UIDevic
     // length, so it stays capped; the transport is a scrubber and takes the
     // whole width it can get — capping it too is what left the controls
     // huddled in the left half of a landscape screen.
-    CGFloat availableWidth = bounds.size.width - side - rightSide;
+    CGFloat availableWidth = MAX(0.0, bounds.size.width - side - rightSide);
     CGFloat panelWidth = MIN(availableWidth, 460.0);
     CGFloat videoBarWidth = availableWidth;
     CGFloat textWidth = panelWidth - 24.0;
@@ -2293,14 +2296,15 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
 }
 
 - (void)apollo_openPostURL:(NSURL *)postURL {
-    if (!postURL || self.isDismissing || self.mediaMenuSession) return;
+    UIWindowScene *originatingScene = self.viewIfLoaded.window.windowScene;
+    if (!postURL || !originatingScene || self.isDismissing || self.mediaMenuSession) return;
     [self apollo_dismissToGalleryWithFlickDirection:0.0 completion:^{
         // Apollo's URL handler only acts on apollo:// URLs — handing it the raw
         // https reddit.com link is silently ignored. The scheme conversion is
         // what every other in-app route in the tweak goes through.
-        if (ApolloRouteResolvedURLViaApolloScheme(postURL)) return;
-        if (!ApolloRouteURLThroughApp(postURL)) {
-            ApolloLog(@"[Gallery] couldn't route %@ through the app", postURL.absoluteString);
+        NSURL *nativeURL = ApolloURLByConvertingResolvedURLToApolloScheme(postURL) ?: postURL;
+        if (!ApolloRouteURLThroughAppInScene(nativeURL, originatingScene)) {
+            ApolloLog(@"[Gallery] native post route unavailable");
         }
     }];
 }

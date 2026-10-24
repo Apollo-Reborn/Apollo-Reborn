@@ -1,8 +1,11 @@
 blank_issues_enabled: false
 contact_links:
+  - name: 🐞 Report a bug from the app
+    url: https://report.apolloreborn.app/
+    about: In Apollo, go to Settings → Apollo Reborn → Bug Reports. It attaches your debug log for you and doesn't need a GitHub account. This link opens the same form on the web, where you attach the log yourself.
   - name: ✨ Feature Requests
     url: https://request.apolloreborn.app/
-    about: Submit new feature requests and vote on existing ideas.
+    about: Suggest new features and vote on existing ideas. Feature requests go here, not in GitHub issues, and don't need a log.
   - name: 💬 r/ApolloReborn Community
     url: https://www.reddit.com/r/ApolloReborn/
     about: Ask questions, get help, and discuss with the community. (Do not directly discuss API key workarounds using alternative apps in this subreddit.)

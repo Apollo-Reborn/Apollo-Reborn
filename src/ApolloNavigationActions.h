@@ -8,8 +8,15 @@ UIView *ApolloNavigationActionsContentView(UIBarButtonItem *item);
 // its visibility, or change its geometry until native ownership ends.
 UIView *ApolloNavigationActionsMenuSourceView(UIView *action);
 
+// YES while the trailing Duo rail publishes `button` (a control inside Apollo's
+// composite actions) as one of its generated native items.
+BOOL ApolloNavigationActionsDuoMirrorsButton(UINavigationItem *item, UIView *button);
+
 // Defers measurement, so calling from a layout callback is safe.
 void ApolloNavigationActionsRefresh(UINavigationBar *navigationBar);
+// Tint a native Edit/Done item's UIKit-owned prominent fill while editing.
+// Keeps its native target, image, style, sizing and transition unchanged.
+void ApolloNavigationActionsSetNativeEditingAccent(UIBarButtonItem *item, BOOL enabled);
 // Collapse this item's action pill at once (no animation). For screens that
 // replace their trailing items in place for a while (the comments find
 // navigator) so the pill neither stays expanded under the stand-in nor comes

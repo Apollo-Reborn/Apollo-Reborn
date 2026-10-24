@@ -197,6 +197,11 @@ extern "C" {
 // Opt-in top navigation bar movement, following the bottom tab bar's scroll
 // behavior while Hide Bars on Scroll is enabled. Default NO.
 extern BOOL sHideTopBarOnScroll;
+// Experimental Duo landscape feed layout: 0 = Original (default),
+// 2 = Focused feed; value 1 is retired. Read live by ApolloMediaHinge.
+extern NSInteger sDuoLandscapeFeedLayout;
+// Standard (default NO) or Liquid Glass for the open Duo subreddit panel.
+extern BOOL sDuoSubredditPanelGlassEnabled;
 BOOL ApolloSupportsNativeTabBarScrollBehavior(void);
 #ifdef __cplusplus
 }
@@ -220,6 +225,12 @@ extern ApolloSettingsIconAppearance sSettingsIconAppearance;
 // Liquid Glass only. When ON, tab-bar swipe navigates back/forward instead of
 // switching tabs; needs a relaunch to apply. See ApolloLiquidGlass.xm.
 extern BOOL sTabBarSwipeNavigation;
+// iPad only. When ON, each tab's navigation stack is hosted inside a
+// multi-column UISplitViewController (sidebar → content → detail) instead of a
+// single full-width stack. Opt-in; default OFF via registerDefaults
+// (UDKeyIPadPaneLayout). Read once at %ctor — installation happens at scene
+// connect, so changing it needs a relaunch. See src/ipad/ApolloPaneLayout.h.
+extern BOOL sIPadPaneLayout;
 #ifdef __cplusplus
 extern "C" {
 #endif

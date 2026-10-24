@@ -8,6 +8,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloImageUploadHost.h"
 #import "ApolloState.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloTableSnapshot.h"
@@ -3916,22 +3917,61 @@ static void ApolloComposeBodyEditorLogRedirectOnce(UINavigationItem *navigationI
 
 %end
 
+// Apollo computes its caret position from the ORIGINAL album URL after
+// replaceRange: returns (RE: sub_1001bc3a8). Resolve on the next main-queue turn,
+// after that callback and its Add Title To Link action have finished, then map
+// the selection through the replacement. Read the current text, never a stale
+// insertion snapshot. The post photo picker keeps its ID for submit_gallery.
+static char kApolloMediaComposerAlbumResolutionScheduled;
+static void ApolloMediaComposerScheduleAlbumResolution(UITextView *textView, NSString *insertedText) {
+    if ([insertedText rangeOfString:@"imgur.com" options:NSCaseInsensitiveSearch].location == NSNotFound || !insertedText.length) return;
+    id editor = textView.delegate;
+    if (![editor isKindOfClass:ApolloClassComposeViewController] ||
+        ApolloObjectIvar(editor, "composeTextView") != textView ||
+        [objc_getAssociatedObject(textView, &kApolloMediaComposerAlbumResolutionScheduled) boolValue]) return;
+    objc_setAssociatedObject(textView, &kApolloMediaComposerAlbumResolutionScheduled, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak UITextView *weakTextView = textView;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UITextView *strongTextView = weakTextView;
+        if (!strongTextView) return;
+        id currentEditor = strongTextView.delegate;
+        if ([currentEditor isKindOfClass:ApolloClassComposeViewController] &&
+            ApolloObjectIvar(currentEditor, "composeTextView") == strongTextView) {
+            NSRange selection = strongTextView.selectedRange;
+            NSString *text = strongTextView.text;
+            NSString *resolved = ApolloImageUploadResolveAlbumTextWithSelection(text, &selection);
+            if (![resolved isEqualToString:text]) {
+                // The scheduled flag suppresses reentry through setText:.
+                strongTextView.text = resolved;
+                strongTextView.selectedRange = selection;
+                if ([currentEditor respondsToSelector:@selector(textViewDidChange:)]) {
+                    [currentEditor textViewDidChange:strongTextView];
+                }
+            }
+        }
+        objc_setAssociatedObject(strongTextView, &kApolloMediaComposerAlbumResolutionScheduled, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    });
+}
+
 %hook UITextView
 
 - (void)setText:(NSString *)text {
     %orig;
+    ApolloMediaComposerScheduleAlbumResolution(self, text);
     ApolloMediaComposerCaptureBodyTextViewMutation(self, @"setText:");
     ApolloMediaComposerNudgeTitleRowHeight(self);
 }
 
 - (void)setAttributedText:(NSAttributedString *)attributedText {
     %orig;
+    ApolloMediaComposerScheduleAlbumResolution(self, attributedText.string);
     ApolloMediaComposerCaptureBodyTextViewMutation(self, @"setAttributedText:");
     ApolloMediaComposerNudgeTitleRowHeight(self);
 }
 
 - (void)insertText:(NSString *)text {
     %orig;
+    ApolloMediaComposerScheduleAlbumResolution(self, text);
     ApolloMediaComposerCaptureBodyTextViewMutation(self, @"insertText:");
     ApolloMediaComposerNudgeTitleRowHeight(self);
 }
@@ -3944,6 +3984,7 @@ static void ApolloComposeBodyEditorLogRedirectOnce(UINavigationItem *navigationI
 
 - (void)replaceRange:(UITextRange *)range withText:(NSString *)text {
     %orig;
+    ApolloMediaComposerScheduleAlbumResolution(self, text);
     ApolloMediaComposerCaptureBodyTextViewMutation(self, @"replaceRange:withText:");
     ApolloMediaComposerNudgeTitleRowHeight(self);
 }

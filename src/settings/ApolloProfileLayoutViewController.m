@@ -370,6 +370,7 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
 @property(nonatomic) CGFloat pinnedPreviewHeight;
 @property(nonatomic) BOOL updatingPinnedPreviewLayout;
 @property(nonatomic) BOOL previewHeightRefreshScheduled;
+@property(nonatomic) CGFloat previewRestingTopInset;
 @property(nonatomic, copy) NSString *scrollAnchorRowID;
 @property(nonatomic) CGFloat scrollAnchorScreenY;
 @property(nonatomic) CGFloat scrollAnchorPinnedBottom;
@@ -703,8 +704,11 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
 }
 
 - (BOOL)apollo_hasRoomToPinPreview {
+    // Hiding the navigation bar during a scroll must not suddenly enable
+    // pinning halfway through that gesture. Reserve its resting height.
+    CGFloat topInset = MAX(self.previewRestingTopInset, self.tableView.adjustedContentInset.top);
     CGFloat availableHeight = CGRectGetHeight(self.tableView.bounds)
-        - self.tableView.adjustedContentInset.top - self.tableView.adjustedContentInset.bottom;
+        - topInset - self.tableView.adjustedContentInset.bottom;
     // Preserve access to the controls on small phones, in landscape, and at
     // larger text sizes. The saved preference resumes when there is room.
     return self.traitCollection.verticalSizeClass != UIUserInterfaceSizeClassCompact &&
@@ -779,6 +783,10 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
     CGFloat tableWidth = CGRectGetWidth(self.tableView.bounds);
     if (tableWidth <= 1.0) return;
     self.updatingPinnedPreviewLayout = YES;
+    CGFloat restingInset = self.tableView.adjustedContentInset.top;
+    if (self.tableView.contentOffset.y + restingInset <= 0.5 || self.previewRestingTopInset == 0) {
+        self.previewRestingTopInset = restingInset;
+    }
 
     CGRect readable = [self apollo_tableReadableFrame];
     CGFloat cardX = CGRectGetMinX(readable);

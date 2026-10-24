@@ -1,0 +1,50 @@
+name: Bug report log check
+
+# Bug reports and sign-in help requests work far better with a debug log or
+# crash log. The issue forms strongly encourage one but let people continue
+# without it, so this labels a new report that has no log attached `needs-log`
+# (with a comment on how to export one) and clears that as soon as the author
+# adds a log. It never closes or reopens an issue. The logic and its exemptions live in
+# .github/scripts/issue-log-check.js; tests in tests/issue_log_check_tests.js.
+#
+# Issue and comment text is only ever handled as data inside github-script;
+# nothing from an issue is interpolated into a shell command.
+
+on:
+  issues:
+    types: [opened, edited]
+  issue_comment:
+    types: [created, edited]
+
+concurrency:
+  # One run at a time per issue, so an edit or comment made right after
+  # opening is seen after the opening check has finished.
+  group: issue-log-check-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read   # sparse checkout of .github/scripts
+  issues: write    # label and comment
+
+jobs:
+  check:
+    name: Check for a log
+    # Only issues filed with a form that asks for a log (issue_comment also
+    # fires for pull requests, which never have this heading).
+    if: >-
+      !github.event.issue.pull_request &&
+      contains(github.event.issue.body, '### Debug log or crash log')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the check script
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Label or clear the flag
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const check = require('./.github/scripts/issue-log-check.js');
+            await check.run({ github, context, core });

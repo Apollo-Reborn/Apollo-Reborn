@@ -12,6 +12,40 @@
 static NSString *const kApolloReportURLString = @"https://report.apolloreborn.app/";
 static NSString *const kApolloReportHost = @"report.apolloreborn.app";
 static NSString *const kApolloReportMessageHandler = @"apolloReport";
+static NSString *const kApolloReportLogFilename = @"apollo-reborn.log";
+
+// A log is what makes most bug reports fixable, so the plain flow attaches the
+// session log as soon as the form opens. Real logs run ~20 KB-1 MB; this cap
+// only keeps a runaway session under the form's 20 MB attachment limit, which
+// would otherwise block sending until the log was removed.
+static const NSUInteger kApolloReportMaxLogBytes = 5 * 1024 * 1024;
+
+// Keeps the newest part of an oversized log (the bug the user just hit is at
+// the end), cut at a line break so the UTF-8 never splits mid-character.
+static NSString *ApolloReportLogForAttachment(NSString *logs) {
+    NSData *data = [logs dataUsingEncoding:NSUTF8StringEncoding];
+    if (data.length <= kApolloReportMaxLogBytes) return logs;
+
+    const unsigned char *bytes = (const unsigned char *)data.bytes;
+    NSUInteger cut = data.length - kApolloReportMaxLogBytes;
+    NSUInteger start = cut;
+    while (start < data.length && bytes[start] != '\n') start++;
+    if (start < data.length) {
+        start++;
+    } else {
+        // No line break in the kept window: step past UTF-8 continuation
+        // bytes so the cut still lands on a character boundary.
+        start = cut;
+        while (start < data.length && (bytes[start] & 0xC0) == 0x80) start++;
+    }
+    NSData *tail = [data subdataWithRange:NSMakeRange(start, data.length - start)];
+    NSString *text = [[NSString alloc] initWithData:tail encoding:NSUTF8StringEncoding];
+    if (!text) return logs;
+    ApolloLog(@"[BugReport] log trimmed to its newest %lu of %lu bytes for the report form",
+              (unsigned long)tail.length, (unsigned long)data.length);
+    return [NSString stringWithFormat:@"[Apollo Reborn: older log lines removed to fit the report form (%lu of %lu bytes kept)]\n%@",
+            (unsigned long)tail.length, (unsigned long)data.length, text];
+}
 
 // WKUserContentController retains message handlers. Keep only a weak reference
 // back to the view controller so its web view does not form a retain cycle.
@@ -31,6 +65,7 @@ static NSString *const kApolloReportMessageHandler = @"apolloReport";
 @property (nonatomic, strong) UIProgressView *progressView;
 @property (nonatomic, strong) ApolloWeakScriptMessageHandler *messageHandler;
 @property (nonatomic, copy) NSString *collectedLogs;
+@property (nonatomic, assign) BOOL collectingLogs;
 @property (nonatomic, assign) BOOL pageReady;
 @property (nonatomic, assign) BOOL logsAttached;
 
@@ -65,7 +100,9 @@ static NSString *const kApolloReportMessageHandler = @"apolloReport";
     self.title = self.isCrashRecoveryFlow ? @"Crash Report" : @"Bug Report";
     self.view.backgroundColor = [UIColor systemBackgroundColor];
     self.attachedFilenames = [NSMutableSet set];
-    if (!self.isCrashRecoveryFlow) [self showAttachLogsButton];
+    // The crash-recovery flow arrives with its crash report already attached;
+    // a plain bug report gets the session log without having to ask for it.
+    if (!self.isCrashRecoveryFlow) [self collectLogs];
 
     WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
     // Crash reporting shouldn't leave persistent browser state behind; the
@@ -123,6 +160,10 @@ static NSString *const kApolloReportMessageHandler = @"apolloReport";
             [NSURLQueryItem queryItemWithName:@"severity" value:@"crash"],
             [NSURLQueryItem queryItemWithName:@"hasCrashReport" value:@"1"],
         ]];
+    } else {
+        // Lets the form word its missing-log prompt for the app ("tap Attach
+        // Logs") and label the issue; older site deployments ignore it.
+        [queryItems addObject:[NSURLQueryItem queryItemWithName:@"source" value:@"in-app"]];
     }
     components.queryItems = queryItems;
     NSURL *url = components.URL;
@@ -133,10 +174,12 @@ static NSString *const kApolloReportMessageHandler = @"apolloReport";
     [self.webView loadRequest:request];
 }
 
+// Only reachable after the user removed the automatic log (or it couldn't be
+// attached), so the sheet says why it matters before putting it back.
 - (void)attachLogsTapped:(UIBarButtonItem *)sender {
     UIAlertController *sheet =
         [UIAlertController alertControllerWithTitle:@"Attach Reborn Debug Logs?"
-                                            message:@"This adds diagnostics from the current app session to your report. Logs can include feature usage, settings state, websites encountered, and Apollo AI diagnostics. Logs do not contain passwords or API keys. You can remove the attachment from the form before sending."
+                                            message:@"A log makes it much more likely we can fix the problem. It covers this app session: feature usage, settings state, websites encountered, and Apollo AI diagnostics. Logs do not contain passwords or API keys."
                                      preferredStyle:UIAlertControllerStyleActionSheet];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Attach Logs"
                                              style:UIAlertActionStyleDefault
@@ -150,13 +193,25 @@ static NSString *const kApolloReportMessageHandler = @"apolloReport";
 }
 
 - (void)collectLogs {
+    if (self.collectingLogs) return;
+    self.collectingLogs = YES;
     [self showCollectingLogsSpinner];
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSString *logs = ApolloCollectLogs();
+        NSString *logs = ApolloReportLogForAttachment(ApolloCollectLogs());
         dispatch_async(dispatch_get_main_queue(), ^{
-            weakSelf.collectedLogs = logs;
-            [weakSelf attachLogsIfReady];
+            typeof(self) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            strongSelf.collectingLogs = NO;
+            strongSelf.collectedLogs = logs;
+            if (logs.length == 0) {
+                [strongSelf showAttachLogsButton];
+                return;
+            }
+            // Until the page finishes loading there's nothing to show; the
+            // attach runs from -webView:didFinishNavigation:.
+            if (!strongSelf.pageReady) strongSelf.navigationItem.rightBarButtonItem = nil;
+            [strongSelf attachLogsIfReady];
         });
     });
 }
@@ -165,7 +220,7 @@ static NSString *const kApolloReportMessageHandler = @"apolloReport";
     if (!self.pageReady || self.logsAttached || self.collectedLogs.length == 0) return;
 
     __weak typeof(self) weakSelf = self;
-    [self evaluateAttachFilename:@"apollo-reborn.log"
+    [self evaluateAttachFilename:kApolloReportLogFilename
                         contents:self.collectedLogs
                         mimeType:@"text/plain"
                       identifier:@"reborn-log"
@@ -177,7 +232,8 @@ static NSString *const kApolloReportMessageHandler = @"apolloReport";
         weakSelf.logsAttached = YES;
         // Drop the native copy once the page owns its removable File object.
         weakSelf.collectedLogs = nil;
-        [weakSelf showLogsAttachedConfirmation];
+        // The form lists the file ("from app"); no confirmation needed.
+        weakSelf.navigationItem.rightBarButtonItem = nil;
         ApolloLog(@"[BugReport] attached unified session log to embedded form");
     }];
 }
@@ -260,16 +316,6 @@ static NSString *const kApolloReportMessageHandler = @"apolloReport";
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:spinner];
 }
 
-- (void)showLogsAttachedConfirmation {
-    self.navigationItem.rightBarButtonItem = nil;
-    UIAlertController *alert =
-        [UIAlertController alertControllerWithTitle:@"Logs Attached"
-                                            message:@"apollo-reborn.log is now included in the form. You can remove it from the attachment list before sending."
-                                     preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
-}
-
 #pragma mark - JavaScript bridge state
 
 - (void)userContentController:(__unused WKUserContentController *)userContentController
@@ -298,7 +344,7 @@ static NSString *const kApolloReportMessageHandler = @"apolloReport";
             if ([file isKindOfClass:NSString.class]) [surviving addObject:file];
         }
         [self.attachedFilenames intersectSet:surviving];
-        if (self.logsAttached && ![self.attachedFilenames containsObject:@"apollo-reborn.log"]) {
+        if (self.logsAttached && ![self.attachedFilenames containsObject:kApolloReportLogFilename]) {
             self.logsAttached = NO;
             if (!self.isCrashRecoveryFlow) [self showAttachLogsButton];
             ApolloLog(@"[BugReport] user removed bridged log; restored Attach Logs action");
@@ -355,6 +401,27 @@ static NSString *const kApolloReportMessageHandler = @"apolloReport";
 
 #pragma mark - WKNavigationDelegate
 
+// Keeps this web view on the report form. Links that lead off it (the filed
+// GitHub issue, the feature-request board, the site footer) open in Apollo's
+// browser instead: a target=_blank link otherwise does nothing here (there's
+// no WKUIDelegate), and a plain one would replace the form. Coming back from
+// that can restore the form from the back-forward cache with its log still
+// attached, which -webView:didFinishNavigation: would then attach again.
+- (void)webView:(__unused WKWebView *)webView
+    decidePolicyForNavigationAction:(WKNavigationAction *)navigationAction
+                    decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
+    NSURL *url = navigationAction.request.URL;
+    BOOL topLevel = !navigationAction.targetFrame || navigationAction.targetFrame.isMainFrame;
+    if (topLevel && navigationAction.navigationType == WKNavigationTypeLinkActivated &&
+        url && ![url.host isEqualToString:kApolloReportHost]) {
+        decisionHandler(WKNavigationActionPolicyCancel);
+        ApolloLog(@"[BugReport] link to %@ opened in the in-app browser", url.host ?: @"(no host)");
+        ApolloPresentWebURLFromViewController(self, url);
+        return;
+    }
+    decisionHandler(WKNavigationActionPolicyAllow);
+}
+
 - (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(__unused WKNavigation *)navigation {
     if ([webView.URL.host isEqualToString:kApolloReportHost]) {
         self.pageReady = NO;
@@ -367,9 +434,17 @@ static NSString *const kApolloReportMessageHandler = @"apolloReport";
     self.progressView.hidden = YES;
     // A reload rebuilds the page's File objects; re-attach everything.
     [self.attachedFilenames removeAllObjects];
+    BOOL logWasAttached = self.logsAttached;
     self.logsAttached = NO;
     [self attachDiagnosticFilesIfReady];
-    [self attachLogsIfReady];
+    // The native copy is dropped once the page owns it, so a reload after
+    // the first attach collects a fresh log rather than leaving it off the
+    // form.
+    if (logWasAttached && self.collectedLogs.length == 0) {
+        [self collectLogs];
+    } else {
+        [self attachLogsIfReady];
+    }
 }
 
 - (void)webView:(__unused WKWebView *)webView

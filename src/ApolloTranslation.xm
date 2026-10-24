@@ -8116,6 +8116,23 @@ static void ApolloApplyGlobeMergeForNavItem(UINavigationItem *navItem) {
             : (ApolloThemeAccentColor() ?: controller.viewIfLoaded.tintColor ?: UIColor.systemBlueColor));
     UIBarButtonItem *standalone = objc_getAssociatedObject(navItem, kApolloGlobeStandaloneItemKey);
 
+    // The Duo rail already mirrors the merged globe as a native item. Leave it
+    // in the composite; detaching it or adding a standalone item shows two
+    // globes and disturbs the sort slot.
+    if (!container && ApolloNavigationActionsDuoMirrorsButton(navItem, globe)) {
+        if (standalone && [navItem.rightBarButtonItems containsObject:standalone]) {
+            NSMutableArray<UIBarButtonItem *> *its = [navItem.rightBarButtonItems mutableCopy];
+            [its removeObject:standalone];
+            sApplyingGlobeMerge = YES;
+            navItem.rightBarButtonItems = its;
+            sApplyingGlobeMerge = NO;
+            ApolloLog(@"[Translation] Globe: removed standalone item; the Duo rail already mirrors the globe on '%@'",
+                      navItem.title ?: @"(untitled)");
+        }
+        objc_setAssociatedObject(navItem, kApolloGlobeStandaloneItemKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return;
+    }
+
     if (container) {
         // Prefer the merged layout — drop any standalone fallback we added.
         if (standalone) {
@@ -11305,22 +11322,31 @@ static void ApolloReapplyTranslationOnAppResume(void) {
 }
 
 // Return the globe before UIKit measures or snapshots the restored action pill.
-static void ApolloRestoreGlobeBeforeSearchDismissal(UINavigationItem *navItem,
-                                                   NSArray<UIBarButtonItem *> *items) {
+// Returns the incoming items minus the standalone item, which is left as is:
+// setting customView on an installed item makes UIKit replace the view at its
+// OLD index, an NSRangeException when the new array is shorter (Duo controls
+// swapping four trailing items for one).
+static NSArray<UIBarButtonItem *> *ApolloRestoreGlobeBeforeSearchDismissal(UINavigationItem *navItem,
+                                                                         NSArray<UIBarButtonItem *> *items) {
     if (!IsLiquidGlass() || sApplyingGlobeMerge ||
-        [objc_getAssociatedObject(navItem, kApolloGlobeRemovalPendingKey) boolValue]) return;
+        [objc_getAssociatedObject(navItem, kApolloGlobeRemovalPendingKey) boolValue]) return items;
     UIBarButtonItem *standalone = objc_getAssociatedObject(navItem, kApolloGlobeStandaloneItemKey);
     UIButton *globe = objc_getAssociatedObject(navItem, kApolloGlobeMergeButtonKey);
     if (!globe || !ApolloStandaloneItemHostsGlobe(standalone, globe) ||
-        ![navItem.rightBarButtonItems containsObject:standalone]) return;
+        ![navItem.rightBarButtonItems containsObject:standalone]) return items;
     UIView *container = ApolloFindTrailingButtonContainerInItems(items, globe);
     if (!container ||
         ApolloNativeActionMenuOwnsNavigationSurface(ApolloNavigationActionsMenuSourceView(globe)) ||
-        ApolloNativeActionMenuOwnsNavigationSurface(ApolloNavigationActionsMenuSourceView(container))) return;
-    // Release UIKit's search adaptor before the restored strip adopts the globe.
-    standalone.customView = nil;
+        ApolloNativeActionMenuOwnsNavigationSurface(ApolloNavigationActionsMenuSourceView(container))) return items;
     objc_setAssociatedObject(navItem, kApolloGlobeStandaloneItemKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // Moving the globe only empties the standalone item's host view; the item
+    // itself leaves the bar with the array set that follows.
     [UIView performWithoutAnimation:^{ ApolloMergeGlobeIntoContainer(globe, container); }];
+    if (![items containsObject:standalone]) return items;
+    NSMutableArray<UIBarButtonItem *> *filtered = [items mutableCopy];
+    [filtered removeObject:standalone];
+    ApolloLog(@"[Translation] Globe: merged into restored container; dropped standalone item from incoming right items");
+    return filtered;
 }
 
 // Supply both search actions before the editor expands into the available gap.
@@ -11358,8 +11384,7 @@ static NSArray<UIBarButtonItem *> *ApolloSearchItemsWithGlobe(UINavigationItem *
     NSArray *prepared = ApolloSearchItemsWithGlobe(self, items);
     // Settle the button allocation first; the title capsule owns its resize.
     if (prepared != items) animated = NO;
-    items = prepared;
-    ApolloRestoreGlobeBeforeSearchDismissal(self, items);
+    items = ApolloRestoreGlobeBeforeSearchDismissal(self, prepared);
     %orig(items, animated);
     // Subreddit headers size this nav item's title against the trailing
     // cluster. The owner association makes this a small, local invalidation.
@@ -11383,7 +11408,11 @@ static NSArray<UIBarButtonItem *> *ApolloSearchItemsWithGlobe(UINavigationItem *
         [self setRightBarButtonItems:prepared animated:NO];
         return;
     }
-    ApolloRestoreGlobeBeforeSearchDismissal(self, items);
+    NSArray *restored = ApolloRestoreGlobeBeforeSearchDismissal(self, items);
+    if (restored != items) {
+        [self setRightBarButtonItems:restored animated:animated];
+        return;
+    }
     %orig(item, animated);
     if (sShowSubredditHeaders && !sApplyingGlobeMerge) ApolloSubredditRequestTitleRelayout(self);
     if (sApplyingGlobeMerge) return;

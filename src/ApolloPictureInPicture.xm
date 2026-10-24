@@ -5,6 +5,7 @@
 #import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloDeviceGeometry.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloMediaAutoplay.h"
 #import "ApolloState.h"
@@ -232,6 +233,25 @@ static void PiPClaimMixablePlaybackSession(void) {
     [session setActive:YES withOptions:0 error:nil];
 }
 
+// Return the top edge of a view only when it is actually visible and occludes
+// the bottom edge of the app window at the video's horizontal midpoint. A tab
+// bar can stay attached to a window while hidden, translated away, or
+// repurposed as iPadOS's top/side tab sidebar; testing `tabBar.window` alone
+// therefore subtracts phantom chrome. Testing the x coordinate also prevents a
+// vertical sidebar that reaches the bottom from shrinking the whole window.
+static BOOL PiPBottomOcclusionTopForView(UIView *view, UIWindow *window,
+                                         CGFloat horizontalPoint, CGFloat *topOut) {
+    if (!view || !window || view.window != window || view.hidden || view.alpha <= 0.01) return NO;
+    CGRect frame = [view convertRect:view.bounds toView:window];
+    CGRect visible = CGRectIntersection(frame, window.bounds);
+    if (CGRectIsNull(visible) || CGRectIsEmpty(visible)) return NO;
+    CGFloat windowBottom = CGRectGetMaxY(window.bounds);
+    if (CGRectGetMaxY(visible) < windowBottom - 1.0) return NO;
+    if (!CGRectContainsPoint(visible, CGPointMake(horizontalPoint, windowBottom - 0.5))) return NO;
+    if (topOut) *topOut = CGRectGetMinY(visible);
+    return YES;
+}
+
 // Did the user turn this player's sound on? player.muted alone can't answer:
 // Apollo's fresh comments/fullscreen players keep AVPlayer's default
 // muted == NO (silenced by the Ambient session), so a muted-sounding video can
@@ -267,15 +287,16 @@ static BOOL PiPIsVideoMidpointVisible(id videoNode, id cellNode) {
     UIViewController *rootVC = window.rootViewController;
     if ([rootVC isKindOfClass:[UITabBarController class]]) {
         UITabBarController *tab = (UITabBarController *)rootVC;
-        if (tab.tabBar.window) {
-            bottomY -= tab.tabBar.bounds.size.height;
-        }
-        UIViewController *selected = tab.selectedViewController;
-        if ([selected isKindOfClass:[UINavigationController class]]) {
-            UINavigationBar *navBar = ((UINavigationController *)selected).navigationBar;
-            if (navBar.window) {
-                topY = CGRectGetMaxY([navBar convertRect:navBar.bounds toView:nil]);
-            }
+        CGFloat tabBarTop = 0.0;
+        if (PiPBottomOcclusionTopForView(tab.tabBar, window, mid.x, &tabBarTop)) bottomY = tabBarTop;
+        // Unwraps the iPad pane layout's split view controller; identity
+        // otherwise. Any column's bar gives the same top inset — they are laid
+        // out at the same y — so the primary column's is enough.
+        UINavigationController *selectedNav =
+            ApolloNavigationControllerForTabChild(tab.selectedViewController);
+        UINavigationBar *navBar = selectedNav.navigationBar;
+        if (navBar.window) {
+            topY = CGRectGetMaxY([navBar convertRect:navBar.bounds toView:nil]);
         }
     }
 
@@ -1184,28 +1205,22 @@ static BOOL sPiPSessionHandbackInProgress = NO;
 // =============================================================================
 
 - (void)ensureWindowForAnchorView:(UIView *)anchorView {
-    UIWindowScene *scene = anchorView.window.windowScene;
-    if (!scene) {
-        for (UIScene *candidate in [UIApplication sharedApplication].connectedScenes) {
-            if ([candidate isKindOfClass:[UIWindowScene class]]
-                && candidate.activationState == UISceneActivationStateForegroundActive) {
-                scene = (UIWindowScene *)candidate;
-                break;
-            }
-        }
-    }
+    UIWindowScene *scene = anchorView.window.windowScene ?: ApolloDevicePreferredWindowScene();
 
     if (self.window && (!scene || self.window.windowScene == scene)) {
         self.window.hidden = NO;
         return;
     }
 
-    ApolloPiPWindow *window = scene
-        ? [[ApolloPiPWindow alloc] initWithWindowScene:scene]
-        // TODO: Modernization - no foreground-active window scene was found, so
-        // this sceneless fallback window still assumes the main screen's bounds.
-        // It should instead defer creating the window until a scene activates.
-        : [[ApolloPiPWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+    ApolloPiPWindow *window = nil;
+    if (scene) {
+        window = [[ApolloPiPWindow alloc] initWithWindowScene:scene];
+    } else {
+        // Last resort only: no connected scene yet. Prefer the geometry
+        // helper's screen (still mainScreen if nothing else exists) so this
+        // is not a second, ad-hoc mainScreen reader.
+        window = [[ApolloPiPWindow alloc] initWithFrame:ApolloDevicePreferredScreen().bounds];
+    }
     window.windowLevel = UIWindowLevelNormal + 50; // above app UI, below alerts/keyboard
     window.backgroundColor = [UIColor clearColor];
 
@@ -1457,7 +1472,7 @@ static BOOL sPiPSessionHandbackInProgress = NO;
 
 - (CGPoint)centerForCorner:(NSInteger)corner size:(CGSize)size {
     CGRect bounds = self.window.bounds;
-    UIEdgeInsets insets = self.window.safeAreaInsets;
+    UIEdgeInsets insets = ApolloDeviceChromeInsetsForView(self.window);
     CGFloat leftX = insets.left + kPiPEdgeMargin + size.width / 2;
     CGFloat rightX = bounds.size.width - insets.right - kPiPEdgeMargin - size.width / 2;
     CGFloat topY = insets.top + kPiPEdgeMargin + size.height / 2;
@@ -1485,7 +1500,7 @@ static BOOL sPiPSessionHandbackInProgress = NO;
 // the safe area + margin.
 - (CGPoint)clampedCenter:(CGPoint)center forSize:(CGSize)size {
     CGRect bounds = self.window.bounds;
-    UIEdgeInsets insets = self.window.safeAreaInsets;
+    UIEdgeInsets insets = ApolloDeviceChromeInsetsForView(self.window);
     CGFloat minX = insets.left + kPiPEdgeMargin + size.width / 2;
     CGFloat maxX = bounds.size.width - insets.right - kPiPEdgeMargin - size.width / 2;
     CGFloat minY = insets.top + kPiPEdgeMargin + size.height / 2;
@@ -1609,7 +1624,7 @@ static BOOL sPiPSessionHandbackInProgress = NO;
 // (clamped). Only kPiPStashVisibleWidth of the card stays on screen.
 - (CGRect)stashFrameForSide:(NSInteger)side size:(CGSize)size centerY:(CGFloat)centerY {
     CGRect bounds = self.window.bounds;
-    UIEdgeInsets insets = self.window.safeAreaInsets;
+    UIEdgeInsets insets = ApolloDeviceChromeInsetsForView(self.window);
     CGFloat y = centerY - size.height / 2;
     CGFloat minY = insets.top + kPiPEdgeMargin;
     CGFloat maxY = bounds.size.height - insets.bottom - kPiPEdgeMargin - size.height;

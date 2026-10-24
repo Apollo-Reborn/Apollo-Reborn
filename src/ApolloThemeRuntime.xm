@@ -524,10 +524,19 @@ typedef struct { uint32_t rgb; ApolloThemeToken token; uint8_t mode; } RGBTokenE
 //   primaryBG   -> SecondaryBackground (card surface: CFD7E8 / 061636)
 //   secondaryBG -> Background          (page behind cells: BAC1D1 / 081D47)
 //   tertiaryBG  -> TertiaryBackground  (raised: C1C8D9 / 041129)
-//   separator   -> Separator           (B5B9C7 / 06214D)
-//   bar         -> BarBackground        (C5CAD9 / 031229)
+//   separator   -> Separator           (B5B9C7 / 06214D, 203454)
+//   bar         -> BarBackground        (C5CAD9 / 031229, 182237)
 //   gray        -> SecondaryLabel       (ABABAB / 484E5B)
 //   unread      -> Selection            (95C0EE / 034388)
+//
+// Outrun's dark separator and bar each have two constants. Their getters
+// (sub_10068d6e0 separator, sub_10068de08 bar) read UsePureBlackDarkMode from
+// the group.com.christianselig.apollo suite: #06214D / #031229 with Pure Black
+// on, #203454 / #182237 with it off. Both pairs must map, or every custom
+// theme with Pure Black off keeps Outrun's navy wherever Apollo paints the
+// bar role: the classic feed search toolbar and the filler above it when the
+// feed is pulled down (#1452). Each constant is built once in the binary,
+// inside those getters, so the extra entries can't catch unrelated colours.
 static const RGBTokenEntry kDonorEntries[] = {
     { 0xC400A6, ApolloThemeTokenAccent,              ApolloThemeModeLight },
     { 0xFF00D8, ApolloThemeTokenAccent,              ApolloThemeModeDark  },
@@ -539,8 +548,10 @@ static const RGBTokenEntry kDonorEntries[] = {
     { 0x041129, ApolloThemeTokenTertiaryBackground,  ApolloThemeModeDark  },
     { 0xB5B9C7, ApolloThemeTokenSeparator,           ApolloThemeModeLight },
     { 0x06214D, ApolloThemeTokenSeparator,           ApolloThemeModeDark  },
+    { 0x203454, ApolloThemeTokenSeparator,           ApolloThemeModeDark  }, // Pure Black off
     { 0xC5CAD9, ApolloThemeTokenBarBackground,       ApolloThemeModeLight },
     { 0x031229, ApolloThemeTokenBarBackground,       ApolloThemeModeDark  },
+    { 0x182237, ApolloThemeTokenBarBackground,       ApolloThemeModeDark  }, // Pure Black off
     { 0xABABAB, ApolloThemeTokenSecondaryLabel,      ApolloThemeModeLight },
     { 0x484E5B, ApolloThemeTokenSecondaryLabel,      ApolloThemeModeDark  },
     // Inbox unread-message tint. Outrun's UNREAD row background comes from a
@@ -1366,7 +1377,9 @@ static NSString * const kPureBlackReduceSmearingKey = @"PureBlackModeReduceSmear
 // 0x100ae3c14, arms off 0x10068b6bc). One table so all five stay in sync.
 //
 // tinted themes (solarized/outrun/sunset/sepia/dracula) retint everything
-// themselves and ignore Pure Black entirely. Non-tinted themes share one
+// themselves, and their card, page and accent ignore Pure Black. (Apollo's
+// own separator and bar getters still fork on it for all but dracula; see
+// kDonorEntries for Outrun's pair.) Non-tinted themes share one
 // baseline each (card 0x20252F, page 0x2B3039, separator 0x474E5C) that
 // ApolloStockNonTintedDarkCardRGB / ...PageRGB / ...SeparatorRGB override per
 // Apollo's Pure Black tier.
@@ -1590,9 +1603,8 @@ static UIColor *ApolloThemeSettingsLabelColor(BOOL secondary) {
 UIColor *ApolloThemeSettingsTextColor(void) { return ApolloThemeSettingsLabelColor(NO); }
 UIColor *ApolloThemeSettingsSecondaryTextColor(void) { return ApolloThemeSettingsLabelColor(YES); }
 
-// Dark-mode separator override for a non-tinted stock theme. One "on" value
-// covers both Pure Black tiers — PURER doesn't push the separator any
-// further than plain Pure Black does (unlike the card).
+// Share custom-token and stock Pure Black handling across the list's row,
+// section header, primary text, and secondary text roles.
 // Keep the plain subreddit list independent of the grouped settings-card
 // palette. Both Pure Black tiers retain #1A1A1A section bands and use the
 // page's black (or smearing-reduced black) for rows.
@@ -1626,6 +1638,9 @@ UIColor *ApolloThemeSubredditListHeaderBackgroundColor(void) { return ApolloThem
 UIColor *ApolloThemeSubredditListTextColor(void) { return ApolloThemeSubredditListColor(2); }
 UIColor *ApolloThemeSubredditListSecondaryTextColor(void) { return ApolloThemeSubredditListColor(3); }
 
+// Dark-mode separator override for a non-tinted stock theme. One "on" value
+// covers both Pure Black tiers — PURER doesn't push the separator any
+// further than plain Pure Black does (unlike the card).
 static BOOL ApolloStockNonTintedDarkSeparatorRGB(uint32_t *outRGB) {
     NSUserDefaults *d = GroupDefaults();
     if (![d boolForKey:kUsePureBlackDarkModeKey]) return NO;

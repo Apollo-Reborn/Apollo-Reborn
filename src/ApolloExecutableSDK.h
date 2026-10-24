@@ -71,4 +71,16 @@ static inline bool ApolloSDKSupportsLiquidGlassCompatibility(uint32_t sdk, bool 
     return ApolloSDKEnablesLiquidGlass(sdk, glassRuntime) && (sdk >> 16) < 27;
 }
 
+// SDK 27 is required for Duo's native canvas, but no longer honors the plist
+// opt-out. A separately validated UIKit launch override can serve single-
+// display devices. Unknown capabilities and future SDK/OS versions keep the
+// system design; they must not expose a switch we cannot apply.
+static inline bool ApolloSDKSupportsLiquidGlassRuntimeSelection(uint32_t sdk,
+                                                               bool glassRuntime,
+                                                               long runtimeMajor,
+                                                               long logicalDisplayCount) {
+    return glassRuntime && (sdk >> 16) == 27 &&
+        (runtimeMajor == 26 || runtimeMajor == 27) && logicalDisplayCount == 1;
+}
+
 #endif

@@ -13,6 +13,8 @@ body:
         - Existing [login issues](https://github.com/Apollo-Reborn/Apollo-Reborn/issues?q=is%3Aissue+label%3Aquestion+login) — note that Reddit has been revoking API keys, which is **not** something the tweak can fix.
         - Make sure you are running at least version 3.1.0 of Apollo Reborn if you are using a custom redirect URI.
 
+        **Please include a debug log.** It shows where the sign-in failed, and without one we may not be able to tell what's going wrong.
+
   - type: checkboxes
     id: preflight
     attributes:
@@ -43,6 +45,30 @@ body:
       label: What happens?
       description: Describe exactly where it fails. Include the error text shown (e.g. "{}", "can't open the page"), and what the in-app browser does at the final "Accept"/"Open in Apollo" step.
       placeholder: I enter my username and password, tap Accept, and the in-app browser says...
+    validations:
+      required: true
+
+  # Same label as bug_report.yml: .github/scripts/issue-log-check.js keys on it.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Debug log or crash log
+      description: |
+        Strongly recommended. Try signing in once more, then (before closing Apollo) go to **Settings → Apollo Reborn → Advanced → Export Debug Logs** and save the `.log` file, e.g. with Save to Files. Drag the file into this box, or use the attach-files link under it.
+
+        Logs never include passwords or API keys, but like everything here they're public.
+      placeholder: Attach your apollo-reborn-….log file here.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: log-attached
+    attributes:
+      label: Did you attach a debug log?
+      description: Without a log we may not be able to tell why sign-in fails.
+      options:
+        - "Yes, it's attached above"
+        - "No, continue without a log (I understand my issue may not get fixed without one)"
     validations:
       required: true
 

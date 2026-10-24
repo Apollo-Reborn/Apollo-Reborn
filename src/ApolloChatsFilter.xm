@@ -19,6 +19,7 @@
 #import "ApolloChatRoomDirectory.h"
 #import "ApolloChatUnreadPoller.h"
 #import "ApolloCommon.h"
+#import "ApolloDuoRail.h"
 #import "ApolloDirectChatWeb.h"
 #import "ApolloState.h"
 #import "ApolloSwiftRuntime.h"
@@ -342,6 +343,7 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
 @property (nonatomic, strong) UIButton *chatButton;
 @property (nonatomic, strong) UILabel *chatUnreadBadge;
 @property (nonatomic, assign) ApolloInboxMode selectedMode;
+@property (nonatomic, assign) CGRect lastSegmentedFrame;
 - (void)apollo_setSelectedMode:(ApolloInboxMode)mode animated:(BOOL)animated;
 - (void)apollo_refreshForTraits:(UITraitCollection *)traits;
 @end
@@ -424,9 +426,27 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
     return self;
 }
 
+// On iPhone Duo the Inbox page moves into a split detail column whose trailing
+// edge sits under the tab rail. The switcher spans its host view edge to edge,
+// so follow the horizontal safe area there (and re-lay out when it changes).
+- (void)safeAreaInsetsDidChange {
+    [super safeAreaInsetsDidChange];
+    if (ApolloDuoDeviceDetected()) [self setNeedsLayout];
+}
+
+- (CGRect)apollo_contentBounds {
+    CGRect bounds = self.bounds;
+    if (!ApolloDuoDeviceDetected()) return bounds;
+    UIEdgeInsets safe = self.safeAreaInsets;
+    bounds.origin.x += safe.left;
+    bounds.size.width = MAX(0.0, bounds.size.width - safe.left - safe.right);
+    return bounds;
+}
+
 - (void)layoutSubviews {
     [super layoutSubviews];
     if (CGRectGetWidth(self.bounds) <= 24.0 || CGRectGetHeight(self.bounds) <= 16.0) return;
+    CGRect contentBounds = [self apollo_contentBounds];
 
     CGFloat badgeWidth = 18.0;
     if (self.chatUnreadBadge.text.length > 1) {
@@ -441,10 +461,19 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
         CGFloat controlHeight = self.segmentedControl.intrinsicContentSize.height;
         if (controlHeight <= 0) controlHeight = 32.0;
         controlHeight = MIN(controlHeight, CGRectGetHeight(self.bounds) - 12.0);
-        CGRect controlFrame = CGRectMake(12.0,
+        CGRect controlFrame = CGRectMake(CGRectGetMinX(contentBounds) + 12.0,
                                          floor((CGRectGetHeight(self.bounds) - controlHeight) / 2.0),
-                                         CGRectGetWidth(self.bounds) - 24.0, controlHeight);
+                                         MAX(0.0, CGRectGetWidth(contentBounds) - 24.0), controlHeight);
         self.segmentedControl.frame = controlFrame;
+        if (!CGRectEqualToRect(controlFrame, self.lastSegmentedFrame)) {
+            // A width change while the control is offscreen (Inbox moving into
+            // the Duo detail column) leaves the glass thumb and segment labels
+            // at the old geometry: a label-less pill a third of its half wide.
+            // Lay the control out again at its new size right away.
+            self.lastSegmentedFrame = controlFrame;
+            [self.segmentedControl setNeedsLayout];
+            [self.segmentedControl layoutIfNeeded];
+        }
         // Overlay the pill beside the "Chat" title (right segment's midpoint,
         // same +20pt offset as the custom variant).
         CGFloat chatSegmentMidX = CGRectGetMinX(controlFrame) + controlFrame.size.width * 0.75;
@@ -453,7 +482,7 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
         return;
     }
 
-    self.containerView.frame = CGRectInset(self.bounds, 12.0, 8.0);
+    self.containerView.frame = CGRectInset(contentBounds, 12.0, 8.0);
     CGRect content = CGRectInset(self.containerView.bounds, 3.0, 3.0);
     CGFloat halfWidth = floor(content.size.width / 2.0);
     CGRect notificationsFrame = CGRectMake(content.origin.x, content.origin.y, halfWidth, content.size.height);

@@ -10,6 +10,8 @@
 
 #import "fishhook.h"
 #import "ApolloCommon.h"
+#import "ApolloDeviceGeometry.h"
+#import "ApolloDeviceIdentity.h"
 #import "ApolloRedditMediaUpload.h"
 #import "ApolloDeletedCommentsData.h"
 #import "ApolloImageUploadHost.h"
@@ -23,11 +25,15 @@
 #import "ApolloBarkNotifications.h"
 #import "ApolloLiquidGlassIconSelectionState.h"
 #import "ApolloState.h"
+#import "ApolloDuoRail.h"
+#import "ApolloDuoCompatibility.h"
 #import "ApolloTranslation.h"
 #import "ApolloRedgifsMissingDuration.h"
 #import "ApolloRedgifsErrorCards.h"
 #import "Tweak.h"
 #import "settings/CustomAPIViewController.h"
+#import "settings/ApolloSetupAssistant.h"
+#import "settings/ApolloSetupPreset.h"
 #import "settings/ApolloAutomaticBackup.h"
 #import "Version.h"
 #import "UserDefaultConstants.h"
@@ -1552,61 +1558,37 @@ static OSStatus SecItemDelete_replacement(CFDictionaryRef query) {
 }
 
 // --- Device detection (for media chrome, Pixel Pals and Dynamic Island behaviour) ---
-// Apollo's device model mapper (sub_1007a3cdc) only recognizes models up to iPhone 14 Pro Max.
-// Newer models return "unknown" (0x3f) and get no Pixel Pals.
-// Remap newer machine identifiers to "iPhone15,2" (iPhone 14 Pro) so Apollo
-// treats them as Dynamic Island devices and enables full Pixel Pals + FauxCutOutView.
-// This also keeps the portrait gallery counter at the top right;
-// unknown devices get the centered "1 of 5" layout.
-// Apollo then lays Pixel Pals out for the 14 Pro's 125x37 island;
-// ApolloPixelPals.xm remaps that onto the device's real island (position on
-// every DI device, and size on the iPhone 18 Pro's smaller island).
+// Apollo's model mapper only recognizes devices through iPhone 14 Pro Max.
+// Map newer models through ApolloDeviceIdentity.h (14 Pro = island, 14 = notch),
+// preserving media chrome and Pixel Pals on regular phones. ApolloPixelPals.xm
+// follows the real island's size and position.
 static void *uname_orig;
 static int uname_replacement(struct utsname *buf) {
     int ret = ((int (*)(struct utsname *))uname_orig)(buf);
     if (ret != 0) return ret;
 
-    // iPhone15,4+ are all unrecognized by Apollo's mapper.
-    // Map Dynamic Island models to iPhone15,2 (iPhone 14 Pro) and notch models to iPhone14,7 (iPhone 14)
-    static NSDictionary *modelRemap;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        NSString *di    = @"iPhone15,2";  // iPhone 14 Pro (Dynamic Island)
-        NSString *notch = @"iPhone14,7";  // iPhone 14 (notch)
-
-        modelRemap = @{
-            @"iPhone15,4": di,    // iPhone 15
-            @"iPhone15,5": di,    // iPhone 15 Plus
-            @"iPhone16,1": di,    // iPhone 15 Pro
-            @"iPhone16,2": di,    // iPhone 15 Pro Max
-            @"iPhone17,1": di,    // iPhone 16 Pro
-            @"iPhone17,2": di,    // iPhone 16 Pro Max
-            @"iPhone17,3": di,    // iPhone 16
-            @"iPhone17,4": di,    // iPhone 16 Plus
-            @"iPhone17,5": notch, // iPhone 16e
-            @"iPhone18,1": di,    // iPhone 17 Pro
-            @"iPhone18,2": di,    // iPhone 17 Pro Max
-            @"iPhone18,3": di,    // iPhone 17
-            @"iPhone18,4": di,    // iPhone Air
-            @"iPhone18,5": notch, // iPhone 17e
-            @"iPhone19,2": di,    // iPhone 18 Pro
-            @"iPhone19,3": di,    // iPhone 18 Pro Max
-        };
-    });
-
     NSString *machine = @(buf->machine);
 #if APOLLO_SIM_BUILD
     // The simulator's uname reports the host arch ("arm64"), so Apollo's
     // device mapper sees "unknown" and hides Pixel Pals. Substitute the
-    // simulated device's identifier so the same remap table below applies.
+    // simulated device's identifier so the same classification applies.
     if (![machine hasPrefix:@"iPhone"]) {
         const char *simModel = getenv("SIMULATOR_MODEL_IDENTIFIER");
         if (simModel) machine = @(simModel);
     }
 #endif
-    NSString *remap = modelRemap[machine];
+
+    // Classification only — uname is called from arbitrary threads before
+    // UIKit is up. A live cutout is applied later per window.
+    ApolloDeviceIdentityKind kind =
+        ApolloDeviceIdentityKindForMachine(machine.UTF8String, false, false);
+    const char *remap = ApolloDeviceIdentityModelForKind(kind);
     if (remap) {
-        strlcpy(buf->machine, remap.UTF8String, sizeof(buf->machine));
+        strlcpy(buf->machine, remap, sizeof(buf->machine));
+        static dispatch_once_t logOnce;
+        dispatch_once(&logOnce, ^{
+            ApolloLog(@"[DeviceIdentity] %@ → %s", machine, remap);
+        });
     }
 #if APOLLO_SIM_BUILD
     else if (![@(buf->machine) isEqualToString:machine]) {
@@ -2847,10 +2829,11 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
     // claimed for Reddit regardless of the Media Upload Host (see
     // ApolloShouldUseCookieRedditUpload), so their multi-image albums must be
     // synthesized into Reddit galleries too. The synthesis only succeeds when
-    // >= 2 of the album's member tokens map to RECORDED Reddit uploads, so a
+    // all of the album's member tokens map to RECORDED Reddit uploads, so a
     // genuine Imgur album (Imgur-hosted member ids) still passes through to
-    // Imgur untouched. ImgChest keeps its own album responder below.
-    NSData *redditAlbumResponseData = sImageUploadProvider != ImageUploadProviderImgChest ? ApolloRedditSyntheticImgurAlbumResponseDataForRequest(request) : nil;
+    // Imgur untouched. Claim by member ownership, since Comment Link Host /
+    // Auto can override Media Upload Host. ImgChest has its own responder below.
+    NSData *redditAlbumResponseData = completionHandler ? ApolloRedditSyntheticImgurAlbumResponseDataForRequest(request) : nil;
     if (redditAlbumResponseData.length > 0) {
         NSHTTPURLResponse *fakeHTTPResponse = [[NSHTTPURLResponse alloc] initWithURL:url
                                                                           statusCode:200
@@ -2865,9 +2848,7 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
     // ImgChest host: combine the member uploads into one multi-image ImgChest
     // post and answer the Imgur album creation with its link.
     ApolloImgChestAlbumResponder imgChestAlbumResponder = nil;
-    if (sImageUploadProvider == ImageUploadProviderImgChest) {
-        imgChestAlbumResponder = ApolloImgChestAlbumCreationResponderForRequest(request);
-    }
+    if (completionHandler) imgChestAlbumResponder = ApolloImgChestAlbumCreationResponderForRequest(request);
     if (completionHandler && imgChestAlbumResponder) {
         __block __weak NSURLSessionDataTask *proxyTask = nil;
         void (^wrappedHandler)(NSData *, NSURLResponse *, NSError *) = ^(NSData *data, NSURLResponse *response, NSError *error) {
@@ -3762,6 +3743,9 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyIPadTabBarBottom: @NO,
                                     UDKeySettingsIconAppearance: @(ApolloSettingsIconAppearanceLight),
                                     UDKeyTabBarSwipeNavigation: @NO,
+                                    UDKeyDuoLandscapeFeedLayout: @0,
+                                    UDKeyDuoSubredditPanelGlassEnabled: @NO,
+                                    UDKeyIPadPaneLayout: @NO,
                                     UDKeyLiquidGlassEnabled: @YES,
                                     UDKeyIconRowMagnifier: @YES,
                                     UDKeyInfoRowTapUpvote: @YES,
@@ -4076,6 +4060,17 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     // sLiquidGlassEnabled was already latched in ApolloCommon +load. Do not
     // reload it here: UIKit and early hook constructors use that launch choice.
     sTabBarSwipeNavigation = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyTabBarSwipeNavigation];
+    sDuoLandscapeFeedLayout = [standardDefaults integerForKey:UDKeyDuoLandscapeFeedLayout];
+    sDuoSubredditPanelGlassEnabled = [standardDefaults boolForKey:UDKeyDuoSubredditPanelGlassEnabled];
+    // Value 1 belonged to the removed side-by-side experiment. Keep Focused
+    // feed at 2 so existing selections survive this menu cleanup.
+    if (sDuoLandscapeFeedLayout != 0 && sDuoLandscapeFeedLayout != 2) {
+        sDuoLandscapeFeedLayout = 0;
+        [standardDefaults setInteger:0 forKey:UDKeyDuoLandscapeFeedLayout];
+    }
+    // Read once here: ApolloPaneInstall.xm builds the split controllers during
+    // scene connect, which happens after %ctor and never again for the process.
+    sIPadPaneLayout = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyIPadPaneLayout];
     sIconRowMagnifier = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyIconRowMagnifier];
     sInfoRowTapUpvote = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyInfoRowTapUpvote];
     sInfoRowTapComments = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyInfoRowTapComments];
@@ -4512,17 +4507,31 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     // Mirror the selected app icon for Bark notification icon passthrough.
     ApolloBarkCaptureInitialIconSelection();
 
+    ApolloSetupAssistantStart();
+
     // Redirect user to Custom API settings if no API credentials are set — but not
     // when at least one web-session account is configured (no API key is expected
     // for those). Checked by configured-account count, not the active account, so
     // this doesn't depend on which account happens to be current right now.
-    if ([sRedditClientId length] == 0 && !(sWebJSONEnabled && ApolloWebSessionUsernames().count > 0)) {
+    if ([standardDefaults integerForKey:UDKeySetupAssistantState] == ApolloSetupStateExistingInstall &&
+        !ApolloSetupAssistantBlocksLaunchPrompts() &&
+        [sRedditClientId length] == 0 && !(sWebJSONEnabled && ApolloWebSessionUsernames().count > 0)) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (ApolloSetupAssistantBlocksLaunchPrompts()) return;
             UIWindow *mainWindow = ((UIWindowScene *)UIApplication.sharedApplication.connectedScenes.anyObject).windows.firstObject;
             UITabBarController *tabBarController = (UITabBarController *)mainWindow.rootViewController;
             // Navigate to Settings tab
             tabBarController.selectedViewController = [tabBarController.viewControllers lastObject];
-            UINavigationController *settingsNavController = (UINavigationController *) tabBarController.selectedViewController;
+            // The selected child is the navigation controller in the stock
+            // layout, but a UISplitViewController under the iPad pane layout —
+            // unwrap rather than casting, or this push hits the split
+            // controller and throws.
+            UINavigationController *settingsNavController =
+                ApolloNavigationControllerForTabChild(tabBarController.selectedViewController);
+            if (!settingsNavController) {
+                ApolloLog(@"[Tweak] no navigation controller for the settings tab; skipping Custom API redirect");
+                return;
+            }
 
             // Push Custom API directly
             CustomAPIViewController *vc = [[CustomAPIViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
@@ -4538,6 +4547,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                     object:nil
                      queue:[NSOperationQueue mainQueue]
                 usingBlock:^(NSNotification *note) {
+        if (ApolloSetupAssistantBlocksLaunchPrompts()) return;
         ApolloSendUsageHeartbeatIfNeeded();
         ApolloUpdateCheckIfNeeded();
     }];

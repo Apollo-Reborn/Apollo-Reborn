@@ -68,6 +68,20 @@ field_end = theme.index("%end", field_start)
 field_hook = theme[field_start:field_end]
 require(field_hook, "ApolloThemeTokenTertiaryBackground", "Raised-role search field retained")
 
+# The classic search toolbar and its pull-down filler use Outrun's dark bar
+# constant, which Apollo picks by Pure Black Dark Mode (#1452). Both values of
+# the bar and separator pairs must stay in the donor table.
+donor_start = theme.index("static const RGBTokenEntry kDonorEntries[] = {")
+donor_end = theme.index("};", donor_start)
+donor = theme[donor_start:donor_end]
+for rgb, token, message in (
+    ("0x031229", "ApolloThemeTokenBarBackground", "dark Bars, Pure Black on"),
+    ("0x182237", "ApolloThemeTokenBarBackground", "dark Bars, Pure Black off"),
+    ("0x06214D", "ApolloThemeTokenSeparator", "dark separator, Pure Black on"),
+    ("0x203454", "ApolloThemeTokenSeparator", "dark separator, Pure Black off"),
+):
+    require(donor, "{ %s, %s," % (rgb, token), "Outrun donor " + message)
+
 print("classic_bar_theme_regression_check passed")
 PY
 
