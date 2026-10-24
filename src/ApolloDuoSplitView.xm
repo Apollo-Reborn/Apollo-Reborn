@@ -2814,22 +2814,36 @@ static BOOL ApolloDuoPostsRouteFeedLink(ApolloDuoSplitState *state, UINavigation
     return YES;
 }
 
-// Back to a feed that a link left: put its thread back in the right pane.
-static void ApolloDuoPostsRestoreFeedLinkDetail(ApolloDuoSplitState *state, UIViewController *controller) {
+// Back to a feed that a link left: restore its retained thread in the current
+// presentation, including when rotation or folding removed the paired columns.
+static void ApolloDuoPostsRestoreFeedLinkDetail(ApolloDuoSplitState *state,
+                                               UINavigationController *navigation,
+                                               UIViewController *controller) {
     ApolloDuoFeedLinkReturn *ret = objc_getAssociatedObject(controller, &kDuoFeedLinkReturnDetail);
     NSArray *detail = ret.detail;
     // Only a real Back: the feed the link opened has left the stack.
-    if (!detail.count || controller != state.feed.topViewController || state.changing
-        || (ret.openedFeed && [state.feed.viewControllers containsObject:ret.openedFeed])) return;
-    objc_setAssociatedObject(controller, &kDuoFeedLinkReturnDetail, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    if (!ApolloDuoPostsUsesSplit(state)) return;
-    if (detail.count == 1) {
+    if (!detail.count || !navigation || controller != navigation.topViewController || state.changing
+        || (state.feed && navigation != state.feed)
+        || (ret.openedFeed && [navigation.viewControllers containsObject:ret.openedFeed])) return;
+    if (!state.feed || !ApolloDuoPostsUsesSplit(state)) {
+        // Native didShow has completed the pop. Keep these exact controllers
+        // (and their reading positions) on the single stack until columns return.
+        state.changing = YES;
+        [navigation setViewControllers:[navigation.viewControllers arrayByAddingObjectsFromArray:detail] animated:NO];
+        state.changing = NO;
+    } else if (!state.secondary.viewControllers.firstObject) {
+        // A column transition has not supplied its backstop yet. Retain the
+        // record rather than consuming history that cannot be installed.
+        return;
+    } else if (detail.count == 1) {
         ApolloDuoPostsSetDetail(state, detail.firstObject, YES);
     } else {
         UIViewController *backstop = state.secondary.viewControllers.firstObject;
         [state.secondary setViewControllers:[@[backstop] arrayByAddingObjectsFromArray:detail] animated:NO];
         ApolloDuoPostsSyncColumns(state);
     }
+    objc_setAssociatedObject(controller, &kDuoFeedLinkReturnDetail, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!state.feed || !ApolloDuoPostsUsesSplit(state)) ApolloDuoPostsSyncColumns(state);
     ApolloLog(@"[DuoSplit] Back from a feed link; restored %lu thread page(s)", (unsigned long)detail.count);
 }
 
@@ -3104,7 +3118,11 @@ static NSIndexPath *ApolloDuoListWillSelect(id controller, SEL selector, UITable
     // didSelect into native section space later, so resolving a row there would
     // double-map reordered/FOLLOWING sections and could suppress the wrong row.
     NSString *target = ApolloSubredditListNameAtIndexPath(table, candidate);
-    NSString *current = ApolloNamedSubredditForPostsController(state.feed.viewControllers.firstObject);
+    // Linked feeds retain earlier feeds in Back history. Portrait can also
+    // append comments, so compare with the last feed rather than either end.
+    NSUInteger feedPages = ApolloDuoFeedStackKeptCount(state.feed);
+    UIViewController *visibleFeed = feedPages ? state.feed.viewControllers[feedPages - 1] : nil;
+    NSString *current = ApolloNamedSubredditForPostsController(visibleFeed);
     if (target.length == 0 || current.length == 0
         || [target caseInsensitiveCompare:current] != NSOrderedSame) return candidate;
 
@@ -3173,8 +3191,8 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     // Relayout the host then so it does not keep the outgoing Back reservation.
     if (navigation == state.feed) {
         [state.host.viewIfLoaded setNeedsLayout];
-        ApolloDuoPostsRestoreFeedLinkDetail(state, controller);
     }
+    ApolloDuoPostsRestoreFeedLinkDetail(state, navigation, controller);
 }
 - (void)setNavigationBarHidden:(BOOL)hidden animated:(BOOL)animated {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(self, NO);
