@@ -737,6 +737,12 @@ static UIScrollView *ApolloPostsTabContentScrollView(UIView *view, CGRect viewpo
         return %orig(tabBarController, viewController);
     }
     UINavigationController *outer = (UINavigationController *)viewController;
+    // An open subreddit drawer covers the feed. Close it rather than scrolling
+    // or popping the hidden page underneath.
+    if (ApolloDuoSplitDismissPostsList(outer)) {
+        ApolloLog(@"[PostsTab] Closed subreddit list");
+        return NO;
+    }
     // The outer Duo tab contains only a split host. Scroll/pop the actual
     // detail stack, so the sidebar and its own scroll position stay intact.
     UINavigationController *nav = ApolloDuoSplitDetailNavigation(outer);
