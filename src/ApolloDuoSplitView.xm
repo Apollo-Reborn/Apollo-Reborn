@@ -1154,8 +1154,17 @@ BOOL ApolloDuoSplitIsSidebarController(UIViewController *controller) {
     return state.split && state.root == controller && ![state.kind isEqualToString:@"account"];
 }
 
-// A Posts-tab reselect at the feed root reveals the drawer without toggling it
-// closed again. Other tabs and the cover display keep their native behavior.
+// A Posts-tab reselect closes an open drawer before any scroll or pop, so the
+// tab toggles the list like its List button. The feed behind it is untouched.
+BOOL ApolloDuoSplitDismissPostsList(UINavigationController *nav) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    if (!state.split || !state.feed || state.changing || !state.host.listVisible) return NO;
+    [state.host setListVisible:NO animated:!UIAccessibilityIsReduceMotionEnabled()];
+    return YES;
+}
+
+// A Posts-tab reselect at the feed root reveals the drawer. Other tabs and the
+// cover display keep their native behavior.
 BOOL ApolloDuoSplitRevealPostsList(UINavigationController *nav) {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
     if (!state.split || !state.feed || state.changing) return NO;

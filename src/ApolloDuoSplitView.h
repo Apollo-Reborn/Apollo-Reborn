@@ -22,6 +22,8 @@ BOOL ApolloDuoSplitRevealPostsList(UINavigationController *navigation);
 BOOL ApolloDuoSplitAllowsNavigationSwipe(UINavigationController *navigation);
 /// Only the Posts feed root can open its closed drawer with an edge swipe.
 BOOL ApolloDuoSplitCanRevealPostsListWithSwipe(UINavigationController *navigation);
+/// Closes the Posts subreddit drawer when it is open; NO when it was not.
+BOOL ApolloDuoSplitDismissPostsList(UINavigationController *navigation);
 /// Returns from a visited profile dashboard to its retained Posts Back stack.
 BOOL ApolloDuoSplitReturnFromVisitedProfile(UINavigationController *navigation);
 BOOL ApolloDuoSplitShowSidebar(UINavigationController *navigation);
