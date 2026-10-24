@@ -3106,6 +3106,29 @@ static UIViewController *ApolloDuoPostsPopFeedLink(ApolloDuoSplitState *state, B
     return top;
 }
 
+// Apollo opens a Reddit link in whichever tab is showing. On Duo Settings is
+// a split, so a subreddit or post opened from Safari there landed in the
+// Settings detail column and stayed. Open it from the Posts tab instead.
+static BOOL ApolloDuoSplitRouteSettingsRedditContent(ApolloDuoSplitState *state, UIViewController *page, BOOL animated) {
+    if (state.split && !state.changing && [state.kind isEqualToString:@"settings"]
+        && ([page isKindOfClass:ApolloClassPostsViewController]
+            || [page isKindOfClass:ApolloClassCommentsViewController])) {
+        UITabBarController *tabs = state.outer.tabBarController;
+        if ([tabs respondsToSelector:@selector(goToHomeTab)]) {
+            ((void (*)(id, SEL))objc_msgSend)(tabs, @selector(goToHomeTab));
+        } else {
+            tabs.selectedViewController = tabs.viewControllers.firstObject;
+        }
+        UINavigationController *posts = (id)tabs.selectedViewController;
+        if ([posts isKindOfClass:UINavigationController.class] && posts != state.outer) {
+            ApolloLog(@"[DuoSplit] %@ opened from Settings; showing it in Posts", NSStringFromClass(page.class));
+            [posts pushViewController:page animated:animated];
+            return YES;
+        }
+    }
+    return NO;
+}
+
 static BOOL ApolloDuoSplitRoutePush(UINavigationController *nav, UIViewController *page, BOOL animated) {
     if (sDuoSplitPushingFeedLink) return NO;
     // UIKit pushes column containers while adapting a split. Those are native
@@ -3114,6 +3137,7 @@ static BOOL ApolloDuoSplitRoutePush(UINavigationController *nav, UIViewControlle
     if ([page isKindOfClass:UINavigationController.class] ||
         [page isKindOfClass:UISplitViewController.class]) return NO;
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, YES);
+    if (ApolloDuoSplitRouteSettingsRedditContent(state, page, animated)) return YES;
     if (state.split && !state.changing && [ApolloDuoSplitKind(page) isEqualToString:@"account"]) {
         if (ApolloDuoSplitShouldOpen((id)state.outer.tabBarController)) {
             ApolloDuoSplitNavigateProfile(state, page, YES);
