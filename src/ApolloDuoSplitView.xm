@@ -200,7 +200,7 @@ static void ApolloDuoSlideView(UIView *view, CGFloat from, CGFloat to, NSTimeInt
     [view.layer addAnimation:slide forKey:@"ApolloDuoSlide"];
 }
 
-@interface ApolloDuoSplitHost : UIViewController <UISplitViewControllerDelegate, ApolloDuoLayoutControl>
+@interface ApolloDuoSplitHost : UIViewController <UISplitViewControllerDelegate, UIGestureRecognizerDelegate, ApolloDuoLayoutControl>
 @property(nonatomic, strong) UISplitViewController *split;
 @property(nonatomic, strong) UINavigationController *subredditList;
 @property(nonatomic, weak) UINavigationController *postsNavigation;
@@ -254,7 +254,10 @@ static void ApolloDuoSlideView(UIView *view, CGFloat from, CGFloat to, NSTimeInt
 @property(nonatomic, strong) UIButton *moreButton;
 @property(nonatomic, strong) UINavigationBar *sidebarNavigationBar;
 @property(nonatomic, strong) UIButton *profileBackButton;
+@property(nonatomic, strong) UIScreenEdgePanGestureRecognizer *leadingSwipe;
 @end
+static BOOL ApolloDuoSplitLeadingSwipeShouldBegin(ApolloDuoSplitHost *host);
+static void ApolloDuoSplitLeadingSwipeFinished(ApolloDuoSplitHost *host);
 @implementation ApolloDuoSplitHost
 - (void)viewDidLoad {
     [super viewDidLoad];
@@ -403,6 +406,25 @@ static void ApolloDuoSlideView(UIView *view, CGFloat from, CGFloat to, NSTimeInt
         [self.view addSubview:self.sidebarNavigationBar];
         if (self.profileBackButton) [self.view addSubview:self.profileBackButton];
     }
+    // Apollo's Back swipe has nothing to pop at a bare feed root or a visited
+    // profile dashboard, whose Back pages live outside its one-page stack.
+    // Continue the regular phone's gesture there: reveal the subreddit list
+    // (the page beneath the feed on a phone), or leave the visited profile.
+    self.leadingSwipe = [[UIScreenEdgePanGestureRecognizer alloc] initWithTarget:self action:@selector(leadingSwipeChanged:)];
+    self.leadingSwipe.edges = UIRectEdgeLeft;
+    self.leadingSwipe.delegate = self;
+    [self.view addGestureRecognizer:self.leadingSwipe];
+}
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gesture {
+    if (gesture != self.leadingSwipe) return YES;
+    return ApolloDuoSplitLeadingSwipeShouldBegin(self);
+}
+- (void)leadingSwipeChanged:(UIScreenEdgePanGestureRecognizer *)gesture {
+    if (gesture.state != UIGestureRecognizerStateEnded) return;
+    // Require a deliberate swipe, as a completed native Back does, so brushing
+    // the screen edge while holding the device does not open anything.
+    if ([gesture translationInView:self.view].x < 40.0 && [gesture velocityInView:self.view].x < 400.0) return;
+    ApolloDuoSplitLeadingSwipeFinished(self);
 }
 - (void)viewDidDisappear:(BOOL)animated {
     [super viewDidDisappear:animated];
@@ -2611,19 +2633,47 @@ static void ApolloDuoSplitNavigateProfile(ApolloDuoSplitState *state, UIViewCont
     }];
 }
 
+static BOOL ApolloDuoSplitCanReturnFromVisitedProfile(ApolloDuoSplitState *state) {
+    return state.split && !state.changing && state.profilePrefix.count
+        && [state.kind isEqualToString:@"account"]
+        && [state.tabKind isEqualToString:@"subreddits"]
+        && state.secondary.viewControllers.count == 1
+        && state.secondary.topViewController == state.root;
+}
+
 BOOL ApolloDuoSplitReturnFromVisitedProfile(UINavigationController *navigation) {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(navigation, NO);
-    if (!state.split || state.changing || !state.profilePrefix.count
-        || ![state.kind isEqualToString:@"account"]
-        || ![state.tabKind isEqualToString:@"subreddits"]
-        || state.secondary.viewControllers.count != 1
-        || state.secondary.topViewController != state.root) return NO;
+    if (!ApolloDuoSplitCanReturnFromVisitedProfile(state)) return NO;
     // An unfolded visited profile is the dashboard's detail root. Its native
     // Back pages are retained outside that one-page navigation stack, so use
     // the same transition as the profile's Back button. The Account tab has
     // no Posts prefix and must retain its own profile at the top.
     ApolloDuoSplitNavigateProfile(state, nil, NO);
     return YES;
+}
+
+static BOOL ApolloDuoSplitLeadingSwipeShouldBegin(ApolloDuoSplitHost *host) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(host.navigationController, NO);
+    if (state.host != host || state.outer.presentedViewController) return NO;
+    if (ApolloDuoSplitCanReturnFromVisitedProfile(state)) return YES;
+    // Only a bare feed root. Apollo's native Back owns pushed pages and the
+    // comments column, so those keep popping exactly as before.
+    return state.split && state.feed && !state.changing && host.subredditList && !host.listVisible
+        && !host.postsShowingDetail && state.feed.viewControllers.count == 1
+        && !state.feed.transitionCoordinator;
+}
+
+static void ApolloDuoSplitLeadingSwipeFinished(ApolloDuoSplitHost *host) {
+    // Re-check: the page can change between the swipe's start and its end.
+    if (!ApolloDuoSplitLeadingSwipeShouldBegin(host)) return;
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(host.navigationController, NO);
+    if (ApolloDuoSplitCanReturnFromVisitedProfile(state)) {
+        ApolloLog(@"[DuoSplit] leading swipe returned from visited profile");
+        ApolloDuoSplitNavigateProfile(state, nil, NO);
+        return;
+    }
+    ApolloLog(@"[DuoSplit] leading swipe revealed subreddit list");
+    [host setListVisible:YES animated:!UIAccessibilityIsReduceMotionEnabled()];
 }
 
 static void ApolloDuoSplitUpdate(void) {
