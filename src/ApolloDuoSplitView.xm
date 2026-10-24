@@ -679,6 +679,15 @@ static void ApolloDuoSplitEndCommentsSwipe(ApolloDuoSplitHost *host, BOOL close,
 - (void)updateFeedLayoutButton {
     ApolloDuoRegisterLayoutControl(self);
     ApolloDuoRefreshLayoutButton(self.feedLayoutButton, self.feedLayoutBarItem);
+    [self applyFeedLayoutAvailability];
+}
+// Focused only applies to full-width content; paired columns are both narrow.
+// Dim the control in place instead of removing it, so the bar does not reflow
+// (and the control does not vanish and return) as threads open and close.
+- (void)applyFeedLayoutAvailability {
+    BOOL enabled = !sDuoFeedLayoutChanging && !self.postsColumnsPaired;
+    if (self.feedLayoutButton.enabled != enabled) self.feedLayoutButton.enabled = enabled;
+    if (self.feedLayoutBarItem.enabled != enabled) self.feedLayoutBarItem.enabled = enabled;
 }
 - (void)toggleFeedLayout { ApolloDuoToggleFeedLayout(self); }
 - (void)revealRestoredFeedControls {
@@ -968,7 +977,8 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
         // Carry the same control into full-width comments, just like List and
         // Split. Replacing it with the thread's standalone item makes its
         // glass and glyph disappear/reappear during the native push and Back.
-        self.feedLayoutButton.hidden = portrait || !supportsLayout || self.postsColumnsPaired;
+        self.feedLayoutButton.hidden = portrait || !supportsLayout;
+        [self applyFeedLayoutAvailability];
         if (self.feedControlsOwner != owner) {
             ApolloNativeFeedSearchSetDuoControls(self.feedControlsOwner, nil, nil, nil);
             self.feedControlsOwner = owner;
