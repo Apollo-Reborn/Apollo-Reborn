@@ -2023,6 +2023,48 @@ static NSString *ApolloDuoCommentsPostID(UIViewController *page) {
 // that layout together with the page: the retained live feed must resize as
 // comments enter/leave, not jump to its final width before a snapshot slides.
 // Once both columns exist, Apollo's native navigation animator owns pushes.
+// The feed rewraps when a thread opens or closes beside it, so rows above the
+// reader's place change height and the page drifts up or down. Keep the row
+// at the middle of the visible feed at the same height on screen instead.
+@interface ApolloDuoFeedAnchor : NSObject
+@property(nonatomic, strong) NSIndexPath *path;
+@property(nonatomic) CGFloat fraction;
+@property(nonatomic) CGFloat screenY;
+@end
+@implementation ApolloDuoFeedAnchor @end
+
+static ApolloDuoFeedAnchor *ApolloDuoCaptureFeedAnchor(UITableView *table) {
+    if (!table.window || table.dragging || table.decelerating) return nil;
+    UIEdgeInsets inset = table.adjustedContentInset;
+    CGFloat visible = table.bounds.size.height - inset.top - inset.bottom;
+    CGFloat middle = table.contentOffset.y + inset.top + visible / 2;
+    for (NSIndexPath *path in table.indexPathsForVisibleRows) {
+        CGRect rect = [table rectForRowAtIndexPath:path];
+        if (middle < CGRectGetMinY(rect) || middle >= CGRectGetMaxY(rect) || rect.size.height <= 0) continue;
+        ApolloDuoFeedAnchor *anchor = [ApolloDuoFeedAnchor new];
+        anchor.path = path;
+        anchor.fraction = (middle - CGRectGetMinY(rect)) / rect.size.height;
+        anchor.screenY = middle - table.contentOffset.y;
+        return anchor;
+    }
+    return nil;
+}
+
+static void ApolloDuoRestoreFeedAnchor(UITableView *table, ApolloDuoFeedAnchor *anchor) {
+    NSIndexPath *path = anchor.path;
+    if (!path || !table.window || path.section >= table.numberOfSections
+        || path.row >= [table numberOfRowsInSection:path.section]) return;
+    CGRect rect = [table rectForRowAtIndexPath:path];
+    CGFloat minimum = -table.adjustedContentInset.top;
+    CGFloat maximum = MAX(minimum, table.contentSize.height - table.bounds.size.height + table.adjustedContentInset.bottom);
+    CGFloat offset = ApolloDuoAnchoredOffset(CGRectGetMinY(rect), rect.size.height, anchor.fraction,
+                                             anchor.screenY, minimum, maximum);
+    if (fabs(offset - table.contentOffset.y) < 0.5) return;
+    ApolloLog(@"[DuoSplit] feed anchor: row %ld.%ld offset %.1f -> %.1f", (long)path.section, (long)path.row,
+              table.contentOffset.y, offset);
+    [table setContentOffset:CGPointMake(table.contentOffset.x, offset) animated:NO];
+}
+
 static void ApolloDuoPostsSetDetail(ApolloDuoSplitState *state, UIViewController *page, BOOL animated) {
     UIView *surface = state.host.view;
     BOOL entering = page != nil;
@@ -2066,6 +2108,8 @@ static void ApolloDuoPostsSetDetail(ApolloDuoSplitState *state, UIViewController
     }
     ApolloDuoPostsStopGeometry(state.feed.viewIfLoaded);
     ApolloDuoPostsStopGeometry(state.secondary.viewIfLoaded);
+    ApolloDuoFeedAnchor *feedAnchor = ApolloDuoCaptureFeedAnchor(
+        ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded));
     void (^updateColumns)(void) = ^{
         state.changing = YES;
         [state.secondary setViewControllers:page ? @[backstop, page] : @[backstop] animated:NO];
@@ -2080,6 +2124,12 @@ static void ApolloDuoPostsSetDetail(ApolloDuoSplitState *state, UIViewController
         SEL commit = NSSelectorFromString(@"waitUntilAllUpdatesAreCommitted");
         if ([table respondsToSelector:commit]) ((void (*)(id, SEL))objc_msgSend)(table, commit);
         [table layoutIfNeeded];
+        // Anchor before the geometry replay reads its endpoints, so rows
+        // glide to where the reader's place stays put instead of jumping.
+        if (feedAnchor) {
+            ApolloDuoRestoreFeedAnchor(table, feedAnchor);
+            [table layoutIfNeeded];
+        }
     };
     if (!animate) {
         [UIView performWithoutAnimation:updateColumns];

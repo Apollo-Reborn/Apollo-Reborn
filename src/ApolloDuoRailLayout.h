@@ -136,6 +136,16 @@ static inline double ApolloDuoDrawerSpringInitialVelocity(double from,
     return fraction < omega ? fraction : omega;
 }
 
+// Keeps a feed row's anchored point (a fraction of its height) at the same
+// distance from the table's top edge after the column resizes and rows rewrap.
+static inline double ApolloDuoAnchoredOffset(double rowMinY, double rowHeight, double fraction,
+                                             double screenY, double minimum, double maximum) {
+    double offset = rowMinY + rowHeight * fraction - screenY;
+    if (offset > maximum) offset = maximum;
+    if (offset < minimum) offset = minimum;
+    return offset;
+}
+
 #ifdef __cplusplus
 }
 #endif

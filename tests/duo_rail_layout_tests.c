@@ -91,6 +91,17 @@ int main(void) {
     Check(ApolloDuoDrawerSpringInitialVelocity(0, 0, 900) == 0,
           "a zero-distance slide has no velocity");
 
+    /* Feed anchor across a column resize: the same point of the same row
+       stays at the same height on screen, within the scrollable range. */
+    Check(ApolloDuoAnchoredOffset(1000, 200, 0.5, 300, -50, 5000) == 800,
+          "a row that keeps its height keeps its screen position");
+    Check(ApolloDuoAnchoredOffset(1200, 300, 0.5, 300, -50, 5000) == 1050,
+          "a row that rewraps taller keeps its middle under the same point");
+    Check(ApolloDuoAnchoredOffset(100, 200, 0.0, 400, -50, 5000) == -50,
+          "the offset never scrolls above the top inset");
+    Check(ApolloDuoAnchoredOffset(9000, 200, 1.0, 0, -50, 5000) == 5000,
+          "the offset never scrolls past the end");
+
     printf("OK: %u checks\n", checks);
     return 0;
 }
