@@ -6,6 +6,7 @@
 #import "ApolloMediaHinge.h"
 #import "ApolloSearchRecents.h"
 #import "ApolloSearchVisitRecording.h"
+#import "ApolloClasses.h"
 #import "ApolloDuoAccount.h"
 #import "ApolloDuoSubsChrome.h"
 #import "ApolloThemeRuntime.h"
@@ -1245,6 +1246,19 @@ static BOOL ApolloDuoPostsUsesSplit(ApolloDuoSplitState *state) {
     return state.host.postsSplitEnabled && ApolloDuoPostsHasLandscapeColumns(state);
 }
 
+
+// Feeds opened from a split link (ApolloDuoPostsRouteFeedLink) belong on the
+// feed stack; only the pages above the last of them are thread pages.
+static char kDuoFeedLinkPage;
+static NSUInteger ApolloDuoFeedStackKeptCount(UINavigationController *feed) {
+    NSArray *pages = feed.viewControllers;
+    NSUInteger kept = MIN(pages.count, (NSUInteger)1);
+    for (NSUInteger index = 1; index < pages.count; index++) {
+        if ([objc_getAssociatedObject(pages[index], &kDuoFeedLinkPage) boolValue]) kept = index + 1;
+    }
+    return kept;
+}
+
 static void ApolloDuoPostsSyncColumnsWithAnimation(ApolloDuoSplitState *state, BOOL animateDisplayMode) {
     if (!state.feed || !state.split || state.changing) return;
     if (sDuoSplitResizingTabs || !ApolloDuoPostsHasLandscapeColumns(state)) {
@@ -1265,10 +1279,11 @@ static void ApolloDuoPostsSyncColumnsWithAnimation(ApolloDuoSplitState *state, B
     // Never migrate a page while Apollo's native push/pop owns its transition.
     BOOL separateComments = ApolloDuoPostsHasLandscapeColumns(state)
         && (state.host.postsSplitEnabled || state.postsTogglingSplit);
-    if (separateComments && state.feed.viewControllers.count > 1 && !state.feed.transitionCoordinator) {
-        NSArray *pushed = [state.feed.viewControllers subarrayWithRange:NSMakeRange(1, state.feed.viewControllers.count - 1)];
+    NSUInteger feedKept = ApolloDuoFeedStackKeptCount(state.feed);
+    if (separateComments && state.feed.viewControllers.count > feedKept && !state.feed.transitionCoordinator) {
+        NSArray *pushed = [state.feed.viewControllers subarrayWithRange:NSMakeRange(feedKept, state.feed.viewControllers.count - feedKept)];
         state.changing = YES;
-        [state.feed setViewControllers:@[state.feed.viewControllers.firstObject] animated:NO];
+        [state.feed setViewControllers:[state.feed.viewControllers subarrayWithRange:NSMakeRange(0, feedKept)] animated:NO];
         [state.secondary setViewControllers:[@[state.secondary.viewControllers.firstObject] arrayByAddingObjectsFromArray:pushed] animated:NO];
         state.changing = NO;
     }
@@ -1279,7 +1294,8 @@ static void ApolloDuoPostsSyncColumnsWithAnimation(ApolloDuoSplitState *state, B
         NSArray *destinations = [state.secondary.viewControllers subarrayWithRange:NSMakeRange(1, state.secondary.viewControllers.count - 1)];
         state.changing = YES;
         [state.secondary setViewControllers:@[state.secondary.viewControllers.firstObject] animated:NO];
-        [state.feed setViewControllers:[@[state.feed.viewControllers.firstObject] arrayByAddingObjectsFromArray:destinations] animated:NO];
+        [state.feed setViewControllers:[[state.feed.viewControllers subarrayWithRange:NSMakeRange(0, feedKept)]
+                                           arrayByAddingObjectsFromArray:destinations] animated:NO];
         state.changing = NO;
     }
     [state.host.viewIfLoaded setNeedsLayout];
@@ -2632,7 +2648,185 @@ static BOOL ApolloDuoSplitHasDeferredPresentationInWindow(UIWindow *window) {
 }
 %end
 
+// Feed links opened from either pane of the landscape feed/comments split
+// (a subreddit name on a feed row, in the post header or in a comment).
+// Posts, comment permalinks, subreddit pages (wiki/sidebar/rules) and profiles
+// keep their existing routes; only subreddit/multireddit feeds come here:
+// - the subreddit already shown on the left (e.g. the post header): no-op;
+// - any other feed: show it full width like a subreddit-list selection, but
+//   pushed on the feed stack so Back returns to the previous feed and thread.
+static char kDuoFeedLinkReturnDetail;
+static BOOL sDuoSplitPushingFeedLink;
+
+@interface ApolloDuoFeedLinkReturn : NSObject
+@property(nonatomic, copy) NSArray<UIViewController *> *detail;
+@property(nonatomic, weak) UIViewController *openedFeed;
+@end
+@implementation ApolloDuoFeedLinkReturn
+@end
+
+static BOOL ApolloDuoPostsRouteFeedLink(ApolloDuoSplitState *state, UINavigationController *nav,
+                                       UIViewController *page, BOOL animated) {
+    // Drawer selections arrive through the primary/outer stacks and keep their
+    // root-replacing path.
+    if ((nav != state.secondary && nav != state.feed) || !state.split || !ApolloDuoPostsUsesSplit(state)
+        || !ApolloClassPostsViewController || ![page isKindOfClass:ApolloClassPostsViewController]) return NO;
+    UIViewController *visibleFeed = state.feed.topViewController;
+    NSString *target = ApolloNamedSubredditForPostsController(page);
+    NSString *current = ApolloNamedSubredditForPostsController(visibleFeed);
+    if (target.length && current.length && [target caseInsensitiveCompare:current] == NSOrderedSame) {
+        ApolloLog(@"[DuoSplit] feed link to the subreddit already on the left; ignored");
+        return YES;
+    }
+    NSArray *detail = state.secondary.viewControllers.count > 1
+        ? [state.secondary.viewControllers subarrayWithRange:NSMakeRange(1, state.secondary.viewControllers.count - 1)] : @[];
+    BOOL animate = animated && !UIAccessibilityIsReduceMotionEnabled();
+    state.needsDefault = NO;
+    UIView *surface = state.host.view;
+    // One coordinated animation: snapshot both panes, settle the final
+    // layout underneath (thread closed, feed pushed) without animation, then
+    // slide the thread out to the right and fade the old feed out while the
+    // new feed fades in at full width. Running a native push alongside the
+    // column animation instead flung retained surfaces across the screen.
+    UIView *feedSnapshot = nil, *threadSnapshot = nil;
+    if (animate && surface.window) {
+        [surface layoutIfNeeded];
+        CGRect pane = ApolloDuoPostsDetailPane(state);
+        if (!CGRectIsNull(pane) && !CGRectIsEmpty(pane)) {
+            CGRect feedRect = CGRectMake(0, 0, CGRectGetMinX(pane), CGRectGetHeight(surface.bounds));
+            feedSnapshot = [surface resizableSnapshotViewFromRect:feedRect afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero];
+            feedSnapshot.frame = feedRect;
+            threadSnapshot = [surface resizableSnapshotViewFromRect:pane afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero];
+            threadSnapshot.frame = pane;
+        }
+    }
+    // Close the thread first: an unpaired feed keeps its own bar actions,
+    // which the split would otherwise discard while the page is pushed.
+    UIViewController *backstop = state.secondary.viewControllers.firstObject;
+    [state.secondary setViewControllers:backstop ? @[backstop] : @[] animated:NO];
+    ApolloDuoPostsSyncColumns(state);
+    objc_setAssociatedObject(page, &kDuoFeedLinkPage, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    sDuoSplitPushingFeedLink = YES;
+    [state.feed pushViewController:page animated:NO];
+    sDuoSplitPushingFeedLink = NO;
+    [surface layoutIfNeeded];
+    if (feedSnapshot && threadSnapshot) {
+        for (UIView *snapshot in @[feedSnapshot, threadSnapshot]) {
+            snapshot.userInteractionEnabled = NO;
+            [surface addSubview:snapshot];
+        }
+        UIView *incoming = state.feed.view;
+        incoming.alpha = 0.0;
+        incoming.transform = CGAffineTransformMakeTranslation(48.0, 0.0);
+        CGFloat travel = CGRectGetMaxX(surface.bounds) - CGRectGetMinX(threadSnapshot.frame);
+        [UIView animateWithDuration:0.42 delay:0 usingSpringWithDamping:1.0 initialSpringVelocity:0
+                            options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
+                         animations:^{
+            threadSnapshot.transform = CGAffineTransformMakeTranslation(travel, 0.0);
+            feedSnapshot.transform = CGAffineTransformMakeTranslation(-48.0, 0.0);
+            feedSnapshot.alpha = 0.0;
+            incoming.alpha = 1.0;
+            incoming.transform = CGAffineTransformIdentity;
+        } completion:^(__unused BOOL finished) {
+            [feedSnapshot removeFromSuperview];
+            [threadSnapshot removeFromSuperview];
+            incoming.alpha = 1.0;
+            incoming.transform = CGAffineTransformIdentity;
+        }];
+    }
+    if (detail.count && visibleFeed && [state.feed.viewControllers containsObject:page]) {
+        // Recorded after the push, so re-shows during it never count as Back.
+        ApolloDuoFeedLinkReturn *ret = [ApolloDuoFeedLinkReturn new];
+        ret.detail = detail;
+        ret.openedFeed = page;
+        objc_setAssociatedObject(visibleFeed, &kDuoFeedLinkReturnDetail, ret, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    [state.host setListVisible:NO animated:animate];
+    ApolloLog(@"[DuoSplit] feed link %@ opened full width; Back restores %lu thread page(s)",
+              target ?: @"(multireddit/feed)", (unsigned long)detail.count);
+    return YES;
+}
+
+// Back to a feed that a link left: put its thread back in the right pane.
+static void ApolloDuoPostsRestoreFeedLinkDetail(ApolloDuoSplitState *state, UIViewController *controller) {
+    ApolloDuoFeedLinkReturn *ret = objc_getAssociatedObject(controller, &kDuoFeedLinkReturnDetail);
+    NSArray *detail = ret.detail;
+    // Only a real Back: the feed the link opened has left the stack.
+    if (!detail.count || controller != state.feed.topViewController || state.changing
+        || (ret.openedFeed && [state.feed.viewControllers containsObject:ret.openedFeed])) return;
+    objc_setAssociatedObject(controller, &kDuoFeedLinkReturnDetail, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!ApolloDuoPostsUsesSplit(state)) return;
+    if (detail.count == 1) {
+        ApolloDuoPostsSetDetail(state, detail.firstObject, YES);
+    } else {
+        UIViewController *backstop = state.secondary.viewControllers.firstObject;
+        [state.secondary setViewControllers:[@[backstop] arrayByAddingObjectsFromArray:detail] animated:NO];
+        ApolloDuoPostsSyncColumns(state);
+    }
+    ApolloLog(@"[DuoSplit] Back from a feed link; restored %lu thread page(s)", (unsigned long)detail.count);
+}
+
+// Back from a feed a link opened: return to the previous feed with its thread
+// in one animation (the mirror of the forward one) instead of a native pop
+// followed by the thread sliding back in. Returns the popped page, or nil to
+// leave the pop to UIKit (interactive swipes, or a thread is open).
+static UIViewController *ApolloDuoPostsPopFeedLink(ApolloDuoSplitState *state, BOOL animated) {
+    NSArray<UIViewController *> *pages = state.feed.viewControllers;
+    if (!state.split || state.changing || pages.count < 2 || !ApolloDuoPostsUsesSplit(state)
+        || state.secondary.viewControllers.count > 1) return nil;
+    UIGestureRecognizerState swipe = state.feed.interactivePopGestureRecognizer.state;
+    if (swipe == UIGestureRecognizerStateBegan || swipe == UIGestureRecognizerStateChanged) return nil;
+    UIViewController *top = pages.lastObject, *previous = pages[pages.count - 2];
+    ApolloDuoFeedLinkReturn *ret = objc_getAssociatedObject(previous, &kDuoFeedLinkReturnDetail);
+    if (![objc_getAssociatedObject(top, &kDuoFeedLinkPage) boolValue] || !ret.detail.count) return nil;
+
+    UIView *surface = state.host.view;
+    BOOL animate = animated && surface.window && !UIAccessibilityIsReduceMotionEnabled();
+    UIView *snapshot = nil;
+    if (animate) {
+        [surface layoutIfNeeded];
+        snapshot = [surface snapshotViewAfterScreenUpdates:NO];
+        snapshot.frame = surface.bounds;
+        snapshot.userInteractionEnabled = NO;
+    }
+    // Settle the final split underneath: previous feed on the left, its
+    // thread on the right.
+    objc_setAssociatedObject(previous, &kDuoFeedLinkReturnDetail, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [state.feed setViewControllers:[pages subarrayWithRange:NSMakeRange(0, pages.count - 1)] animated:NO];
+    UIViewController *backstop = state.secondary.viewControllers.firstObject;
+    [state.secondary setViewControllers:[(backstop ? @[backstop] : @[]) arrayByAddingObjectsFromArray:ret.detail] animated:NO];
+    ApolloDuoPostsSyncColumns(state);
+    [surface layoutIfNeeded];
+    ApolloLog(@"[DuoSplit] Back from a feed link; restored %lu thread page(s)%@",
+              (unsigned long)ret.detail.count, animate ? @" (animated)" : @"");
+    if (!snapshot) return top;
+
+    [surface addSubview:snapshot];
+    UIView *feedView = state.feed.view, *threadView = state.secondary.view;
+    CGFloat travel = CGRectGetMaxX(surface.bounds) - CGRectGetMinX([threadView convertRect:threadView.bounds toView:surface]);
+    feedView.alpha = 0.0;
+    feedView.transform = CGAffineTransformMakeTranslation(-48.0, 0.0);
+    threadView.transform = CGAffineTransformMakeTranslation(MAX(0.0, travel), 0.0);
+    [surface bringSubviewToFront:snapshot];
+    [UIView animateWithDuration:0.42 delay:0 usingSpringWithDamping:1.0 initialSpringVelocity:0
+                        options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
+                     animations:^{
+        snapshot.alpha = 0.0;
+        snapshot.transform = CGAffineTransformMakeTranslation(48.0, 0.0);
+        feedView.alpha = 1.0;
+        feedView.transform = CGAffineTransformIdentity;
+        threadView.transform = CGAffineTransformIdentity;
+    } completion:^(__unused BOOL finished) {
+        [snapshot removeFromSuperview];
+        feedView.alpha = 1.0;
+        feedView.transform = CGAffineTransformIdentity;
+        threadView.transform = CGAffineTransformIdentity;
+    }];
+    return top;
+}
+
 static BOOL ApolloDuoSplitRoutePush(UINavigationController *nav, UIViewController *page, BOOL animated) {
+    if (sDuoSplitPushingFeedLink) return NO;
     // UIKit pushes column containers while adapting a split. Those are native
     // containment operations, not sidebar selections. Redirecting the secondary
     // navigation controller into its own stack raises a UIKit assertion.
@@ -2653,6 +2847,7 @@ static BOOL ApolloDuoSplitRoutePush(UINavigationController *nav, UIViewControlle
         }
     }
     if (state.feed && !state.changing) {
+        if (ApolloDuoPostsRouteFeedLink(state, nav, page, animated)) return YES;
         if (state.host.postsColumnsPaired && (nav == state.feed || nav == state.outer)) {
             NSString *incomingPost = ApolloDuoCommentsPostID(page);
             NSString *visiblePost = ApolloDuoCommentsPostID(state.secondary.topViewController);
@@ -2904,7 +3099,10 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(navigation, NO);
     // Native didShow finalizes the bar after push/pop and column migration.
     // Relayout the host then so it does not keep the outgoing Back reservation.
-    if (navigation == state.feed) [state.host.viewIfLoaded setNeedsLayout];
+    if (navigation == state.feed) {
+        [state.host.viewIfLoaded setNeedsLayout];
+        ApolloDuoPostsRestoreFeedLinkDetail(state, controller);
+    }
 }
 - (void)setNavigationBarHidden:(BOOL)hidden animated:(BOOL)animated {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(self, NO);
@@ -2993,6 +3191,10 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
         UIViewController *page = detail.topViewController;
         ApolloDuoAccountSetPages(state, [detail.viewControllers subarrayWithRange:NSMakeRange(0, detail.viewControllers.count - 1)]);
         return page;
+    }
+    if (state.feed && self == state.feed) {
+        UIViewController *popped = ApolloDuoPostsPopFeedLink(state, animated);
+        if (popped) return popped;
     }
     UIViewController *page = %orig(animated);
     [state.host.viewIfLoaded setNeedsLayout];
