@@ -4,15 +4,15 @@
 #import <objc/runtime.h>
 
 // Apollo's pans use the whole navigation surface for edge checks. On Duo a
-// visible pane can start well inside that surface, and the outer stack is a
+// detail column starts well inside that surface, and the outer stack is a
 // containment host. Qualify a right swipe at the *pane's* left content edge,
 // then perform one native animated Back on that exact navigation controller.
-// At the feed root the same gesture reveals the subreddit drawer. Calling the
-// native pop entry point keeps the author's feed/thread restoration animation.
-// Keep row swipe actions elsewhere, and honor Apollo's navigation-gesture opt-out.
+// The Posts feed and thread use the host's back swipe instead (see
+// ApolloDuoSplitAllowsNavigationSwipe). Keep row swipe actions elsewhere, and
+// honor Apollo's navigation-gesture opt-out.
 static BOOL ApolloDuoBackSwipeCanNavigate(UINavigationController *navigation) {
     BOOL eligible = ApolloDeviceIsDuo() && navigation.viewIfLoaded.window
-        && (navigation.viewControllers.count > 1 || ApolloDuoSplitCanRevealPostsListWithSwipe(navigation))
+        && navigation.viewControllers.count > 1
         && ![NSUserDefaults.standardUserDefaults boolForKey:@"DisableNavigationGestures"]
         && !ApolloDuoSplitIsResizing() && !navigation.transitionCoordinator
         && !navigation.presentedViewController && !navigation.topViewController.presentedViewController
@@ -73,11 +73,6 @@ static BOOL ApolloDuoBackSwipeAcceptsPoint(UINavigationController *navigation, C
 - (void)swiped:(UISwipeGestureRecognizer *)gesture {
     UINavigationController *navigation = self.navigation;
     if (gesture.state != UIGestureRecognizerStateRecognized || !ApolloDuoBackSwipeCanNavigate(navigation)) return;
-    if (navigation.viewControllers.count == 1) {
-        ApolloLog(@"[DuoSwipe] feed root: reveal subreddit drawer");
-        ApolloDuoSplitRevealPostsList(navigation);
-        return;
-    }
     ApolloLog(@"[DuoSwipe] Back in pane; stack pages=%lu", (unsigned long)navigation.viewControllers.count);
     [navigation popViewControllerAnimated:!UIAccessibilityIsReduceMotionEnabled()];
 }
@@ -86,6 +81,10 @@ static BOOL ApolloDuoBackSwipeAcceptsPoint(UINavigationController *navigation, C
 static char kApolloDuoBackSwipe;
 BOOL ApolloDuoHasBackSwipe(UINavigationController *navigation) {
     return objc_getAssociatedObject(navigation, &kApolloDuoBackSwipe) != nil;
+}
+
+BOOL ApolloDuoBackSwipeOwnsBack(UINavigationController *navigation) {
+    return ApolloDuoHasBackSwipe(navigation) && ApolloDuoBackSwipeCanNavigate(navigation);
 }
 
 void ApolloDuoInstallBackSwipe(UINavigationController *navigation) {

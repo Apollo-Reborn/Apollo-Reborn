@@ -1194,17 +1194,12 @@ UINavigationController *ApolloDuoSplitDetailNavigation(UINavigationController *n
     return state.split && !state.changing ? (state.feed && !state.host.postsShowingDetail ? state.feed : state.secondary) : nav;
 }
 
+// The pane Back swipe covers the detail column of Settings, Inbox, Account
+// and Search. The Posts feed and thread belong to the host's back swipe, and
+// a folded single stack keeps Apollo's interactive Back pan.
 BOOL ApolloDuoSplitAllowsNavigationSwipe(UINavigationController *nav) {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
-    if (state.changing) return NO;
-    if (!state.split) return YES;
-    return !state.host.listVisible && (nav == state.feed || nav == state.secondary);
-}
-
-BOOL ApolloDuoSplitCanRevealPostsListWithSwipe(UINavigationController *nav) {
-    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
-    return state.split && !state.changing && state.feed == nav
-        && !state.host.listVisible && nav.viewControllers.count == 1;
+    return state.split && !state.changing && !state.feed && nav == state.secondary;
 }
 
 UIViewController *ApolloDuoSplitRootController(UINavigationController *nav) {
@@ -2998,6 +2993,9 @@ static BOOL ApolloDuoSplitCommentsSwipeOwnsPane(ApolloDuoSplitHost *host) {
 // is a single page; deeper pages there keep Apollo's own Back pan.
 static BOOL ApolloDuoSplitLeadingSwipeAcceptsPoint(ApolloDuoSplitHost *host, CGPoint point) {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(host.navigationController, NO);
+    // Other splits use the pane Back swipe (ApolloDuoNavigationGestures); only
+    // leaving a visited profile belongs to this one there.
+    if (!state.feed) return ApolloDuoSplitCanReturnFromVisitedProfile(state);
     if (!host.postsShowingDetail || !host.postsColumnsPaired) return YES;
     CGRect pane = ApolloDuoPostsDetailPane(state);
     if (CGRectIsNull(pane) || point.x < CGRectGetMinX(pane)) return YES;
@@ -3061,7 +3059,15 @@ static void ApolloDuoSplitEndCommentsSwipe(ApolloDuoSplitHost *host, BOOL close,
 
 static BOOL ApolloDuoSplitLeadingSwipeShouldBegin(ApolloDuoSplitHost *host) {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(host.navigationController, NO);
-    if (state.host != host || state.outer.presentedViewController) return NO;
+    if (state.host != host || ApolloDuoSplitIsResizing()
+        || [NSUserDefaults.standardUserDefaults boolForKey:@"DisableNavigationGestures"]) return NO;
+    // Never navigate behind a sheet or during another transition, whichever
+    // container owns it (the same guards as the pane Back swipe).
+    for (UIViewController *controller = host; controller; controller = controller.parentViewController) {
+        if (controller.presentedViewController || controller.isBeingDismissed || controller.transitionCoordinator) return NO;
+    }
+    if (state.feed.topViewController.presentedViewController
+        || state.secondary.topViewController.presentedViewController) return NO;
     if (ApolloDuoSplitCanReturnFromVisitedProfile(state)) return YES;
     if (ApolloDuoSplitLeadingSwipeClosesComments(host, state)) return YES;
     // Only a bare feed root. Apollo's native Back owns pushed pages and the
@@ -3699,9 +3705,9 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     UINavigationController *nav = (id)self;
     Ivar leftIvar = class_getInstanceVariable(nav.class, "leftScreenEdgePanGestureRecognizer");
     BOOL back = leftIvar && object_getIvar(self, leftIvar) == gesture;
-    // One owner for backward navigation, including when folded. Apollo's old
-    // edge pan otherwise competes with the pane-aware swipe and can pop twice.
-    if (back && ApolloDuoHasBackSwipe(nav)) return NO;
+    // One owner for backward navigation: where the pane swipe can go Back,
+    // Apollo's edge pan would compete with it and could pop twice.
+    if (back && ApolloDuoBackSwipeOwnsBack(nav)) return NO;
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(self, NO);
     if (!state.split || state.changing) return %orig(gesture);
     Ivar rightIvar = class_getInstanceVariable(nav.class, "rightScreenEdgePanGestureRecognizer");
