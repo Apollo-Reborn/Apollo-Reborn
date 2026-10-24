@@ -24,6 +24,12 @@ BOOL ApolloLiquidGlassTabGestureNeedsLifecycleCleanup(BOOL tabControllerAvailabl
     return tabControllerAvailable && startingSelectionAvailable;
 }
 
+BOOL ApolloLiquidGlassTabGestureCanClearLifecycleState(NSUInteger scheduledGeneration,
+                                                        NSUInteger currentGeneration,
+                                                        BOOL applicationActive) {
+    return applicationActive && scheduledGeneration == currentGeneration;
+}
+
 BOOL ApolloLiquidGlassTabBarFrameIsBottom(CGRect tabBarFrame, CGRect windowBounds) {
     if (CGRectIsEmpty(tabBarFrame) || CGRectIsEmpty(windowBounds)) return NO;
 

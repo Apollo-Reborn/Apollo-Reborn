@@ -34,6 +34,7 @@ static __weak UITouch *sApolloLiquidLensTouch;
 static __weak UITabBarController *sApolloLiquidLensTabController;
 static __weak UIViewController *sApolloLiquidLensPreviousTab;
 static BOOL sApolloLiquidLensPreservesSelection;
+static NSUInteger sApolloLiquidLensTouchGeneration;
 
 static void ApolloCancelLiquidLensGesture(UITabBar *tabBar);
 
@@ -545,6 +546,7 @@ static void ApolloBeginTrackingLiquidLensTouch(UITouch *touch, UIWindow *window)
     sApolloLiquidLensTabController = tabs;
     sApolloLiquidLensPreviousTab = tabs.selectedViewController;
     sApolloLiquidLensPreservesSelection = NO;
+    sApolloLiquidLensTouchGeneration++;
 }
 
 static BOOL ApolloLiquidLensBlocksSelection(UITabBarController *tabs,
@@ -559,8 +561,11 @@ static void ApolloFinishTrackedLiquidLensTouch(void) {
     if (sApolloLiquidLensPreservesSelection) ApolloRestoreLiquidLensStartingTab();
     if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
 
+    NSUInteger generation = sApolloLiquidLensTouchGeneration;
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (UIApplication.sharedApplication.applicationState == UIApplicationStateActive) {
+        if (ApolloLiquidGlassTabGestureCanClearLifecycleState(
+                generation, sApolloLiquidLensTouchGeneration,
+                UIApplication.sharedApplication.applicationState == UIApplicationStateActive)) {
             ApolloClearTrackedLiquidLensTouch();
         }
     });
@@ -2686,8 +2691,13 @@ void ApolloNavigationTitlesRefresh(void) {
         if (!ApolloLiquidGlassTabGestureNeedsLifecycleCleanup(
                 sApolloLiquidLensTabController != nil, sApolloLiquidLensPreviousTab != nil)) return;
         ApolloRestoreLiquidLensStartingTab();
+        NSUInteger generation = sApolloLiquidLensTouchGeneration;
         dispatch_async(dispatch_get_main_queue(), ^{
-            ApolloClearTrackedLiquidLensTouch();
+            if (ApolloLiquidGlassTabGestureCanClearLifecycleState(
+                    generation, sApolloLiquidLensTouchGeneration,
+                    UIApplication.sharedApplication.applicationState == UIApplicationStateActive)) {
+                ApolloClearTrackedLiquidLensTouch();
+            }
         });
     }];
     // Programmatic entry also needs a refresh, but editing starts before Apollo

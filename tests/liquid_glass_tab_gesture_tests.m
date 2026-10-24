@@ -33,6 +33,12 @@ int main(void) {
                 @"reactivation cleanup depends on tracked selection state, not a live weak touch");
         Require(!ApolloLiquidGlassTabGestureNeedsLifecycleCleanup(NO, YES),
                 @"cleanup does not run without a tracked tab controller");
+        Require(ApolloLiquidGlassTabGestureCanClearLifecycleState(7, 7, YES),
+                @"the matching active gesture generation may clear lifecycle state");
+        Require(!ApolloLiquidGlassTabGestureCanClearLifecycleState(7, 8, YES),
+                @"a delayed callback cannot clear a newer gesture's state");
+        Require(!ApolloLiquidGlassTabGestureCanClearLifecycleState(7, 7, NO),
+                @"cleanup waits while the app is inactive");
         Require(ApolloLiquidGlassTabBarFrameIsBottom(CGRectMake(0.0, 760.0, 390.0, 84.0),
                                                       CGRectMake(0.0, 0.0, 390.0, 844.0)),
                 @"an iPhone bottom tab bar is eligible");
