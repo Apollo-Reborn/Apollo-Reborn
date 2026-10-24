@@ -87,6 +87,14 @@ static void ApolloDuoSyncOuterCellBackground(_ASTableViewCell *cell) {
         // restoring its node color during reuse/layout flashes card-colored bands
         // behind the rail between scroll callbacks.
         background = UIColor.clearColor;
+    } else if (!accountFeed) {
+        // Feed/comment nodes are opaque, so UIKit's full-width selection view
+        // only ever shows in the strip behind the rail. Apollo builds it once
+        // per theme, so after a light/dark switch a row opened and closed
+        // again showed the old theme's color there. The profile's shortcut
+        // rows clip theirs in NavigationActions instead.
+        BOOL besideRail = CGRectGetWidth(cell.bounds) - CGRectGetWidth(cell.contentView.bounds) >= 1.0;
+        if (cell.selectedBackgroundView.hidden != besideRail) cell.selectedBackgroundView.hidden = besideRail;
     }
     if (cell.backgroundColor != background && ![cell.backgroundColor isEqual:background]) {
         cell.backgroundColor = background;
