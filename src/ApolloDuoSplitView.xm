@@ -1451,6 +1451,9 @@ static void ApolloDuoPostsSyncColumnsWithAnimation(ApolloDuoSplitState *state, B
         state.feedActions = nil;
         state.feedActionsItem = nil;
     }
+    UISplitViewControllerColumn feedColumn = detail ? UISplitViewControllerColumnPrimary : UISplitViewControllerColumnSecondary;
+    if (feedPages && [split viewControllerForColumn:feedColumn] != state.feed)
+        ApolloNativeFeedSearchWillMoveBetweenColumns(state.feed.viewControllers[feedPages - 1]);
     if (detail) {
         BOOL retainedColumns = [split viewControllerForColumn:UISplitViewControllerColumnPrimary] == state.feed
             && [split viewControllerForColumn:UISplitViewControllerColumnSecondary] == state.secondary;
@@ -1909,6 +1912,7 @@ static NSString *ApolloDuoCommentsPostID(UIViewController *page) {
 @property(nonatomic, strong) NSIndexPath *path;
 @property(nonatomic) CGFloat fraction;
 @property(nonatomic) CGFloat screenY;
+@property(nonatomic) BOOL atTop;
 @end
 @implementation ApolloDuoFeedAnchor @end
 
@@ -1924,6 +1928,7 @@ static ApolloDuoFeedAnchor *ApolloDuoCaptureFeedAnchor(UITableView *table) {
         anchor.path = path;
         anchor.fraction = (middle - CGRectGetMinY(rect)) / rect.size.height;
         anchor.screenY = middle - table.contentOffset.y;
+        anchor.atTop = ApolloDuoFeedRestsAtTop(table.contentOffset.y, -inset.top);
         return anchor;
     }
     return nil;
@@ -1936,8 +1941,9 @@ static void ApolloDuoRestoreFeedAnchor(UITableView *table, ApolloDuoFeedAnchor *
     CGRect rect = [table rectForRowAtIndexPath:path];
     CGFloat minimum = -table.adjustedContentInset.top;
     CGFloat maximum = MAX(minimum, table.contentSize.height - table.bounds.size.height + table.adjustedContentInset.bottom);
-    CGFloat offset = ApolloDuoAnchoredOffset(CGRectGetMinY(rect), rect.size.height, anchor.fraction,
-                                             anchor.screenY, minimum, maximum);
+    CGFloat offset = anchor.atTop ? minimum
+        : ApolloDuoAnchoredOffset(CGRectGetMinY(rect), rect.size.height, anchor.fraction,
+                                  anchor.screenY, minimum, maximum);
     if (fabs(offset - table.contentOffset.y) < 0.5) return;
     ApolloLog(@"[DuoSplit] feed anchor: row %ld.%ld offset %.1f -> %.1f", (long)path.section, (long)path.row,
               table.contentOffset.y, offset);
@@ -1984,6 +1990,7 @@ static void ApolloDuoPostsSetDetail(ApolloDuoSplitState *state, UIViewController
         state.changing = NO;
         ApolloDuoPostsSyncColumns(state);
         [surface layoutIfNeeded];
+        ApolloNativeFeedSearchFinishColumnMove(state.feed.topViewController);
         // Texture schedules its row geometry separately from UIKit's column
         // layout. Commit the existing measurement before taking endpoints so
         // cell/media widths participate in the same resize as their live nav.

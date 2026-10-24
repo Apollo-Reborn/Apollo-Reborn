@@ -101,6 +101,12 @@ int main(void) {
           "the offset never scrolls above the top inset");
     Check(ApolloDuoAnchoredOffset(9000, 200, 1.0, 0, -50, 5000) == 5000,
           "the offset never scrolls past the end");
+    /* A feed resting at its top stays at its top: anchoring a row there
+       scrolls the first post under the search bar, which then collapses. */
+    Check(ApolloDuoFeedRestsAtTop(-136, -136), "the top rest is the top");
+    Check(ApolloDuoFeedRestsAtTop(-135.5, -136), "half a point below the rest is still the top");
+    Check(!ApolloDuoFeedRestsAtTop(-122.5, -136), "a feed scrolled a little is anchored");
+    Check(!ApolloDuoFeedRestsAtTop(400, -136), "a feed scrolled down is anchored");
 
     printf("OK: %u checks\n", checks);
     return 0;

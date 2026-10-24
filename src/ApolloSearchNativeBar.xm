@@ -1253,6 +1253,10 @@ static CGFloat NSBNavBottomForTable(UIScrollView *table, UIViewController *vc) {
 // the offset the drag started from.
 @property (nonatomic) BOOL pullFromCollapsedRest;
 @property (nonatomic) CGFloat pullRestOffset;
+// The Duo split is moving this page to its other column with the list resting
+// at its revealed top (ApolloNativeFeedSearchWillMoveBetweenColumns). One-shot,
+// consumed by ApolloNativeFeedSearchFinishColumnMove.
+@property (nonatomic) BOOL columnMoveRevealed;
 @end
 @implementation ApolloNativeSearchRestingState
 @end
@@ -1537,6 +1541,69 @@ void ApolloNativeFeedSearchRestoreCancelledNavigation(UIViewController *vc) {
     }];
 }
 
+// The Duo split moves the feed page between its columns whenever a thread
+// opens or closes beside it. UIKit lays the moved page out with the palette
+// collapsed (the scroll-away policy has no say in it) and sends only
+// viewDidAppear:, so the appearance reveal, a turn later, drew the feed bar-less
+// for a frame and then shoved it down a bar's height. Note the revealed top
+// here; ApolloNativeFeedSearchFinishColumnMove repairs it before it is drawn.
+void ApolloNativeFeedSearchWillMoveBetweenColumns(UIViewController *vc) {
+    if (!ApolloNativeFeedSearchEnabled() || !vc || !NSBIsNativeSearchFeedVC(vc)) return;
+    UIScrollView *table = NSBTableForVC(vc);
+    BOOL atRest = table && fabs(table.contentOffset.y + table.adjustedContentInset.top) <= 2.0;
+    BOOL revealed = CGRectGetHeight(vc.navigationItem.searchController.searchBar.bounds) > 1.0;
+    NSBRestingStateForVC(vc).columnMoveRevealed = atRest && revealed;
+    if (NSBTraceEnabled()) {
+        ApolloLog(@"[DuoColumnMove] will move: y=%.1f adjTop=%.1f revealed=%d -> noted=%d",
+                  table.contentOffset.y, table.adjustedContentInset.top, (int)revealed, (int)(atRest && revealed));
+    }
+}
+
+// The move has been laid out: UIKit has collapsed the palette by now. Repair
+// it in this transaction, before the split captures the geometry its slide
+// animates to (or before viewDidAppear: returns, when the split didn't call).
+// The appearance may have begun (viewWillAppear: drops `visible`), so this
+// checks the moved list directly rather than through the settled-geometry gate.
+void ApolloNativeFeedSearchFinishColumnMove(UIViewController *vc) {
+    if (!ApolloNativeFeedSearchEnabled() || !vc || !NSBIsNativeSearchFeedVC(vc)) return;
+    ApolloNativeSearchRestingState *state = NSBRestingStateForVC(vc);
+    if (!state.columnMoveRevealed) return;
+    state.columnMoveRevealed = NO;
+    UIScrollView *table = NSBTableForVC(vc);
+    UINavigationItem *navItem = vc.navigationItem;
+    UISearchController *sc = navItem.searchController;
+    UIView *navigationView = vc.navigationController.view;
+    if (!table.window || !navigationView || !sc || sc.active || NSBUserIsScrolling(table)) return;
+    [UIView performWithoutAnimation:^{
+        [navigationView setNeedsLayout];
+        [navigationView layoutIfNeeded];
+    }];
+    CGFloat barHeight = CGRectGetHeight(sc.searchBar.bounds);
+    BOOL atRest = fabs(table.contentOffset.y + table.adjustedContentInset.top) <= 2.0;
+    if (NSBTraceEnabled()) {
+        ApolloLog(@"[DuoColumnMove] finish: y=%.1f adjTop=%.1f bar=%.1f hides=%d",
+                  table.contentOffset.y, table.adjustedContentInset.top, barHeight,
+                  (int)navItem.hidesSearchBarWhenScrolling);
+    }
+    if (!atRest || barHeight > 1.0 || !navItem.hidesSearchBarWhenScrolling) return;
+    // NSBEnsureBarRevealedAtTop's repair; revealInFlight keeps the offset
+    // hook from scheduling a check of its own.
+    state.revealInFlight = YES;
+    [UIView performWithoutAnimation:^{
+        navItem.hidesSearchBarWhenScrolling = NO;
+        [navigationView setNeedsLayout];
+        [navigationView layoutIfNeeded];
+        [table setContentOffset:CGPointMake(table.contentOffset.x, -table.adjustedContentInset.top) animated:NO];
+        navItem.hidesSearchBarWhenScrolling = YES;
+        [navigationView layoutIfNeeded];
+    }];
+    state.revealInFlight = NO;
+    if (NSBTraceEnabled()) {
+        ApolloLog(@"[DuoColumnMove] repaired: y=%.1f adjTop=%.1f bar=%.1f", table.contentOffset.y,
+                  table.adjustedContentInset.top, CGRectGetHeight(sc.searchBar.bounds));
+    }
+}
+
 // The reveal above only ever ran from the controller's layout pass, and a
 // programmatic scroll — the tab-bar scroll-to-top, a pull-to-refresh settling —
 // does not trigger one, so the bar stayed collapsed at the top until the user
@@ -1796,6 +1863,9 @@ static void NSBViewWillDisappear(UIViewController *vc) {
     // UIKit finishes restoring the palette. Read its geometry next turn.
     UIScrollView *appearedTable = NSBTableForVC((UIViewController *)self);
     if (!appearedState.keepCollapsedOnAppear) NSBArmReveal(appearedTable, "appeared");
+    // A Duo column move the split did not finish repairs here
+    // (ApolloNativeFeedSearchFinishColumnMove).
+    ApolloNativeFeedSearchFinishColumnMove((UIViewController *)self);
     NSBScheduleRevealCheck(appearedTable);
     // Safety net for the return-to-live-query path: if Apollo's search-active
     // layout hid the nav bar before the guard armed, put it back.
