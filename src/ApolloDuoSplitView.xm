@@ -3,6 +3,7 @@
 // switching can keep addressing that object. Only its visible contents change
 // at an unfold/fold boundary. UIKit owns all column frames and transitions.
 #import "ApolloDuoSplitView.h"
+#import "ApolloDuoNavigationGestures.h"
 #import "ApolloMediaHinge.h"
 #import "ApolloSearchRecents.h"
 #import "ApolloSearchVisitRecording.h"
@@ -994,7 +995,23 @@ static void ApolloDuoSplitLink(UINavigationController *nav, ApolloDuoSplitState 
 
 UINavigationController *ApolloDuoSplitDetailNavigation(UINavigationController *nav) {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    // A Back addressed to a visible pane belongs to that pane. Only the outer
+    // shell / drawer forwards Back to whichever content is currently showing.
+    if (nav == state.feed || nav == state.secondary) return nav;
     return state.split && !state.changing ? (state.feed && !state.host.postsShowingDetail ? state.feed : state.secondary) : nav;
+}
+
+BOOL ApolloDuoSplitAllowsNavigationSwipe(UINavigationController *nav) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    if (state.changing) return NO;
+    if (!state.split) return YES;
+    return !state.host.listVisible && (nav == state.feed || nav == state.secondary);
+}
+
+BOOL ApolloDuoSplitCanRevealPostsListWithSwipe(UINavigationController *nav) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    return state.split && !state.changing && state.feed == nav
+        && !state.host.listVisible && nav.viewControllers.count == 1;
 }
 
 UIViewController *ApolloDuoSplitRootController(UINavigationController *nav) {
@@ -3144,8 +3161,13 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
 @interface ApolloDuoSplitNavigation : UINavigationController @end
 %group ApolloDuoSplitNavigationHooks
 %hook ApolloDuoSplitNavigation
+- (void)viewDidLoad {
+    %orig;
+    ApolloDuoInstallBackSwipe((id)self);
+}
 - (void)navigationController:(UINavigationController *)navigation didShowViewController:(UIViewController *)controller animated:(BOOL)animated {
     %orig(navigation, controller, animated);
+    ApolloDuoInstallBackSwipe(navigation);
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(navigation, NO);
     // Native didShow finalizes the bar after push/pop and column migration.
     // Relayout the host then so it does not keep the outgoing Back reservation.
@@ -3165,11 +3187,14 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
 }
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gesture {
     UINavigationController *nav = (id)self;
+    Ivar leftIvar = class_getInstanceVariable(nav.class, "leftScreenEdgePanGestureRecognizer");
+    BOOL back = leftIvar && object_getIvar(self, leftIvar) == gesture;
+    // One owner for backward navigation, including when folded. Apollo's old
+    // edge pan otherwise competes with the pane-aware swipe and can pop twice.
+    if (back && ApolloDuoHasBackSwipe(nav)) return NO;
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(self, NO);
     if (!state.split || state.changing) return %orig(gesture);
-    Ivar leftIvar = class_getInstanceVariable(nav.class, "leftScreenEdgePanGestureRecognizer");
     Ivar rightIvar = class_getInstanceVariable(nav.class, "rightScreenEdgePanGestureRecognizer");
-    BOOL back = leftIvar && object_getIvar(self, leftIvar) == gesture;
     BOOL forward = rightIvar && object_getIvar(self, rightIvar) == gesture;
     if (!back && !forward) return %orig(gesture);
     // The outer controller now contains a host, not a browsable page. Its
@@ -3261,6 +3286,7 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
 }
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
+    ApolloDuoInstallBackSwipe((id)self);
     ApolloDuoSplitScheduleUpdate();
 }
 %end
