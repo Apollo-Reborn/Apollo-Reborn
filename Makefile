@@ -194,6 +194,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloSwipeUpComments.xm \
     $(SRC_DIR)/ApolloMediaMetadata.m \
     $(SRC_DIR)/ApolloMediaAutoplay.m \
+    $(SRC_DIR)/ApolloVideoVisibility.m \
     $(SRC_DIR)/ApolloCommentsCollapse.xm \
     $(SRC_DIR)/ApolloCommentHeaderLayout.xm \
     $(SRC_DIR)/ApolloMaintainerTint.m \
