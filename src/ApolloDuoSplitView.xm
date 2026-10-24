@@ -2140,6 +2140,9 @@ static void ApolloDuoAccountPrepareHost(ApolloDuoSplitState *state, ApolloDuoSpl
     BOOL ownAccount = ApolloDuoSplitIsOwnAccountController(profile);
     host.accountHeader = ApolloDuoAccountProfileHeader(profile);
     UINavigationBar *sidebarBar = [[UINavigationBar alloc] init];
+    // Only hosts the sidebar button over the banner; ApolloProgressiveBlur
+    // skips it so no frosted square appears behind the button.
+    sidebarBar.accessibilityIdentifier = @"ApolloReborn.duo-sidebar-bar";
     UINavigationBarAppearance *sidebarAppearance = [UINavigationBarAppearance new];
     [sidebarAppearance configureWithTransparentBackground];
     sidebarBar.standardAppearance = sidebarAppearance;
