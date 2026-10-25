@@ -928,6 +928,8 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
 @property(nonatomic, weak) UIViewController *searchBackPage;
 @property(nonatomic, strong) UIBarButtonItem *searchBackItem;
 @property(nonatomic) BOOL searchBackSupplementedNative;
+// Set while a swipe-initiated, non-interactive thread close is queued.
+@property(nonatomic) BOOL closingBySwipe;
 @end
 @implementation ApolloDuoSplitState @end
 
@@ -3513,6 +3515,30 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     sDuoSplitGesture = NULL;
     sDuoSplitGestureView = NULL;
     sDuoSplitGestureOffset = 0.0;
+    // Paired columns: a native interactive pop of the comments column leaves the
+    // split mid-reflow (feed widening, drawer/primary column flashing in). Close
+    // the thread through the same Duo transition as the Back button instead,
+    // keeping Apollo's own rules for where a Back swipe may start.
+    if (result && back && self == state.secondary && state.secondary.viewControllers.count == 2
+        && state.feed && state.host.postsShowingDetail && ApolloDuoPostsUsesSplit(state)
+        && !state.host.listVisible && !state.closingBySwipe
+        && [gesture isKindOfClass:UIPanGestureRecognizer.class]) {
+        CGPoint closeVelocity = [(UIPanGestureRecognizer *)gesture velocityInView:nav.view];
+        if (closeVelocity.x <= 0.0 || fabs(closeVelocity.x) < fabs(closeVelocity.y)) return result;
+        state.closingBySwipe = YES;
+        ApolloLog(@"[DuoSplit] back swipe in paired columns: closing the thread through the Duo transition");
+        __weak UINavigationController *weakNav = nav;
+        __weak ApolloDuoSplitState *weakState = state;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UINavigationController *strongNav = weakNav;
+            ApolloDuoSplitState *strongState = weakState;
+            strongState.closingBySwipe = NO;
+            if (!strongNav || !strongState || strongState.changing || strongNav.transitionCoordinator
+                || strongNav.viewControllers.count != 2) return;
+            [strongNav popViewControllerAnimated:YES];
+        });
+        return NO;
+    }
     return result;
 }
 - (void)pushViewController:(UIViewController *)controller animated:(BOOL)animated {
