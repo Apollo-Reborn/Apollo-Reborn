@@ -260,6 +260,12 @@ static UIImage *ApolloAboutGitHubMark(UIImage *artwork) {
 }
 
 static NSString *ApolloIPadPaneLayoutSettingDetail(void) {
+    if (!ApolloPaneLayoutSupported()) {
+        // Standard builds can't switch glass on, so point at the right build.
+        return ApolloLiquidGlassCanToggle()
+            ? @"Requires Liquid Glass. Turn it on under Interface \u2192 Appearance, then reopen Apollo."
+            : @"Requires the Liquid Glass version of Apollo Reborn.";
+    }
     BOOL desired = [NSUserDefaults.standardUserDefaults boolForKey:UDKeyIPadPaneLayout];
     BOOL active = ApolloPaneLayoutActive();
     if (desired != active) {
@@ -267,7 +273,7 @@ static NSString *ApolloIPadPaneLayoutSettingDetail(void) {
             ? @"Will turn on after Apollo quits and reopens. The current single-column layout remains active until then."
             : @"Will turn off after Apollo quits and reopens. The current iPad Layout remains active until then.";
     }
-    return @"Beta on iPadOS 18 or newer. Keep favourites in the sidebar and read posts and comments side by side. You can switch back anytime. Reopen Apollo to apply changes.";
+    return @"Beta on iPadOS 26 or newer. Keep favourites in the sidebar and read posts and comments side by side. You can switch back anytime. Reopen Apollo to apply changes.";
 }
 
 @interface ApolloFeedShortcutsPreviewState : NSObject
@@ -2378,8 +2384,8 @@ typedef NS_ENUM(NSInteger, Tag) {
             UITableViewCell *cell = [weakSelf switchCellWithIdentifier:@"Cell_Gen_IPadPaneLayout"
                                                                  label:@"iPad Layout"
                                                                 detail:ApolloIPadPaneLayoutSettingDetail()
-                                                                    on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyIPadPaneLayout]
-                                                               enabled:YES
+                                                                    on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyIPadPaneLayout] && ApolloPaneLayoutSupported()
+                                                               enabled:ApolloPaneLayoutSupported()
                                                                 action:@selector(iPadPaneLayoutSwitchToggled:)];
             UILabel *title = [cell.contentView viewWithTag:7001];
             title.attributedText = ApolloIPadLayoutBetaTitle(title.font, weakSelf.traitCollection);
@@ -2389,7 +2395,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         }
                                   onSelect:nil];
     iPadPaneLayout.visible = ^BOOL {
-        return ApolloPaneLayoutSupported();
+        return ApolloPaneLayoutDeviceSupported();
     };
 
     // Overrides the top scroll-edge glass under the nav bar (iOS 26+). Liquid

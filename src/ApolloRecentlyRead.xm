@@ -8,6 +8,7 @@
 
 #import "ApolloCommon.h"
 #import "ApolloPostReadState.h"
+#import "ApolloProfileRowWrapper.h"
 #import "ApolloState.h"
 #import "Tweak.h"
 #import "UserDefaultConstants.h"
@@ -1128,6 +1129,7 @@ static UIViewController *ApolloRecentlyReadOwnProfileForAdapter(id adapter) {
 @interface ApolloRecentlyReadProfileTap : NSObject
 + (instancetype)shared;
 - (void)open:(UITapGestureRecognizer *)gesture;
+- (void)openFromView:(UIView *)view;
 @end
 
 @implementation ApolloRecentlyReadProfileTap
@@ -1139,7 +1141,11 @@ static UIViewController *ApolloRecentlyReadOwnProfileForAdapter(id adapter) {
 }
 - (void)open:(UITapGestureRecognizer *)gesture {
     if (gesture.state != UIGestureRecognizerStateRecognized) return;
-    for (UIResponder *responder = gesture.view; responder; responder = responder.nextResponder) {
+    ApolloProfileRowWrapperFocusRowView(gesture.view);
+    [self openFromView:gesture.view];
+}
+- (void)openFromView:(UIView *)view {
+    for (UIResponder *responder = view; responder; responder = responder.nextResponder) {
         if ([responder isKindOfClass:ApolloClassProfileViewController]) {
             ApolloRecentlyReadPresentFromViewController((UIViewController *)responder);
             return;
@@ -1171,6 +1177,11 @@ static id (^ApolloRecentlyReadProfileRowBlock(id (^originalBlock)(void), id (^se
         objc_setAssociatedObject(rowIcon, &kRecentlyReadRowIconKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         rowTitle.attributedText = rowTitle.attributedText;
         rowIcon.image = rowIcon.image;
+        // Keyboard focus can land on this row without a tap; tell the shared
+        // cell how to open it.
+        ApolloProfileRowWrapperRegisterInjectedRow(row, ^(UIView *view) {
+            [[ApolloRecentlyReadProfileTap shared] openFromView:view];
+        });
         [row onDidLoad:^(ASDisplayNode *loaded) {
             UIView *view = loaded.view;
             view.accessibilityLabel = kRecentlyReadRowTitle;

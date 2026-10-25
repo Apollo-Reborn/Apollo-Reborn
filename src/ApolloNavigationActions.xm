@@ -1987,6 +1987,13 @@ NSArray<UIView *> *ApolloNavigationActionsManagedRoots(UINavigationBar *bar) {
     return ApolloNavigationActionsDiscoverGroups(bar, bar.topItem);
 }
 
+BOOL ApolloNavigationActionsViewIsStaleForItem(UIView *view, UINavigationItem *item) {
+    if (![view isKindOfClass:ApolloNavigationActionsStrip.class]) return NO;
+    UIBarButtonItem *barItem = ((ApolloNavigationActionsStrip *)view).barItem;
+    return !barItem || !([item.rightBarButtonItems containsObject:barItem] ||
+                         [item.leftBarButtonItems containsObject:barItem]);
+}
+
 // UIKit puts the Back bubble and the vertical actions in one SwiftUI glass
 // container. Its collapse spring briefly joins those two surfaces even though
 // Back never changes. Give the existing native Back control its own native

@@ -622,6 +622,122 @@ static id ApolloSimDebugProbeObject(id object, const char *selectorName) {
     return ((id (*)(id, SEL))objc_msgSend)(object, selector);
 }
 
+// "titleprobe": every visible navigation-bar title control, its labels and the
+// horizontal constraints sizing it, for diagnosing squeezed titles.
+static void ApolloSimDebugCollectTitleControls(UIView *view, NSMutableArray<UIView *> *out) {
+    if ([NSStringFromClass(view.class) isEqualToString:@"_UINavigationBarTitleControl"]) [out addObject:view];
+    for (UIView *subview in view.subviews) ApolloSimDebugCollectTitleControls(subview, out);
+}
+
+static void ApolloSimDebugTitleProbe(void) {
+    NSMutableArray<UIView *> *controls = [NSMutableArray array];
+    for (UIWindow *window in ApolloAllWindows()) ApolloSimDebugCollectTitleControls(window, controls);
+    for (UIView *control in controls) {
+        ApolloLog(@"[TitleProbe] %p frame=%@ alpha=%.2f hidden=%d intrinsic=%@ super=%@ transform=%@",
+                  control, NSStringFromCGRect(control.frame), control.alpha, control.hidden,
+                  NSStringFromCGSize(control.intrinsicContentSize), NSStringFromClass(control.superview.class),
+                  NSStringFromCGAffineTransform(control.transform));
+        NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:control];
+        for (NSUInteger i = 0; i < queue.count; i++) {
+            UIView *view = queue[i];
+            if ([view isKindOfClass:UILabel.class]) {
+                UILabel *label = (UILabel *)view;
+                ApolloLog(@"[TitleProbe]   label '%@' frame=%@ intrinsic=%@", label.text,
+                          NSStringFromCGRect(label.frame), NSStringFromCGSize(label.intrinsicContentSize));
+            } else if (view != control) {
+                ApolloLog(@"[TitleProbe]   %@ frame=%@", NSStringFromClass(view.class), NSStringFromCGRect(view.frame));
+            }
+            [queue addObjectsFromArray:view.subviews];
+        }
+        for (NSLayoutConstraint *constraint in [control constraintsAffectingLayoutForAxis:UILayoutConstraintAxisHorizontal]) {
+            ApolloLog(@"[TitleProbe]   constraint %@", constraint);
+        }
+    }
+}
+
+// "constraintprobe <Class>": the constraints owned by the first visible view of
+// that class and by each of its direct subviews.
+static UIView *ApolloSimDebugFindViewOfClass(UIView *view, Class cls) {
+    if ([view isKindOfClass:cls] && !view.hidden && view.window) return view;
+    for (UIView *subview in view.subviews) {
+        UIView *found = ApolloSimDebugFindViewOfClass(subview, cls);
+        if (found) return found;
+    }
+    return nil;
+}
+
+static void ApolloSimDebugConstraintProbe(NSString *className) {
+    Class cls = objc_getClass(className.UTF8String);
+    UIView *view = nil;
+    for (UIWindow *window in ApolloAllWindows()) {
+        view = cls ? ApolloSimDebugFindViewOfClass(window, cls) : nil;
+        if (view) break;
+    }
+    if (!view) { ApolloLog(@"[ConstraintProbe] no visible %@", className); return; }
+    ApolloLog(@"[ConstraintProbe] %@ %p frame=%@ safe=%@", className, view, NSStringFromCGRect(view.frame),
+              NSStringFromUIEdgeInsets(view.safeAreaInsets));
+    NSMutableArray<UIView *> *owners = [NSMutableArray arrayWithObject:view];
+    [owners addObjectsFromArray:view.subviews];
+    for (UIView *owner in owners) {
+        for (NSLayoutConstraint *constraint in owner.constraints) {
+            ApolloLog(@"[ConstraintProbe]   %@ owns %@", NSStringFromClass(owner.class), constraint);
+        }
+    }
+}
+
+// "focusprobe": the item UIKit's focus system currently has focused in each
+// window, with its frame and ancestry.
+static void ApolloSimDebugFocusProbe(void) {
+    for (UIWindow *window in ApolloAllWindows()) {
+        UIFocusSystem *system = [UIFocusSystem focusSystemForEnvironment:window];
+        id<UIFocusItem> item = system.focusedItem;
+        if (!item) { ApolloLog(@"[FocusProbe] %@: nothing focused", NSStringFromClass(window.class)); continue; }
+        NSMutableString *chain = [NSMutableString string];
+        if ([(id)item isKindOfClass:UIView.class]) {
+            for (UIView *view = (UIView *)item; view && view != window; view = view.superview) {
+                [chain appendFormat:@" < %@", NSStringFromClass(view.class)];
+                if (chain.length > 300) break;
+            }
+        }
+        CGRect frame = [item.focusItemContainer.coordinateSpace convertRect:item.frame toCoordinateSpace:window];
+        ApolloLog(@"[FocusProbe] %@ focused=%@ frame=%@ effect=%@%@", NSStringFromClass(window.class),
+                  NSStringFromClass([(id)item class]), NSStringFromCGRect(frame),
+                  [(id)item respondsToSelector:@selector(focusEffect)] ? item.focusEffect : nil, chain);
+    }
+}
+
+// "responderprobe": each window's first responder (found through UIKit's
+// private -firstResponder, which also reports view controllers) and, for a
+// message thread on screen, whether its reply bar is in a window.
+static void ApolloSimDebugResponderProbe(void) {
+    SEL firstResponder = NSSelectorFromString(@"firstResponder");
+    for (UIWindow *window in ApolloAllWindows()) {
+        id responder = [window respondsToSelector:firstResponder]
+            ? ((id (*)(id, SEL))objc_msgSend)(window, firstResponder) : nil;
+        ApolloLog(@"[ResponderProbe] %@ key=%d firstResponder=%@ %p", NSStringFromClass(window.class),
+                  window.isKeyWindow, NSStringFromClass([responder class]), responder);
+    }
+    Class threadClass = objc_getClass("_TtC6Apollo22MessagesViewController");
+    for (UIWindow *window in ApolloAllWindows()) {
+        NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:window];
+        for (NSUInteger i = 0; i < queue.count; i++) {
+            UIResponder *next = queue[i].nextResponder;
+            if (threadClass && [next isKindOfClass:threadClass]) {
+                UIViewController *thread = (UIViewController *)next;
+                UIView *bar = thread.inputAccessoryView;
+                UIScrollView *list = ApolloObjectIvar(thread, "messagesCollectionView");
+                ApolloLog(@"[ResponderProbe] thread %@ %p isFirst=%d canBecome=%d bar.window=%@ bar.frame=%@ list.inset=%@ list.frame=%@",
+                          NSStringFromClass(thread.class), thread, thread.isFirstResponder,
+                          thread.canBecomeFirstResponder, NSStringFromClass(bar.window.class),
+                          NSStringFromCGRect([bar convertRect:bar.bounds toView:nil]),
+                          [list isKindOfClass:UIScrollView.class] ? [NSString stringWithFormat:@"%@ content=%@ safe=%@", NSStringFromUIEdgeInsets(list.adjustedContentInset), NSStringFromUIEdgeInsets(list.contentInset), NSStringFromUIEdgeInsets(list.safeAreaInsets)] : @"-",
+                          [list isKindOfClass:UIScrollView.class] ? NSStringFromCGRect([list convertRect:list.bounds toView:nil]) : @"-");
+            }
+            [queue addObjectsFromArray:queue[i].subviews];
+        }
+    }
+}
+
 static void ApolloSimDebugFieldProbe(NSString *tag) {
     UISearchBar *bar = nil;
     for (UIWindow *window in ApolloAllWindows()) {
@@ -2504,6 +2620,23 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
                                              ps.count >= 3 ? ps[2].doubleValue : 1.2,
                                              ps.count >= 4 ? ps[3].doubleValue : 0.0);
             }
+            return;
+        }
+        if ([contents hasPrefix:@"constraintprobe "]) {
+            ApolloSimDebugConstraintProbe([[contents substringFromIndex:16]
+                stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]);
+            return;
+        }
+        if ([contents hasPrefix:@"responderprobe"]) {
+            ApolloSimDebugResponderProbe();
+            return;
+        }
+        if ([contents hasPrefix:@"focusprobe"]) {
+            ApolloSimDebugFocusProbe();
+            return;
+        }
+        if ([contents hasPrefix:@"titleprobe"]) {
+            ApolloSimDebugTitleProbe();
             return;
         }
         if ([contents hasPrefix:@"fieldprobe"]) {

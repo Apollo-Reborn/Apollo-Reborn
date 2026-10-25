@@ -104,6 +104,7 @@ Class ApolloClassShareAsImageViewController;
 Class ApolloClassSubItemTableViewCell;
 Class ApolloClassThickSeparatorCellNode;
 Class ApolloClassThinSeparatorCellNode;
+Class ApolloClassMessageInputBar;
 Class ApolloClassTranslatorViewController;
 Class ApolloClassUIBarBadgeView;
 Class ApolloClassUIButtonLabel;
@@ -240,6 +241,7 @@ __attribute__((constructor)) static void ApolloClassesResolve(void) {
     ApolloClassSubItemTableViewCell = objc_getClass("_TtC6Apollo20SubItemTableViewCell");
     ApolloClassThickSeparatorCellNode = objc_getClass("_TtC6Apollo22ThickSeparatorCellNode");
     ApolloClassThinSeparatorCellNode = objc_getClass("_TtC6Apollo21ThinSeparatorCellNode");
+    ApolloClassMessageInputBar = objc_getClass("_TtC6Apollo15MessageInputBar");
     ApolloClassTranslatorViewController = objc_getClass("_TtC6Apollo24TranslatorViewController");
     ApolloClassUIBarBadgeView = objc_getClass("_UIBarBadgeView");
     ApolloClassUIButtonLabel = objc_getClass("UIButtonLabel");

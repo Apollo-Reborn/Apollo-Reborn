@@ -135,6 +135,10 @@ static void ApolloMarkdownGifCollectToolbarViewsInView(UIView *root, NSMutableAr
         (*budget)--;
         if (view.hidden || view.alpha < 0.01) continue;
         if ([view.accessibilityIdentifier isEqualToString:kApolloMarkdownGifButtonIdentifier]) continue;
+        // A message thread's reply bar never carries the markdown toolbar. On
+        // iPad it sits in the app window, where a window-wide scan would pair
+        // its photo button with unrelated labels and anchor to the wrong view.
+        if (ApolloClassMessageInputBar && [view isKindOfClass:ApolloClassMessageInputBar]) continue;
 
         NSString *label = ApolloMarkdownGifAccessibilityLabelForView(view);
         if (label.length > 0 || [view isKindOfClass:[UIControl class]]) {
