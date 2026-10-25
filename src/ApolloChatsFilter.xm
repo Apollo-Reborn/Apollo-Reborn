@@ -2464,7 +2464,7 @@ static const NSInteger kMaxChatFilterPages = 8;   // cap so a chat-sparse accoun
 // a list back. On an error it logs "Error fetching messages" and returns; on a nil list (what
 // RedditKit makes of a 403 HTML block page) it does nothing. Either way the Inbox sat on its
 // spinner for good, which is what API-Key-Free accounts hit once www.reddit.com started refusing
-// /api/info (ApolloWebJSON now sends those reads to api.reddit.com), and what a 429 or a dropped
+// /api/info (ApolloWebJSON now sends those reads to /api/info/.json), and what a 429 or a dropped
 // connection on that one lookup still caused. An empty list takes the stock path and the rows
 // draw without their parent context, so while Apollo handles a page of messages, a failed parent
 // lookup answers with an empty list. Only the Inbox calls -thingsByFullNames: from inside a

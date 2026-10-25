@@ -298,6 +298,18 @@ NSURL *ApolloWebJSONProbeURL(NSURL *url);
 // JSON rewrite, no User-Agent stamping (they pick their UA deliberately).
 BOOL ApolloWebJSONURLIsProbe(NSURL *url);
 
+// `request` marked so ApolloWebJSONRewriteRequest sends it by the route at
+// `attempt` in ApolloWebJSONRoutesForRequest's list (ApolloWebJSONRoutes.h),
+// for a resend after the route before it got Reddit's block page. Unchanged for
+// attempt 0. The mark rides on the URL fragment and never reaches Reddit.
+NSURLRequest *ApolloWebJSONRequestMarkingRouteAttempt(NSURLRequest *request, NSInteger attempt);
+
+#if APOLLO_SIM_BUILD
+// Sim debug bridge: send these ApolloWebJSONRoutes' requests (a bit per route)
+// where Reddit blocks them, to exercise the fallback; 0 turns it off.
+void ApolloWebJSONSimSetBlockedRoutes(NSUInteger routeMask);
+#endif
+
 // Seconds the tweak's optional reads (author avatars, subreddit header info)
 // for `username`'s web session should wait, or 0 when they may go ahead.
 // Reddit doesn't report a web session's remaining request budget (cookie
