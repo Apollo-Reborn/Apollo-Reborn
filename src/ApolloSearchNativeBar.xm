@@ -1327,7 +1327,15 @@ static void NSBApplyScrollAwayPolicy(UIViewController *vc, UIScrollView *table) 
     if (item.searchController && !item.hidesSearchBarWhenScrolling &&
         objc_getAssociatedObject(vc, kNSBAppearedKey) != nil &&
         !state.revealInFlight && !state.reappearanceHold && !session.dismissWindow) {
-        item.hidesSearchBarWhenScrolling = YES;
+        // Flushed without animation, like the reveal repair: restored bare,
+        // UIKit animated the field's style change and its glass outline
+        // flashed for a few frames at the end of every transition the
+        // re-appearance hold had covered (measured on a Duo screen recording).
+        UIView *navigationView = vc.navigationController.view;
+        [UIView performWithoutAnimation:^{
+            item.hidesSearchBarWhenScrolling = YES;
+            [navigationView layoutIfNeeded];
+        }];
     }
 }
 
