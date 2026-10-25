@@ -21,6 +21,7 @@
 #import "ApolloSearchNativeBar.h"
 #import "ApolloFeedShortcutsAppearance.h"
 #import "ApolloFollowingSection.h"
+#import "ApolloGalleryViewController.h"
 #import "ApolloSwiftRuntime.h"
 #import "settings/CustomAPIViewController.h"
 #import <AVFoundation/AVFoundation.h>
@@ -1344,6 +1345,14 @@ static BOOL ApolloDuoPostsUsesSplit(ApolloDuoSplitState *state) {
 }
 
 
+// Gallery View is a grid over its source listing, so it is a feed page too.
+// As a thread page it sat in the comments pane with the feed column covering
+// part of it; on the feed stack it uses the full width like any other feed.
+static BOOL ApolloDuoIsFeedPage(UIViewController *page) {
+    return (ApolloClassPostsViewController && [page isKindOfClass:ApolloClassPostsViewController])
+        || [page isKindOfClass:ApolloGalleryViewController.class];
+}
+
 // Feed pages (subreddits and multireddits, whether opened from a split link or
 // pushed while the split was off) belong on the feed stack; only the pages
 // above the last of them are thread pages for the right pane.
@@ -1353,8 +1362,7 @@ static NSUInteger ApolloDuoFeedStackKeptCount(UINavigationController *feed) {
     NSUInteger kept = MIN(pages.count, (NSUInteger)1);
     for (NSUInteger index = 1; index < pages.count; index++) {
         UIViewController *page = pages[index];
-        if ([objc_getAssociatedObject(page, &kDuoFeedLinkPage) boolValue]
-            || (ApolloClassPostsViewController && [page isKindOfClass:ApolloClassPostsViewController])) kept = index + 1;
+        if ([objc_getAssociatedObject(page, &kDuoFeedLinkPage) boolValue] || ApolloDuoIsFeedPage(page)) kept = index + 1;
     }
     return kept;
 }
@@ -2587,8 +2595,7 @@ static void ApolloDuoSplitOpen(ApolloDuoSplitState *state) {
         // Leading subreddit/feed pages stay on the left; only what follows
         // them (posts, comments) belongs in the thread pane.
         NSUInteger feedCount = detail.count ? 1 : 0;
-        while (feedCount < detail.count && ApolloClassPostsViewController
-               && [detail[feedCount] isKindOfClass:ApolloClassPostsViewController]) feedCount++;
+        while (feedCount < detail.count && ApolloDuoIsFeedPage(detail[feedCount])) feedCount++;
         NSArray *feedPages = feedCount ? [detail subarrayWithRange:NSMakeRange(0, feedCount)] : @[[UIViewController new]];
         [state.secondary setViewControllers:@[] animated:NO];
         [state.feed setViewControllers:feedPages animated:NO];
@@ -2996,7 +3003,10 @@ static BOOL ApolloDuoPostsRouteFeedLink(ApolloDuoSplitState *state, UINavigation
     // Drawer selections arrive through the primary/outer stacks and keep their
     // root-replacing path.
     if ((nav != state.secondary && nav != state.feed) || !state.split || !ApolloDuoPostsUsesSplit(state)
-        || !ApolloClassPostsViewController || ![page isKindOfClass:ApolloClassPostsViewController]) return NO;
+        || !ApolloDuoIsFeedPage(page)) return NO;
+    // Without a thread to cover, Gallery View is an ordinary full-width push.
+    BOOL gallery = [page isKindOfClass:ApolloGalleryViewController.class];
+    if (gallery && state.secondary.viewControllers.count < 2) return NO;
     UIViewController *visibleFeed = state.feed.topViewController;
     NSString *target = ApolloNamedSubredditForPostsController(page);
     NSString *current = ApolloNamedSubredditForPostsController(visibleFeed);
@@ -3069,7 +3079,7 @@ static BOOL ApolloDuoPostsRouteFeedLink(ApolloDuoSplitState *state, UINavigation
     }
     [state.host setListVisible:NO animated:animate];
     ApolloLog(@"[DuoSplit] feed link %@ opened full width; Back restores %lu thread page(s)",
-              target ?: @"(multireddit/feed)", (unsigned long)detail.count);
+              gallery ? @"(gallery)" : target ?: @"(multireddit/feed)", (unsigned long)detail.count);
     return YES;
 }
 
@@ -3239,10 +3249,12 @@ static BOOL ApolloDuoSplitRoutePush(UINavigationController *nav, UIViewControlle
             ApolloLog(@"[DuoSplit] subreddit forward transition animated=%d", animate);
             [state.host setListVisible:NO animated:YES];
         } else if (nav == state.feed || nav == state.outer) {
-            if (!ApolloDuoPostsUsesSplit(state)) {
+            if (!ApolloDuoPostsUsesSplit(state) || ApolloDuoIsFeedPage(page)) {
                 // A single page needs no column replacement or custom slide.
                 // Apollo's native animator keeps the outgoing Focused feed
-                // visible underneath the arriving thread (and on Back).
+                // visible underneath the arriving thread (and on Back). A
+                // feed page (Gallery View over an unpaired feed) is pushed
+                // the same way, full width, never into the comments pane.
                 if (nav == state.feed) return NO;
                 [state.feed pushViewController:page animated:animated];
                 return YES;

@@ -14,6 +14,7 @@ source = source_path.read_text()
 signatures = [
     'static BOOL ApolloDuoPostsHasLandscapeColumns(',
     'static BOOL ApolloDuoPostsUsesSplit(',
+    'static BOOL ApolloDuoIsFeedPage(',
     'static NSUInteger ApolloDuoFeedStackKeptCount(UINavigationController *feed) {',
     'static void ApolloDuoPostsRestoreFeedLinkDetail(',
     'static NSIndexPath *ApolloDuoListWillSelect(',
@@ -23,8 +24,8 @@ for signature in signatures:
     start = source.index(signature)
     functions.append(source[start:source.index('\n}', start) + 2])
 # The previous helper used state.feed directly and had no navigation argument.
-if 'UINavigationController *navigation,' not in functions[3]:
-    functions[3] = functions[3].replace(
+if 'UINavigationController *navigation,' not in functions[4]:
+    functions[4] = functions[4].replace(
         'ApolloDuoSplitState *state, UIViewController *controller)',
         'ApolloDuoSplitState *state, __unused UINavigationController *navigation, UIViewController *controller)')
 fixture = (root / 'tests/duo_feed_history_tests.m').read_text()

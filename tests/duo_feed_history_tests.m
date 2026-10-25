@@ -17,6 +17,8 @@
 @implementation PostsController @end
 @interface CommentsController : UIViewController @end
 @implementation CommentsController @end
+@interface ApolloGalleryViewController : UIViewController @end
+@implementation ApolloGalleryViewController @end
 @interface UINavigationController : UIViewController
 @property(nonatomic, copy) NSArray<UIViewController *> *viewControllers;
 @property(nonatomic, readonly) UIViewController *topViewController;
@@ -176,6 +178,28 @@ static void TestGuards(void) {
     ApolloDuoPostsRestoreFeedLinkDetail(state, state.feed, feed);
     Check(state.feed.viewControllers.count == 2 && state.feed.topViewController == thread, @"synchronous navigation callbacks do not duplicate history");
 }
+static void TestGallery(void) {
+    // Gallery View is pushed onto the feed it came from. In a paired split it
+    // must stay on that stack (full width, or on the left beside a thread it
+    // opens) rather than becoming a thread page in the comments pane.
+    ApolloDuoSplitState *state = State(NO);
+    UIViewController *feed = state.feed.topViewController;
+    ApolloGalleryViewController *gallery = [ApolloGalleryViewController new];
+    CommentsController *comments = [CommentsController new];
+    Check(ApolloDuoIsFeedPage(gallery), @"Gallery View is a feed page");
+    Check(!ApolloDuoIsFeedPage(comments), @"a comments page is not a feed page");
+    state.feed.viewControllers = @[feed, gallery];
+    Check(ApolloDuoFeedStackKeptCount(state.feed) == 2, @"Gallery View stays on the feed stack");
+    state.feed.viewControllers = @[feed, gallery, comments];
+    Check(ApolloDuoFeedStackKeptCount(state.feed) == 2, @"a thread opened from Gallery View is outside the feed prefix");
+    // Back from a gallery that closed a paired thread brings that thread back.
+    CommentsController *thread = [CommentsController new];
+    SaveThread(feed, gallery, @[thread]);
+    state.feed.viewControllers = @[feed];
+    ApolloDuoPostsRestoreFeedLinkDetail(state, state.feed, feed);
+    Check(state.secondary.topViewController == thread && !HasSavedThread(feed),
+          @"Back from Gallery View restores the thread it covered");
+}
 static void TestDrawer(void) {
     ApolloDuoSplitState *state = State(NO);
     UIViewController *a = state.feed.topViewController;
@@ -211,6 +235,7 @@ int main(void) { @autoreleasepool {
         TestRestore(NO, NO, YES, depth.unsignedIntegerValue);
     }
     TestGuards();
+    TestGallery();
     TestDrawer();
     printf("Duo feed history: %lu checks, %lu failures\n", (unsigned long)checks, (unsigned long)failures);
     return failures ? 1 : 0;
