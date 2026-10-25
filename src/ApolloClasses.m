@@ -53,6 +53,7 @@ Class ApolloClassComposeViewController;
 Class ApolloClassCrosspostNode;
 Class ApolloClassCrosspostPerformViewController;
 Class ApolloClassDualStateButtonNode;
+Class ApolloClassEmptyStateLabel;
 Class ApolloClassFLAnimatedImage;
 Class ApolloClassFLAnimatedImageView;
 Class ApolloClassJumpBar;
@@ -190,6 +191,7 @@ __attribute__((constructor)) static void ApolloClassesResolve(void) {
     ApolloClassCrosspostNode = objc_getClass("_TtC6Apollo13CrosspostNode");
     ApolloClassCrosspostPerformViewController = objc_getClass("_TtC6Apollo30CrosspostPerformViewController");
     ApolloClassDualStateButtonNode = objc_getClass("_TtC6Apollo19DualStateButtonNode");
+    ApolloClassEmptyStateLabel = objc_getClass("_TtC6Apollo15EmptyStateLabel");
     ApolloClassFLAnimatedImage = objc_getClass("FLAnimatedImage");
     ApolloClassFLAnimatedImageView = objc_getClass("FLAnimatedImageView");
     ApolloClassJumpBar = objc_getClass("_TtC6Apollo7JumpBar");

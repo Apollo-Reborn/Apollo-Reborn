@@ -63,6 +63,7 @@ extern Class ApolloClassComposeViewController;
 extern Class ApolloClassCrosspostNode;
 extern Class ApolloClassCrosspostPerformViewController;
 extern Class ApolloClassDualStateButtonNode;
+extern Class ApolloClassEmptyStateLabel;
 extern Class ApolloClassFLAnimatedImage;
 extern Class ApolloClassFLAnimatedImageView;
 extern Class ApolloClassJumpBar;
