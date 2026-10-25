@@ -64,16 +64,29 @@ static BOOL ApolloDuoBackSwipeAcceptsPoint(UINavigationController *navigation, C
 }
 
 // Away from the edge strip, content with its own sideways drag keeps it: a
-// gallery or carousel that can still page back, and sliders/switches.
-static BOOL ApolloDuoBackSwipeTouchOwnsHorizontalDrag(UIView *view, UIView *container) {
+// gallery or carousel that can still page back, and sliders/switches. When
+// the swipe would only reveal a root's list, any sideways scroller keeps it,
+// even at its leading end or when its content fits (one that bounces
+// sideways still drags): a Community Highlights carousel is being scrolled,
+// not asked to open the list over itself.
+static BOOL ApolloDuoBackSwipeTouchOwnsHorizontalDrag(UIView *view, UIView *container, BOOL rootReveal) {
     for (UIView *candidate = view; candidate && candidate != container; candidate = candidate.superview) {
         if ([candidate isKindOfClass:UISlider.class] || [candidate isKindOfClass:UISwitch.class]) return YES;
         if (![candidate isKindOfClass:UIScrollView.class]) continue;
         UIScrollView *scroll = (UIScrollView *)candidate;
-        if (scroll.scrollEnabled && scroll.contentSize.width > CGRectGetWidth(scroll.bounds) + 1.0
-            && scroll.contentOffset.x > -scroll.adjustedContentInset.left + 0.5) return YES;
+        if (!scroll.scrollEnabled) continue;
+        BOOL overflows = scroll.contentSize.width > CGRectGetWidth(scroll.bounds) + 1.0;
+        if (rootReveal ? overflows || scroll.alwaysBounceHorizontal
+                       : overflows && scroll.contentOffset.x > -scroll.adjustedContentInset.left + 0.5) return YES;
     }
     return NO;
+}
+
+// Mirrors swiped: below. Closing a paired thread, leaving a visited profile
+// and popping a page are Back; only a plain root reveals its list.
+static BOOL ApolloDuoBackSwipeRevealsAtRoot(UINavigationController *navigation) {
+    if (ApolloDuoBackSwipeStartsAnywhere() && ApolloDuoSplitPairedThreadNavigation(navigation)) return NO;
+    return navigation.viewControllers.count == 1 && !ApolloDuoSplitCanReturnFromVisitedProfile(navigation);
 }
 
 // The row under the finger highlights on touchesBegan, before any swipe has
@@ -146,7 +159,7 @@ static const NSTimeInterval kApolloDuoHighlightGuardDelay = 0.12;
     if ((gesture != self.swipe && gesture != self.highlightGuard)
         || !ApolloDuoBackSwipeAcceptsPoint(navigation, point)) return NO;
     return ApolloDuoBackSwipeInEdgeStrip(ApolloDuoBackSwipePane(navigation), point)
-        || !ApolloDuoBackSwipeTouchOwnsHorizontalDrag(touch.view, navigation.view);
+        || !ApolloDuoBackSwipeTouchOwnsHorizontalDrag(touch.view, navigation.view, ApolloDuoBackSwipeRevealsAtRoot(navigation));
 }
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gesture {
     if (gesture == self.highlightGuard) {

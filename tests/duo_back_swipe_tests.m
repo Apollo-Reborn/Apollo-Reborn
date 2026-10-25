@@ -63,6 +63,7 @@ typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 @property(nonatomic) CGPoint contentOffset;
 @property(nonatomic) UIEdgeInsets adjustedContentInset;
 @property(nonatomic, getter=isScrollEnabled) BOOL scrollEnabled;
+@property(nonatomic) BOOL alwaysBounceHorizontal;
 @end
 @implementation UIScrollView @end
 @interface UISlider : UIView @end
@@ -356,6 +357,56 @@ int main(void) {
         Check([owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch], @"a scroll view that cannot scroll does not block Back");
         UISlider *slider = [UISlider new]; slider.superview = cell; touch.view = slider;
         Check(![owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch], @"a slider keeps its drag");
+
+        // At a feed root the swipe would only reveal the list, so a sideways
+        // scroller (Community Highlights) keeps the drag even at its start.
+        UINavigationController *root = Navigation(); root.viewControllers = @[[UIViewController new]];
+        UINavigationController *rootThread = Navigation(); rootThread.viewControllers = @[[UIViewController new]];
+        ApolloDuoSplitState *rootSplit = [ApolloDuoSplitState new];
+        rootSplit.split = [NSObject new]; rootSplit.host = [TestDuoHost new];
+        rootSplit.feed = root; rootSplit.secondary = rootThread; root.duoState = rootSplit; rootThread.duoState = rootSplit;
+        ApolloDuoInstallBackSwipe(root); owner = objc_getAssociatedObject(root, &kApolloDuoBackSwipe);
+        UIView *feedHeader = [UIView new]; feedHeader.superview = root.view;
+        UIScrollView *highlights = [UIScrollView new]; highlights.superview = feedHeader; highlights.scrollEnabled = YES;
+        highlights.bounds = CGRectMake(0, 0, 600, 200); highlights.contentSize = CGSizeMake(1800, 200);
+        UIView *card = [UIView new]; card.superview = highlights;
+        touch = [UITouch new]; touch.view = card; touch.point = CGPointMake(300, 300);
+        Check(ApolloDuoSplitCanRevealPostsListWithSwipe(root) && ApolloDuoBackSwipeAcceptsPoint(root, touch.point),
+              @"the feed root can reveal the list from this point");
+        Check(![owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch]
+              && ![owner gestureRecognizer:owner.highlightGuard shouldReceiveTouch:touch],
+              @"root reveal: a carousel at its leading end keeps the swipe");
+        highlights.contentOffset = CGPointMake(600, 0);
+        Check(![owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch], @"root reveal: a scrolled carousel keeps the swipe");
+        highlights.contentOffset = CGPointZero; touch.point = CGPointMake(10, 300);
+        Check([owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch], @"root reveal: the edge strip still opens the list over a carousel");
+        touch.point = CGPointMake(300, 300);
+        highlights.contentSize = CGSizeMake(500, 200); highlights.alwaysBounceHorizontal = YES;
+        Check(![owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch],
+              @"root reveal: a carousel whose cards fit still keeps the swipe when it bounces sideways");
+        highlights.alwaysBounceHorizontal = NO;
+        Check([owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch],
+              @"root reveal: a horizontal scroll view that fits and does not bounce lets the list open");
+        highlights.alwaysBounceHorizontal = YES; highlights.scrollEnabled = NO;
+        Check([owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch],
+              @"root reveal: a scroll view with scrolling disabled lets the list open");
+        highlights.scrollEnabled = YES; highlights.alwaysBounceHorizontal = NO;
+        highlights.contentSize = CGSizeMake(1800, 200); touch.point = CGPointMake(10, 300);
+        touch.point = CGPointMake(300, 300); touch.view = feedHeader;
+        Check([owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch], @"root reveal: the rest of the feed still opens the list");
+        touch.view = card; rootSplit.host.postsShowingDetail = YES;
+        rootThread.viewControllers = @[[UIViewController new], [UIViewController new]];
+        Check([owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch],
+              @"closing the paired thread is Back: a carousel at its leading end does not hold it");
+        rootSplit.host.postsShowingDetail = NO; rootThread.viewControllers = @[[UIViewController new]];
+        root.viewControllers = @[[UIViewController new], [UIViewController new]];
+        Check([owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch], @"a pushed page with a carousel at its first item still goes Back");
+        highlights.contentSize = CGSizeMake(500, 200); highlights.alwaysBounceHorizontal = YES;
+        Check([owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch],
+              @"a pushed page still goes Back over a bouncing carousel whose cards fit");
+        highlights.contentSize = CGSizeMake(1800, 200); highlights.alwaysBounceHorizontal = NO;
+        highlights.contentOffset = CGPointMake(600, 0);
+        Check(![owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch], @"a pushed page with a carousel mid-way keeps it scrolling");
 
         // A visited profile is the account split's one-page detail root: Back
         // leaves it the way its Back button does, with or without the setting.
