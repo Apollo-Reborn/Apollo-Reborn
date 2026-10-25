@@ -2669,10 +2669,31 @@ static void ApolloDuoSplitOpen(ApolloDuoSplitState *state) {
 // Folding or unfolding re-hosts the open pages. UIKit reports that as the
 // thread disappearing and reappearing, and Apollo pauses its video exactly as
 // when the reader leaves the post. Resume what was playing before the move.
+//
+// Apollo has two player paths (AGENTS.md, "ASVideoNode Player Access"):
+// shareable v.redd.it video keeps a nil ASVideoNode.player and plays through
+// playerLayer.player; GIF/Giphy/Streamable play through the node's own player.
+// Resolve the layer's player first, as the native mute handler does.
+static AVPlayer *ApolloDuoVideoNodePlayer(id node) {
+    CALayer *layer = [node respondsToSelector:@selector(playerLayer)]
+        ? ((id (*)(id, SEL))objc_msgSend)(node, @selector(playerLayer)) : nil;
+    AVPlayer *player = [layer isKindOfClass:AVPlayerLayer.class] ? ((AVPlayerLayer *)layer).player : nil;
+    if (!player && [node respondsToSelector:@selector(player)])
+        player = ((id (*)(id, SEL))objc_msgSend)(node, @selector(player));
+    return [player isKindOfClass:AVPlayer.class] ? player : nil;
+}
+
+@interface ApolloDuoPlayingVideo : NSObject
+@property(nonatomic, weak) id node;
+@property(nonatomic, weak) AVPlayer *player;
+@property(nonatomic, weak) AVPlayerItem *item;
+@end
+@implementation ApolloDuoPlayingVideo @end
+
 static void ApolloDuoResumeVideosAfterMove(NSArray<UIViewController *> *controllers) {
     Class videoClass = objc_getClass("ASVideoNode");
     if (!videoClass || !controllers.count) return;
-    NSMutableArray *playing = [NSMutableArray array];
+    NSMutableArray<ApolloDuoPlayingVideo *> *playing = [NSMutableArray array];
     for (UIViewController *controller in controllers) {
         UIView *root = controller.viewIfLoaded;
         if (!root.window) continue;
@@ -2682,19 +2703,36 @@ static void ApolloDuoResumeVideosAfterMove(NSArray<UIViewController *> *controll
             [views addObjectsFromArray:view.subviews];
             id node = [view respondsToSelector:@selector(asyncdisplaykit_node)]
                 ? ((id (*)(id, SEL))objc_msgSend)(view, @selector(asyncdisplaykit_node)) : nil;
-            if (![node isKindOfClass:videoClass] || ![node respondsToSelector:@selector(player)]) continue;
-            AVPlayer *player = ((id (*)(id, SEL))objc_msgSend)(node, @selector(player));
-            if (player.rate > 0) [playing addObject:node];
+            if (![node isKindOfClass:videoClass]) continue;
+            AVPlayer *player = ApolloDuoVideoNodePlayer(node);
+            if (!(player.rate > 0) || !player.currentItem) continue;
+            ApolloDuoPlayingVideo *video = [ApolloDuoPlayingVideo new];
+            video.node = node;
+            video.player = player;
+            video.item = player.currentItem;
+            [playing addObject:video];
         }
     }
     if (!playing.count) return;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         NSUInteger resumed = 0;
-        for (id node in playing) {
-            AVPlayer *player = ((id (*)(id, SEL))objc_msgSend)(node, @selector(player));
+        for (ApolloDuoPlayingVideo *video in playing) {
+            id node = video.node;
+            AVPlayer *player = video.player;
+            // Only the same player, still on the same content, still on screen
+            // and paused: a node that was reused or scrolled away, or a player
+            // that moved on, belongs to something else now.
+            if (!node || !player || ApolloDuoVideoNodePlayer(node) != player
+                || player.currentItem != video.item || player.rate > 0) continue;
             UIView *view = ((id (*)(id, SEL))objc_msgSend)(node, @selector(view));
-            if (!player || player.rate > 0 || !view.window) continue;
-            ((void (*)(id, SEL))objc_msgSend)(node, @selector(play));
+            if (!view.window || view.hidden || view.alpha <= 0.01) continue;
+            // The shareable path's node has no player of its own: play the
+            // layer's player directly. The direct path goes through the node so
+            // ASVideoNode's own playback state stays in step.
+            id direct = [node respondsToSelector:@selector(player)]
+                ? ((id (*)(id, SEL))objc_msgSend)(node, @selector(player)) : nil;
+            if (direct == player) ((void (*)(id, SEL))objc_msgSend)(node, @selector(play));
+            else [player play];
             resumed++;
         }
         if (resumed) ApolloLog(@"[DuoSplit] resumed %lu video(s) paused by the fold rebuild", (unsigned long)resumed);
