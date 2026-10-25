@@ -83,7 +83,7 @@ static const ApolloWhatsNewItemEntry kWhatsNewItems[] = {
     { "3.9.0", "magnifyingglass.circle.fill", "Search With Kagi", "Kagi subscribers can search Reddit through Kagi from the Search tab's magnifier." },
     { "3.9.0", "person.crop.circle.fill", "Profiles", "Edit your Reddit profile right in Apollo, and find profile settings on a new User Profiles page." },
     { "3.9.0", "checkmark.shield.fill", "Fixes Across the App", "Crash fixes, Google and Apple sign-in, moderator tools without an API key, and no forced YouTube captions on iOS 27." },
-    { "4.0.0", "rectangle.split.2x1", "iPhone Duo", "Browse with adaptive columns, a feed beside comments, and navigation that follows folding and rotation." },
+    { "4.0.0", "rectangle.split.2x1", "iPhone Duo", "Browse paired columns with steadier folding, centered cover titles and text that stays clear of the rail." },
     { "4.0.0", "sidebar.left", "iPad Layout (Beta)", "Try a native sidebar and adjustable feed and reader columns on iPadOS 18 or later." },
     { "4.0.0", "bookmark.fill", "Pick Up Where You Left Off", "Return to your last feed, post and nearby reading position after iOS closes Apollo." },
     { "4.0.0", "square.grid.2x2.fill", "Gallery, Reworked", "Open galleries faster, pinch to change tile size, and browse Saved categories in Gallery View." },

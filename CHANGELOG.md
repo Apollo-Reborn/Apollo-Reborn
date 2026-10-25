@@ -39,6 +39,9 @@ All notable changes to this project will be documented in this file.
 
 ### Fixes
 
+- Refine **Duo navigation** with steadier feed positions and search bars when columns change, a smoother subreddit drawer, correct Home/Popular/All restoration, and Reddit links opened from Settings routed to Posts (#1470: @nnastasi)
+  - Resume videos that were playing before folding or unfolding, covering both shared Reddit videos and direct-player media
+- Center **folded Duo title pills** in the usable header and keep composer text clear of the right-hand system strip, with correct wrapping and height through folding and unfolding (#1480: @jordanearle)
 - Keep the same **Duo comments thread** when returning from a linked subreddit after rotation or folding, and let the drawer return to an older retained feed correctly (#1464: @jordanearle)
 - Correct **Duo video autoplay** around the side rail and both columns' navigation bars (#1466: @kiliantyler)
 - Keep **View All Comments** visible inside its Duo comments pane when opening a specific comment (#1468: @d0lb33)

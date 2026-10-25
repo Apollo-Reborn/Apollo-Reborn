@@ -360,6 +360,7 @@ Thank you to these wonderful people:
     <tr>
       <td align="center" valign="top" width="14.29%"><a href="https://github.com/kiliantyler"><img src="https://avatars.githubusercontent.com/u/22827191?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="kiliantyler"/></a><br /><sub><b>kiliantyler</b></sub><br /><a href="https://github.com/Apollo-Reborn/Apollo-Reborn/commits?author=kiliantyler" title="Code">Code</a></td>
       <td align="center" valign="top" width="14.29%"><a href="https://github.com/d0lb33"><img src="https://avatars.githubusercontent.com/u/18106388?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="d0lb33"/></a><br /><sub><b>d0lb33</b></sub><br /><a href="https://github.com/Apollo-Reborn/Apollo-Reborn/commits?author=d0lb33" title="Code">Code</a></td>
+      <td align="center" valign="top" width="14.29%"><a href="https://github.com/nnastasi"><img src="https://avatars.githubusercontent.com/u/146885500?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="nnastasi"/></a><br /><sub><b>nnastasi</b></sub><br /><a href="https://github.com/Apollo-Reborn/Apollo-Reborn/commits?author=nnastasi" title="Code">Code</a></td>
     </tr>
   </tbody>
 </table>
