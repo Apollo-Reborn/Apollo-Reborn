@@ -17,6 +17,8 @@ for signature in ['UINavigationController *ApolloDuoSplitDetailNavigation(',
                   'BOOL ApolloDuoSplitCanRevealPostsListWithSwipe(',
                   'BOOL ApolloDuoSplitCanReturnFromVisitedProfile(',
                   'BOOL ApolloDuoSplitPopRevealsContent(',
+                  'BOOL ApolloDuoSplitIsActive(',
+                  'BOOL ApolloDuoSplitBackClosesThread(',
                   'static BOOL ApolloDuoPostsPopReachedBackstop(']:
     start = split.index(signature)
     policies.append(split[start:split.index('\n}', start) + 2])

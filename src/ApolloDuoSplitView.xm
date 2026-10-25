@@ -1099,6 +1099,20 @@ BOOL ApolloDuoSplitPopRevealsContent(UINavigationController *nav) {
     return !placeholder && !overview;
 }
 
+// An unfolded split lays `nav` out: a pane, its outer host, a sidebar or the
+// drawer list. Folded or in portrait there is none.
+BOOL ApolloDuoSplitIsActive(UINavigationController *nav) {
+    return ApolloDuoSplitStateForNavigation(nav, NO).split != nil;
+}
+
+// Back in `nav` closes the Posts thread column: the thread pane right above
+// its backstop, which this file's popViewControllerAnimated: hook closes.
+BOOL ApolloDuoSplitBackClosesThread(UINavigationController *nav) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    return state.split && state.feed && !state.changing && nav == state.secondary
+        && nav.viewControllers.count == 2;
+}
+
 // A native pop has still left the Posts thread pane on its backstop. Apollo's
 // tab-bar pan and goBack call its Swift pop directly, so they never reach this
 // file's popViewControllerAnimated: hook and its column close.
