@@ -44,6 +44,7 @@
 #import "ApolloWebSessionStore.h"
 #import "ApolloClasses.h"
 #import "ApolloDuoRail.h"
+#import "ApolloHighlightsCarouselGesturePolicy.h"
 
 NSNotificationName const ApolloCommunityHighlightsDataReadyNotification =
     @"ApolloCommunityHighlightsDataReadyNotification";
@@ -1635,6 +1636,30 @@ static ApolloHLCardView *ApolloHLBuildCard(ApolloHLItem *item) {
 
 // Match Daily Spotlight's gesture arbitration: the table waits for the carousel
 // to resolve horizontal versus vertical intent.
+static UINavigationController *ApolloHLAncestorNavigationController(UIView *view) {
+    for (UIResponder *r = view.nextResponder; r; r = r.nextResponder) {
+        if ([r isKindOfClass:[UIViewController class]]) {
+            UIViewController *vc = (UIViewController *)r;
+            if (vc.navigationController) return vc.navigationController;
+            return [vc isKindOfClass:[UINavigationController class]] ? (UINavigationController *)vc : nil;
+        }
+    }
+    return nil;
+}
+
+// ApolloNavigationController keeps swiped-back pages in a Swift array ivar
+// named poppedViewControllers (same check as the feed gallery carousel). Any
+// failure returns NO, which keeps the carousel's native rubber-band.
+static BOOL ApolloHLCanGoForward(UINavigationController *nav) {
+    id popped = ApolloObjectIvar(nav, "poppedViewControllers");
+    if (![popped respondsToSelector:@selector(count)]) return NO;
+    @try {
+        return ((NSUInteger (*)(id, SEL))objc_msgSend)(popped, @selector(count)) > 0;
+    } @catch (__unused NSException *e) {
+        return NO;
+    }
+}
+
 @interface ApolloHLCarouselScrollView : UIScrollView <UIGestureRecognizerDelegate>
 - (UIScrollView *)ahlEnclosingFeedScrollView;
 @end
@@ -1643,7 +1668,24 @@ static ApolloHLCardView *ApolloHLBuildCard(ApolloHLItem *item) {
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
     if (gestureRecognizer != self.panGestureRecognizer) return YES;
     CGPoint velocity = [self.panGestureRecognizer velocityInView:self];
-    return fabs(velocity.x) >= fabs(velocity.y);
+    if (fabs(velocity.x) < fabs(velocity.y)) return NO;
+
+    // At an end of the carousel, an outward pan with somewhere to navigate goes
+    // to Apollo's Back/Forward pans (which wait on this pan) instead of
+    // rubber-banding.
+    UINavigationController *nav = ApolloHLAncestorNavigationController(self);
+    BOOL idle = nav.transitionCoordinator == nil;
+    BOOL canGoBack = idle && nav.viewControllers.count > 1;
+    BOOL canGoForward = idle && ApolloHLCanGoForward(nav);
+    BOOL rightToLeft = self.effectiveUserInterfaceLayoutDirection ==
+        UIUserInterfaceLayoutDirectionRightToLeft;
+    CGFloat minOffset = -self.contentInset.left;
+    CGFloat maxOffset = self.contentSize.width - CGRectGetWidth(self.bounds) + self.contentInset.right;
+    CGPoint translation = [self.panGestureRecognizer translationInView:self];
+    return !ApolloHLCarouselShouldYieldToNavigation(self.contentOffset.x, minOffset, maxOffset,
+                                                    velocity.x, velocity.y,
+                                                    translation.x, translation.y, rightToLeft,
+                                                    canGoBack, canGoForward);
 }
 
 // Make the navigation controller's swipe-to-go-back pan (a non-scrollview pan /
