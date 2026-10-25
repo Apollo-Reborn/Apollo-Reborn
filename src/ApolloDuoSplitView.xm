@@ -2952,10 +2952,12 @@ static void ApolloDuoSplitUpdate(void) {
             if (state.split && state.halfWidthSidebar != halfWidth) {
                 // UIKit animates the same column containers; content and
                 // navigation chrome move with the divider in both directions.
-                [UIView animateWithDuration:0.25 animations:^{
+                // The fold region can publish a beat after the posture
+                // change, so keep both panes scrollable while it moves.
+                [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionAllowUserInteraction animations:^{
                     ApolloDuoSplitApplySidebarWidth(state, halfWidth);
                     [state.split.view layoutIfNeeded];
-                }];
+                } completion:nil];
             }
             ApolloDuoSplitOpenDefault(state);
             ApolloDuoPostsSyncColumns(state);
