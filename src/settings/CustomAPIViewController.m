@@ -23,6 +23,7 @@
 #import "ApolloMessageDraftStore.h"
 #import "ApolloDevvitPosts.h"        // ApolloDevvitFeedOwnershipChangedNotification
 #import "ApolloFloatingTabs.h"       // close-all / fan-out entry points for the toggles
+#import "ApolloAllPlusNSFW.h"        // ApolloAllPlusInvalidate() -- drop cached candidates on toggle
 #import "settings/ApolloAISettingsViewController.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloReduceRateLimiting.h"
@@ -2177,7 +2178,7 @@ typedef NS_ENUM(NSInteger, Tag) {
                                   onSelect:nil];
 
     return [ApolloSettingsSection sectionWithTitle:@"All+"
-                                            footer:@"Shows r/all the way old Reddit did, with NSFW posts placed by the same hot ranking as everything else. NSFW boost moves them up the hot, best and rising sorts."
+                                            footer:@"Shows r/all the way old Reddit did, with NSFW posts placed by the same hot ranking as everything else. Applies to the hot, best and rising sorts; top, new and controversial are left as Reddit sends them. NSFW boost moves the NSFW posts up."
                                               rows:@[ allPlusNSFW, allPlusNSFWBoost ]];
 }
 
@@ -4983,6 +4984,9 @@ static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
 - (void)allPlusNSFWSwitchToggled:(UISwitch *)sender {
     sAllPlusNSFWEnabled = sender.isOn;
     [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyAllPlusNSFWEnabled];
+    // Either way, start clean: off must stop a search already in flight from
+    // publishing or re-asking; on must not resume from whatever was buffered.
+    ApolloAllPlusInvalidate();
     // Reload the boost slider row so it enables/disables to match the toggle.
     [self reloadRowWithID:@"gen.allPlusNSFWBoost"];
 }
