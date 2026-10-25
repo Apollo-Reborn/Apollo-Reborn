@@ -38,6 +38,31 @@ NSString *ApolloWebJSONRoutePath(ApolloWebJSONRoute route, NSString *path);
 // Reddit's 403 HTML block page, as opposed to a 403 with a JSON error body.
 BOOL ApolloWebJSONRouteResponseIsBlockPage(NSHTTPURLResponse *_Nullable response);
 
+#pragma mark - Remote route table (keyless-routes.json)
+
+// Maintainers can change the order of routes without a release through
+// keyless-routes.json in the repository (docs/keyless-routes.md). The file can
+// only pick among the routes above, never name a host or URL:
+// - an endpoint gets any order or subset of www, www-dotjson and old: a
+//   built-in one (above) for one of its own methods, another only as a GET on
+//   /api/<name>, so feeds and threads can't be moved to another route;
+// - writes can't be added, and nothing the file says makes a write retry.
+// Which route an endpoint uses, Old Reddit included, is left to review of the
+// file's pull requests.
+// Anything else is rejected entry by entry; an unreadable file or an unknown
+// "version" is rejected whole. Returns the validated overrides, keyed
+// "<METHOD> <endpoint>" ("GET /api/info"), or nil when the whole file is
+// rejected. `rejections`, when given, gets one line per thing left out.
+NSDictionary<NSString *, NSArray<NSNumber *> *> *_Nullable ApolloWebJSONRouteTableParse(
+    NSData *_Nullable data, NSArray<NSString *> *_Nullable *_Nullable rejections);
+
+// The overrides ApolloWebJSONRoutesForRequest uses ahead of the built-in table
+// (from ApolloWebJSONRouteTableParse), or nil for the built-in table alone.
+void ApolloWebJSONRouteSetRemoteTable(NSDictionary<NSString *, NSArray<NSNumber *> *> *_Nullable overrides);
+
+// One line per override in effect with the built-in order it replaces, for logs.
+NSString *ApolloWebJSONRouteRemoteTableDescription(void);
+
 #pragma mark - Route health
 
 // Per account, path and route, in memory for the launch: Old Reddit access

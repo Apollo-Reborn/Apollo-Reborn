@@ -170,8 +170,114 @@ static void TestDescription(void) {
     CHECK([text containsString:@"alice|/api/info|old: 1 ok, 0 blocked"], @"%@", text);
 }
 
-int main(void) {
+static NSDictionary *ParseJSON(NSString *json, NSArray<NSString *> **rejections) {
+    return ApolloWebJSONRouteTableParse([json dataUsingEncoding:NSUTF8StringEncoding], rejections);
+}
+
+static void TestTableParseValid(void) {
+    NSArray<NSString *> *rejections = nil;
+    NSDictionary *table = ParseJSON(@"{\"version\":1,\"endpoints\":{"
+        "\"GET /api/info\":{\"routes\":[\"old\",\"www-dotjson\"]},"
+        "\"POST /api/morechildren\":{\"routes\":[\"www-dotjson\"]},"
+        "\"GET /api/morechildren\":{\"routes\":[\"www\",\"old\"]},"
+        "\"GET /api/foo\":{\"routes\":[\"www-dotjson\",\"www\"]},"
+        "\"GET /api/bar\":{\"routes\":[\"old\"]}}}", &rejections);
+    CHECK(table.count == 5, @"5 entries (got %@, rejected %@)", table, rejections);
+    CHECK(rejections.count == 0, @"nothing rejected: %@", rejections);
+    CHECK([table[@"GET /api/info"] isEqualToArray:(@[ @(ApolloWebJSONRouteOld), @(ApolloWebJSONRouteWwwDotJSON) ])], @"reorder");
+    CHECK([table[@"POST /api/morechildren"] isEqualToArray:@[ @(ApolloWebJSONRouteWwwDotJSON) ]], @"subset");
+    CHECK([table[@"GET /api/foo"] isEqualToArray:(@[ @(ApolloWebJSONRouteWwwDotJSON), @(ApolloWebJSONRouteWww) ])], @"added GET");
+    CHECK([table[@"GET /api/bar"] isEqualToArray:@[ @(ApolloWebJSONRouteOld) ]], @"added GET may use old");
+
+    CHECK([ParseJSON(@"{\"version\":1,\"endpoints\":{}}", NULL) count] == 0, @"empty endpoints: no overrides");
+    CHECK(ParseJSON(@"{\"version\":1}", NULL) != nil, @"missing endpoints: no overrides, not rejected");
+}
+
+static void TestTableParseRejectsEntries(void) {
+    NSDictionary<NSString *, NSString *> *bad = @{
+        @"\"POST /api/foo\":{\"routes\":[\"www-dotjson\"]}": @"POST for an added endpoint",
+        @"\"POST /api/comment\":{\"routes\":[\"www-dotjson\"]}": @"a write",
+        @"\"DELETE /api/info\":{\"routes\":[\"www\"]}": @"another method",
+        @"\"POST /api/info\":{\"routes\":[\"www-dotjson\"]}": @"a method the built-in endpoint doesn't have",
+        @"\"GET /api/*\":{\"routes\":[\"www\"]}": @"a wildcard",
+        @"\"GET /api/info.json\":{\"routes\":[\"www\"]}": @"a .json path",
+        @"\"GET /r/all/hot\":{\"routes\":[\"www-dotjson\"]}": @"a listing",
+        @"\"GET /api/v1/me\":{\"routes\":[\"www-dotjson\"]}": @"more than one segment",
+        @"\"GET /api/foo?x=1\":{\"routes\":[\"www\"]}": @"a query",
+        @"\"GET  /api/foo\":{\"routes\":[\"www\"]}": @"a malformed key",
+        @"\"GET /api/info\":{\"routes\":[\"https://evil.example\"]}": @"a URL as a route",
+        @"\"GET /api/info\":{\"routes\":[\"api\"]}": @"an unknown route",
+        @"\"GET /api/info\":{\"routes\":[]}": @"no routes",
+        @"\"GET /api/info\":{\"routes\":[\"www\",\"www\"]}": @"a duplicate",
+        @"\"GET /api/info\":{\"routes\":[\"www\",\"old\",\"www-dotjson\",\"www\"]}": @"more than 3",
+        @"\"GET /api/info\":{\"routes\":\"old\"}": @"routes not a list",
+        @"\"GET /api/info\":[\"old\"]": @"entry not an object",
+    };
+    for (NSString *entry in bad) {
+        NSArray<NSString *> *rejections = nil;
+        NSDictionary *table = ParseJSON([NSString stringWithFormat:@"{\"version\":1,\"endpoints\":{%@,"
+                                         "\"GET /api/ok\":{\"routes\":[\"www-dotjson\"]}}}", entry], &rejections);
+        CHECK(table.count == 1 && table[@"GET /api/ok"], @"%@: only that entry left out (got %@)", bad[entry], table);
+        CHECK(rejections.count == 1, @"%@: one rejection logged (got %@)", bad[entry], rejections);
+    }
+}
+
+static void TestTableParseRejectsFile(void) {
+    NSArray<NSString *> *rejections = nil;
+    CHECK(ParseJSON(@"not json", &rejections) == nil && rejections.count == 1, @"not JSON");
+    CHECK(ParseJSON(@"[1]", NULL) == nil, @"not an object");
+    CHECK(ParseJSON(@"{\"version\":2,\"endpoints\":{}}", NULL) == nil, @"unknown version");
+    CHECK(ParseJSON(@"{\"endpoints\":{}}", NULL) == nil, @"no version");
+    CHECK(ParseJSON(@"{\"version\":\"1\",\"endpoints\":{}}", NULL) == nil, @"version as a string");
+    CHECK(ParseJSON(@"{\"version\":1,\"endpoints\":[]}", NULL) == nil, @"endpoints not an object");
+    CHECK(ApolloWebJSONRouteTableParse(nil, NULL) == nil, @"nil");
+    CHECK(ApolloWebJSONRouteTableParse([NSData data], NULL) == nil, @"empty");
+    NSMutableString *many = [NSMutableString stringWithString:@"{\"version\":1,\"endpoints\":{"];
+    for (int i = 0; i < 33; i++) [many appendFormat:@"%@\"GET /api/e%d\":{\"routes\":[\"www\"]}", i ? @"," : @"", i];
+    [many appendString:@"}}"];
+    CHECK(ParseJSON(many, NULL) == nil, @"more than 32 endpoints");
+    NSMutableString *big = [NSMutableString stringWithString:@"{\"version\":1,\"pad\":\""];
+    while (big.length < 17 * 1024) [big appendString:@"xxxxxxxxxxxxxxxx"];
+    [big appendString:@"\",\"endpoints\":{}}"];
+    CHECK(ParseJSON(big, NULL) == nil, @"larger than 16 KB");
+}
+
+static void TestRemoteTableMerge(void) {
+    ApolloWebJSONRouteHealthReset();
+    NSArray *builtIn = @[ @(ApolloWebJSONRouteWwwDotJSON), @(ApolloWebJSONRouteOld) ];
+    ApolloWebJSONRouteSetRemoteTable(ParseJSON(@"{\"version\":1,\"endpoints\":{"
+        "\"GET /api/info\":{\"routes\":[\"old\"]},"
+        "\"GET /api/foo\":{\"routes\":[\"www-dotjson\",\"www\"]}}}", NULL));
+    CHECK([ApolloWebJSONRoutesForRequest(@"GET", @"api/info.json") isEqualToArray:@[ @(ApolloWebJSONRouteOld) ]], @"override applies");
+    CHECK(!ApolloWebJSONRouteRequestMayRetry(@"GET", @"/api/info.json"), @"one route: nothing to retry on");
+    CHECK([ApolloWebJSONRoutesForRequest(@"POST", @"/api/morechildren.json") isEqualToArray:builtIn], @"other entries keep built-in");
+    CHECK(ApolloWebJSONRouteRequestMayRetry(@"GET", @"/api/foo"), @"added GET with two routes may retry");
+    CHECK([ApolloWebJSONRoutePath(ApolloWebJSONRouteWwwDotJSON, @"/api/foo.json") isEqualToString:@"/api/foo/.json"], @"added path");
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", @"/api/foo", 0, 0) == ApolloWebJSONRouteWwwDotJSON, @"choose uses it");
+    CHECK([ApolloWebJSONRouteRemoteTableDescription() containsString:@"GET /api/info: old (built-in: www-dotjson, old)"],
+          @"%@", ApolloWebJSONRouteRemoteTableDescription());
+    CHECK([ApolloWebJSONRouteRemoteTableDescription() containsString:@"GET /api/foo: www-dotjson, www (built-in: www)"],
+          @"%@", ApolloWebJSONRouteRemoteTableDescription());
+    ApolloWebJSONRouteSetRemoteTable(nil);
+    CHECK([ApolloWebJSONRoutesForRequest(@"GET", @"/api/info") isEqualToArray:builtIn], @"cleared: built-in again");
+    CHECK([ApolloWebJSONRoutesForRequest(@"GET", @"/api/foo") isEqualToArray:@[ @(ApolloWebJSONRouteWww) ]], @"cleared: www");
+    CHECK([ApolloWebJSONRouteRemoteTableDescription() containsString:@"built-in"], @"empty description");
+}
+
+static void TestRepositoryFile(const char *repoRoot) {
+    NSString *path = [@(repoRoot) stringByAppendingPathComponent:@"keyless-routes.json"];
+    NSArray<NSString *> *rejections = nil;
+    NSDictionary *table = ApolloWebJSONRouteTableParse([NSData dataWithContentsOfFile:path], &rejections);
+    CHECK(table != nil && rejections.count == 0, @"keyless-routes.json parses cleanly (rejected %@)", rejections);
+}
+
+int main(int argc, const char *argv[]) {
     @autoreleasepool {
+        TestTableParseValid();
+        TestTableParseRejectsEntries();
+        TestTableParseRejectsFile();
+        TestRemoteTableMerge();
+        if (argc > 1) TestRepositoryFile(argv[1]);
         TestTableEndpoints();
         TestEverythingElseStaysOnWww();
         TestRouteTransforms();

@@ -26,6 +26,7 @@
 #import "settings/ApolloAISettingsViewController.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloReduceRateLimiting.h"
+#import "ApolloWebJSONRouteUpdates.h"
 #import "ApolloKagiSearch.h"         // Kagi Session Link (Search tab's Kagi mode)
 #import "ApolloKagiSearchParsing.h"  // ApolloKagiNormalizeSessionToken()
 #import "ApolloAccountCredentials.h"
@@ -1842,6 +1843,21 @@ typedef NS_ENUM(NSInteger, Tag) {
                                   onSelect:nil];
     reduceRateLimiting.visible = ^BOOL { return sWebJSONEnabled; };
 
+    // keyless-routes.json from the repository may reorder the routes blocked
+    // API-key-free reads take (ApolloWebJSONRouteUpdates.h). Off: built-in only.
+    ApolloSettingsRow *routeUpdates =
+        [ApolloSettingsRow customRowWithID:@"api.routeUpdates"
+                                      cell:^UITableViewCell *(__unused UITableView *tableView, __unused ApolloSettingsRow *row) {
+            return [weakSelf switchCellWithIdentifier:@"Cell_API_RouteUpdates"
+                                                label:@"Use Route Updates"
+                                               detail:@"When Reddit blocks an address API-key-free accounts use, Apollo Reborn can switch to another reddit.com address from a list kept in its GitHub repository, checked while the app is open. Off uses only the addresses built into this version."
+                                                   on:sKeylessRouteUpdates
+                                               action:@selector(routeUpdatesSwitchToggled:)]
+                ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+        }
+                                  onSelect:nil];
+    routeUpdates.visible = ^BOOL { return sWebJSONEnabled; };
+
     // Modern Reddit Chat / Moderator Mail. Both work for API-key and
     // API-key-free accounts alike, so both are a plain choice that stays
     // switchable for everyone. These preferences are app-wide, like the rest of
@@ -1877,7 +1893,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 
     return [ApolloSettingsSection sectionWithTitle:@"Experimental"
                                             footer:@"Sign in to reddit.com instead of using API keys."
-                                              rows:@[ webJSON, webSessionLogin, reduceRateLimiting, modernChat, modernModmail ]];
+                                              rows:@[ webJSON, webSessionLogin, reduceRateLimiting, routeUpdates, modernChat, modernModmail ]];
 }
 
 - (ApolloSettingsSection *)buildAPIKeysExtrasSection {
@@ -4721,6 +4737,10 @@ static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
 
 - (void)reduceRateLimitingSwitchToggled:(UISwitch *)sender {
     ApolloReduceRateLimitingSetEnabled(sender.isOn);
+}
+
+- (void)routeUpdatesSwitchToggled:(UISwitch *)sender {
+    ApolloWebJSONRouteUpdatesSetEnabled(sender.isOn);
 }
 
 // Modern Chat / Modmail are a plain app-wide choice for every account.

@@ -55,14 +55,18 @@ static NSDictionary *ApolloWebJSONRouteEntry(NSString *method, NSString *path) {
     return nil;
 }
 
+static NSArray<NSNumber *> *ApolloWebJSONRemoteRoutes(NSString *method, NSString *path);
+
 NSArray<NSNumber *> *ApolloWebJSONRoutesForRequest(NSString *method, NSString *path) {
-    return ApolloWebJSONRouteEntry(method, path)[@"routes"] ?: @[ @(ApolloWebJSONRouteWww) ];
+    return ApolloWebJSONRemoteRoutes(method, path) ?: ApolloWebJSONRouteEntry(method, path)[@"routes"] ?: @[ @(ApolloWebJSONRouteWww) ];
 }
 
-// Every table entry is a read (see above), so its fallback routes may be tried
-// in turn. Anything else, writes included, has only www and is never resent.
+// Every built-in entry is a read (see above), and the remote table can only add
+// GETs (ApolloWebJSONRouteTableParse), so a request with more than one route
+// may try them in turn. Anything else, writes included, has only www and is
+// never resent.
 BOOL ApolloWebJSONRouteRequestMayRetry(NSString *method, NSString *path) {
-    return [ApolloWebJSONRouteEntry(method, path)[@"routes"] count] > 1;
+    return ApolloWebJSONRoutesForRequest(method, path).count > 1;
 }
 
 NSString *ApolloWebJSONRoutePath(ApolloWebJSONRoute route, NSString *path) {
@@ -74,6 +78,129 @@ BOOL ApolloWebJSONRouteResponseIsBlockPage(NSHTTPURLResponse *response) {
     if (![response isKindOfClass:[NSHTTPURLResponse class]] || response.statusCode != 403) return NO;
     NSString *contentType = [[response valueForHTTPHeaderField:@"Content-Type"] lowercaseString] ?: @"";
     return [contentType containsString:@"text/html"];
+}
+
+#pragma mark - Remote route table (keyless-routes.json)
+
+static NSUInteger const kApolloWebJSONRouteTableMaxBytes = 16 * 1024;
+static NSUInteger const kApolloWebJSONRouteTableMaxEndpoints = 32;
+static NSUInteger const kApolloWebJSONRouteTableMaxRoutes = 3;
+
+static NSObject *ApolloWebJSONRemoteTableLock(void) {
+    static NSObject *lock;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [NSObject new]; });
+    return lock;
+}
+
+// Guarded by ApolloWebJSONRemoteTableLock.
+static NSDictionary<NSString *, NSArray<NSNumber *> *> *sApolloWebJSONRemoteTable;
+
+static NSString *ApolloWebJSONRemoteTableKey(NSString *method, NSString *path) {
+    return [NSString stringWithFormat:@"%@ %@", method.uppercaseString, ApolloWebJSONRouteEndpointKey(path)];
+}
+
+static NSArray<NSNumber *> *ApolloWebJSONRemoteRoutes(NSString *method, NSString *path) {
+    if (![method isKindOfClass:[NSString class]] || ![path isKindOfClass:[NSString class]]) return nil;
+    @synchronized (ApolloWebJSONRemoteTableLock()) {
+        if (sApolloWebJSONRemoteTable.count == 0) return nil;
+        return sApolloWebJSONRemoteTable[ApolloWebJSONRemoteTableKey(method, path)];
+    }
+}
+
+void ApolloWebJSONRouteSetRemoteTable(NSDictionary<NSString *, NSArray<NSNumber *> *> *overrides) {
+    @synchronized (ApolloWebJSONRemoteTableLock()) {
+        sApolloWebJSONRemoteTable = [overrides copy];
+    }
+}
+
+static NSInteger ApolloWebJSONRouteFromName(id name) {
+    if (![name isKindOfClass:[NSString class]]) return -1;
+    for (NSInteger r = ApolloWebJSONRouteWww; r <= ApolloWebJSONRouteOld; r++) {
+        if ([ApolloWebJSONRouteName((ApolloWebJSONRoute)r) isEqualToString:name]) return r;
+    }
+    return -1;
+}
+
+static NSString *ApolloWebJSONRouteNames(NSArray<NSNumber *> *routes) {
+    NSMutableArray<NSString *> *names = [NSMutableArray arrayWithCapacity:routes.count];
+    for (NSNumber *route in routes) [names addObject:ApolloWebJSONRouteName((ApolloWebJSONRoute)route.integerValue)];
+    return [names componentsJoinedByString:@", "];
+}
+
+NSDictionary<NSString *, NSArray<NSNumber *> *> *ApolloWebJSONRouteTableParse(NSData *data, NSArray<NSString *> **rejections) {
+    NSMutableArray<NSString *> *rejected = [NSMutableArray array];
+    NSDictionary *result = nil;
+    do {
+        if (![data isKindOfClass:[NSData class]] || data.length == 0) { [rejected addObject:@"file: empty"]; break; }
+        if (data.length > kApolloWebJSONRouteTableMaxBytes) { [rejected addObject:@"file: larger than 16 KB"]; break; }
+        id root = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+        if (![root isKindOfClass:[NSDictionary class]]) { [rejected addObject:@"file: not a JSON object"]; break; }
+        id version = root[@"version"];
+        if (![version isKindOfClass:[NSNumber class]] || [version integerValue] != 1) { [rejected addObject:@"file: version isn't 1"]; break; }
+        id endpoints = root[@"endpoints"] ?: @{};
+        if (![endpoints isKindOfClass:[NSDictionary class]]) { [rejected addObject:@"file: endpoints isn't an object"]; break; }
+        if ([endpoints count] > kApolloWebJSONRouteTableMaxEndpoints) { [rejected addObject:@"file: more than 32 endpoints"]; break; }
+
+        NSMutableDictionary<NSString *, NSArray<NSNumber *> *> *overrides = [NSMutableDictionary dictionary];
+        for (id key in [[endpoints allKeys] sortedArrayUsingSelector:@selector(compare:)]) {
+            NSString *label = [key isKindOfClass:[NSString class]] ? key : @"(non-string key)";
+            NSArray<NSString *> *parts = [key isKindOfClass:[NSString class]] ? [key componentsSeparatedByString:@" "] : nil;
+            if (parts.count != 2) { [rejected addObject:[label stringByAppendingString:@": not \"<METHOD> <path>\""]]; continue; }
+            NSString *method = parts[0];
+            NSString *path = parts[1];
+            if (![method isEqualToString:@"GET"] && ![method isEqualToString:@"POST"]) {
+                [rejected addObject:[label stringByAppendingString:@": method isn't GET or POST"]]; continue;
+            }
+            // Exactly /api/<name>: no wildcards, query, listings or other segments.
+            static NSRegularExpression *apiPath;
+            static dispatch_once_t once;
+            dispatch_once(&once, ^{
+                apiPath = [NSRegularExpression regularExpressionWithPattern:@"^/api/[a-z0-9_]+$" options:0 error:NULL];
+            });
+            if (![apiPath firstMatchInString:path options:0 range:NSMakeRange(0, path.length)]) {
+                [rejected addObject:[label stringByAppendingString:@": path isn't /api/<name>"]]; continue;
+            }
+            BOOL builtIn = ApolloWebJSONRouteEntry(method, path) != nil;
+            if (!builtIn && ![method isEqualToString:@"GET"]) {
+                [rejected addObject:[label stringByAppendingString:@": only GETs can be added"]]; continue;
+            }
+            id entry = endpoints[key];
+            id names = [entry isKindOfClass:[NSDictionary class]] ? entry[@"routes"] : nil;
+            if (![names isKindOfClass:[NSArray class]] || [names count] == 0 || [names count] > kApolloWebJSONRouteTableMaxRoutes) {
+                [rejected addObject:[label stringByAppendingString:@": routes isn't a list of 1 to 3 names"]]; continue;
+            }
+            NSMutableArray<NSNumber *> *routes = [NSMutableArray array];
+            NSString *problem = nil;
+            for (id name in names) {
+                NSInteger route = ApolloWebJSONRouteFromName(name);
+                if (route < 0) { problem = [NSString stringWithFormat:@": unknown route %@", name]; break; }
+                if ([routes containsObject:@(route)]) { problem = [NSString stringWithFormat:@": route %@ listed twice", name]; break; }
+                [routes addObject:@(route)];
+            }
+            if (problem) { [rejected addObject:[label stringByAppendingString:problem]]; continue; }
+            overrides[ApolloWebJSONRemoteTableKey(method, path)] = [routes copy];
+        }
+        result = [overrides copy];
+    } while (0);
+    if (rejections) *rejections = [rejected copy];
+    return result;
+}
+
+NSString *ApolloWebJSONRouteRemoteTableDescription(void) {
+    NSDictionary<NSString *, NSArray<NSNumber *> *> *table;
+    @synchronized (ApolloWebJSONRemoteTableLock()) {
+        table = sApolloWebJSONRemoteTable;
+    }
+    if (table.count == 0) return @"(built-in routes only)";
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    for (NSString *key in [table.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+        NSArray<NSString *> *parts = [key componentsSeparatedByString:@" "];
+        NSArray<NSNumber *> *builtIn = ApolloWebJSONRouteEntry(parts.firstObject, parts.lastObject)[@"routes"];
+        [lines addObject:[NSString stringWithFormat:@"%@: %@ (built-in: %@)", key, ApolloWebJSONRouteNames(table[key]),
+                          builtIn ? ApolloWebJSONRouteNames(builtIn) : @"www"]];
+    }
+    return [lines componentsJoinedByString:@"\n"];
 }
 
 #pragma mark - Route health

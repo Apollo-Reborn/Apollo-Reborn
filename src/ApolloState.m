@@ -180,6 +180,7 @@ BOOL sAppleTranslateSheet = NO;
 
 BOOL sWebJSONEnabled = NO;
 BOOL sReduceRateLimiting = NO;
+BOOL sKeylessRouteUpdates = YES;
 BOOL sPollsFeatureEnabled = NO;
 NSInteger sPollOptionAlignment = ApolloPollOptionAlignmentCenter;
 NSString *sWebSessionCookieHeader = nil;

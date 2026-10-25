@@ -15,4 +15,4 @@ xcrun --sdk macosx clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
     "$test_repo_root/tests/web_json_routes_tests.m" \
     -o "$test_binary"
 
-"$test_binary"
+"$test_binary" "$test_repo_root"

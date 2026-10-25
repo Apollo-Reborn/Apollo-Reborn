@@ -631,6 +631,11 @@ static NSString *const UDKeyReduceRateLimiting = @"ReduceRateLimiting";
 // API-key-free sign-in, or at the first rate limit for accounts that signed in
 // before the prompt existed), so it never asks twice. Not user-facing.
 static NSString *const UDKeyReduceRateLimitingOffered = @"ReduceRateLimitingOffered";
+// Use Route Updates (ApolloWebJSONRouteUpdates.m). While API-Key-Free Mode is
+// on, fetch keyless-routes.json from the repository so maintainers can change
+// which reddit.com routes blocked API-key-free reads take without a release.
+// Off uses only the routes built into the tweak. Default YES.
+static NSString *const UDKeyKeylessRouteUpdates = @"KeylessRouteUpdates";
 // Reddit's modern web Chat, for API-key and API-key-free accounts alike. Off
 // means Apollo's own Direct Chat, which needs Reddit API credentials.
 static NSString *const UDKeyUseModernRedditChat = @"UseModernRedditChat";
