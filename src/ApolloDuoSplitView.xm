@@ -42,6 +42,10 @@ static void ApolloDuoToggleVisibleFeedLayout(UIViewController *controller, BOOL 
 
 static NSHashTable<id<ApolloDuoLayoutControl>> *sDuoLayoutControls;
 static BOOL sDuoFeedLayoutChanging;
+@class ApolloDuoSplitHost;
+// The one host whose list follows a finger, so the interruptions that cancel
+// a thread close (a fold, a tab switch, a sheet, resigning) can let it go too.
+static __weak ApolloDuoSplitHost *sDuoListDragHost;
 
 static void ApolloDuoRegisterLayoutControl(id<ApolloDuoLayoutControl> control) {
     if (!sDuoLayoutControls) sDuoLayoutControls = [NSHashTable weakObjectsHashTable];
@@ -234,6 +238,35 @@ static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat
     [view.layer addAnimation:slide forKey:@"ApolloDuoSlide"];
 }
 
+// The interactive drawer's pure pieces: where the finger puts the subreddit
+// list and when a release shows it. Free of UIKit; tested as shipped
+// (tests/run_duo_interactive_drawer_tests.sh). The rest of the slide runs on
+// ApolloDuoSlideDrawer's spring with the finger's velocity.
+// The drawer parks its width plus a 12pt gap off the leading edge.
+static CGFloat ApolloDuoListDragTravel(CGFloat drawerWidth) {
+    return MAX(drawerWidth, 0.0) + 12.0;
+}
+static CGFloat ApolloDuoListDragOffset(CGFloat translation, CGFloat travel) {
+    return MIN(MAX(translation, 0.0), MAX(travel, 0.0));
+}
+static CGFloat ApolloDuoListDragProgress(CGFloat translation, CGFloat travel) {
+    return travel > 0.0 ? ApolloDuoListDragOffset(translation, travel) / travel : 0.0;
+}
+static CGFloat ApolloDuoListDragTranslationX(CGFloat translation, CGFloat travel) {
+    return -travel + ApolloDuoListDragOffset(translation, travel);
+}
+// A drag starts only from a fully hidden drawer: one still sliding in or
+// out is moving already, and a second drag never replaces the first.
+static BOOL ApolloDuoListDragBegins(BOOL listVisible, BOOL containerHidden, BOOL tracking) {
+    return !listVisible && containerHidden && !tracking;
+}
+// Only a drag in hand can end shown, and only by committing; with none, a
+// release is no Back at all.
+static BOOL ApolloDuoListDragEndsVisible(BOOL tracking, BOOL commit) {
+    return tracking && commit;
+}
+// End of the interactive drawer's pure pieces.
+
 @interface ApolloDuoSplitHost : UIViewController <UISplitViewControllerDelegate, ApolloDuoLayoutControl>
 @property(nonatomic, strong) UISplitViewController *split;
 @property(nonatomic, strong) UINavigationController *subredditList;
@@ -254,6 +287,15 @@ static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat
 @property(nonatomic, strong) UIView *postsTransitionSnapshot;
 @property(nonatomic, weak) UINavigationController *searchNavigation;
 @property(nonatomic) NSUInteger listAnimationGeneration;
+// The subreddit list follows the finger (ApolloDuoSplitInteractiveDrawer*):
+// shown only to the transform, with listVisible still NO until it commits.
+@property(nonatomic) BOOL listDragging;
+@property(nonatomic) CGFloat listDragTravel;
+- (BOOL)beginListDrag;
+- (BOOL)updateListDrag:(CGFloat)translation;
+- (CGFloat)listDragProgress:(CGFloat)translation;
+- (void)finishListDrag:(BOOL)commit velocity:(CGFloat)velocity;
+- (void)cancelListDragNow;
 @property(nonatomic, strong) UIButton *splitButton;
 @property(nonatomic, strong) UIButton *feedLayoutButton;
 @property(nonatomic, strong) UIBarButtonItem *listBarItem;
@@ -607,35 +649,27 @@ static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat
 }
 - (void)toggleList { [self setListVisible:!self.listVisible animated:YES]; }
 - (void)dismissList { [self setListVisible:NO animated:YES]; }
-- (void)setListVisible:(BOOL)visible animated:(BOOL)animated {
-    [self setListVisible:visible animated:animated velocity:0];
+// Material must be cleared after UIKit installs its initial light-mode table
+// background, before exposing the drawer.
+- (void)prepareListReveal {
+    [self.subredditList.view layoutIfNeeded];
+    UITableView *table = ApolloDuoSplitFindTable(self.subredditList.view);
+    // Reset before the first reveal frame, after the drawer's safe-area
+    // layout, so reopening always starts with the feed shortcuts.
+    [table setContentOffset:CGPointMake(-table.adjustedContentInset.left,
+                                       -table.adjustedContentInset.top) animated:NO];
+    [table layoutIfNeeded];
+    [self updateListAppearance];
 }
-- (void)setListVisible:(BOOL)visible animated:(BOOL)animated velocity:(CGFloat)velocity {
-    if (!self.subredditList) return;
-    if (!visible) [self endListEditing];
-    if (self.listVisible == visible) return;
-    [self.view layoutIfNeeded];
-    BOOL wasHidden = self.listContainer.hidden;
-    CGFloat start = wasHidden ? -self.listGlass.bounds.size.width - 12
-        : (self.listContainer.layer.presentationLayer ?: self.listContainer.layer).transform.m41;
-    self.listVisible = visible;
-    [self.view setNeedsLayout];
-    if (visible) {
-        // Material must be cleared after UIKit installs its initial light-mode
-        // table background, before exposing the drawer.
-        [self.subredditList.view layoutIfNeeded];
-        UITableView *table = ApolloDuoSplitFindTable(self.subredditList.view);
-        // Reset before the first reveal frame, after the drawer's safe-area
-        // layout, so reopening always starts with the feed shortcuts.
-        [table setContentOffset:CGPointMake(-table.adjustedContentInset.left,
-                                           -table.adjustedContentInset.top) animated:NO];
-        [table layoutIfNeeded];
-        [self updateListAppearance];
-    }
+// Settles the drawer from `start` to its shown or parked place on the
+// drawer's spring, carrying `velocity` (a released finger's, or 0), and fades
+// the dismiss layer with it. The drawer is hidden for good only if it ends parked.
+- (void)settleListVisible:(BOOL)visible from:(CGFloat)start velocity:(CGFloat)velocity animated:(BOOL)animated {
     self.listDismiss.hidden = NO;
     // The spring's tail is visually settled; let taps reach the feed then.
     self.listDismiss.userInteractionEnabled = visible;
     self.listContainer.hidden = NO;
+    self.listContainer.userInteractionEnabled = YES;
     NSUInteger generation = ++self.listAnimationGeneration;
     NSTimeInterval duration = animated && !UIAccessibilityIsReduceMotionEnabled() ? 0.25 : 0;
     [UIView animateWithDuration:duration delay:0 options:UIViewAnimationOptionCurveEaseOut
@@ -647,6 +681,115 @@ static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat
         weakSelf.listContainer.hidden = !weakSelf.listVisible;
         weakSelf.listDismiss.hidden = !weakSelf.listVisible;
     });
+}
+- (void)setListVisible:(BOOL)visible animated:(BOOL)animated {
+    [self setListVisible:visible animated:animated velocity:0];
+}
+- (void)setListVisible:(BOOL)visible animated:(BOOL)animated velocity:(CGFloat)velocity {
+    if (!self.subredditList) return;
+    if (!visible) [self endListEditing];
+    // A drag in hand ends here: the slide below starts from where it is.
+    BOOL dragging = self.listDragging;
+    self.listDragging = NO;
+    if (self.listVisible == visible && !dragging) return;
+    [self.view layoutIfNeeded];
+    BOOL wasHidden = self.listContainer.hidden;
+    CGFloat start = wasHidden ? -self.listGlass.bounds.size.width - 12
+        : (self.listContainer.layer.presentationLayer ?: self.listContainer.layer).transform.m41;
+    self.listVisible = visible;
+    [self.view setNeedsLayout];
+    if (visible && !dragging) [self prepareListReveal];
+    [self settleListVisible:visible from:start velocity:velocity animated:animated];
+}
+// Pulls the hidden drawer in with the finger: transforms and alpha only from
+// here on. The drawer is prepared once, as a reveal would, before it moves.
+- (BOOL)beginListDrag {
+    if (!self.subredditList || !self.view.window
+        || !ApolloDuoListDragBegins(self.listVisible, self.listContainer.hidden, self.listDragging)) return NO;
+    [self.view layoutIfNeeded];
+    CGFloat width = self.listGlass.bounds.size.width;
+    if (width <= 0.0) return NO;
+    [self prepareListReveal];
+    self.listDragging = YES;
+    self.listDragTravel = ApolloDuoListDragTravel(width);
+    sDuoListDragHost = self;
+    // A hide that finished earlier must not hide this drag when its turn comes.
+    ++self.listAnimationGeneration;
+    [self.listContainer.layer removeAnimationForKey:@"ApolloDuoSlide"];
+    self.listContainer.transform = CGAffineTransformMakeTranslation(ApolloDuoListDragTranslationX(0.0, self.listDragTravel), 0);
+    self.listDismiss.alpha = 0;
+    // The finger that pulls the list in is on the feed; a second one is not
+    // for a drawer that is not open yet.
+    self.listDismiss.userInteractionEnabled = NO;
+    self.listContainer.userInteractionEnabled = NO;
+    self.listDismiss.hidden = NO;
+    self.listContainer.hidden = NO;
+    return YES;
+}
+- (CGFloat)listDragProgress:(CGFloat)translation {
+    return self.listDragging ? ApolloDuoListDragProgress(translation, self.listDragTravel) : 0.0;
+}
+- (BOOL)updateListDrag:(CGFloat)translation {
+    if (!self.listDragging) return NO;
+    if (!self.view.window) {
+        [self cancelListDragNow];
+        return NO;
+    }
+    self.listContainer.transform = CGAffineTransformMakeTranslation(ApolloDuoListDragTranslationX(translation, self.listDragTravel), 0);
+    self.listDismiss.alpha = ApolloDuoListDragProgress(translation, self.listDragTravel);
+    return YES;
+}
+// Commits the rest of the slide, or slides the drawer back out, on the
+// drawer's spring from where the finger left it and at the finger's speed.
+// Reduce Motion tracked the finger, then fades instead of sliding.
+- (void)finishListDrag:(BOOL)commit velocity:(CGFloat)velocity {
+    if (!self.listDragging) return;
+    BOOL visible = ApolloDuoListDragEndsVisible(self.listDragging, commit);
+    CGFloat start = self.listContainer.transform.tx;
+    self.listDragging = NO;
+    sDuoListDragHost = nil;
+    self.listVisible = visible;
+    [self.view setNeedsLayout];
+    if (!UIAccessibilityIsReduceMotionEnabled()) {
+        [self settleListVisible:visible from:start velocity:velocity animated:YES];
+        return;
+    }
+    // The list stays where the finger left it and fades to shown or hidden.
+    // A fading scrim lets taps reach the feed, as the spring's tail does.
+    self.listDismiss.userInteractionEnabled = visible;
+    self.listContainer.userInteractionEnabled = YES;
+    NSUInteger generation = ++self.listAnimationGeneration;
+    if (visible) {
+        self.listContainer.alpha = 0;
+        self.listContainer.transform = CGAffineTransformIdentity;
+    }
+    __weak typeof(self) weakSelf = self;
+    [UIView animateWithDuration:0.15 animations:^{
+        weakSelf.listDismiss.alpha = visible ? 1 : 0;
+        weakSelf.listContainer.alpha = visible ? 1 : 0;
+    } completion:^(__unused BOOL finished) {
+        ApolloDuoSplitHost *host = weakSelf;
+        if (!host || host.listAnimationGeneration != generation) return;
+        host.listContainer.alpha = 1;
+        host.listContainer.transform = CGAffineTransformMakeTranslation(visible ? 0 : -host.listGlass.bounds.size.width - 12, 0);
+        host.listContainer.hidden = !host.listVisible;
+        host.listDismiss.hidden = !host.listVisible;
+    }];
+}
+// An interruption: the drawer is parked, hidden and consistent at once.
+- (void)cancelListDragNow {
+    if (!self.listDragging) return;
+    self.listDragging = NO;
+    sDuoListDragHost = nil;
+    ++self.listAnimationGeneration;
+    [self.listContainer.layer removeAnimationForKey:@"ApolloDuoSlide"];
+    self.listContainer.transform = CGAffineTransformMakeTranslation(-self.listGlass.bounds.size.width - 12, 0);
+    self.listContainer.hidden = YES;
+    self.listDismiss.alpha = 0;
+    self.listDismiss.hidden = YES;
+    self.listDismiss.userInteractionEnabled = YES;
+    self.listContainer.userInteractionEnabled = YES;
+    ApolloLog(@"[DuoSplit] interactive drawer removed");
 }
 - (void)splitViewController:(UISplitViewController *)splitViewController willChangeToDisplayMode:(UISplitViewControllerDisplayMode)displayMode {
     if (!self.accountHeader) return;
@@ -2581,11 +2724,14 @@ static void ApolloDuoPostsCancelInteractiveClose(ApolloDuoSplitState *state, BOO
 static void ApolloDuoPostsCancelActiveInteractiveClose(void) {
     ApolloDuoSplitState *state = sDuoPostsInteractiveClose;
     if (state) ApolloDuoPostsCancelInteractiveClose(state, NO, 0.0);
+    // The same interruptions let a list pulled in with the finger go.
+    [sDuoListDragHost cancelListDragNow];
 }
 
 static void ApolloDuoPostsCancelInteractiveCloseForHost(ApolloDuoSplitHost *host) {
     ApolloDuoSplitState *state = sDuoPostsInteractiveClose;
     if (state && state.host == host) ApolloDuoPostsCancelInteractiveClose(state, NO, 0.0);
+    [host cancelListDragNow];
 }
 
 // Apollo's own Back shadow on the departing page (ApolloInterruptibleNavTransition.xm),
@@ -2740,6 +2886,60 @@ void ApolloDuoSplitInteractiveCloseCancel(UINavigationController *nav, BOOL anim
     }
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
     if (state.interactiveClose.navigation == nav) ApolloDuoPostsCancelInteractiveClose(state, animated, 0.0);
+}
+
+// The subreddit list pulled in with the finger from the Posts feed root, by
+// the same pane Back. Begin prepares the hidden drawer; NO when it can't, and
+// the Back then acts on release. Update moves it by the drag's translation and
+// returns NO once the drag was let go. Progress is the share of the drawer
+// shown. Finish commits it shown or slides it back on the drawer's spring with
+// the release velocity; Cancel removes the drag at once (with a nil
+// navigation, whichever drag is active).
+static ApolloDuoSplitHost *ApolloDuoDrawerHost(UINavigationController *nav) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    return state.split && state.feed == nav && !state.changing ? state.host : nil;
+}
+
+BOOL ApolloDuoSplitInteractiveDrawerBegin(UINavigationController *nav) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    ApolloDuoSplitHost *host = ApolloDuoDrawerHost(nav);
+    // Nothing else moving the panes: a thread close following a finger, an
+    // open still sliding in, a toggle, a native pop or a resize.
+    if (!host || state.interactiveClose || state.postsTogglingSplit || sDuoSplitResizingTabs
+        || nav.transitionCoordinator || host.postsTransitionSnapshot.window) return NO;
+    return [host beginListDrag];
+}
+
+BOOL ApolloDuoSplitInteractiveDrawerUpdate(UINavigationController *nav, CGFloat translation) {
+    ApolloDuoSplitHost *host = ApolloDuoDrawerHost(nav);
+    if (!host.listDragging) return NO;
+    if (sDuoSplitResizingTabs) {
+        [host cancelListDragNow];
+        return NO;
+    }
+    return [host updateListDrag:translation];
+}
+
+CGFloat ApolloDuoSplitInteractiveDrawerProgress(UINavigationController *nav, CGFloat translation) {
+    return [ApolloDuoDrawerHost(nav) listDragProgress:translation];
+}
+
+void ApolloDuoSplitInteractiveDrawerFinish(UINavigationController *nav, BOOL commit, CGFloat velocity) {
+    ApolloDuoSplitHost *host = ApolloDuoDrawerHost(nav);
+    if (!host.listDragging) return;
+    [host finishListDrag:commit velocity:velocity];
+}
+
+void ApolloDuoSplitInteractiveDrawerCancel(UINavigationController *nav, BOOL animated) {
+    if (!nav) {
+        [sDuoListDragHost cancelListDragNow];
+        return;
+    }
+    // A split being rebuilt (state.changing) still lets its drag go.
+    ApolloDuoSplitHost *host = ApolloDuoSplitStateForNavigation(nav, NO).host;
+    if (!host.listDragging) return;
+    if (animated) [host finishListDrag:NO velocity:0];
+    else [host cancelListDragNow];
 }
 
 static UITableView *ApolloDuoSplitFindTable(UIView *view) {

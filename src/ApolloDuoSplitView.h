@@ -45,6 +45,18 @@ BOOL ApolloDuoSplitInteractiveCloseBegin(UINavigationController *nav);
 BOOL ApolloDuoSplitInteractiveCloseUpdate(UINavigationController *nav, CGFloat translation);
 void ApolloDuoSplitInteractiveCloseFinish(UINavigationController *nav, BOOL commit, CGFloat velocity);
 void ApolloDuoSplitInteractiveCloseCancel(UINavigationController *nav, BOOL animated);
+/// The Posts subreddit list pulled in with the finger from the feed root, by
+/// the same pane Back. Begin prepares the hidden drawer; NO when it can't, and
+/// the Back then acts on release. Update moves it by the drag's translation and
+/// returns NO once the drag was let go. Progress is the share of the drawer
+/// shown. Finish commits it shown or slides it back on the drawer's spring with
+/// the release velocity; Cancel removes the drag at once (with a nil
+/// navigation, whichever drag is active).
+BOOL ApolloDuoSplitInteractiveDrawerBegin(UINavigationController *nav);
+BOOL ApolloDuoSplitInteractiveDrawerUpdate(UINavigationController *nav, CGFloat translation);
+CGFloat ApolloDuoSplitInteractiveDrawerProgress(UINavigationController *nav, CGFloat translation);
+void ApolloDuoSplitInteractiveDrawerFinish(UINavigationController *nav, BOOL commit, CGFloat velocity);
+void ApolloDuoSplitInteractiveDrawerCancel(UINavigationController *nav, BOOL animated);
 BOOL ApolloDuoSplitShowSidebar(UINavigationController *navigation);
 __END_DECLS
 

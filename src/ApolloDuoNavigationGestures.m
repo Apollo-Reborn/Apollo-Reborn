@@ -169,11 +169,28 @@ static BOOL ApolloDuoBackShouldCommit(CGFloat progress, CGFloat velocity) {
     return velocity > -500.0 && (progress >= 0.35 || (velocity >= 500.0 && progress >= 0.05));
 }
 
-// Routes with a driver of their own follow the finger from Began. Only the
-// Posts thread close does so far (ApolloDuoSplitInteractiveClose*); every
-// other route, the drawer included, acts once on release.
+// Routes with a driver of their own follow the finger from Began: the Posts
+// thread close (ApolloDuoSplitInteractiveClose*) and the subreddit drawer
+// (ApolloDuoSplitInteractiveDrawer*); every other route acts once on release.
 static BOOL ApolloDuoBackRouteTracks(ApolloDuoBackRouting route) {
-    return route.owner == ApolloDuoBackOwnerThreadClose;
+    return (route.owner == ApolloDuoBackOwnerThreadClose || route.owner == ApolloDuoBackOwnerDrawer);
+}
+// The driver a tracked route has, so each phase of the drag reads the same.
+static BOOL ApolloDuoBackDragBegin(ApolloDuoBackRouting route, UINavigationController *navigation) {
+    return route.owner == ApolloDuoBackOwnerDrawer ? ApolloDuoSplitInteractiveDrawerBegin(navigation)
+        : ApolloDuoSplitInteractiveCloseBegin(navigation);
+}
+static BOOL ApolloDuoBackDragUpdate(ApolloDuoBackRouting route, UINavigationController *navigation, CGFloat translation) {
+    return route.owner == ApolloDuoBackOwnerDrawer ? ApolloDuoSplitInteractiveDrawerUpdate(navigation, translation)
+        : ApolloDuoSplitInteractiveCloseUpdate(navigation, translation);
+}
+static void ApolloDuoBackDragFinish(ApolloDuoBackRouting route, UINavigationController *navigation, BOOL commit, CGFloat velocity) {
+    if (route.owner == ApolloDuoBackOwnerDrawer) ApolloDuoSplitInteractiveDrawerFinish(navigation, commit, velocity);
+    else ApolloDuoSplitInteractiveCloseFinish(navigation, commit, velocity);
+}
+static void ApolloDuoBackDragCancel(ApolloDuoBackRouting route, UINavigationController *navigation, BOOL animated) {
+    if (route.owner == ApolloDuoBackOwnerDrawer) ApolloDuoSplitInteractiveDrawerCancel(navigation, animated);
+    else ApolloDuoSplitInteractiveCloseCancel(navigation, animated);
 }
 
 // What the release of a tracked drag does. The driver alone finishes it, so
@@ -386,14 +403,14 @@ BOOL ApolloDuoNativeBackInFlight(UINavigationController *navigation) {
         pan.touchView = nil;
         // A close the split can't cover (no window, another transition
         // still moving the panes) acts on release, as before.
-        self.drag = ApolloDuoBackRouteTracks(self.route) && ApolloDuoSplitInteractiveCloseBegin(navigation)
+        self.drag = ApolloDuoBackRouteTracks(self.route) && ApolloDuoBackDragBegin(self.route, navigation)
             ? ApolloDuoBackDragTracking : ApolloDuoBackDragNone;
         return;
     }
     if (pan.state == UIGestureRecognizerStateChanged) {
         if (self.drag != ApolloDuoBackDragTracking) return;
         // A sheet presented mid-drag, a resize, or a split that let the drag go.
-        if (ApolloDuoBackSwipeCanNavigate(navigation) && ApolloDuoSplitInteractiveCloseUpdate(navigation, translation)) return;
+        if (ApolloDuoBackSwipeCanNavigate(navigation) && ApolloDuoBackDragUpdate(self.route, navigation, translation)) return;
         [self abandonDrag:pan];
         return;
     }
@@ -401,12 +418,15 @@ BOOL ApolloDuoNativeBackInFlight(UINavigationController *navigation) {
     self.drag = ApolloDuoBackDragNone;
     if (pan.state != UIGestureRecognizerStateEnded) {
         // Cancelled (the app resigned active, the system took the touch) or failed.
-        if (drag == ApolloDuoBackDragTracking) ApolloDuoSplitInteractiveCloseCancel(navigation, NO);
+        if (drag == ApolloDuoBackDragTracking) ApolloDuoBackDragCancel(self.route, navigation, NO);
         return;
     }
     if (drag == ApolloDuoBackDragAbandoned) return;
+    // The drawer's progress is the share of the drawer shown, not of the pane.
     CGFloat width = CGRectGetWidth(ApolloDuoBackSwipePane(navigation));
-    CGFloat progress = width > 0.0 ? translation / width : 0.0;
+    CGFloat progress = self.route.owner == ApolloDuoBackOwnerDrawer && drag == ApolloDuoBackDragTracking
+        ? ApolloDuoSplitInteractiveDrawerProgress(navigation, translation)
+        : (width > 0.0 ? translation / width : 0.0);
     CGFloat velocity = [pan velocityInView:nil].x;
     BOOL commits = ApolloDuoBackShouldCommit(progress, velocity);
     if (!commits && drag != ApolloDuoBackDragTracking) return;
@@ -417,14 +437,15 @@ BOOL ApolloDuoNativeBackInFlight(UINavigationController *navigation) {
     if (drag == ApolloDuoBackDragTracking) {
         switch (ApolloDuoBackReleaseFor(commits, sameBack, !ApolloDuoBackSwipeCanNavigate(navigation))) {
             case ApolloDuoBackReleaseCommit:
-                ApolloLog(@"[DuoSwipe] thread pane: close the thread that followed the finger");
-                ApolloDuoSplitInteractiveCloseFinish(navigation, YES, velocity);
+                if (self.route.owner == ApolloDuoBackOwnerDrawer) ApolloLog(@"[DuoSwipe] feed root: the subreddit drawer followed the finger");
+                else ApolloLog(@"[DuoSwipe] thread pane: close the thread that followed the finger");
+                ApolloDuoBackDragFinish(self.route, navigation, YES, velocity);
                 return;
             case ApolloDuoBackReleaseSpringBack:
-                ApolloDuoSplitInteractiveCloseFinish(navigation, NO, velocity);
+                ApolloDuoBackDragFinish(self.route, navigation, NO, velocity);
                 return;
             case ApolloDuoBackReleaseCancel:
-                ApolloDuoSplitInteractiveCloseCancel(navigation, NO);
+                ApolloDuoBackDragCancel(self.route, navigation, NO);
                 return;
         }
     }
@@ -436,7 +457,7 @@ BOOL ApolloDuoNativeBackInFlight(UINavigationController *navigation) {
 // A navigation that is gone cancels whichever drag is active (nil below).
 - (void)abandonDrag:(UIPanGestureRecognizer *)pan {
     self.drag = ApolloDuoBackDragAbandoned;
-    ApolloDuoSplitInteractiveCloseCancel(self.navigation, NO);
+    ApolloDuoBackDragCancel(self.route, self.navigation, NO);
     pan.enabled = NO;
     pan.enabled = YES;
 }

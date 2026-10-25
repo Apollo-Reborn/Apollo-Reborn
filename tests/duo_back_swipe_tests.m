@@ -207,6 +207,37 @@ static void ApolloDuoSplitInteractiveCloseCancel(UINavigationController *nav, BO
     closeCancels++;
     if (animated) closeAnimatedCancels++;
 }
+// The split's interactive subreddit drawer. Begin answers drawerBegins (NO
+// leaves the Back to the release); progress is the drag over a 372pt travel.
+static BOOL drawerBegins, drawerTracks = YES;
+static NSUInteger drawerBegun, drawerUpdated, drawerCommits, drawerSlideBacks, drawerCancels, drawerAnimatedCancels,
+    drawerActiveCancels;
+static __weak UINavigationController *drawerNavigation;
+static BOOL ApolloDuoSplitInteractiveDrawerBegin(UINavigationController *nav) {
+    drawerNavigation = nav;
+    if (drawerBegins) drawerBegun++;
+    return drawerBegins;
+}
+static BOOL ApolloDuoSplitInteractiveDrawerUpdate(UINavigationController *nav, __unused CGFloat translation) {
+    if (nav != drawerNavigation) return NO;
+    drawerUpdated++;
+    return drawerTracks;
+}
+static CGFloat ApolloDuoSplitInteractiveDrawerProgress(UINavigationController *nav, CGFloat translation) {
+    return nav == drawerNavigation ? MIN(MAX(translation / 372.0, 0.0), 1.0) : 0.0;
+}
+static CGFloat drawerVelocity;
+static void ApolloDuoSplitInteractiveDrawerFinish(UINavigationController *nav, BOOL commit, CGFloat velocity) {
+    if (nav != drawerNavigation) return;
+    if (commit) drawerCommits++; else drawerSlideBacks++;
+    drawerVelocity = velocity;
+}
+static void ApolloDuoSplitInteractiveDrawerCancel(UINavigationController *nav, BOOL animated) {
+    if (!nav) drawerActiveCancels++;
+    if (nav != drawerNavigation) return;
+    drawerCancels++;
+    if (animated) drawerAnimatedCancels++;
+}
 // INCLUDE_PRODUCTION_GESTURES
 static NSUInteger checks;
 static void Check(BOOL valid, NSString *message) {
@@ -1151,11 +1182,12 @@ int main(void) {
         // driver takes, and what a release does with it.
         Check(ApolloDuoBackRouteTracks((ApolloDuoBackRouting){ApolloDuoBackOwnerThreadClose}),
               @"tracks: the interactive thread close has a driver");
-        Check(!ApolloDuoBackRouteTracks((ApolloDuoBackRouting){ApolloDuoBackOwnerDrawer})
-              && !ApolloDuoBackRouteTracks((ApolloDuoBackRouting){ApolloDuoBackOwnerVisitedProfile})
+        Check(ApolloDuoBackRouteTracks((ApolloDuoBackRouting){ApolloDuoBackOwnerDrawer}),
+              @"tracks: the interactive drawer has a driver");
+        Check(!ApolloDuoBackRouteTracks((ApolloDuoBackRouting){ApolloDuoBackOwnerVisitedProfile})
               && !ApolloDuoBackRouteTracks((ApolloDuoBackRouting){ApolloDuoBackOwnerSplitPop})
               && !ApolloDuoBackRouteTracks((ApolloDuoBackRouting){ApolloDuoBackOwnerNative}),
-              @"tracks: no other route (the drawer has no driver yet)");
+              @"tracks: no other route");
         Check(ApolloDuoBackReleaseFor(YES, YES, NO) == ApolloDuoBackReleaseCommit, @"release: past the threshold, same Back: commit");
         Check(ApolloDuoBackReleaseFor(NO, YES, NO) == ApolloDuoBackReleaseSpringBack, @"release: short of it: spring back");
         Check(ApolloDuoBackReleaseFor(YES, NO, NO) == ApolloDuoBackReleaseSpringBack,
@@ -1246,7 +1278,51 @@ int main(void) {
               @"drive: the feed-pane Back beside a thread opens the list and leaves the thread's driver alone");
         leftSwipesDisabled = NO; routePosts.host.postsShowingDetail = NO; routePosts.host.listVisible = NO;
         Drag(drawerOwner, 60, 700);
-        Check(closeBegun == begunNow && drawerReveals == revealsNow + 2, @"drive: the drawer route never takes the driver");
+        Check(closeBegun == begunNow && drawerReveals == revealsNow + 2, @"drive: the drawer route never takes the thread close's driver");
+
+        // The feed root pulls the list in: the drawer's driver alone, never also the discrete reveal.
+        drawerBegins = YES; drawerTracks = YES;
+        routePosts.host.postsShowingDetail = NO; routePosts.host.listVisible = NO;
+        revealsNow = drawerReveals; begunNow = closeBegun;
+        NSUInteger drawerCommitsBefore = drawerCommits;
+        Drag(drawerOwner, 372 * 0.5, 0);
+        Check(drawerNavigation == routeFeed && drawerBegun == 1 && drawerUpdated == 1 && drawerCommits == drawerCommitsBefore + 1
+              && drawerReveals == revealsNow && closeBegun == begunNow && routeFeed.pops == 0,
+              @"drawer drive: past a third of the drawer it commits through the driver, with no second Back");
+        Drag(drawerOwner, 372 * 0.1, 0);
+        Check(drawerSlideBacks == 1 && drawerCommits == drawerCommitsBefore + 1 && drawerReveals == revealsNow,
+              @"drawer drive: a short drag slides the drawer back, and the discrete reveal stays quiet");
+        Drag(drawerOwner, 372 * 0.1, 900);
+        Check(drawerCommits == drawerCommitsBefore + 2 && drawerReveals == revealsNow, @"drawer drive: a flick commits");
+        Check(Near(drawerVelocity, 900), @"drawer drive: a commit hands the release velocity to the drawer's spring");
+        Drag(drawerOwner, 372 * 0.5, -900);
+        Check(drawerSlideBacks == 2 && drawerCommits == drawerCommitsBefore + 2, @"drawer drive: a backward flick slides back at any progress");
+        Check(Near(drawerVelocity, -900), @"drawer drive: a slide back hands the release velocity to the drawer's spring");
+        // Progress is the drawer's, not the pane's: 120pt is a third of the 372pt drawer but under a fifth of the pane.
+        Drag(drawerOwner, 140, 0);
+        Check(drawerCommits == drawerCommitsBefore + 3, @"drawer drive: the threshold is measured against the drawer, not the pane");
+        // The driver lets go mid-drag (a fold, a tab switch): no Back on release.
+        drawerTracks = NO;
+        NSUInteger drawerCancelsBefore = drawerCancels, drawerCommitsNow = drawerCommits, slideBacksNow = drawerSlideBacks;
+        Drag(drawerOwner, 372, 900);
+        Check(drawerCancels == drawerCancelsBefore + 1 && drawerAnimatedCancels == 0 && drawerCommits == drawerCommitsNow
+              && drawerSlideBacks == slideBacksNow && drawerReveals == revealsNow,
+              @"drawer drive: an interrupted drag is removed at once and its release is no Back");
+        drawerTracks = YES;
+        // A cancelled pan (resigning active) removes the drag at once.
+        ApolloDuoPaneBackPan *drawerPan = drawerOwner.pan;
+        drawerPan.translation = CGPointZero; drawerPan.velocity = CGPointMake(300, 40);
+        drawerPan.state = UIGestureRecognizerStateBegan; [drawerOwner panned:drawerPan];
+        drawerCancelsBefore = drawerCancels;
+        drawerPan.state = UIGestureRecognizerStateCancelled; [drawerOwner panned:drawerPan];
+        drawerPan.state = UIGestureRecognizerStatePossible;
+        Check(drawerCancels == drawerCancelsBefore + 1 && drawerCommits == drawerCommitsNow && drawerReveals == revealsNow,
+              @"drawer drive: a cancelled pan removes the drag and does nothing else");
+        // The split can't take the drag at Began: the discrete reveal acts on release, as before.
+        drawerBegins = NO;
+        Drag(drawerOwner, 60, 700);
+        Check(drawerReveals == revealsNow + 1 && drawerCommits == drawerCommitsNow, @"drawer drive: no driver, the release reveals once");
+        drawerBegins = YES;
         // The pane's navigation went away mid-drag: the drag still goes.
         leftSwipesDisabled = NO; closeBegins = YES; closeTracks = YES;
         routePosts.host.postsShowingDetail = YES; routePosts.host.listVisible = NO;
