@@ -17,6 +17,10 @@ BOOL ApolloNavigationActionsDuoRailHostsGlobe(UINavigationItem *item);
 // The Duo rail may have been laid out again: check it for UIKit's overflow.
 // Coalesced, so calling it from a layout callback is safe.
 void ApolloNavigationActionsDuoRailLayoutChanged(void);
+// Puts every visible page's rail buttons back, then re-checks for overflow.
+void ApolloNavigationActionsDuoRailResetFolds(void);
+// The accessibility identifier of the bar item a bar button view shows.
+NSString *ApolloNavigationActionsBarButtonIdentifier(UIView *button);
 
 // Defers measurement, so calling from a layout callback is safe.
 void ApolloNavigationActionsRefresh(UINavigationBar *navigationBar);

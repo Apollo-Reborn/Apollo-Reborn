@@ -1144,18 +1144,71 @@ static BOOL ApolloActionsButtonActionContains(UIButton *button, NSString *needle
     return NO;
 }
 
-// Set on a navigation item while its rail is folded because it overflowed: the
-// rail's top edge then (an NSNumber), and how many trailing items it had.
+// Set on a navigation item while its rail is folded because it overflowed:
+// how many buttons are folded, the rail's top edge when it first folded, and
+// how many other trailing items it had (NSNumbers).
+static char kActionsDuoOverflowLevelKey;
 static char kActionsDuoOverflowTopKey;
 static char kActionsDuoOverflowCountKey;
+// From the last build: how many strip buttons could fold (the globe, which
+// can arrive later, is counted when checking), whether the globe folded, and
+// whether the page had a globe to order among them.
+static char kActionsDuoFoldableCountKey;
+static char kActionsDuoBuiltGlobeFoldKey;
+static char kActionsDuoBuiltGlobePresentKey;
+// How many buttons Apollo's strip had at the last build, More included.
+static char kActionsDuoStripCountKey;
+// Set on a page's first build, and when folding the phone resets the rail,
+// until its rail first settles: meanwhile its builds may start from a
+// remembered fold (the globe often arrives a moment after the first build).
+static char kActionsDuoUseFoldMemoryKey;
 
-static BOOL ApolloActionsDuoFoldWanted(UINavigationItem *item) {
-    return ApolloActionsHasTrailingTabRail() && objc_getAssociatedObject(item, &kActionsDuoOverflowTopKey) != nil;
+// The rail's top edge at the last check, -1 before the first.
+static CGFloat sDuoRailTop = -1.0;
+// Fold levels that settled, by rail situation (see ApolloActionsDuoFitKey), so
+// a new page in the same situation starts folded instead of showing UIKit's
+// overflow for a moment and then folding.
+static NSMutableDictionary<NSString *, NSNumber *> *sDuoFoldMemory;
+
+static NSString *ApolloActionsDuoFitKey(UINavigationItem *item, NSUInteger stripCount, NSUInteger otherCount) {
+    if (sDuoRailTop < 0.0 || !stripCount) return nil;
+    UIViewController *controller = [objc_getAssociatedObject(item, &kActionsControllerKey) controller];
+    UINavigationController *navigation = controller.navigationController;
+    BOOL back = navigation && navigation.viewControllers.firstObject != controller && !item.hidesBackButton;
+    CGSize size = ((UIViewController *)ApolloMainTabBarController()).view.bounds.size;
+    return [NSString stringWithFormat:@"%.0fx%.0f top %.0f back %d strip %lu other %lu", size.width, size.height,
+            sDuoRailTop, back, (unsigned long)stripCount, (unsigned long)otherCount];
+}
+
+static NSUInteger ApolloActionsDuoFoldLevel(UINavigationItem *item) {
+    if (!ApolloActionsHasTrailingTabRail()) return 0;
+    return [objc_getAssociatedObject(item, &kActionsDuoOverflowLevelKey) unsignedIntegerValue];
 }
 
 BOOL ApolloNavigationActionsDuoRailHostsGlobe(UINavigationItem *item) {
     if (!item || !objc_getAssociatedObject(item, &kActionsDuoNativeItemsKey)) return NO;
-    return [objc_getAssociatedObject(item, &kActionsDuoBuiltFoldKey) boolValue] && ApolloActionsDuoFoldWanted(item);
+    return [objc_getAssociatedObject(item, &kActionsDuoBuiltGlobeFoldKey) boolValue] && ApolloActionsDuoFoldLevel(item) > 0;
+}
+
+static BOOL ApolloActionsIsModeratorButton(UIButton *button) {
+    return [button.accessibilityLabel.lowercaseString containsString:@"moderator"]
+        || ApolloActionsButtonActionContains(button, @"moderator");
+}
+
+// The order buttons leave the rail in, one per overflow, least used first:
+// Moderator, then Translation's globe, then the rest (Sort). More never folds.
+static NSArray<UIButton *> *ApolloActionsDuoFoldOrder(NSArray<UIButton *> *buttons, UIButton *more,
+                                                      UINavigationItem *item) {
+    UIButton *globe = ApolloTranslationNavigationItemGlobeButton(item);
+    NSMutableArray<UIButton *> *order = [NSMutableArray array];
+    for (UIButton *button in buttons) {
+        if (button != more && button != globe && ApolloActionsIsModeratorButton(button)) [order addObject:button];
+    }
+    if (globe) [order addObject:globe];
+    for (UIButton *button in buttons) {
+        if (button != more && button != globe && ![order containsObject:button]) [order addObject:button];
+    }
+    return order;
 }
 
 static NSArray<UIBarButtonItem *> *ApolloActionsWithoutRailGlobe(NSArray<UIBarButtonItem *> *items) {
@@ -1193,13 +1246,12 @@ static NSArray<ApolloActionsDuoFoldedRow *> *ApolloActionsDuoFoldedRows(NSArray<
     NSMutableArray<ApolloActionsDuoFoldedRow *> *rows = [NSMutableArray array];
     UIButton *globe = ApolloTranslationNavigationItemGlobeButton(navItem);
     for (UIButton *button in folded) {
-        // A globe merged into Apollo's strip is folded with it; it gets the
-        // globe's own row below.
+        // The globe gets its own row below.
         if (button == globe) continue;
         ApolloActionsDuoFoldedRow *row = [ApolloActionsDuoFoldedRow new];
         row.button = button;
         NSString *label = button.accessibilityLabel;
-        if ([label.lowercaseString containsString:@"moderator"] || ApolloActionsButtonActionContains(button, @"moderator")) {
+        if (ApolloActionsIsModeratorButton(button)) {
             row.title = @"Moderator";
             row.image = ApolloActionsFoldedModeratorIcon();
         } else {
@@ -1210,7 +1262,7 @@ static NSArray<ApolloActionsDuoFoldedRow *> *ApolloActionsDuoFoldedRows(NSArray<
         }
         [rows addObject:row];
     }
-    if (globe) {
+    if (globe && [folded containsObject:globe]) {
         ApolloActionsDuoFoldedRow *row = [ApolloActionsDuoFoldedRow new];
         row.button = globe;
         // A toggle like the globe itself: one title, checked while translated.
@@ -1351,37 +1403,108 @@ static void ApolloActionsRebuildRailsForController(UIViewController *controller)
     for (UIViewController *child in controller.childViewControllers) ApolloActionsRebuildRailsForController(child);
 }
 
-// The navigation items whose split strip is on screen, so on the rail.
+// UIKit copies a bar item's accessibility identifier onto its rail button, so
+// tagging a page's rail items tells which page the rail is showing: in the
+// opened display's split both pages have split strips, but one owns the rail.
+static NSString *ApolloActionsDuoRailTagPrefix(UINavigationItem *item) {
+    return [NSString stringWithFormat:@"ApolloRebornDuoRail.%p.", item];
+}
+
+// The navigation items whose split strip is on screen.
 static void ApolloActionsCollectRailItems(UIViewController *controller, NSMutableArray<UINavigationItem *> *items) {
     if (!controller || !controller.isViewLoaded || !controller.view.window) return;
     UINavigationItem *item = controller.navigationItem;
-    if (objc_getAssociatedObject(item, &kActionsDuoNativeItemsKey) && ![items containsObject:item]) [items addObject:item];
+    // Only the top page of a stack shows its items; one below it can still be
+    // in the window mid-push.
+    UINavigationController *navigation = controller.navigationController;
+    BOOL topOfStack = !navigation || navigation.topViewController == controller;
+    if (topOfStack && objc_getAssociatedObject(item, &kActionsDuoNativeItemsKey) && ![items containsObject:item]) {
+        [items addObject:item];
+    }
     for (UIViewController *child in controller.childViewControllers) ApolloActionsCollectRailItems(child, items);
 }
 
-// UIKit's overflow button on the vertical rail (iOS 26/27), found by its
+// UIKit's overflow item on the vertical rail (iOS 26/27), found by its
 // accessibility identifier. If UIKit renames it the rail never folds, which
 // is the behaviour before this existed.
 static NSString *const kActionsDuoRailOverflowIdentifier = @"BottomOverflowBarButtonItem";
 
-// Walks the rail column for its bar buttons: whether UIKit's overflow button
-// is there, and the top edge of the topmost button. The buttons stack down
-// from just below whatever the system reserves, so that edge moves up when
-// the system gives space back. Feed tables can't hold the rail: skip them.
-static void ApolloActionsScanDuoRail(UIView *view, UIView *root, CGRect column, BOOL *overflow, CGFloat *top) {
+// The bar item each bar button view shows, recorded as UIKit configures the
+// view (see ApolloNavigationActionsRailItemHooks). The view's own accessibility
+// identifier is only filled in while accessibility is active, so read the
+// item's, which UIKit sets on its overflow item and we set on our rail items.
+@interface ApolloActionsBarItemBox : NSObject
+@property (nonatomic, weak) UIBarButtonItem *item;
+@end
+
+@implementation ApolloActionsBarItemBox
+@end
+
+static char kActionsBarButtonItemKey;
+
+static NSString *ApolloActionsBarButtonIdentifier(UIView *button) {
+    ApolloActionsBarItemBox *box = objc_getAssociatedObject(button, &kActionsBarButtonItemKey);
+    return box.item.accessibilityIdentifier ?: button.accessibilityIdentifier;
+}
+
+NSString *ApolloNavigationActionsBarButtonIdentifier(UIView *button) {
+    return ApolloActionsBarButtonIdentifier(button);
+}
+
+// Walks the window's bar buttons. In the rail column: whether UIKit's
+// overflow button is there, the top edge of the topmost button, and the
+// buttons' identifiers. The buttons stack down from just below whatever the
+// system reserves, so that edge moves up when the system gives space back.
+// Elsewhere: the identifiers only. Feed tables can't hold bar buttons.
+static void ApolloActionsScanDuoRail(UIView *view, UIView *root, CGRect column, BOOL *overflow, CGFloat *top,
+                                     NSMutableSet<NSString *> *railIdentifiers,
+                                     NSMutableSet<NSString *> *otherIdentifiers) {
     if (view.hidden || view.alpha < 0.01 || [view isKindOfClass:UIScrollView.class]) return;
     if (ApolloClassUIButtonBarButton && [view isKindOfClass:ApolloClassUIButtonBarButton]) {
         CGRect frame = [view convertRect:view.bounds toView:root];
+        NSString *identifier = ApolloActionsBarButtonIdentifier(view);
         if (CGRectGetMidX(frame) >= CGRectGetMinX(column) && CGRectGetMidX(frame) <= CGRectGetMaxX(column)) {
-            if ([view.accessibilityIdentifier isEqualToString:kActionsDuoRailOverflowIdentifier]) *overflow = YES;
+            if ([identifier isEqualToString:kActionsDuoRailOverflowIdentifier]) *overflow = YES;
+            if (identifier) [railIdentifiers addObject:identifier];
             *top = MIN(*top, CGRectGetMinY(frame));
+        } else if (identifier) {
+            [otherIdentifiers addObject:identifier];
         }
         return;
     }
-    for (UIView *subview in view.subviews) ApolloActionsScanDuoRail(subview, root, column, overflow, top);
+    for (UIView *subview in view.subviews) {
+        ApolloActionsScanDuoRail(subview, root, column, overflow, top, railIdentifiers, otherIdentifiers);
+    }
 }
 
-static void ApolloActionsSetDuoOverflowFold(UINavigationItem *item, NSNumber *top, NSNumber *count) {
+static BOOL ApolloActionsDuoTagged(UINavigationItem *item, NSSet<NSString *> *identifiers) {
+    NSString *prefix = ApolloActionsDuoRailTagPrefix(item);
+    for (NSString *identifier in identifiers) {
+        if ([identifier hasPrefix:prefix]) return YES;
+    }
+    return NO;
+}
+
+// The pages that own the rail: those whose items show there. Only when no
+// page's items do (all of them are in UIKit's overflow menu) does a page
+// whose items show nowhere else count. Otherwise a page beside the rail's
+// owner (the feed beside comments in the opened split) would fold too.
+static NSArray<UINavigationItem *> *ApolloActionsDuoRailOwners(NSArray<UINavigationItem *> *items,
+                                                              NSSet<NSString *> *railIdentifiers,
+                                                              NSSet<NSString *> *otherIdentifiers, BOOL overflow) {
+    NSMutableArray<UINavigationItem *> *owners = [NSMutableArray array];
+    for (UINavigationItem *item in items) {
+        if (ApolloActionsDuoTagged(item, railIdentifiers)) [owners addObject:item];
+    }
+    if (owners.count || !overflow) return owners;
+    for (UINavigationItem *item in items) {
+        if (!ApolloActionsDuoTagged(item, otherIdentifiers)) [owners addObject:item];
+    }
+    return owners;
+}
+
+static void ApolloActionsSetDuoOverflowFold(UINavigationItem *item, NSNumber *level, NSNumber *top, NSNumber *count) {
+    objc_setAssociatedObject(item, &kActionsDuoOverflowLevelKey, level, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(item, &kActionsDuoOverflowTopKey, top, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(item, &kActionsDuoOverflowCountKey, count, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
@@ -1393,14 +1516,6 @@ static NSUInteger ApolloActionsDuoRailOtherCount(UINavigationItem *item) {
     for (UIBarButtonItem *candidate in item.rightBarButtonItems) {
         if (!objc_getAssociatedObject(candidate, &kActionsDuoSourceButtonKey)
             && !ApolloTranslationIsDuoRailGlobeItem(candidate)) count++;
-    }
-    return count;
-}
-
-static NSUInteger ApolloActionsDuoRailMirrorCount(UINavigationItem *item) {
-    NSUInteger count = 0;
-    for (UIBarButtonItem *candidate in item.rightBarButtonItems) {
-        if (objc_getAssociatedObject(candidate, &kActionsDuoSourceButtonKey)) count++;
     }
     return count;
 }
@@ -1420,24 +1535,66 @@ static void ApolloActionsCheckDuoRailOverflow(void) {
     CGRect column = [tabs.tabBar convertRect:tabs.tabBar.bounds toView:root];
     BOOL overflow = NO;
     CGFloat top = CGFLOAT_MAX;
-    ApolloActionsScanDuoRail(root, root, column, &overflow, &top);
+    NSMutableSet<NSString *> *railIdentifiers = [NSMutableSet set];
+    NSMutableSet<NSString *> *otherIdentifiers = [NSMutableSet set];
+    ApolloActionsScanDuoRail(root, root, column, &overflow, &top, railIdentifiers, otherIdentifiers);
     if (top == CGFLOAT_MAX) return;
-    for (UINavigationItem *item in items) {
+
+    // Rotating, folding the phone or pushing a page passes through moments
+    // where the rail holds two pages' items, or its top edge is moving. Act
+    // only on a rail that has looked the same for a moment, and not mid-
+    // transition, so those moments never fold or unfold it.
+    static CGFloat sLastTop = -1.0;
+    static BOOL sLastOverflow;
+    static CFAbsoluteTime sStableSince;
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (fabs(top - sLastTop) > 0.5 || overflow != sLastOverflow) {
+        sLastTop = top;
+        sLastOverflow = overflow;
+        sStableSince = now;
+    }
+    if (now - sStableSince < 0.35 || tabs.transitionCoordinator) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            ApolloNavigationActionsDuoRailLayoutChanged();
+        });
+        return;
+    }
+
+    sDuoRailTop = top;
+    BOOL changed = NO;
+    for (UINavigationItem *item in ApolloActionsDuoRailOwners(items, railIdentifiers, otherIdentifiers, overflow)) {
         NSUInteger count = ApolloActionsDuoRailOtherCount(item);
-        NSNumber *foldTop = objc_getAssociatedObject(item, &kActionsDuoOverflowTopKey);
-        if (!foldTop) {
-            if (!overflow) continue;
-            // Only More of ours on the rail: the overflow is someone else's.
-            if (ApolloActionsDuoRailMirrorCount(item) < 2 && !ApolloTranslationNavigationItemHasGlobe(item)) continue;
-            ApolloLog(@"[NavigationActions] Duo rail overflowed (top %.0f): folding into More", top);
-            ApolloActionsSetDuoOverflowFold(item, @(top), @(count));
-            ApolloActionsRepublishRail(item);
-            continue;
+        NSUInteger level = ApolloActionsDuoFoldLevel(item);
+        if (!overflow) {
+            // Settled and fitting: remember this level for the situation.
+            NSString *key = ApolloActionsDuoFitKey(item, [objc_getAssociatedObject(item, &kActionsDuoStripCountKey)
+                                                              unsignedIntegerValue], count);
+            if (key) {
+                if (!sDuoFoldMemory) sDuoFoldMemory = [NSMutableDictionary dictionary];
+                sDuoFoldMemory[key] = @(level);
+            }
+            objc_setAssociatedObject(item, &kActionsDuoUseFoldMemoryKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
+        NSNumber *foldTop = objc_getAssociatedObject(item, &kActionsDuoOverflowTopKey);
+        if (overflow) {
+            // Fold one more button; each step re-checks once the rail settles.
+            NSUInteger foldable = [objc_getAssociatedObject(item, &kActionsDuoFoldableCountKey) unsignedIntegerValue]
+                + (ApolloTranslationNavigationItemHasGlobe(item) ? 1 : 0);
+            if (level >= foldable) continue;  // only More left: the overflow is someone else's
+            ApolloLog(@"[NavigationActions] Duo rail overflowed (top %.0f): folding %lu of %lu into More",
+                      top, (unsigned long)level + 1, (unsigned long)foldable);
+            ApolloActionsSetDuoOverflowFold(item, @(level + 1),
+                                            @(foldTop ? MIN(foldTop.doubleValue, top) : top), @(count));
+            ApolloActionsRepublishRail(item);
+            changed = YES;
+            break;
+        }
+        if (!level) continue;
         // Folded. Try the full rail again only once there's more room than
         // the fold has seen (the rail's top moved up: a Live Activity ended)
         // or the page has fewer items. Otherwise unfolding would just overflow
-        // and fold again. If it does overflow, the next check folds it back.
+        // and fold again. If it does overflow, the next checks fold it back
+        // one button at a time.
         NSUInteger foldCount = [objc_getAssociatedObject(item, &kActionsDuoOverflowCountKey) unsignedIntegerValue];
         if (top < foldTop.doubleValue - 1.0) {
             ApolloLog(@"[NavigationActions] Duo rail top moved up (%.0f -> %.0f): unfolding", foldTop.doubleValue, top);
@@ -1446,12 +1603,22 @@ static void ApolloActionsCheckDuoRailOverflow(void) {
                       (unsigned long)foldCount, (unsigned long)count);
         } else {
             // Track the most room seen while folded, and the current count.
-            if (top < foldTop.doubleValue) ApolloActionsSetDuoOverflowFold(item, @(top), @(count));
-            else if (count != foldCount) ApolloActionsSetDuoOverflowFold(item, foldTop, @(count));
+            ApolloActionsSetDuoOverflowFold(item, @(level), @(MIN(foldTop.doubleValue, top)), @(count));
             continue;
         }
-        ApolloActionsSetDuoOverflowFold(item, nil, nil);
+        ApolloActionsSetDuoOverflowFold(item, nil, nil, nil);
         ApolloActionsRepublishRail(item);
+        changed = YES;
+        break;
+    }
+    // One change per pass, then a full settle: right after a change UIKit
+    // still shows the old rail, which would otherwise read as a further
+    // overflow and fold the next button at once.
+    if (changed) {
+        sStableSince = CFAbsoluteTimeGetCurrent();
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            ApolloNavigationActionsDuoRailLayoutChanged();
+        });
     }
 }
 
@@ -1466,6 +1633,18 @@ void ApolloNavigationActionsDuoRailLayoutChanged(void) {
     });
 }
 
+void ApolloNavigationActionsDuoRailResetFolds(void) {
+    NSMutableArray<UINavigationItem *> *items = [NSMutableArray array];
+    ApolloActionsCollectRailItems((UIViewController *)ApolloMainTabBarController(), items);
+    for (UINavigationItem *item in items) {
+        ApolloActionsSetDuoOverflowFold(item, nil, nil, nil);
+        objc_setAssociatedObject(item, &kActionsDuoUseFoldMemoryKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    // The rail's geometry changes completely; measure it afresh.
+    sDuoRailTop = -1.0;
+    ApolloActionsRebuildRailsForController((UIViewController *)ApolloMainTabBarController());
+}
+
 static void ApolloActionsObserveDuoModeChanges(void) {
     [NSNotificationCenter.defaultCenter addObserverForName:ApolloDuoModeDidChangeNotification
                                                     object:nil
@@ -1475,10 +1654,7 @@ static void ApolloActionsObserveDuoModeChanges(void) {
         dispatch_async(dispatch_get_main_queue(), ^{
             // Folding or unfolding changes the rail completely: start every
             // page unfolded and let the overflow check fold what doesn't fit.
-            NSMutableArray<UINavigationItem *> *items = [NSMutableArray array];
-            ApolloActionsCollectRailItems((UIViewController *)ApolloMainTabBarController(), items);
-            for (UINavigationItem *item in items) ApolloActionsSetDuoOverflowFold(item, nil, nil);
-            ApolloActionsRebuildRailsForController((UIViewController *)ApolloMainTabBarController());
+            ApolloNavigationActionsDuoRailResetFolds();
         });
     }];
 }
@@ -1587,19 +1763,42 @@ static NSArray<UIBarButtonItem *> *ApolloActionsDuoNativeItems(UINavigationItem 
     // changes (fold/unfold, or the globe arriving after the split), rebuild the
     // rail from Apollo's own strip instead of keeping the stale mirrors.
     NSNumber *builtFold = objc_getAssociatedObject(item, &kActionsDuoBuiltFoldKey);
-    BOOL foldWanted = ApolloActionsDuoFoldWanted(item);
-    // A folded rail offers the globe in More. Translation stops adding its
-    // rail item once it sees that; drop one it added before the split.
-    if (foldWanted && builtFold.boolValue && generated) items = ApolloActionsWithoutRailGlobe(items);
-    if (generated && original && builtFold && builtFold.boolValue != foldWanted) {
-        ApolloLog(@"[NavigationActions] Duo rail fold %@: rebuilding from Apollo's strip", foldWanted ? @"needed" : @"no longer needed");
+    NSUInteger foldLevel = ApolloActionsDuoFoldLevel(item);
+    // A page whose items change before its rail first settles (the globe
+    // arriving) looks its new situation up too; a remembered fold then
+    // rebuilds it through the fold check below.
+    if (generated && !foldLevel && ApolloActionsHasTrailingTabRail()
+        && [objc_getAssociatedObject(item, &kActionsDuoUseFoldMemoryKey) boolValue]) {
+        NSString *key = ApolloActionsDuoFitKey(item, [objc_getAssociatedObject(item, &kActionsDuoStripCountKey)
+                                                          unsignedIntegerValue], ApolloActionsDuoRailOtherCount(item));
+        NSUInteger remembered = key ? [sDuoFoldMemory[key] unsignedIntegerValue] : 0;
+        if (remembered) {
+            foldLevel = remembered;
+            ApolloActionsSetDuoOverflowFold(item, @(foldLevel), @(sDuoRailTop), @(ApolloActionsDuoRailOtherCount(item)));
+            ApolloLog(@"[NavigationActions] Duo rail: folding %lu from memory as items changed (%@)",
+                      (unsigned long)foldLevel, key);
+        }
+    }
+    // A rail that folded the globe offers it in More. Translation stops adding
+    // its rail item once it sees that; drop one it added before the split.
+    if (ApolloNavigationActionsDuoRailHostsGlobe(item) && generated) items = ApolloActionsWithoutRailGlobe(items);
+    // The globe usually arrives after the split. While folded, its arrival
+    // changes which buttons the fold level covers (it folds before Sort).
+    BOOL globePresent = ApolloTranslationNavigationItemHasGlobe(item);
+    BOOL globeChanged = foldLevel
+        && [objc_getAssociatedObject(item, &kActionsDuoBuiltGlobePresentKey) boolValue] != globePresent;
+    if (generated && original && builtFold && (builtFold.unsignedIntegerValue != foldLevel || globeChanged)) {
+        ApolloLog(@"[NavigationActions] Duo rail fold %lu -> %lu%@: rebuilding from Apollo's strip",
+                  (unsigned long)builtFold.unsignedIntegerValue, (unsigned long)foldLevel,
+                  globeChanged ? @" (globe changed)" : @"");
         items = ApolloActionsWithoutDuoMirrors(item, items, original);
     } else if (generated && ApolloActionsArraysIdentical(items, generated)) {
         return items;
     }
 
     NSMutableArray<UIBarButtonItem *> *result = [NSMutableArray array];
-    BOOL converted = NO;
+    BOOL converted = NO, globeFolded = NO;
+    NSUInteger foldable = 0, stripCount = 0;
     for (UIBarButtonItem *barItem in items) {
         UIView *source = ApolloNavigationActionsContentView(barItem);
         UIButton *more = ApolloActionsFindMore(source);
@@ -1626,13 +1825,31 @@ static NSArray<UIBarButtonItem *> *ApolloActionsDuoNativeItems(UINavigationItem 
             [result addObject:barItem];
             continue;
         }
+        NSArray<UIButton *> *order = ApolloActionsDuoFoldOrder(buttons, more, item);
+        UIButton *globe = ApolloTranslationNavigationItemGlobeButton(item);
+        foldable = order.count - ([order containsObject:globe] ? 1 : 0);
+        stripCount = buttons.count;
+        // A new page (or one reset by folding the phone) starts at the level
+        // that settled last time in the same situation, so it doesn't show
+        // UIKit's overflow first. The overflow check still corrects it.
+        if (!generated) objc_setAssociatedObject(item, &kActionsDuoUseFoldMemoryKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        BOOL useMemory = [objc_getAssociatedObject(item, &kActionsDuoUseFoldMemoryKey) boolValue];
+        if (useMemory && !foldLevel && ApolloActionsHasTrailingTabRail()) {
+            NSString *key = ApolloActionsDuoFitKey(item, stripCount, ApolloActionsDuoRailOtherCount(item));
+            NSUInteger remembered = key ? [sDuoFoldMemory[key] unsignedIntegerValue] : 0;
+            if (remembered) {
+                foldLevel = MIN(remembered, order.count);
+                ApolloActionsSetDuoOverflowFold(item, @(foldLevel), @(sDuoRailTop),
+                                                @(ApolloActionsDuoRailOtherCount(item)));
+                ApolloLog(@"[NavigationActions] Duo rail: starting %lu folded from memory (%@)",
+                          (unsigned long)foldLevel, key);
+            }
+        }
         NSArray<UIButton *> *folded = nil;
-        if (foldWanted) {
-            folded = [buttons filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(UIButton *button,
-                                                                                               __unused NSDictionary *bindings) {
-                return button != more;
-            }]];
-            [buttons setArray:@[ more ]];
+        if (foldLevel) {
+            folded = [order subarrayWithRange:NSMakeRange(0, MIN(foldLevel, order.count))];
+            [buttons removeObjectsInArray:folded];
+            globeFolded = globe && [folded containsObject:globe];
             ApolloLog(@"[NavigationActions] Duo rail: %lu button(s) moved into More", (unsigned long)folded.count);
         }
 
@@ -1642,20 +1859,31 @@ static NSArray<UIBarButtonItem *> *ApolloActionsDuoNativeItems(UINavigationItem 
         for (NSUInteger reverse = buttons.count; reverse > 0; reverse--) {
             UIButton *button = buttons[reverse - 1];
             UIBarButtonItem *native = ApolloActionsNativeItemForDuoButton(button, reverse - 1);
+            native.accessibilityIdentifier = [ApolloActionsDuoRailTagPrefix(item)
+                stringByAppendingFormat:@"%lu", (unsigned long)(reverse - 1)];
             if (folded && button == more) ApolloActionsArmFoldedRows(native, button, folded, item);
             [result addObject:native];
         }
         converted = YES;
     }
-    if (!converted) return items;
-    if (foldWanted) result = [ApolloActionsWithoutRailGlobe(result) mutableCopy];
+    if (!converted) {
+        // Nothing of Apollo's strip to rebuild here: count the build as done,
+        // or every later publish would retry it.
+        if (builtFold) objc_setAssociatedObject(item, &kActionsDuoBuiltFoldKey, @(foldLevel), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return items;
+    }
+    if (globeFolded) result = [ApolloActionsWithoutRailGlobe(result) mutableCopy];
 
     NSArray *native = [result copy];
     objc_setAssociatedObject(item, &kActionsDuoOriginalItemsKey, [items copy],
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(item, &kActionsDuoNativeItemsKey, native,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(item, &kActionsDuoBuiltFoldKey, @(foldWanted), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(item, &kActionsDuoBuiltFoldKey, @(foldLevel), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(item, &kActionsDuoBuiltGlobeFoldKey, @(globeFolded), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(item, &kActionsDuoBuiltGlobePresentKey, @(globePresent), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(item, &kActionsDuoFoldableCountKey, @(foldable), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(item, &kActionsDuoStripCountKey, @(stripCount), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloLog(@"[NavigationActions] Split composite actions into %lu native Duo items on %@",
               (unsigned long)native.count,
               NSStringFromClass([objc_getAssociatedObject(item, &kActionsControllerKey) controller].class));
@@ -2794,6 +3022,23 @@ static void ApolloActionsUpdateBackGlass(UIView *button, UIBarButtonItem *item) 
 %end
 %end
 
+%group ApolloNavigationActionsRailItemHooks
+%hook _UIButtonBarButton
+- (void)_configureFromBarItem:(UIBarButtonItem *)item
+           appearanceDelegate:(id)delegate
+                 isBackButton:(BOOL)isBackButton
+            useBreadcrumbStyle:(BOOL)useBreadcrumbStyle {
+    %orig;
+    ApolloActionsBarItemBox *box = objc_getAssociatedObject(self, &kActionsBarButtonItemKey);
+    if (!box) {
+        box = [ApolloActionsBarItemBox new];
+        objc_setAssociatedObject(self, &kActionsBarButtonItemKey, box, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    box.item = [item isKindOfClass:UIBarButtonItem.class] ? item : nil;
+}
+%end
+%end
+
 %ctor {
     if (@available(iOS 26.0, *)) {
         %init(ApolloNavigationActionsHooks);
@@ -2802,6 +3047,11 @@ static void ApolloActionsUpdateBackGlass(UIView *button, UIBarButtonItem *item) 
         }
         if (IsLiquidGlass()) {
             %init(ApolloNavigationActionsChromeHooks);
+        }
+        if (ApolloClassUIButtonBarButton
+            && class_getInstanceMethod(ApolloClassUIButtonBarButton,
+                                       @selector(_configureFromBarItem:appearanceDelegate:isBackButton:useBreadcrumbStyle:))) {
+            %init(ApolloNavigationActionsRailItemHooks);
         }
         ApolloActionsRegisterFoldedRows();
         ApolloActionsObserveDuoModeChanges();
