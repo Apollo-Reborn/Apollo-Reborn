@@ -1880,10 +1880,11 @@ static void NSBViewWillDisappear(UIViewController *vc) {
     if (ApolloNativeFeedSearchEnabled()) NSBInvalidateRestingSearch((UIViewController *)self);
     %orig;
     if (!ApolloNativeFeedSearchEnabled() || !NSBIsNativeSearchVC(self)) return;
-    // The comments screen is handled by its own hook below: it inherits this
-    // method, and an inherited method reached through other modules' subclass
-    // hooks does not reliably arrive here.
+    // The comments screen and the feed are handled by their own hooks below:
+    // they inherit this method, and an inherited method reached through other
+    // modules' subclass hooks does not reliably arrive here.
     if (NSBIsNativeSearchCommentsVC(self)) return;
+    if (ApolloClassPostsViewController && [self isKindOfClass:ApolloClassPostsViewController]) return;
     NSBViewWillDisappear((UIViewController *)self);
 }
 
@@ -1993,6 +1994,22 @@ static void *NSBCommentJumpTableForController(UIViewController *vc) {
     if (ApolloNativeFeedSearchEnabled()) NSBInvalidateRestingSearch((UIViewController *)self);
     %orig;
     if (!ApolloNativeFeedSearchEnabled() || !NSBIsNativeSearchCommentsVC((UIViewController *)self)) return;
+    NSBViewWillDisappear((UIViewController *)self);
+}
+
+%end
+
+// The feed has the same shape: PostsViewController inherits viewWillDisappear:
+// and ApolloSubredditHeaders hooks it on the subclass, so the base hook never
+// wrote the feed's leave-at-top note either. Every return to a feed resting at
+// its top (Back, a forward swipe, a Duo feed link) then laid the page out with
+// the bar collapsed and the appearance reveal shoved it down a turn later.
+%hook _TtC6Apollo19PostsViewController
+
+- (void)viewWillDisappear:(BOOL)animated {
+    if (ApolloNativeFeedSearchEnabled()) NSBInvalidateRestingSearch((UIViewController *)self);
+    %orig;
+    if (!ApolloNativeFeedSearchEnabled() || !NSBIsNativeSearchVC((UIViewController *)self)) return;
     NSBViewWillDisappear((UIViewController *)self);
 }
 
