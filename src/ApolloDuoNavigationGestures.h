@@ -7,4 +7,9 @@ BOOL ApolloDuoHasBackSwipe(UINavigationController *navigation);
 UIGestureRecognizer *ApolloDuoNativeBackPan(UINavigationController *navigation);
 /// Apollo's own interactive Back owns this pop; the Duo pane swipe stands down.
 BOOL ApolloDuoNativeBackPanOwns(UINavigationController *navigation);
+/// A pop Apollo's own Back pan drives is still running (dragging or settling).
+BOOL ApolloDuoNativeBackInFlight(UINavigationController *navigation);
+/// Called when Apollo's own Back pan is allowed to begin, and when a page shows.
+void ApolloDuoNoteNativeBackBegan(UINavigationController *navigation);
+void ApolloDuoNoteNativeBackShown(UINavigationController *navigation);
 __END_DECLS

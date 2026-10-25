@@ -3198,22 +3198,15 @@ static void ApolloDuoPostsRestoreFeedLinkDetail(ApolloDuoSplitState *state,
     ApolloLog(@"[DuoSplit] Back from a feed link; restored %lu thread page(s)", (unsigned long)detail.count);
 }
 
-// Apollo's own interactive Back is following the finger on `nav`. UIKit's
-// interactivePopGestureRecognizer stays Possible on Apollo's stacks.
-static BOOL ApolloDuoSplitNativeBackPanTracking(UINavigationController *nav) {
-    UIGestureRecognizerState state = ApolloDuoNativeBackPan(nav).state;
-    return state == UIGestureRecognizerStateBegan || state == UIGestureRecognizerStateChanged;
-}
-
 // Back from a feed a link opened: return to the previous feed with its thread
 // in one animation (the mirror of the forward one) instead of a native pop
 // followed by the thread sliding back in. Returns the popped page, or nil to
-// leave the pop to UIKit (interactive swipes, or a thread is open).
+// leave the pop to UIKit (Apollo's own interactive Back, or a thread is open).
 static UIViewController *ApolloDuoPostsPopFeedLink(ApolloDuoSplitState *state, BOOL animated) {
     NSArray<UIViewController *> *pages = state.feed.viewControllers;
     if (!state.split || state.changing || pages.count < 2 || !ApolloDuoPostsUsesSplit(state)
         || state.secondary.viewControllers.count > 1) return nil;
-    if (ApolloDuoSplitNativeBackPanTracking(state.feed)) return nil;
+    if (ApolloDuoNativeBackInFlight(state.feed)) return nil;
     UIViewController *top = pages.lastObject, *previous = pages[pages.count - 2];
     ApolloDuoFeedLinkReturn *ret = objc_getAssociatedObject(previous, &kDuoFeedLinkReturnDetail);
     if (![objc_getAssociatedObject(top, &kDuoFeedLinkPage) boolValue] || !ret.detail.count) return nil;
@@ -3569,6 +3562,7 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
 - (void)navigationController:(UINavigationController *)navigation didShowViewController:(UIViewController *)controller animated:(BOOL)animated {
     %orig(navigation, controller, animated);
     ApolloDuoInstallBackSwipe(navigation);
+    ApolloDuoNoteNativeBackShown(navigation);
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(navigation, NO);
     // Native didShow finalizes the bar after push/pop and column migration.
     // Relayout the host then so it does not keep the outgoing Back reservation.
@@ -3584,8 +3578,11 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
         // which must wait until UIKit has finished this transition, and the
         // snapshot holds the pane until the close lays out the full-width feed
         // in the same transaction. Apollo also queued the thread as a forward
-        // page, which the split's own close never does; drop it with Apollo's
-        // native wipe, or a later forward pan would push it over a new thread.
+        // page, which the split's own close never does, and a later forward
+        // pan would push it over a new thread. Drop it on purpose with
+        // Apollo's own didReceiveMemoryWarning override, which empties
+        // poppedViewControllers (the native wipe ApolloForwardSwipeExpiry
+        // relies on); the split never edits that Swift array itself.
         if (ApolloDuoSplitForwardPage(navigation)) [navigation didReceiveMemoryWarning];
         UIView *surface = state.host.view;
         CGRect pane = ApolloDuoPostsDetailPane(state);
@@ -3635,7 +3632,11 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     // and the pane swipe stands down for that one.
     if (back && ApolloDuoHasBackSwipe(nav) && !ApolloDuoNativeBackPanOwns(nav)) return NO;
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(self, NO);
-    if (!state.split || state.changing) return %orig(gesture);
+    if (!state.split || state.changing) {
+        BOOL result = %orig(gesture);
+        if (back && result) ApolloDuoNoteNativeBackBegan(nav);
+        return result;
+    }
     Ivar rightIvar = class_getInstanceVariable(nav.class, "rightScreenEdgePanGestureRecognizer");
     BOOL forward = rightIvar && object_getIvar(self, rightIvar) == gesture;
     if (!back && !forward) return %orig(gesture);
@@ -3654,6 +3655,7 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     sDuoSplitGesture = NULL;
     sDuoSplitGestureView = NULL;
     sDuoSplitGestureOffset = 0.0;
+    if (back && result) ApolloDuoNoteNativeBackBegan(nav);
     return result;
 }
 - (void)pushViewController:(UIViewController *)controller animated:(BOOL)animated {
@@ -3698,20 +3700,23 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     UINavigationController *detail = ApolloDuoSplitDetailNavigation(self);
     if (detail != self) return [detail popViewControllerAnimated:animated];
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(self, NO);
-    if (state.feed && !state.changing && self == state.secondary && state.secondary.viewControllers.count == 2) {
+    // A pop Apollo's own interactive Back drives, whether it reaches here as
+    // the pan begins or as it ends, is a native page pop: never one of the
+    // split's own (thread close, Account pages, feed-link Back).
+    BOOL native = ApolloDuoNativeBackInFlight(self);
+    if (!native && state.feed && !state.changing && self == state.secondary && state.secondary.viewControllers.count == 2) {
         UIViewController *page = state.secondary.topViewController;
         ApolloDuoPostsSetDetail(state, nil, animated);
         return page;
     }
-    if (state.split && !state.changing && [state.kind isEqualToString:@"account"]
-        && self == state.secondary && detail.viewControllers.count > 1
-        && !ApolloDuoSplitNativeBackPanTracking(detail)) {
+    if (!native && state.split && !state.changing && [state.kind isEqualToString:@"account"]
+        && self == state.secondary && detail.viewControllers.count > 1) {
         UIViewController *page = detail.topViewController;
         ApolloDuoAccountSetPages(state, [detail.viewControllers subarrayWithRange:NSMakeRange(0, detail.viewControllers.count - 1)]);
         ApolloDuoSplitSyncGallerySidebar(state);
         return page;
     }
-    if (state.feed && self == state.feed) {
+    if (!native && state.feed && self == state.feed) {
         UIViewController *popped = ApolloDuoPostsPopFeedLink(state, animated);
         if (popped) return popped;
     }

@@ -172,7 +172,25 @@ static const NSTimeInterval kApolloDuoHighlightGuardDelay = 0.12;
 // swipe only recognizes after the motion, which left the post highlighted throughout.
 // Either direction: a leftward move is a row action, which still runs alongside.
 @property(nonatomic, strong) ApolloDuoHighlightGuard *highlightGuard;
+// Apollo's own Back pan began a pop on this navigation controller and it has
+// not settled yet. Apollo can change the stack as the pan begins and finish
+// the pop after it ends, so the stack alone can't say who owns that Back.
+@property(nonatomic) BOOL nativeBackInFlight;
+@property(nonatomic) NSUInteger nativeBackGeneration;
+@property(nonatomic, weak) UIGestureRecognizer *observedNativeBack;
 @end
+
+static char kApolloDuoBackSwipe;
+
+// A pop Apollo's own Back pan drives is still running on `navigation`: the pan
+// is following the finger, or it began and the pop has not settled. Neither
+// the pane swipe nor the split's own pops may act on that navigation then.
+static const NSTimeInterval kApolloDuoNativeBackSettleDelay = 0.5;
+BOOL ApolloDuoNativeBackInFlight(UINavigationController *navigation) {
+    ApolloDuoBackSwipe *owner = objc_getAssociatedObject(navigation, &kApolloDuoBackSwipe);
+    UIGestureRecognizerState state = ApolloDuoNativeBackPan(navigation).state;
+    return owner.nativeBackInFlight || state == UIGestureRecognizerStateBegan || state == UIGestureRecognizerStateChanged;
+}
 
 @implementation ApolloDuoBackSwipe
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldReceiveTouch:(UITouch *)touch {
@@ -190,7 +208,7 @@ static const NSTimeInterval kApolloDuoHighlightGuardDelay = 0.12;
         return fabs(velocity.x) > fabs(velocity.y) * 1.5;
     }
     return gesture == self.swipe && ApolloDuoBackSwipeCanNavigate(self.navigation)
-        && !ApolloDuoNativeBackPanOwns(self.navigation);
+        && !ApolloDuoNativeBackPanOwns(self.navigation) && !ApolloDuoNativeBackInFlight(self.navigation);
 }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture
         shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
@@ -219,7 +237,10 @@ static const NSTimeInterval kApolloDuoHighlightGuardDelay = 0.12;
 }
 - (void)swiped:(UISwipeGestureRecognizer *)gesture {
     UINavigationController *navigation = self.navigation;
-    if (gesture.state != UIGestureRecognizerStateRecognized || !ApolloDuoBackSwipeCanNavigate(navigation)) return;
+    // Ownership is decided again here: Apollo's own Back may have begun since
+    // this swipe started, and changed the stack under it.
+    if (gesture.state != UIGestureRecognizerStateRecognized || !ApolloDuoBackSwipeCanNavigate(navigation)
+        || ApolloDuoNativeBackInFlight(navigation) || ApolloDuoNativeBackPanOwns(navigation)) return;
     if (ApolloDuoSplitReturnFromVisitedProfile(navigation)) {
         ApolloLog(@"[DuoSwipe] visited profile: Back out of the profile");
         return;
@@ -232,9 +253,57 @@ static const NSTimeInterval kApolloDuoHighlightGuardDelay = 0.12;
     ApolloLog(@"[DuoSwipe] Back in pane; stack pages=%lu", (unsigned long)navigation.viewControllers.count);
     [navigation popViewControllerAnimated:!UIAccessibilityIsReduceMotionEnabled()];
 }
+- (void)noteNativeBackBegan {
+    self.nativeBackInFlight = YES;
+    [self settleNativeBack];
+}
+- (void)nativeBackChanged:(UIGestureRecognizer *)pan {
+    if (pan.state == UIGestureRecognizerStateBegan || pan.state == UIGestureRecognizerStateChanged) {
+        self.nativeBackInFlight = YES;
+    } else if (pan.state == UIGestureRecognizerStateEnded || pan.state == UIGestureRecognizerStateCancelled
+               || pan.state == UIGestureRecognizerStateFailed) {
+        // The pop finishes or springs back after release: hold the flag
+        // through that, unless didShow reports the pop done first.
+        [self settleNativeBack];
+    }
+}
+- (void)settleNativeBack {
+    NSUInteger generation = ++self.nativeBackGeneration;
+    __weak ApolloDuoBackSwipe *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kApolloDuoNativeBackSettleDelay * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ [weakSelf clearNativeBack:generation]; });
+}
+- (void)clearNativeBack:(NSUInteger)generation {
+    if (generation != self.nativeBackGeneration) return;
+    // Still following the finger: its end settles the flag again.
+    UIGestureRecognizerState state = ApolloDuoNativeBackPan(self.navigation).state;
+    if (state == UIGestureRecognizerStateBegan || state == UIGestureRecognizerStateChanged) return;
+    self.nativeBackInFlight = NO;
+}
 @end
 
-static char kApolloDuoBackSwipe;
+// Apollo's own Back pan is about to begin on `navigation` (its
+// gestureRecognizerShouldBegin: said yes). Follow it until its pop settles.
+void ApolloDuoNoteNativeBackBegan(UINavigationController *navigation) {
+    ApolloDuoBackSwipe *owner = objc_getAssociatedObject(navigation, &kApolloDuoBackSwipe);
+    UIGestureRecognizer *pan = ApolloDuoNativeBackPan(navigation);
+    if (!owner || !pan) return;
+    if (owner.observedNativeBack != pan) {
+        [pan addTarget:owner action:@selector(nativeBackChanged:)];
+        owner.observedNativeBack = pan;
+    }
+    [owner noteNativeBackBegan];
+}
+
+// A page finished showing on `navigation`: a native pop there has completed.
+void ApolloDuoNoteNativeBackShown(UINavigationController *navigation) {
+    ApolloDuoBackSwipe *owner = objc_getAssociatedObject(navigation, &kApolloDuoBackSwipe);
+    UIGestureRecognizerState state = ApolloDuoNativeBackPan(navigation).state;
+    if (!owner.nativeBackInFlight || state == UIGestureRecognizerStateBegan || state == UIGestureRecognizerStateChanged) return;
+    owner.nativeBackGeneration++;
+    owner.nativeBackInFlight = NO;
+}
+
 BOOL ApolloDuoHasBackSwipe(UINavigationController *navigation) {
     return objc_getAssociatedObject(navigation, &kApolloDuoBackSwipe) != nil;
 }
