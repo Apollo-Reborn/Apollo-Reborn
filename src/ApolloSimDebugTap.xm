@@ -2245,6 +2245,12 @@ static BOOL ApolloSimDebugHandleIntegratedMainCommand(NSString *contents) {
         ApolloWebJSONSimSetBlockedRoutes(mask);
         return YES;
     }
+    // "routehealth" logs the API-Key-Free route health; "routehealth reset" clears it.
+    if ([contents hasPrefix:@"routehealth"]) {
+        if ([contents containsString:@"reset"]) ApolloWebJSONRouteHealthReset();
+        ApolloLog(@"[SimDebugTap] route health:\n%@", ApolloWebJSONRouteHealthDescription([NSDate timeIntervalSinceReferenceDate]));
+        return YES;
+    }
     if ([contents hasPrefix:@"lpm "]) {
         NSString *payload = [[contents substringFromIndex:4]
             stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];

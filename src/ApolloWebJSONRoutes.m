@@ -75,3 +75,141 @@ BOOL ApolloWebJSONRouteResponseIsBlockPage(NSHTTPURLResponse *response) {
     NSString *contentType = [[response valueForHTTPHeaderField:@"Content-Type"] lowercaseString] ?: @"";
     return [contentType containsString:@"text/html"];
 }
+
+#pragma mark - Route health
+
+static NSInteger const kApolloWebJSONRouteBlocksBeforeCooldown = 3;
+static NSTimeInterval const kApolloWebJSONRouteFirstCooldown = 60.0 * 60.0;
+static NSTimeInterval const kApolloWebJSONRouteLongestCooldown = 8.0 * 60.0 * 60.0;
+// Every keyless path is counted, so bound the store: paths group by pattern,
+// and an account's health starts over if it ever grows past this.
+static NSUInteger const kApolloWebJSONRouteHealthMaxEntries = 512;
+
+@interface ApolloWebJSONRouteHealthEntry : NSObject
+@property (nonatomic) NSInteger consecutiveBlocks;
+@property (nonatomic) NSTimeInterval cooldownUntil;
+@property (nonatomic) NSTimeInterval cooldownLength; // 0 after a success
+@property (nonatomic) NSUInteger blocks;
+@property (nonatomic) NSUInteger successes;
+@property (nonatomic) NSTimeInterval lastBlockAt;
+@property (nonatomic) NSTimeInterval lastSuccessAt;
+@end
+@implementation ApolloWebJSONRouteHealthEntry
+@end
+
+static NSObject *ApolloWebJSONRouteHealthLock(void) {
+    static NSObject *lock;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [NSObject new]; });
+    return lock;
+}
+
+// Guarded by ApolloWebJSONRouteHealthLock. "<account>|<pattern>|<route>".
+static NSMutableDictionary<NSString *, ApolloWebJSONRouteHealthEntry *> *sApolloWebJSONRouteHealth;
+
+NSString *ApolloWebJSONRoutePathPattern(NSString *path) {
+    if (![path isKindOfClass:[NSString class]]) return @"/";
+    NSArray<NSString *> *segments = [[ApolloWebJSONRouteEndpointKey(path) substringFromIndex:1] componentsSeparatedByString:@"/"];
+    static NSSet<NSString *> *variableAfter;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        variableAfter = [NSSet setWithArray:@[ @"r", @"u", @"user", @"comments", @"duplicates", @"by_id", @"m" ]];
+    });
+    NSMutableArray<NSString *> *pattern = [NSMutableArray arrayWithCapacity:segments.count];
+    for (NSUInteger i = 0; i < segments.count; i++) {
+        // The segment after one of those names, unless that name was itself a
+        // value ("/r/user/…"), and a comment link's slug ("/comments/<id>/<slug>").
+        BOOL afterName = i > 0 && [variableAfter containsObject:segments[i - 1]] && ![pattern.lastObject isEqualToString:@"*"];
+        BOOL slug = i > 1 && [segments[i - 2] isEqualToString:@"comments"];
+        [pattern addObject:afterName || slug ? @"*" : segments[i]];
+    }
+    return [@"/" stringByAppendingString:[pattern componentsJoinedByString:@"/"]];
+}
+
+static NSString *ApolloWebJSONRouteHealthKey(NSString *account, NSString *path, ApolloWebJSONRoute route) {
+    return [NSString stringWithFormat:@"%@|%@|%@", account.lowercaseString ?: @"", ApolloWebJSONRoutePathPattern(path),
+            ApolloWebJSONRouteName(route)];
+}
+
+// Under the lock.
+static ApolloWebJSONRouteHealthEntry *ApolloWebJSONRouteHealthEntryFor(NSString *key, BOOL create) {
+    if (!sApolloWebJSONRouteHealth) sApolloWebJSONRouteHealth = [NSMutableDictionary dictionary];
+    ApolloWebJSONRouteHealthEntry *entry = sApolloWebJSONRouteHealth[key];
+    if (!entry && create) {
+        if (sApolloWebJSONRouteHealth.count >= kApolloWebJSONRouteHealthMaxEntries) [sApolloWebJSONRouteHealth removeAllObjects];
+        entry = [ApolloWebJSONRouteHealthEntry new];
+        sApolloWebJSONRouteHealth[key] = entry;
+    }
+    return entry;
+}
+
+BOOL ApolloWebJSONRouteHealthNoteBlockPage(NSString *account, NSString *path, ApolloWebJSONRoute route, NSTimeInterval now) {
+    if (account.length == 0) return NO;
+    @synchronized (ApolloWebJSONRouteHealthLock()) {
+        ApolloWebJSONRouteHealthEntry *entry = ApolloWebJSONRouteHealthEntryFor(ApolloWebJSONRouteHealthKey(account, path, route), YES);
+        entry.blocks++;
+        entry.lastBlockAt = now;
+        if (now < entry.cooldownUntil) return NO; // a request sent before the cooldown began
+        entry.consecutiveBlocks++;
+        // Straight back on a longer cooldown when the first try after one fails.
+        BOOL wasCooling = entry.cooldownLength > 0;
+        if (!wasCooling && entry.consecutiveBlocks < kApolloWebJSONRouteBlocksBeforeCooldown) return NO;
+        entry.cooldownLength = wasCooling ? MIN(entry.cooldownLength * 2.0, kApolloWebJSONRouteLongestCooldown)
+                                          : kApolloWebJSONRouteFirstCooldown;
+        entry.cooldownUntil = now + entry.cooldownLength;
+        entry.consecutiveBlocks = 0;
+        return YES;
+    }
+}
+
+void ApolloWebJSONRouteHealthNoteSuccess(NSString *account, NSString *path, ApolloWebJSONRoute route, NSTimeInterval now) {
+    if (account.length == 0) return;
+    @synchronized (ApolloWebJSONRouteHealthLock()) {
+        ApolloWebJSONRouteHealthEntry *entry = ApolloWebJSONRouteHealthEntryFor(ApolloWebJSONRouteHealthKey(account, path, route), YES);
+        entry.successes++;
+        entry.lastSuccessAt = now;
+        entry.consecutiveBlocks = 0;
+        entry.cooldownLength = 0;
+        entry.cooldownUntil = 0;
+    }
+}
+
+NSTimeInterval ApolloWebJSONRouteCooldownRemaining(NSString *account, NSString *path, ApolloWebJSONRoute route, NSTimeInterval now) {
+    if (account.length == 0) return 0;
+    @synchronized (ApolloWebJSONRouteHealthLock()) {
+        ApolloWebJSONRouteHealthEntry *entry = ApolloWebJSONRouteHealthEntryFor(ApolloWebJSONRouteHealthKey(account, path, route), NO);
+        return entry ? MAX(0, entry.cooldownUntil - now) : 0;
+    }
+}
+
+NSInteger ApolloWebJSONRouteChoose(NSString *account, NSString *method, NSString *path, NSUInteger triedMask, NSTimeInterval now) {
+    NSArray<NSNumber *> *routes = ApolloWebJSONRoutesForRequest(method, path);
+    NSInteger firstUntried = -1;
+    for (NSNumber *number in routes) {
+        ApolloWebJSONRoute route = (ApolloWebJSONRoute)number.integerValue;
+        if (triedMask & (1u << route)) continue;
+        if (firstUntried < 0) firstUntried = route;
+        if (ApolloWebJSONRouteCooldownRemaining(account, path, route, now) <= 0) return route;
+    }
+    return triedMask == 0 ? firstUntried : -1;
+}
+
+NSString *ApolloWebJSONRouteHealthDescription(NSTimeInterval now) {
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    @synchronized (ApolloWebJSONRouteHealthLock()) {
+        for (NSString *key in [sApolloWebJSONRouteHealth.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+            ApolloWebJSONRouteHealthEntry *entry = sApolloWebJSONRouteHealth[key];
+            NSString *cooldown = entry.cooldownUntil > now
+                ? [NSString stringWithFormat:@", cooling down %.0f min more", ceil((entry.cooldownUntil - now) / 60.0)] : @"";
+            [lines addObject:[NSString stringWithFormat:@"%@: %lu ok, %lu blocked%@", key,
+                              (unsigned long)entry.successes, (unsigned long)entry.blocks, cooldown]];
+        }
+    }
+    return lines.count ? [lines componentsJoinedByString:@"\n"] : @"(no keyless responses yet)";
+}
+
+void ApolloWebJSONRouteHealthReset(void) {
+    @synchronized (ApolloWebJSONRouteHealthLock()) {
+        [sApolloWebJSONRouteHealth removeAllObjects];
+    }
+}

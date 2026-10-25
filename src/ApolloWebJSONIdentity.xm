@@ -69,6 +69,7 @@
 
 #import "ApolloWebJSON.h"
 #import "ApolloWebJSONRoutes.h"
+#import "ApolloToast.h"
 #import "ApolloState.h"
 #import "ApolloCommon.h"
 #import "ApolloUserProfileCache.h"
@@ -917,16 +918,31 @@ static __thread BOOL sApolloWebJSONResendingAfterWebBearerMint = NO;
 
 // Route fallback for API-Key-Free reads www.reddit.com refuses at their usual
 // path (ApolloWebJSONRoutes.m). When a route answers with Reddit's block page,
-// the RDKClient hook below sends the same call again for the next route. The
-// resend sets sApolloWebJSONRouteAttemptForSend around its synchronous
+// the RDKClient hook below sends the same call again, marked with the routes
+// already tried so the rewrite picks another. The resend sets
+// sApolloWebJSONRoutesTriedForSend around its synchronous
 // -taskWithMethod:path:parameters:completion: call; the hook reads it on entry
-// and holds it in sApolloWebJSONRouteAttemptToStamp while RedditKit builds the
+// and holds it in sApolloWebJSONRoutesTriedToStamp while RedditKit builds the
 // request, which it does on the same thread before returning (-[RDKClient
 // taskWithMethod:path:parameters:completion:] at 0x10000902c serializes the
 // request and calls -dataTaskWithRequest:completionHandler: on itself), so
 // -dataTaskWithRequest:completionHandler: can mark it for the rewrite.
-static __thread NSInteger sApolloWebJSONRouteAttemptForSend = 0;
-static __thread NSInteger sApolloWebJSONRouteAttemptToStamp = 0;
+static __thread NSUInteger sApolloWebJSONRoutesTriedForSend = 0;
+static __thread NSUInteger sApolloWebJSONRoutesTriedToStamp = 0;
+
+// When every route for a read is blocked or on cooldown, the screen behind it
+// fails without saying why (the Inbox without its reply parents, "more replies"
+// doing nothing). Says so once per launch, with the one thing that avoids it.
+static void ApolloWebJSONShowRoutesBlockedToastOnce(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ApolloShowToastWithStyle(@"Reddit Blocked This Request",
+                                     @"Adding your own API key in Settings avoids it",
+                                     ApolloToastStyleError, @"exclamationmark.triangle");
+        });
+    });
+}
 
 // Once per launch per method, path and outcome, so a report's log shows a
 // route falling back without a line for every lookup. Any thread.
@@ -1055,8 +1071,8 @@ static BOOL ApolloWebJSONKeepSubscriptionListAfterFailedWalk(RDKUser *user, NSAr
 %hook RDKClient
 - (id)taskWithMethod:(NSString *)method path:(NSString *)path parameters:(id)parameters
     completion:(void (^)(NSHTTPURLResponse *, id, NSError *))completion {
-    NSInteger routeAttempt = sApolloWebJSONRouteAttemptForSend;
-    sApolloWebJSONRouteAttemptForSend = 0;
+    NSUInteger routesTried = sApolloWebJSONRoutesTriedForSend;
+    sApolloWebJSONRoutesTriedForSend = 0;
     if (!completion) return %orig;
     // OAuth-only moderator endpoints (removal reasons, modactions) go to
     // oauth.reddit.com with the account's web bearer (ApolloWebJSONRewriteRequest),
@@ -1098,32 +1114,36 @@ static BOOL ApolloWebJSONKeepSubscriptionListAfterFailedWalk(RDKUser *user, NSAr
     RDKClient *client = self;
     id sentParameters = parameters;
     void (^wrapped)(NSHTTPURLResponse *, id, NSError *) = ^(NSHTTPURLResponse *response, id object, NSError *error) {
-        // A read that has another route gets sent again on it, once per route,
-        // and only the last answer reaches the caller. Writes never get here
-        // (ApolloWebJSONRouteRequestMayRetry).
+        // A read that has another route gets sent again on it, at most once per
+        // route, and only the last answer reaches the caller. Writes never get
+        // here (ApolloWebJSONRouteRequestMayRetry).
+        NSInteger usedRoute = response ? ApolloWebJSONRouteFromURL(response.URL) : -1;
         if (username && sWebJSONEnabled && ApolloWebJSONRouteResponseIsBlockPage(response)
             && ApolloWebJSONRouteRequestMayRetry(requestMethod, requestPath)) {
-            NSArray<NSNumber *> *routes = ApolloWebJSONRoutesForRequest(requestMethod, requestPath);
-            NSInteger next = routeAttempt + 1;
-            NSString *blockedName = ApolloWebJSONRouteName((ApolloWebJSONRoute)routes[MIN(routeAttempt, (NSInteger)routes.count - 1)].integerValue);
-            if (next < (NSInteger)routes.count) {
-                NSString *nextName = ApolloWebJSONRouteName((ApolloWebJSONRoute)routes[next].integerValue);
-                ApolloWebJSONLogRouteOutcomeOnce(requestMethod, requestPath,
-                    [NSString stringWithFormat:@"route %@ got the block page, trying %@", blockedName, nextName]);
-                sApolloWebJSONRouteAttemptForSend = next;
+            NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+            // The response URL carries the route the rewrite stamped; without it,
+            // the route the rewrite would have picked.
+            if (usedRoute < 0) usedRoute = ApolloWebJSONRouteChoose(username, requestMethod, requestPath, routesTried, now);
+            NSUInteger tried = routesTried | (usedRoute >= 0 ? (1u << usedRoute) : 0);
+            NSInteger next = ApolloWebJSONRouteChoose(username, requestMethod, requestPath, tried, now);
+            NSString *blockedName = usedRoute >= 0 ? ApolloWebJSONRouteName((ApolloWebJSONRoute)usedRoute) : @"?";
+            if (next >= 0) {
+                ApolloWebJSONLogRouteOutcomeOnce(requestMethod, requestPath, [NSString stringWithFormat:
+                    @"route %@ got the block page, trying %@", blockedName, ApolloWebJSONRouteName((ApolloWebJSONRoute)next)]);
+                sApolloWebJSONRoutesTriedForSend = tried;
                 @try {
                     [client taskWithMethod:requestMethod path:requestPath parameters:sentParameters completion:completion];
                 } @finally {
-                    sApolloWebJSONRouteAttemptForSend = 0;
+                    sApolloWebJSONRoutesTriedForSend = 0;
                 }
                 return;
             }
-            ApolloWebJSONLogRouteOutcomeOnce(requestMethod, requestPath,
-                [NSString stringWithFormat:@"route %@ got the block page, and no route is left", blockedName]);
-        } else if (routeAttempt > 0 && response.statusCode >= 200 && response.statusCode < 300) {
-            NSArray<NSNumber *> *routes = ApolloWebJSONRoutesForRequest(requestMethod, requestPath);
+            ApolloWebJSONLogRouteOutcomeOnce(requestMethod, requestPath, [NSString stringWithFormat:
+                @"route %@ got the block page, and every other route is blocked or cooling down", blockedName]);
+            ApolloWebJSONShowRoutesBlockedToastOnce();
+        } else if (routesTried != 0 && usedRoute >= 0 && response.statusCode >= 200 && response.statusCode < 300) {
             ApolloWebJSONLogRouteOutcomeOnce(requestMethod, requestPath, [NSString stringWithFormat:@"answered by route %@",
-                ApolloWebJSONRouteName((ApolloWebJSONRoute)routes[MIN(routeAttempt, (NSInteger)routes.count - 1)].integerValue)]);
+                ApolloWebJSONRouteName((ApolloWebJSONRoute)usedRoute)]);
         }
         if (username && ApolloWebJSONRequestIsSubscriptionWalk(requestMethod, requestPath) &&
             (error || response.statusCode >= 400)) {
@@ -1147,21 +1167,21 @@ static BOOL ApolloWebJSONKeepSubscriptionListAfterFailedWalk(RDKUser *user, NSAr
     // answered is shared instead of sent again (ApolloWebJSONShareAccountRead).
     ApolloWebJSONTaskCompletion send = ApolloWebJSONShareAccountRead(username, requestMethod, requestPath, parameters, wrapped);
     if (!send) return ApolloWebJSONSharedReadPlaceholderTask();
-    if (routeAttempt == 0) return %orig(method, path, parameters, send);
-    sApolloWebJSONRouteAttemptToStamp = routeAttempt;
+    if (routesTried == 0) return %orig(method, path, parameters, send);
+    sApolloWebJSONRoutesTriedToStamp = routesTried;
     @try {
         return %orig(method, path, parameters, send);
     } @finally {
-        sApolloWebJSONRouteAttemptToStamp = 0;
+        sApolloWebJSONRoutesTriedToStamp = 0;
     }
 }
 
-// Marks a route-fallback resend's request (see sApolloWebJSONRouteAttemptForSend).
+// Marks a route-fallback resend's request (see sApolloWebJSONRoutesTriedForSend).
 - (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(id)completionHandler {
-    NSInteger attempt = sApolloWebJSONRouteAttemptToStamp;
-    if (attempt <= 0) return %orig;
-    sApolloWebJSONRouteAttemptToStamp = 0;
-    return %orig(ApolloWebJSONRequestMarkingRouteAttempt(request, attempt), completionHandler);
+    NSUInteger tried = sApolloWebJSONRoutesTriedToStamp;
+    if (tried == 0) return %orig;
+    sApolloWebJSONRoutesTriedToStamp = 0;
+    return %orig(ApolloWebJSONRequestMarkingTriedRoutes(request, tried), completionHandler);
 }
 %end
 

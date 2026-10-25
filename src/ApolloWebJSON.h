@@ -298,11 +298,15 @@ NSURL *ApolloWebJSONProbeURL(NSURL *url);
 // JSON rewrite, no User-Agent stamping (they pick their UA deliberately).
 BOOL ApolloWebJSONURLIsProbe(NSURL *url);
 
-// `request` marked so ApolloWebJSONRewriteRequest sends it by the route at
-// `attempt` in ApolloWebJSONRoutesForRequest's list (ApolloWebJSONRoutes.h),
-// for a resend after the route before it got Reddit's block page. Unchanged for
-// attempt 0. The mark rides on the URL fragment and never reaches Reddit.
-NSURLRequest *ApolloWebJSONRequestMarkingRouteAttempt(NSURLRequest *request, NSInteger attempt);
+// `request` marked so ApolloWebJSONRewriteRequest skips the routes in
+// `triedMask` (a bit per ApolloWebJSONRoute, ApolloWebJSONRoutes.h), for a
+// resend after one got Reddit's block page. Unchanged for 0. The mark rides on
+// the URL fragment and never reaches Reddit.
+NSURLRequest *ApolloWebJSONRequestMarkingTriedRoutes(NSURLRequest *request, NSUInteger triedMask);
+
+// The ApolloWebJSONRoute a rewritten request or its response URL went by, or -1
+// when `url` wasn't rewritten for a web session.
+NSInteger ApolloWebJSONRouteFromURL(NSURL *url);
 
 #if APOLLO_SIM_BUILD
 // Sim debug bridge: send these ApolloWebJSONRoutes' requests (a bit per route)

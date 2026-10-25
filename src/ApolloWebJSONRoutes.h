@@ -38,6 +38,42 @@ NSString *ApolloWebJSONRoutePath(ApolloWebJSONRoute route, NSString *path);
 // Reddit's 403 HTML block page, as opposed to a 403 with a JSON error body.
 BOOL ApolloWebJSONRouteResponseIsBlockPage(NSHTTPURLResponse *_Nullable response);
 
+#pragma mark - Route health
+
+// Per account, path and route, in memory for the launch: Old Reddit access
+// differs per account, and a stale cooldown shouldn't outlive a relaunch. Fed
+// with every cookie response (ApolloWebJSONNoteResponse), for every keyless
+// path; only paths with more than one route are affected by a cooldown, the
+// rest are only counted. `now` is a timeIntervalSinceReferenceDate, so tests can
+// drive the clock. Any thread.
+
+// Three block pages in a row put a route on cooldown for an hour. Another block
+// page when that ends (no success since) puts it back for twice as long, up to
+// eight hours. A success clears it. Returns YES when this call started a
+// cooldown, for logging.
+BOOL ApolloWebJSONRouteHealthNoteBlockPage(NSString *account, NSString *path, ApolloWebJSONRoute route, NSTimeInterval now);
+void ApolloWebJSONRouteHealthNoteSuccess(NSString *account, NSString *path, ApolloWebJSONRoute route, NSTimeInterval now);
+
+// Seconds left on a route's cooldown for `account` and `path`, or 0.
+NSTimeInterval ApolloWebJSONRouteCooldownRemaining(NSString *account, NSString *path, ApolloWebJSONRoute route, NSTimeInterval now);
+
+// The route to send a request by: the first in ApolloWebJSONRoutesForRequest's
+// order that isn't in `triedMask` (a bit per ApolloWebJSONRoute) and isn't on
+// cooldown. When every route is on cooldown and none has been tried, the first
+// route anyway, so a route that recovers is noticed. -1 when a resend has no
+// route left.
+NSInteger ApolloWebJSONRouteChoose(NSString *account, NSString *method, NSString *path, NSUInteger triedMask, NSTimeInterval now);
+
+// `path` with its variable segments (subreddit, user, post and comment ids)
+// replaced by "*", so the counts group by endpoint: "/r/*/comments/*".
+NSString *ApolloWebJSONRoutePathPattern(NSString *path);
+
+// One line per tracked account, path and route, for logs.
+NSString *ApolloWebJSONRouteHealthDescription(NSTimeInterval now);
+
+// Forgets everything (tests and the sim debug bridge).
+void ApolloWebJSONRouteHealthReset(void);
+
 #ifdef __cplusplus
 }
 #endif

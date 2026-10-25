@@ -114,13 +114,28 @@ BOOL ApolloWebJSONURLIsProbe(NSURL *url) {
     return [url.fragment isEqualToString:kApolloWebJSONProbeMarker];
 }
 
+// A rewritten request that took a route other than www (ApolloWebJSONRoutes.h)
+// carries it after the account: "apollo-webjson-account=<user>;route=<n>".
+// Reddit usernames are letters, digits, "_" and "-", so ";" can't be part of one.
+static NSString *const kApolloWebJSONRouteMarkerSeparator = @";route=";
+
 // nil if `url` carries no account marker (e.g. it's a probe, or an unrelated
 // request that never went through ApolloWebJSONRewriteRequest).
 static NSString *ApolloWebJSONAccountFromURL(NSURL *url) {
     NSString *fragment = url.fragment;
     if (![fragment hasPrefix:kApolloWebJSONAccountMarkerPrefix]) return nil;
     NSString *encoded = [fragment substringFromIndex:kApolloWebJSONAccountMarkerPrefix.length];
+    encoded = [encoded componentsSeparatedByString:kApolloWebJSONRouteMarkerSeparator].firstObject;
     return encoded.stringByRemovingPercentEncoding ?: encoded;
+}
+
+NSInteger ApolloWebJSONRouteFromURL(NSURL *url) {
+    NSString *fragment = url.fragment;
+    if (![fragment hasPrefix:kApolloWebJSONAccountMarkerPrefix]) return -1;
+    NSRange marker = [fragment rangeOfString:kApolloWebJSONRouteMarkerSeparator];
+    if (marker.location == NSNotFound) return ApolloWebJSONRouteWww;
+    NSInteger route = [[fragment substringFromIndex:NSMaxRange(marker)] integerValue];
+    return route >= ApolloWebJSONRouteWww && route <= ApolloWebJSONRouteOld ? route : -1;
 }
 
 NSURL *ApolloWebJSONProbeURL(NSURL *url) {
@@ -447,24 +462,24 @@ BOOL ApolloWebJSONPathNeedsWebBearer(NSString *path) {
 }
 
 // Marks a request RedditKit sends again after its route answered with Reddit's
-// block page (the RDKClient hook in ApolloWebJSONIdentity.xm): the index, into
-// ApolloWebJSONRoutesForRequest's list, of the route this send uses. Rides on
-// the URL fragment like the markers above; the rewrite replaces it with the
-// account marker.
-static NSString *const kApolloWebJSONRouteAttemptMarkerPrefix = @"apollo-webjson-route-attempt=";
+// block page (the RDKClient hook in ApolloWebJSONIdentity.xm): the routes
+// already tried, a bit per ApolloWebJSONRoute, so the rewrite picks another.
+// Rides on the URL fragment like the markers above; the rewrite replaces it
+// with the account marker.
+static NSString *const kApolloWebJSONRoutesTriedMarkerPrefix = @"apollo-webjson-routes-tried=";
 
-NSURLRequest *ApolloWebJSONRequestMarkingRouteAttempt(NSURLRequest *request, NSInteger attempt) {
-    if (attempt <= 0 || !request.URL) return request;
+NSURLRequest *ApolloWebJSONRequestMarkingTriedRoutes(NSURLRequest *request, NSUInteger triedMask) {
+    if (triedMask == 0 || !request.URL) return request;
     NSMutableURLRequest *marked = [request mutableCopy];
     marked.URL = ApolloWebJSONURLWithFragment(request.URL,
-        [kApolloWebJSONRouteAttemptMarkerPrefix stringByAppendingFormat:@"%ld", (long)attempt]);
+        [kApolloWebJSONRoutesTriedMarkerPrefix stringByAppendingFormat:@"%lu", (unsigned long)triedMask]);
     return marked;
 }
 
-static NSInteger ApolloWebJSONRouteAttemptFromURL(NSURL *url) {
+static NSUInteger ApolloWebJSONTriedRoutesFromURL(NSURL *url) {
     NSString *fragment = url.fragment;
-    if (![fragment hasPrefix:kApolloWebJSONRouteAttemptMarkerPrefix]) return 0;
-    return MAX(0, [[fragment substringFromIndex:kApolloWebJSONRouteAttemptMarkerPrefix.length] integerValue]);
+    if (![fragment hasPrefix:kApolloWebJSONRoutesTriedMarkerPrefix]) return 0;
+    return (NSUInteger)MAX(0, [[fragment substringFromIndex:kApolloWebJSONRoutesTriedMarkerPrefix.length] integerValue]);
 }
 
 #if APOLLO_SIM_BUILD
@@ -690,11 +705,12 @@ NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
     NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
     if (!components) return nil;
     // Most requests have only the www route. The few www refuses at their usual
-    // path (ApolloWebJSONRoutes.m) start on the first fallback, and a resend
-    // after a block page carries the index of the route to use next.
-    NSArray<NSNumber *> *routes = ApolloWebJSONRoutesForRequest(method, path);
-    NSInteger routeAttempt = MIN(ApolloWebJSONRouteAttemptFromURL(url), (NSInteger)routes.count - 1);
-    ApolloWebJSONRoute route = (ApolloWebJSONRoute)routes[routeAttempt].integerValue;
+    // path (ApolloWebJSONRoutes.m) take the first route that isn't on cooldown
+    // for this account, and a resend after a block page skips the ones tried.
+    NSInteger chosenRoute = ApolloWebJSONRouteChoose(sessionUsername, method, path, ApolloWebJSONTriedRoutesFromURL(url),
+                                                     [NSDate timeIntervalSinceReferenceDate]);
+    ApolloWebJSONRoute route = chosenRoute >= 0 ? (ApolloWebJSONRoute)chosenRoute
+                                                : (ApolloWebJSONRoute)ApolloWebJSONRoutesForRequest(method, path).firstObject.integerValue;
     components.host = ApolloWebJSONRouteHost(route);
     if (route != ApolloWebJSONRouteWww) {
         components.path = ApolloWebJSONRoutePath(route, path);
@@ -722,6 +738,11 @@ NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
     // Account marker goes on the URL fragment
     NSString *accountFragment = [kApolloWebJSONAccountMarkerPrefix stringByAppendingString:
         [sessionUsername stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLFragmentAllowedCharacterSet]] ?: @""];
+    // The route, so the response is counted against it (ApolloWebJSONNoteResponse)
+    // and a block page is retried on another (ApolloWebJSONIdentity.xm).
+    if (route != ApolloWebJSONRouteWww) {
+        accountFragment = [accountFragment stringByAppendingFormat:@"%@%ld", kApolloWebJSONRouteMarkerSeparator, (long)route];
+    }
     rewrittenURL = ApolloWebJSONURLWithFragment(rewrittenURL, accountFragment);
 
     NSMutableURLRequest *mutable = [request mutableCopy];
@@ -1385,6 +1406,23 @@ void ApolloWebJSONNoteResponse(NSURLRequest *request, NSURLResponse *response) {
     NSString *username = ApolloWebJSONAccountFromURL(url);
     if (username.length == 0) return;
 
+    // Route health (ApolloWebJSONRoutes.h), for every keyless path: a block page
+    // counts toward the route's cooldown, a success clears it. The path a route
+    // sent ("/api/info/.json") groups with the one asked for ("/api/info.json").
+    NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
+    NSInteger route = ApolloWebJSONRouteFromURL(url);
+    NSString *requestedPath = url.path ?: @"/";
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (route >= 0 && ApolloWebJSONRouteResponseIsBlockPage(http)) {
+        if (ApolloWebJSONRouteHealthNoteBlockPage(username, requestedPath, (ApolloWebJSONRoute)route, now)) {
+            ApolloLog(@"[WebJSON] Route %@ for %@ keeps getting the block page for u/%@; skipping it for %.0f min",
+                      ApolloWebJSONRouteName((ApolloWebJSONRoute)route), ApolloWebJSONRoutePathPattern(requestedPath), username,
+                      ceil(ApolloWebJSONRouteCooldownRemaining(username, requestedPath, (ApolloWebJSONRoute)route, now) / 60.0));
+        }
+    } else if (route >= 0 && http.statusCode >= 200 && http.statusCode < 300) {
+        ApolloWebJSONRouteHealthNoteSuccess(username, requestedPath, (ApolloWebJSONRoute)route, now);
+    }
+
     // Ahead of the expiry bookkeeping's early returns: a 429 limits the session
     // whatever it says (or doesn't) about the cookie still being valid.
     ApolloWebJSONRecordRateLimit(username, request, (NSHTTPURLResponse *)response);
@@ -1410,7 +1448,6 @@ void ApolloWebJSONNoteResponse(NSURLRequest *request, NSURLResponse *response) {
     // bearer could be minted, and then its refusal is guaranteed.
     if (ApolloWebJSONPathNeedsWebBearer(url.path)) return;
 
-    NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
     // Reddit's anonymous block page is HTTP 403 with a ~190 KB text/html body.
     // A 403 with a JSON body (e.g. a private/quarantined subreddit) is a normal
     // per-content error — and proves the cookie still authenticates — so it must
