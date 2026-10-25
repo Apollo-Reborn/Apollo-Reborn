@@ -10,6 +10,6 @@
     { "icon": "clock.fill", "title": "Recently Read, Rebuilt", "subtitle": "Your reading history now uses Apollo's native feed, layouts, swipe actions and post menus." },
     { "icon": "magnifyingglass.circle.fill", "title": "Make Search Yours", "subtitle": "Find recently visited subreddits and choose the order and limits of Search's sections." },
     { "icon": "slider.horizontal.3", "title": "Setup Assistant", "subtitle": "Connect or restore an account, choose a starting layout, and review your preferences before applying them." },
-    { "icon": "arrow.down.circle.fill", "title": "Downvote by Tapping", "subtitle": "Tap a post or comment score to cycle through upvote, downvote and no vote. Enable Add Downvote Tap in Posts & Feeds → Info Row." }
+    { "icon": "arrow.down.circle.fill", "title": "Downvote by Tapping", "subtitle": "Tap a post or comment score to cycle through upvote, downvote and no vote." }
   ]
 }
