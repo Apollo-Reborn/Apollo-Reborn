@@ -2231,14 +2231,14 @@ static BOOL ApolloSimDebugHandleIntegratedMainCommand(NSString *contents) {
         return YES;
     }
     // "routeblock <route>[,<route>…]" or "routeblock off": make API-Key-Free
-    // routes (www, www-dotjson, old) get Reddit's real block page, to exercise
+    // routes (www-dotjson, old, api) get Reddit's real block page, to exercise
     // the fallback (ApolloWebJSONRoutes.m).
     if ([contents hasPrefix:@"routeblock "]) {
         NSString *list = [[contents substringFromIndex:11]
             stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
         NSUInteger mask = 0;
         for (NSString *name in [list componentsSeparatedByString:@","]) {
-            for (NSInteger r = ApolloWebJSONRouteWww; r <= ApolloWebJSONRouteOld; r++) {
+            for (NSInteger r = ApolloWebJSONRouteWww; r <= ApolloWebJSONRouteLast; r++) {
                 if ([ApolloWebJSONRouteName((ApolloWebJSONRoute)r) isEqualToString:name]) mask |= (1u << r);
             }
         }

@@ -15,9 +15,14 @@ typedef NS_ENUM(NSInteger, ApolloWebJSONRoute) {
     ApolloWebJSONRouteWww = 0,      // www.reddit.com, path unchanged
     ApolloWebJSONRouteWwwDotJSON,   // www.reddit.com, /api/<endpoint>/.json
     ApolloWebJSONRouteOld,          // old.reddit.com, path unchanged
+    // api.reddit.com, path unchanged. Not in the built-in table: it refused
+    // both built-in endpoints for the cookie as of 2026-10-24, and is here so
+    // keyless-routes.json can use it again without a release.
+    ApolloWebJSONRouteApi,
+    ApolloWebJSONRouteLast = ApolloWebJSONRouteApi,
 };
 
-// "www", "www-dotjson" or "old", for logs.
+// "www", "www-dotjson", "old" or "api", for logs.
 NSString *ApolloWebJSONRouteName(ApolloWebJSONRoute route);
 NSString *ApolloWebJSONRouteHost(ApolloWebJSONRoute route);
 
@@ -43,7 +48,7 @@ BOOL ApolloWebJSONRouteResponseIsBlockPage(NSHTTPURLResponse *_Nullable response
 // Maintainers can change the order of routes without a release through
 // keyless-routes.json in the repository (docs/keyless-routes.md). The file can
 // only pick among the routes above, never name a host or URL:
-// - an endpoint gets any order or subset of www, www-dotjson and old: a
+// - an endpoint gets any order or subset of www, www-dotjson, old and api: a
 //   built-in one (above) for one of its own methods, another only as a GET on
 //   /api/<name>, so feeds and threads can't be moved to another route;
 // - writes can't be added, and nothing the file says makes a write retry.

@@ -11,8 +11,9 @@ Installs with API-Key-Free Mode on and **Use Route Updates** on (the default) fe
 | `www` | `www.reddit.com`, path unchanged |
 | `www-dotjson` | `www.reddit.com/api/<endpoint>/.json` |
 | `old` | `old.reddit.com`, path unchanged |
+| `api` | `api.reddit.com`, path unchanged |
 
-These are the only routes. The file names them; it can't give a host or URL.
+These are the only routes. The file names them; it can't give a host or URL. `api` isn't in the built-in table: as of 2026-10-24 it refused both built-in endpoints for the cookie, and it's there so the file can use it again if Reddit reopens it. For `/api/info` alone, `www.reddit.com/r/all/api/info.json` also answered the cookie then; it isn't a route, but it's the next one to add if the others close.
 
 ## Format
 
@@ -27,10 +28,10 @@ These are the only routes. The file names them; it can't give a host or URL.
 }
 ```
 
-Each key is `<METHOD> /api/<name>`, and `routes` lists 1 to 3 route names to try in order. A request goes by the first route that isn't cooling down for that account, and a block page sends it again by the next one.
+Each key is `<METHOD> /api/<name>`, and `routes` lists 1 to 4 route names to try in order. A request goes by the first route that isn't cooling down for that account, and a block page sends it again by the next one.
 
-- **Built-in endpoints** (`GET /api/info`, `GET` and `POST /api/morechildren`) take any order or subset of the three routes.
-- **Other endpoints** can be added as a `GET` only, on exactly `/api/<name>`, with any of the three routes. Feeds and comment threads can't be added, so the file can't move general browsing to another route.
+- **Built-in endpoints** (`GET /api/info`, `GET` and `POST /api/morechildren`) take any order or subset of the four routes.
+- **Other endpoints** can be added as a `GET` only, on exactly `/api/<name>`, with any of the four routes. Feeds and comment threads can't be added, so the file can't move general browsing to another route.
 - Writes can't be added, and are never resent.
 
 The app leaves out any entry that breaks these rules and logs why. A file it can't read (not JSON, over 16 KB, more than 32 endpoints, `version` not `1`) is ignored whole, and the app keeps the routes it was using. `"endpoints": {}` means the built-in routes everywhere.

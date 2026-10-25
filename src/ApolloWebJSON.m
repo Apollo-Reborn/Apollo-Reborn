@@ -135,7 +135,7 @@ NSInteger ApolloWebJSONRouteFromURL(NSURL *url) {
     NSRange marker = [fragment rangeOfString:kApolloWebJSONRouteMarkerSeparator];
     if (marker.location == NSNotFound) return ApolloWebJSONRouteWww;
     NSInteger route = [[fragment substringFromIndex:NSMaxRange(marker)] integerValue];
-    return route >= ApolloWebJSONRouteWww && route <= ApolloWebJSONRouteOld ? route : -1;
+    return route >= ApolloWebJSONRouteWww && route <= ApolloWebJSONRouteLast ? route : -1;
 }
 
 NSURL *ApolloWebJSONProbeURL(NSURL *url) {
@@ -492,7 +492,7 @@ static _Atomic NSUInteger sApolloWebJSONSimBlockedRoutes = 0;
 void ApolloWebJSONSimSetBlockedRoutes(NSUInteger routeMask) {
     atomic_store(&sApolloWebJSONSimBlockedRoutes, routeMask);
     NSMutableArray<NSString *> *names = [NSMutableArray array];
-    for (NSInteger r = ApolloWebJSONRouteWww; r <= ApolloWebJSONRouteOld; r++) {
+    for (NSInteger r = ApolloWebJSONRouteWww; r <= ApolloWebJSONRouteLast; r++) {
         if (routeMask & (1u << r)) [names addObject:ApolloWebJSONRouteName((ApolloWebJSONRoute)r)];
     }
     ApolloLog(@"[WebJSON] (sim) Routes forced to get the block page: %@",
@@ -1390,9 +1390,11 @@ void ApolloWebJSONNoteResponse(NSURLRequest *request, NSURLResponse *response) {
         return;
     }
 
-    // old.reddit.com carries the cookie for a fallback route (ApolloWebJSONRoutes.m).
-    if (![url.host.lowercaseString isEqualToString:@"www.reddit.com"] &&
-        ![url.host.lowercaseString isEqualToString:@"old.reddit.com"]) return;
+    // old.reddit.com and api.reddit.com carry the cookie for fallback routes
+    // (ApolloWebJSONRoutes.m).
+    NSString *noteHost = url.host.lowercaseString;
+    if (![noteHost isEqualToString:@"www.reddit.com"] && ![noteHost isEqualToString:@"old.reddit.com"] &&
+        ![noteHost isEqualToString:@"api.reddit.com"]) return;
     // Only react to requests we authenticated with the cookie — those carry the
     // Cookie header we set in ApolloWebJSONRewriteRequest. This skips unrelated
     // www.reddit.com traffic (e.g. the trending-subreddits fetch) that could

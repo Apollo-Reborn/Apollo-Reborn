@@ -58,6 +58,14 @@ static void TestRouteTransforms(void) {
     CHECK([ApolloWebJSONRouteHost(ApolloWebJSONRouteWww) isEqualToString:@"www.reddit.com"], @"www host");
     CHECK([ApolloWebJSONRouteHost(ApolloWebJSONRouteWwwDotJSON) isEqualToString:@"www.reddit.com"], @"dotjson host");
     CHECK([ApolloWebJSONRouteHost(ApolloWebJSONRouteOld) isEqualToString:@"old.reddit.com"], @"old host");
+    CHECK([ApolloWebJSONRouteHost(ApolloWebJSONRouteApi) isEqualToString:@"api.reddit.com"], @"api host");
+    CHECK([ApolloWebJSONRoutePath(ApolloWebJSONRouteApi, @"/api/info.json") isEqualToString:@"/api/info.json"], @"api keeps the path");
+    CHECK([ApolloWebJSONRouteName(ApolloWebJSONRouteApi) isEqualToString:@"api"], @"api name");
+    CHECK(ApolloWebJSONRouteLast == ApolloWebJSONRouteApi, @"api is the last route");
+    for (NSArray<NSString *> *builtIn in @[ @[ @"GET", @"/api/info" ], @[ @"GET", @"/api/morechildren" ], @[ @"POST", @"/api/morechildren" ] ]) {
+        CHECK(![ApolloWebJSONRoutesForRequest(builtIn[0], builtIn[1]) containsObject:@(ApolloWebJSONRouteApi)],
+              @"api isn't in the built-in table for %@ %@", builtIn[0], builtIn[1]);
+    }
     CHECK([ApolloWebJSONRouteName(ApolloWebJSONRouteWwwDotJSON) isEqualToString:@"www-dotjson"], @"name");
 }
 
@@ -181,13 +189,16 @@ static void TestTableParseValid(void) {
         "\"POST /api/morechildren\":{\"routes\":[\"www-dotjson\"]},"
         "\"GET /api/morechildren\":{\"routes\":[\"www\",\"old\"]},"
         "\"GET /api/foo\":{\"routes\":[\"www-dotjson\",\"www\"]},"
-        "\"GET /api/bar\":{\"routes\":[\"old\"]}}}", &rejections);
-    CHECK(table.count == 5, @"5 entries (got %@, rejected %@)", table, rejections);
+        "\"GET /api/bar\":{\"routes\":[\"old\"]},"
+        "\"GET /api/baz\":{\"routes\":[\"www-dotjson\",\"old\",\"api\",\"www\"]}}}", &rejections);
+    CHECK(table.count == 6, @"6 entries (got %@, rejected %@)", table, rejections);
     CHECK(rejections.count == 0, @"nothing rejected: %@", rejections);
     CHECK([table[@"GET /api/info"] isEqualToArray:(@[ @(ApolloWebJSONRouteOld), @(ApolloWebJSONRouteWwwDotJSON) ])], @"reorder");
     CHECK([table[@"POST /api/morechildren"] isEqualToArray:@[ @(ApolloWebJSONRouteWwwDotJSON) ]], @"subset");
     CHECK([table[@"GET /api/foo"] isEqualToArray:(@[ @(ApolloWebJSONRouteWwwDotJSON), @(ApolloWebJSONRouteWww) ])], @"added GET");
     CHECK([table[@"GET /api/bar"] isEqualToArray:@[ @(ApolloWebJSONRouteOld) ]], @"added GET may use old");
+    CHECK([table[@"GET /api/baz"] isEqualToArray:(@[ @(ApolloWebJSONRouteWwwDotJSON), @(ApolloWebJSONRouteOld),
+                                                     @(ApolloWebJSONRouteApi), @(ApolloWebJSONRouteWww) ])], @"all four routes, api included");
 
     CHECK([ParseJSON(@"{\"version\":1,\"endpoints\":{}}", NULL) count] == 0, @"empty endpoints: no overrides");
     CHECK(ParseJSON(@"{\"version\":1}", NULL) != nil, @"missing endpoints: no overrides, not rejected");
@@ -206,10 +217,10 @@ static void TestTableParseRejectsEntries(void) {
         @"\"GET /api/foo?x=1\":{\"routes\":[\"www\"]}": @"a query",
         @"\"GET  /api/foo\":{\"routes\":[\"www\"]}": @"a malformed key",
         @"\"GET /api/info\":{\"routes\":[\"https://evil.example\"]}": @"a URL as a route",
-        @"\"GET /api/info\":{\"routes\":[\"api\"]}": @"an unknown route",
+        @"\"GET /api/info\":{\"routes\":[\"oauth\"]}": @"an unknown route",
         @"\"GET /api/info\":{\"routes\":[]}": @"no routes",
         @"\"GET /api/info\":{\"routes\":[\"www\",\"www\"]}": @"a duplicate",
-        @"\"GET /api/info\":{\"routes\":[\"www\",\"old\",\"www-dotjson\",\"www\"]}": @"more than 3",
+        @"\"GET /api/info\":{\"routes\":[\"www\",\"old\",\"www-dotjson\",\"api\",\"www\"]}": @"more than 4",
         @"\"GET /api/info\":{\"routes\":\"old\"}": @"routes not a list",
         @"\"GET /api/info\":[\"old\"]": @"entry not an object",
     };

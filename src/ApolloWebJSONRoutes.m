@@ -4,13 +4,20 @@ NSString *ApolloWebJSONRouteName(ApolloWebJSONRoute route) {
     switch (route) {
         case ApolloWebJSONRouteWwwDotJSON: return @"www-dotjson";
         case ApolloWebJSONRouteOld: return @"old";
+        case ApolloWebJSONRouteApi: return @"api";
         case ApolloWebJSONRouteWww:
         default: return @"www";
     }
 }
 
 NSString *ApolloWebJSONRouteHost(ApolloWebJSONRoute route) {
-    return route == ApolloWebJSONRouteOld ? @"old.reddit.com" : @"www.reddit.com";
+    switch (route) {
+        case ApolloWebJSONRouteOld: return @"old.reddit.com";
+        case ApolloWebJSONRouteApi: return @"api.reddit.com";
+        case ApolloWebJSONRouteWww:
+        case ApolloWebJSONRouteWwwDotJSON:
+        default: return @"www.reddit.com";
+    }
 }
 
 // "/api/info" for "api/info.json", "/api/info/.json?id=…", "/API/info/" and so
@@ -84,7 +91,7 @@ BOOL ApolloWebJSONRouteResponseIsBlockPage(NSHTTPURLResponse *response) {
 
 static NSUInteger const kApolloWebJSONRouteTableMaxBytes = 16 * 1024;
 static NSUInteger const kApolloWebJSONRouteTableMaxEndpoints = 32;
-static NSUInteger const kApolloWebJSONRouteTableMaxRoutes = 3;
+static NSUInteger const kApolloWebJSONRouteTableMaxRoutes = 4;
 
 static NSObject *ApolloWebJSONRemoteTableLock(void) {
     static NSObject *lock;
@@ -116,7 +123,7 @@ void ApolloWebJSONRouteSetRemoteTable(NSDictionary<NSString *, NSArray<NSNumber 
 
 static NSInteger ApolloWebJSONRouteFromName(id name) {
     if (![name isKindOfClass:[NSString class]]) return -1;
-    for (NSInteger r = ApolloWebJSONRouteWww; r <= ApolloWebJSONRouteOld; r++) {
+    for (NSInteger r = ApolloWebJSONRouteWww; r <= ApolloWebJSONRouteLast; r++) {
         if ([ApolloWebJSONRouteName((ApolloWebJSONRoute)r) isEqualToString:name]) return r;
     }
     return -1;
@@ -168,7 +175,7 @@ NSDictionary<NSString *, NSArray<NSNumber *> *> *ApolloWebJSONRouteTableParse(NS
             id entry = endpoints[key];
             id names = [entry isKindOfClass:[NSDictionary class]] ? entry[@"routes"] : nil;
             if (![names isKindOfClass:[NSArray class]] || [names count] == 0 || [names count] > kApolloWebJSONRouteTableMaxRoutes) {
-                [rejected addObject:[label stringByAppendingString:@": routes isn't a list of 1 to 3 names"]]; continue;
+                [rejected addObject:[label stringByAppendingString:@": routes isn't a list of 1 to 4 names"]]; continue;
             }
             NSMutableArray<NSNumber *> *routes = [NSMutableArray array];
             NSString *problem = nil;
