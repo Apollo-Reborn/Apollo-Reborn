@@ -1204,7 +1204,10 @@ static void ApolloActionsArmFoldedModerator(UIBarButtonItem *more, UIButton *mor
         more.menu = [more.menu menuByReplacingChildren:[more.menu.children arrayByAddingObject:row]];
         return;
     }
-    id target = more.target;
+    // The target is usually the controller that owns this item, so a strong
+    // capture in primaryAction would keep the page alive after it's popped.
+    __weak id weakTarget = more.target;
+    BOOL hadTarget = more.target != nil;
     SEL action = more.action;
     __weak UIButton *weakMoreButton = moreButton;
     more.primaryAction = [UIAction actionWithTitle:more.accessibilityLabel ?: @""
@@ -1214,8 +1217,11 @@ static void ApolloActionsArmFoldedModerator(UIBarButtonItem *more, UIButton *mor
         sDuoFoldedModerator = weakModerator;
         sDuoFoldedModeratorAnchor = weakMore;
         sDuoFoldedModeratorArmedAt = CFAbsoluteTimeGetCurrent();
-        if (target && action) {
-            [UIApplication.sharedApplication sendAction:action to:target from:weakMore forEvent:nil];
+        id target = weakTarget;
+        if (hadTarget && action) {
+            // A released target means the page is gone; don't fall back to the
+            // responder chain, which a nil target would send through.
+            if (target) [UIApplication.sharedApplication sendAction:action to:target from:weakMore forEvent:nil];
         } else {
             [weakMoreButton sendActionsForControlEvents:UIControlEventTouchUpInside];
         }
