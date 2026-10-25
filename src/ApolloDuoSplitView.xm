@@ -885,6 +885,11 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
     self.sidebarNavigationBar.frame = CGRectMake(sidebarRightEdge - 88,
         MAX(24, self.view.safeAreaInsets.top), 88, 58);
     self.profileBackButton.frame = CGRectMake(24, MAX(24, self.view.safeAreaInsets.top), 48, 48);
+    // A full-width gallery owns the leading bar area; its Back returns here.
+    BOOL galleryCovers = displayMode == UISplitViewControllerDisplayModeSecondaryOnly
+        && [detail.topViewController isKindOfClass:ApolloGalleryViewController.class];
+    if (self.sidebarNavigationBar.hidden != galleryCovers) self.sidebarNavigationBar.hidden = galleryCovers;
+    if (self.profileBackButton.hidden != galleryCovers) self.profileBackButton.hidden = galleryCovers;
     self.moreButton.hidden = hasDetail;
     self.accountsButton.hidden = hasDetail;
     // Match the native rail's 48pt platter and 24pt physical edge inset.
@@ -929,6 +934,7 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
 @property(nonatomic, weak) UIViewController *searchBackPage;
 @property(nonatomic, strong) UIBarButtonItem *searchBackItem;
 @property(nonatomic) BOOL searchBackSupplementedNative;
+@property(nonatomic) BOOL sidebarHiddenForGallery;
 @end
 @implementation ApolloDuoSplitState @end
 
@@ -2245,6 +2251,34 @@ static void ApolloDuoAccountSetPages(ApolloDuoSplitState *state, NSArray<UIViewC
 
 }
 
+// Gallery View is a full-width grid. In a sidebar split (a profile, Saved, or
+// a Search result) the detail column extends beneath the sidebar, so the grid's
+// leading tiles sat behind it. Hide the sidebar while a gallery is the visible
+// detail page, then return it only if the gallery was what hid it: 1 hides,
+// -1 restores, 0 leaves the user's own sidebar choice alone.
+static NSInteger ApolloDuoGallerySidebarAction(BOOL galleryOnTop, BOOL sidebarVisible, BOOL hiddenForGallery) {
+    if (galleryOnTop) return sidebarVisible ? 1 : 0;
+    return hiddenForGallery ? -1 : 0;
+}
+
+static void ApolloDuoSplitSyncGallerySidebar(ApolloDuoSplitState *state) {
+    // Posts keeps galleries on its feed stack, which already spans the width.
+    // An interactive Back can still be cancelled; its didShow settles it.
+    if (!state.split || state.feed || state.changing || state.secondary.transitionCoordinator.isInteractive) return;
+    UISplitViewController *split = state.split;
+    BOOL gallery = [state.secondary.topViewController isKindOfClass:ApolloGalleryViewController.class];
+    NSInteger action = ApolloDuoGallerySidebarAction(gallery,
+        split.displayMode != UISplitViewControllerDisplayModeSecondaryOnly, state.sidebarHiddenForGallery);
+    if (!action) return;
+    // The same column calls as the sidebar button, so UIKit animates the
+    // divider and the header/controls follow its display-mode callback.
+    state.sidebarHiddenForGallery = action > 0;
+    if (action > 0) [split hideColumn:UISplitViewControllerColumnPrimary];
+    else [split showColumn:UISplitViewControllerColumnPrimary];
+    [state.host.viewIfLoaded setNeedsLayout];
+    ApolloLog(@"[DuoSplit] %@ sidebar %@ for Gallery View", state.kind, action > 0 ? @"hidden" : @"restored");
+}
+
 static void ApolloDuoAccountSelect(ApolloDuoSplitState *state, NSString *title) {
     if (!state.split || state.changing) return;
     if ([title isEqualToString:@"Overview"]) {
@@ -2818,6 +2852,7 @@ static void ApolloDuoSplitClose(ApolloDuoSplitState *state, BOOL preserveDetail)
     state.primary = nil;
     state.secondary = nil;
     state.feed = nil;
+    state.sidebarHiddenForGallery = NO;
     state.needsDefault = NO;
     state.changing = NO;
     ApolloLog(@"[DuoSplit] restored single-column %@ stack", state.kind);
@@ -2916,6 +2951,7 @@ static void ApolloDuoSplitUpdate(void) {
             }
             ApolloDuoSplitOpenDefault(state);
             ApolloDuoPostsSyncColumns(state);
+            ApolloDuoSplitSyncGallerySidebar(state);
             ApolloDuoSearchUpdateBackItem(state);
             if ([state.kind isEqualToString:@"account"] && state.split) {
                 BOOL overview = state.secondary.topViewController == state.root;
@@ -3488,6 +3524,7 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
         [state.host.viewIfLoaded setNeedsLayout];
     }
     ApolloDuoPostsRestoreFeedLinkDetail(state, navigation, controller);
+    if (navigation == state.secondary) ApolloDuoSplitSyncGallerySidebar(state);
 }
 - (void)setNavigationBarHidden:(BOOL)hidden animated:(BOOL)animated {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(self, NO);
@@ -3535,6 +3572,7 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
         ? ApolloNamedSubredditForPostsController(controller) : nil;
     if (ApolloDuoSplitRoutePush(self, controller, animated)) {
         if (visited.length) ApolloSearchRecordVisit(visited);
+        ApolloDuoSplitSyncGallerySidebar(ApolloDuoSplitStateForNavigation(self, NO));
         return;
     }
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(self, NO);
@@ -3547,6 +3585,7 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     %orig(controller, state.changing ? NO : animated);
     [state.host.viewIfLoaded setNeedsLayout];
     ApolloDuoSplitRememberSettings(self);
+    if (self == state.secondary) ApolloDuoSplitSyncGallerySidebar(state);
 }
 - (void)setViewControllers:(NSArray<UIViewController *> *)controllers animated:(BOOL)animated {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(self, NO);
@@ -3578,6 +3617,7 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
         && detail.interactivePopGestureRecognizer.state != UIGestureRecognizerStateChanged) {
         UIViewController *page = detail.topViewController;
         ApolloDuoAccountSetPages(state, [detail.viewControllers subarrayWithRange:NSMakeRange(0, detail.viewControllers.count - 1)]);
+        ApolloDuoSplitSyncGallerySidebar(state);
         return page;
     }
     if (state.feed && self == state.feed) {
@@ -3586,6 +3626,7 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     }
     UIViewController *page = %orig(animated);
     [state.host.viewIfLoaded setNeedsLayout];
+    if (self == state.secondary) ApolloDuoSplitSyncGallerySidebar(state);
     ApolloDuoSplitScheduleUpdate();
     return page;
 }
@@ -3594,6 +3635,8 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     UINavigationController *detail = ApolloDuoSplitDetailNavigation(self);
     if (detail != self) return [detail popToRootViewControllerAnimated:animated];
     NSArray *pages = %orig(animated);
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(self, NO);
+    if (self == state.secondary) ApolloDuoSplitSyncGallerySidebar(state);
     ApolloDuoSplitScheduleUpdate();
     return pages;
 }

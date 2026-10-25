@@ -41,6 +41,8 @@ test = test.replace('// INCLUDE_PRODUCTION_ARRAY_IDENTITY',
                     function(actions, 'static BOOL ApolloActionsArraysIdentical('))
 test = test.replace('// INCLUDE_PRODUCTION_ACCOUNTS_REMOVAL',
                     function(actions, 'static void ApolloActionsRemoveProfileAccountsItem('))
+test = test.replace('// INCLUDE_PRODUCTION_GALLERY_SIDEBAR',
+                    function(source, 'static NSInteger ApolloDuoGallerySidebarAction('))
 (output / 'DuoProfileNavigation.m').write_text(test)
 PY
 

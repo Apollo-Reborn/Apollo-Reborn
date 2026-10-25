@@ -144,6 +144,7 @@ static void UpdateDecision(ApolloDuoSplitState *state) {
 // INCLUDE_PRODUCTION_PROFILE_OWNERSHIP
 // INCLUDE_PRODUCTION_ARRAY_IDENTITY
 // INCLUDE_PRODUCTION_ACCOUNTS_REMOVAL
+// INCLUDE_PRODUCTION_GALLERY_SIDEBAR
 
 static NSUInteger checks, failures;
 static void Check(BOOL condition, NSString *message) {
@@ -303,6 +304,20 @@ static void CheckAccountsRemoval(void) {
           @"a not-yet-loaded profile keeps its absent native items without setter churn");
 }
 
+// A profile, Saved or Search split hides its sidebar for a full-width Gallery
+// View and gives it back on Back, without overriding the user's own choice.
+static void CheckGallerySidebar(void) {
+    Check(ApolloDuoGallerySidebarAction(YES, YES, NO) == 1, @"a gallery over a visible sidebar hides it");
+    Check(ApolloDuoGallerySidebarAction(YES, YES, YES) == 1,
+          @"a sidebar re-shown under the gallery (posture change) is hidden again");
+    Check(ApolloDuoGallerySidebarAction(YES, NO, YES) == 0, @"an already hidden sidebar needs no change");
+    Check(ApolloDuoGallerySidebarAction(YES, NO, NO) == 0, @"a sidebar the user hid stays hidden");
+    Check(ApolloDuoGallerySidebarAction(NO, NO, YES) == -1, @"Back from the gallery restores the sidebar it hid");
+    Check(ApolloDuoGallerySidebarAction(NO, YES, YES) == -1, @"restoration clears the gallery record");
+    Check(ApolloDuoGallerySidebarAction(NO, NO, NO) == 0, @"Back never reveals a sidebar the user had hidden");
+    Check(ApolloDuoGallerySidebarAction(NO, YES, NO) == 0, @"ordinary detail pages leave the sidebar alone");
+}
+
 int main(void) {
     @autoreleasepool {
         landscape = NO;
@@ -383,6 +398,7 @@ int main(void) {
         Check(closes == 1 && !lastClosePreserved, @"closing Duo still collapses Posts normally");
         CheckProfileOwnership();
         CheckAccountsRemoval();
+        CheckGallerySidebar();
         printf("%lu checks, %lu failures\n", (unsigned long)checks, (unsigned long)failures);
         return failures ? 1 : 0;
     }
