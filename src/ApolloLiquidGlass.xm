@@ -2042,7 +2042,7 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
     // of the visible feed. Fit/center in the usable header, including RTL's
     // trailing sidebar. iPhone keeps its existing whole-bar centering policy.
     CGRect titleBounds = bar.bounds;
-    if (ApolloPaneUsesUnifiedChrome(bar)) {
+    if (ApolloPaneUsesUnifiedChrome(bar) || ApolloDuoUsesCoverContentInsets()) {
         titleBounds.origin.x = leftLimit;
         titleBounds.size.width = MAX(0, rightLimit - leftLimit);
     }

@@ -6,6 +6,7 @@
 #import "ApolloThemeRuntime.h"
 #import "ApolloTextureDecls.h"
 #import "ApolloSwiftRuntime.h"
+#import "ApolloDeviceGeometry.h"
 #import <objc/runtime.h>
 #import <objc/message.h>
 
@@ -90,6 +91,42 @@ static CGRect ApolloDuoFullThreadFrame(ASDisplayNode *node, CGRect frame) {
     // Repair the native write at its source rather than scheduling another
     // layout or modifying the table's size/insets from a layout callback.
     %orig(ApolloDuoFullThreadFrame((id)self, frame));
+}
+%end
+%end
+
+@interface ApolloDuoComposeTextView : UITextView
+@end
+
+%group ApolloDuoComposeHooks
+%hook ApolloDuoComposeTextView
+- (void)setFrame:(CGRect)frame {
+    __unsafe_unretained UITextView *editor = (id)self;
+    // Apollo lays its markdown editor out using the scroll view's full width,
+    // which includes the cover display's reserved trailing strip. Repair the
+    // original frame write; leave native text/keyboard insets and height alone.
+    if (NSThread.isMainThread && ApolloDuoUsesCoverContentInsets() && editor.superview) {
+        UIViewController *compose = nil;
+        for (UIResponder *responder = editor; responder; responder = responder.nextResponder) {
+            if (ApolloClassComposeViewController && [responder isKindOfClass:ApolloClassComposeViewController]) {
+                compose = (id)responder;
+                break;
+            }
+        }
+        // PasteableTextView is also used outside the markdown composer.
+        if (compose.isViewLoaded && ApolloReadObjectIvar(compose, "composeTextView") == editor) {
+            UIView *root = compose.view;
+            UIEdgeInsets insets = ApolloDeviceChromeInsetsForView(root);
+            CGRect usable = UIEdgeInsetsInsetRect(root.bounds, insets);
+            usable = [root convertRect:usable toView:editor.superview];
+            CGFloat right = MIN(CGRectGetMaxX(frame), CGRectGetMaxX(usable));
+            CGFloat width = right - CGRectGetMinX(frame);
+            if (!CGRectIsNull(usable) && !CGRectIsInfinite(usable) && isfinite(width) && width > 20.0) {
+                frame.size.width = width;
+            }
+        }
+    }
+    %orig(frame);
 }
 %end
 %end
@@ -609,6 +646,8 @@ static void ApolloDuoAdjustFloatingActionButton(UIView *button) {
     %init;
     Class fullThread = objc_getClass("_TtC6Apollo16ViewFullPostNode");
     if (fullThread) %init(ApolloDuoFullThreadHooks, ApolloDuoFullThreadNode = fullThread);
+    Class composeText = objc_getClass("_TtC6Apollo17PasteableTextView");
+    if (composeText) %init(ApolloDuoComposeHooks, ApolloDuoComposeTextView = composeText);
     Class tabs = objc_getClass("_TtC6Apollo22ApolloTabBarController");
     if (!tabs) {
         ApolloLog(@"[DuoRail] ApolloTabBarController missing; rail inactive");
