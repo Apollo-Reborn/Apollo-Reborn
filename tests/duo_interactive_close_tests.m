@@ -88,8 +88,10 @@ int main(void) {
         Check(Near(ApolloDuoPostsSpringVelocity(100, 475, 750), 2), @"spring: release velocity over the remaining slide");
         Check(Near(ApolloDuoPostsSpringVelocity(100, 0, -500), 5), @"spring: a leftward release springs back toward the pane");
         Check(Near(ApolloDuoPostsSpringVelocity(100, 0, 500), -5), @"spring: a rightward release short of the threshold first carries on");
-        Check(Near(ApolloDuoPostsSpringVelocity(470, 475, 3000), kApolloDuoPostsSpringOmega),
-              @"spring: capped at the critical rate, so the thread never overshoots back over the feed");
+        Check(Near(ApolloDuoPostsSpringVelocity(100, 0, -3000), kApolloDuoPostsSpringOmega),
+              @"spring: springing back is capped at the critical rate, so the thread never overshoots over the feed");
+        Check(Near(ApolloDuoPostsSpringVelocity(420, 475, 1500), 1500.0 / 55.0),
+              @"spring: a fast flick near the end of the commit keeps its speed (an overshoot only leaves the screen)");
         Check(Near(ApolloDuoPostsSpringVelocity(200, 200.5, 900), 0), @"spring: nothing left to travel, no velocity");
 
         // The replay finishes the feed's widening in the slide's remaining time.

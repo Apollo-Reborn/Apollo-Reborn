@@ -181,7 +181,8 @@ static BOOL UIAccessibilityIsReduceMotionEnabled(void) { return reduceMotion; }
 // The split's interactive thread close, as the pan drives it. Begin answers
 // closeBegins; Update answers closeUpdates.
 static BOOL closeBegins, closeTracks = YES;
-static NSUInteger closeBegun, closeUpdated, closeCommits, closeSpringBacks, closeCancels, closeAnimatedCancels;
+static NSUInteger closeBegun, closeUpdated, closeCommits, closeSpringBacks, closeCancels, closeAnimatedCancels,
+    closeActiveCancels;
 static CGFloat closeOffset, closeVelocity;
 static __weak UINavigationController *closeNavigation;
 static BOOL ApolloDuoSplitInteractiveCloseBegin(UINavigationController *nav) {
@@ -200,6 +201,8 @@ static void ApolloDuoSplitInteractiveCloseFinish(UINavigationController *nav, BO
     closeVelocity = velocity;
 }
 static void ApolloDuoSplitInteractiveCloseCancel(UINavigationController *nav, BOOL animated) {
+    // nil: the split cancels whichever drag is active.
+    if (!nav) closeActiveCancels++;
     if (nav != closeNavigation) return;
     closeCancels++;
     if (animated) closeAnimatedCancels++;
@@ -1244,6 +1247,36 @@ int main(void) {
         leftSwipesDisabled = NO; routePosts.host.postsShowingDetail = NO; routePosts.host.listVisible = NO;
         Drag(drawerOwner, 60, 700);
         Check(closeBegun == begunNow && drawerReveals == revealsNow + 2, @"drive: the drawer route never takes the driver");
+        // The pane's navigation went away mid-drag: the drag still goes.
+        leftSwipesDisabled = NO; closeBegins = YES; closeTracks = YES;
+        routePosts.host.postsShowingDetail = YES; routePosts.host.listVisible = NO;
+        UINavigationController *gone = Navigation();
+        gone.viewControllers = @[routeBackstop, [TestPage new]];
+        gone.duoState = routePosts; routePosts.secondary = gone;
+        ApolloDuoInstallBackSwipe(gone);
+        ApolloDuoBackSwipe *goneOwner = objc_getAssociatedObject(gone, &kApolloDuoBackSwipe);
+        ApolloDuoPaneBackPan *gonePan = goneOwner.pan;
+        gonePan.velocity = CGPointMake(300, 40); gonePan.translation = CGPointZero;
+        gonePan.state = UIGestureRecognizerStateBegan; [goneOwner panned:gonePan];
+        Check(goneOwner.drag == ApolloDuoBackDragTracking, @"gone: the drag began");
+        NSUInteger activeCancels = closeActiveCancels, goneDisables = gonePan.disables;
+        goneOwner.navigation = nil;
+        gonePan.translation = CGPointMake(200, 0); gonePan.state = UIGestureRecognizerStateChanged; [goneOwner panned:gonePan];
+        Check(closeActiveCancels == activeCancels + 1 && gonePan.disables == goneDisables + 1,
+              @"gone: a navigation that went away mid-drag cancels the active drag and its pan");
+        goneOwner.navigation = gone;
+        gonePan.state = UIGestureRecognizerStateBegan; [goneOwner panned:gonePan];
+        goneOwner.navigation = nil;
+        gonePan.state = UIGestureRecognizerStateCancelled; [goneOwner panned:gonePan];
+        Check(closeActiveCancels == activeCancels + 2, @"gone: a cancelled pan without its navigation still cancels the active drag");
+        goneOwner.navigation = gone;
+        gonePan.state = UIGestureRecognizerStateBegan; [goneOwner panned:gonePan];
+        goneOwner.navigation = nil;
+        gonePan.translation = CGPointMake(900, 0); gonePan.velocity = CGPointMake(900, 0);
+        gonePan.state = UIGestureRecognizerStateEnded; [goneOwner panned:gonePan];
+        gonePan.state = UIGestureRecognizerStatePossible;
+        Check(closeActiveCancels == activeCancels + 3, @"gone: a release without its navigation cancels instead of committing");
+        goneOwner.navigation = gone; routePosts.secondary = routeThread;
         closeBegins = NO;
         printf("OK: %lu checks\n", (unsigned long)checks);
     }

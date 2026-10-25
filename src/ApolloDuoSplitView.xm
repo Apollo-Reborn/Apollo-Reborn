@@ -2174,12 +2174,14 @@ static CGRect ApolloDuoPostsCloseSmearColumn(CGFloat trailingEdge, CGRect pane) 
 }
 
 // CASpringAnimation's initialVelocity is per unit of the from-to distance,
-// positive toward `to`. Capped at the critical rate, the spring never
-// overshoots: the thread can't spring back past the pane over the feed.
+// positive toward `to`. Springing back toward the pane it is capped at the
+// critical rate, so the thread never overshoots over the feed. Off the pane
+// an overshoot only leaves the screen, so a fast flick keeps its speed.
 static CGFloat ApolloDuoPostsSpringVelocity(CGFloat from, CGFloat to, CGFloat velocity) {
     CGFloat distance = to - from;
     if (fabs(distance) < 1.0) return 0.0;
-    return MIN(kApolloDuoPostsSpringOmega, velocity / distance);
+    CGFloat spring = velocity / distance;
+    return to < from ? MIN(kApolloDuoPostsSpringOmega, spring) : spring;
 }
 
 static NSTimeInterval ApolloDuoPostsCloseRemaining(NSTimeInterval elapsed) {
@@ -2730,6 +2732,12 @@ void ApolloDuoSplitInteractiveCloseFinish(UINavigationController *nav, BOOL comm
 }
 
 void ApolloDuoSplitInteractiveCloseCancel(UINavigationController *nav, BOOL animated) {
+    // The pane's navigation is gone: whatever drag is active still goes, so
+    // its full-screen touch shield can never stay up.
+    if (!nav) {
+        ApolloDuoPostsCancelActiveInteractiveClose();
+        return;
+    }
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
     if (state.interactiveClose.navigation == nav) ApolloDuoPostsCancelInteractiveClose(state, animated, 0.0);
 }
@@ -3610,8 +3618,10 @@ static void ApolloDuoSplitUpdate(void) {
         if (!state) continue;
         // A thread close following the finger owns its columns until it ends;
         // the interruptions that do need an update cancel it before this runs.
-        // One whose views have left the window is over: let it go.
-        if (state.interactiveClose.overlay.window) continue;
+        // One whose views have left the window, or whose pane navigation
+        // is gone while it still tracks, is over: let it go.
+        ApolloDuoPostsCloseHandoff *drag = state.interactiveClose;
+        if (drag.overlay.window && (drag.navigation || drag.phase != ApolloDuoPostsClosePhaseTracking)) continue;
         ApolloDuoPostsCancelInteractiveClose(state, NO, 0.0);
         BOOL postsOpen = [state.kind isEqualToString:@"subreddits"] && ApolloDuoSplitIsUnfolded();
         if (!open && !postsOpen) ApolloDuoSplitClose(state, NO);

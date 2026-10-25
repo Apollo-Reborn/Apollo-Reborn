@@ -433,6 +433,7 @@ BOOL ApolloDuoNativeBackInFlight(UINavigationController *navigation) {
 }
 // The split let the drag go (a fold, a tab switch, a push), or can't take it
 // any more: remove it at once and cancel this pan, so its release is no Back.
+// A navigation that is gone cancels whichever drag is active (nil below).
 - (void)abandonDrag:(UIPanGestureRecognizer *)pan {
     self.drag = ApolloDuoBackDragAbandoned;
     ApolloDuoSplitInteractiveCloseCancel(self.navigation, NO);
