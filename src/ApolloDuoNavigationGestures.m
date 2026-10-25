@@ -78,21 +78,33 @@ static BOOL ApolloDuoBackSwipeTouchOwnsHorizontalDrag(UIView *view, UIView *cont
 @interface ApolloDuoBackSwipe : NSObject <UIGestureRecognizerDelegate>
 @property(nonatomic, weak) UINavigationController *navigation;
 @property(nonatomic, strong) UISwipeGestureRecognizer *swipe;
+// Recognizes as soon as a touch the Back swipe accepts moves clearly rightward, so the
+// row under the finger gets touchesCancelled and drops its highlight. The discrete
+// swipe only recognizes after the motion, which left the post highlighted throughout.
+@property(nonatomic, strong) UIPanGestureRecognizer *highlightGuard;
 @end
 
 @implementation ApolloDuoBackSwipe
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldReceiveTouch:(UITouch *)touch {
     UINavigationController *navigation = self.navigation;
     CGPoint point = [touch locationInView:navigation.view];
-    if (gesture != self.swipe || !ApolloDuoBackSwipeAcceptsPoint(navigation, point)) return NO;
+    if ((gesture != self.swipe && gesture != self.highlightGuard)
+        || !ApolloDuoBackSwipeAcceptsPoint(navigation, point)) return NO;
     return ApolloDuoBackSwipeInEdgeStrip(ApolloDuoBackSwipePane(navigation), point)
         || !ApolloDuoBackSwipeTouchOwnsHorizontalDrag(touch.view, navigation.view);
 }
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gesture {
+    if (gesture == self.highlightGuard) {
+        if (!ApolloDuoBackSwipeCanNavigate(self.navigation)) return NO;
+        CGPoint velocity = [self.highlightGuard velocityInView:self.navigation.view];
+        return velocity.x > 0 && fabs(velocity.x) > fabs(velocity.y) * 1.5;
+    }
     return gesture == self.swipe && ApolloDuoBackSwipeCanNavigate(self.navigation);
 }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture
         shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
+    // The highlight guard only cancels the row's touch; it never competes with anything.
+    if (gesture == self.highlightGuard || other == self.highlightGuard) return YES;
     // Vertical table scrolling should not wait for a discrete right swipe.
     return gesture == self.swipe && [other.view isKindOfClass:UIScrollView.class]
         && other == ((UIScrollView *)other.view).panGestureRecognizer;
@@ -104,7 +116,11 @@ static BOOL ApolloDuoBackSwipeTouchOwnsHorizontalDrag(UIView *view, UIView *cont
     // unless Disable Left Swipes has already turned those row actions off.
     BOOL scrollPan = [other.view isKindOfClass:UIScrollView.class]
         && other == ((UIScrollView *)other.view).panGestureRecognizer;
-    return gesture == self.swipe && [other isKindOfClass:UIPanGestureRecognizer.class] && !scrollPan;
+    return gesture == self.swipe && other != self.highlightGuard
+        && [other isKindOfClass:UIPanGestureRecognizer.class] && !scrollPan;
+}
+- (void)guardMoved:(UIPanGestureRecognizer *)gesture {
+    // Nothing to do: recognizing is the point (cancelsTouchesInView clears the row highlight).
 }
 - (void)swiped:(UISwipeGestureRecognizer *)gesture {
     UINavigationController *navigation = self.navigation;
@@ -148,6 +164,13 @@ void ApolloDuoInstallBackSwipe(UINavigationController *navigation) {
     swipe.delegate = owner;
     swipe.name = @"ApolloReborn.Duo.PaneBack";
     owner.swipe = swipe;
+    UIPanGestureRecognizer *highlightGuard = [[UIPanGestureRecognizer alloc] initWithTarget:owner action:@selector(guardMoved:)];
+    highlightGuard.maximumNumberOfTouches = 1;
+    highlightGuard.cancelsTouchesInView = YES;
+    highlightGuard.delegate = owner;
+    highlightGuard.name = @"ApolloReborn.Duo.PaneBackHighlightGuard";
+    owner.highlightGuard = highlightGuard;
     objc_setAssociatedObject(navigation, &kApolloDuoBackSwipe, owner, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [navigation.view addGestureRecognizer:swipe];
+    [navigation.view addGestureRecognizer:highlightGuard];
 }

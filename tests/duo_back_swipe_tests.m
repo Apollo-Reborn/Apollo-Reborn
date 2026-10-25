@@ -32,8 +32,15 @@
     [self.gestureRecognizers addObject:gesture]; gesture.view = self;
 }
 @end
-@interface UIPanGestureRecognizer : UIGestureRecognizer @end
-@implementation UIPanGestureRecognizer @end
+@interface UIPanGestureRecognizer : UIGestureRecognizer
+@property(nonatomic) NSUInteger maximumNumberOfTouches;
+@property(nonatomic) BOOL cancelsTouchesInView;
+@property(nonatomic) CGPoint velocity;
+- (CGPoint)velocityInView:(UIView *)view;
+@end
+@implementation UIPanGestureRecognizer
+- (CGPoint)velocityInView:(__unused UIView *)view { return self.velocity; }
+@end
 @interface UISwipeGestureRecognizer : UIGestureRecognizer
 @property(nonatomic) NSUInteger direction, numberOfTouchesRequired;
 @end
@@ -194,7 +201,7 @@ int main(void) {
         Check(!ApolloDuoBackSwipeCanNavigate(nav), @"outer containment cannot compete with the real pane");
         nav.duoState = nil;
         ApolloDuoInstallBackSwipe(nav); ApolloDuoInstallBackSwipe(nav);
-        Check(ApolloDuoHasBackSwipe(nav) && nav.view.gestureRecognizers.count == 1, @"recognizer installation is idempotent");
+        Check(ApolloDuoHasBackSwipe(nav) && nav.view.gestureRecognizers.count == 2, @"recognizer installation is idempotent (swipe + highlight guard)");
         ApolloDuoBackSwipe *owner = objc_getAssociatedObject(nav, &kApolloDuoBackSwipe);
         Check(owner.swipe.direction == UISwipeGestureRecognizerDirectionRight && owner.swipe.numberOfTouchesRequired == 1,
               @"Back uses a one-finger right swipe");
@@ -212,6 +219,27 @@ int main(void) {
         Check([owner gestureRecognizer:owner.swipe shouldBeRequiredToFailByGestureRecognizer:row]
               && ![owner gestureRecognizer:owner.swipe shouldBeRequiredToFailByGestureRecognizer:scroll.panGestureRecognizer],
               @"edge Back has priority over row gestures without blocking table pans");
+        UIPanGestureRecognizer *guard = owner.highlightGuard;
+        Check(guard && [nav.view.gestureRecognizers containsObject:guard] && guard.maximumNumberOfTouches == 1
+              && guard.cancelsTouchesInView, @"highlight guard is installed once, one finger, cancelling the row's touch");
+        touch.point = CGPointMake(5, 300);
+        Check([owner gestureRecognizer:guard shouldReceiveTouch:touch], @"highlight guard receives the touches the swipe accepts (edge)");
+        touch.point = CGPointMake(200, 300);
+        Check(![owner gestureRecognizer:guard shouldReceiveTouch:touch], @"highlight guard ignores interior touches the swipe rejects");
+        guard.velocity = CGPointMake(300, 40);
+        Check([owner gestureRecognizerShouldBegin:guard], @"highlight guard begins for a clearly rightward move");
+        guard.velocity = CGPointMake(300, 250);
+        Check(![owner gestureRecognizerShouldBegin:guard], @"highlight guard ignores a diagonal move");
+        guard.velocity = CGPointMake(-300, 10);
+        Check(![owner gestureRecognizerShouldBegin:guard], @"highlight guard ignores a leftward move");
+        guard.velocity = CGPointMake(300, 40); disabled = YES;
+        Check(![owner gestureRecognizerShouldBegin:guard], @"highlight guard stands down when Back cannot navigate");
+        disabled = NO;
+        Check([owner gestureRecognizer:guard shouldRecognizeSimultaneouslyWithGestureRecognizer:row]
+              && [owner gestureRecognizer:owner.swipe shouldRecognizeSimultaneouslyWithGestureRecognizer:guard],
+              @"highlight guard recognizes simultaneously with anything");
+        Check(![owner gestureRecognizer:owner.swipe shouldBeRequiredToFailByGestureRecognizer:guard],
+              @"the swipe never waits for the highlight guard");
         owner.swipe.state = UIGestureRecognizerStateRecognized;
         [owner swiped:owner.swipe]; [owner swiped:owner.swipe];
         Check(nav.pops == 1 && nav.viewControllers.count == 1 && nav.lastAnimated,
