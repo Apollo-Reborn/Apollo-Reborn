@@ -2036,10 +2036,6 @@ static NSString *ApolloDuoCommentsPostID(UIViewController *page) {
     return identifier.length ? identifier.lowercaseString : nil;
 }
 
-// Creating/removing the comments column is a containment transition. Animate
-// that layout together with the page: the retained live feed must resize as
-// comments enter/leave, not jump to its final width before a snapshot slides.
-// Once both columns exist, Apollo's native navigation animator owns pushes.
 // The feed rewraps when a thread opens or closes beside it, so rows above the
 // reader's place change height and the page drifts up or down. Keep the row
 // at the middle of the visible feed at the same height on screen instead.
@@ -2085,31 +2081,46 @@ static void ApolloDuoRestoreFeedAnchor(UITableView *table, ApolloDuoFeedAnchor *
     [table setContentOffset:CGPointMake(table.contentOffset.x, offset) animated:NO];
 }
 
-static void ApolloDuoPostsSetDetail(ApolloDuoSplitState *state, UIViewController *page, BOOL animated) {
+// What an interactive close hands to ApolloDuoPostsCloseDetail when a drag
+// already owns the departing thread: the snapshot of the pane taken at drag
+// start (already parented in the surface and tracking the finger) and an
+// optional extension view that covers what the drag has uncovered.
+@interface ApolloDuoPostsCloseHandoff : NSObject
+@property (nonatomic, strong) UIView *snapshot;
+@property (nonatomic, strong) UIView *extension;
+@end
+
+@implementation ApolloDuoPostsCloseHandoff
+@end
+
+// Close the thread column. `handoff` is nil for the discrete paths (button,
+// pop hook, didShow safety net), which take their own snapshot and slide it
+// out from the pane's left edge. With a handoff the close adopts the
+// handoff's snapshot instead of taking a new one and slides it out from
+// wherever it currently sits.
+static void ApolloDuoPostsCloseDetail(ApolloDuoSplitState *state, ApolloDuoPostsCloseHandoff *handoff, BOOL animated) {
     UIView *surface = state.host.view;
-    BOOL entering = page != nil;
     BOOL animate = animated && surface.window && !UIAccessibilityIsReduceMotionEnabled();
     if (!animate) {
         ApolloDuoPostsStopGeometry(state.feed.viewIfLoaded);
         ApolloDuoPostsStopGeometry(state.secondary.viewIfLoaded);
     }
     UIViewController *backstop = state.secondary.viewControllers.firstObject;
-    [state.host.postsTransitionSnapshot removeFromSuperview];
-    state.host.postsTransitionSnapshot = nil;
-    [state.secondary.view.layer removeAnimationForKey:@"ApolloDuoSlide"];
-    if (entering && state.host.postsShowingDetail) {
-        [surface layoutIfNeeded];
-        [state.secondary setViewControllers:@[backstop, page] animated:animate];
-        return;
+    // A handed-in snapshot is the live drag view; leave it in place.
+    if (!handoff.snapshot) {
+        [state.host.postsTransitionSnapshot removeFromSuperview];
+        state.host.postsTransitionSnapshot = nil;
     }
+    [state.secondary.view.layer removeAnimationForKey:@"ApolloDuoSlide"];
 
     [surface layoutIfNeeded];
     NSArray<ApolloDuoPostsGeometry *> *feedGeometry = animate
         ? ApolloDuoPostsCaptureGeometry(state.feed.view, surface) : nil;
-    CGRect pane = !entering ? ApolloDuoPostsDetailPane(state) : CGRectNull;
-    UIView *snapshot = !entering && animate && !CGRectIsNull(pane) && !CGRectIsEmpty(pane)
-        ? [surface resizableSnapshotViewFromRect:pane afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero] : nil;
-    if (snapshot) {
+    CGRect pane = ApolloDuoPostsDetailPane(state);
+    UIView *snapshot = handoff.snapshot;
+    if (!snapshot && animate && !CGRectIsNull(pane) && !CGRectIsEmpty(pane))
+        snapshot = [surface resizableSnapshotViewFromRect:pane afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero];
+    if (snapshot && !handoff.snapshot) {
         snapshot.frame = pane;
         snapshot.userInteractionEnabled = NO;
         [surface insertSubview:snapshot belowSubview:state.host.listDismiss];
@@ -2121,7 +2132,7 @@ static void ApolloDuoPostsSetDetail(ApolloDuoSplitState *state, UIViewController
         ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded));
     void (^updateColumns)(void) = ^{
         state.changing = YES;
-        [state.secondary setViewControllers:page ? @[backstop, page] : @[backstop] animated:NO];
+        [state.secondary setViewControllers:@[backstop] animated:NO];
         state.changing = NO;
         ApolloDuoPostsSyncColumns(state);
         [surface layoutIfNeeded];
@@ -2155,21 +2166,92 @@ static void ApolloDuoPostsSetDetail(ApolloDuoSplitState *state, UIViewController
     [CATransaction begin];
     [CATransaction setCompletionBlock:^{ ApolloDuoSplitScheduleUpdate(); }];
     ApolloDuoPostsAnimateGeometry(feedGeometry, state.feed.view, surface, 0.32);
-    if (entering) {
-        // Use the live navigation surface so async comment/media updates
-        // remain visible throughout the first push.
-        CGRect incomingPane = ApolloDuoPostsDetailPane(state);
-        CGFloat travel = CGRectGetMaxX(surface.bounds) - CGRectGetMinX(incomingPane);
-        if (!CGRectIsNull(incomingPane) && travel > 0)
-            ApolloDuoSlideView(state.secondary.view, travel, 0, 0.32, nil);
-    } else if (snapshot) {
+    if (snapshot) {
         CGFloat travel = CGRectGetMaxX(surface.bounds) - CGRectGetMinX(pane);
+        // Task 4 refines the handoff path: it only adopts the snapshot and
+        // reuses the discrete slide; the extension is removed with it.
+        UIView *extension = handoff.extension;
         ApolloDuoSlideView(snapshot, 0, travel, 0.32, ^{
             [snapshot removeFromSuperview];
+            [extension removeFromSuperview];
             if (weakHost.postsTransitionSnapshot == snapshot) weakHost.postsTransitionSnapshot = nil;
             ApolloDuoSplitScheduleUpdate();
         });
     }
+    [CATransaction commit];
+}
+
+// Creating/removing the comments column is a containment transition. Animate
+// that layout together with the page: the retained live feed must resize as
+// comments enter/leave, not jump to its final width before a snapshot slides.
+// Once both columns exist, Apollo's native navigation animator owns pushes.
+// Closing (page == nil) is shared with the interactive gestures through
+// ApolloDuoPostsCloseDetail.
+static void ApolloDuoPostsSetDetail(ApolloDuoSplitState *state, UIViewController *page, BOOL animated) {
+    if (!page) {
+        ApolloDuoPostsCloseDetail(state, nil, animated);
+        return;
+    }
+    UIView *surface = state.host.view;
+    BOOL animate = animated && surface.window && !UIAccessibilityIsReduceMotionEnabled();
+    if (!animate) {
+        ApolloDuoPostsStopGeometry(state.feed.viewIfLoaded);
+        ApolloDuoPostsStopGeometry(state.secondary.viewIfLoaded);
+    }
+    UIViewController *backstop = state.secondary.viewControllers.firstObject;
+    [state.host.postsTransitionSnapshot removeFromSuperview];
+    state.host.postsTransitionSnapshot = nil;
+    [state.secondary.view.layer removeAnimationForKey:@"ApolloDuoSlide"];
+    if (state.host.postsShowingDetail) {
+        [surface layoutIfNeeded];
+        [state.secondary setViewControllers:@[backstop, page] animated:animate];
+        return;
+    }
+
+    [surface layoutIfNeeded];
+    NSArray<ApolloDuoPostsGeometry *> *feedGeometry = animate
+        ? ApolloDuoPostsCaptureGeometry(state.feed.view, surface) : nil;
+    ApolloDuoPostsStopGeometry(state.feed.viewIfLoaded);
+    ApolloDuoPostsStopGeometry(state.secondary.viewIfLoaded);
+    ApolloDuoFeedAnchor *feedAnchor = ApolloDuoCaptureFeedAnchor(
+        ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded));
+    void (^updateColumns)(void) = ^{
+        state.changing = YES;
+        [state.secondary setViewControllers:@[backstop, page] animated:NO];
+        state.changing = NO;
+        ApolloDuoPostsSyncColumns(state);
+        [surface layoutIfNeeded];
+        ApolloNativeFeedSearchFinishColumnMove(state.feed.topViewController);
+        // Texture schedules its row geometry separately from UIKit's column
+        // layout. Commit the existing measurement before taking endpoints so
+        // cell/media widths participate in the same resize as their live nav.
+        UITableView *table = ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded);
+        ApolloDuoMediaPrepareTableForTransition(table);
+        SEL commit = NSSelectorFromString(@"waitUntilAllUpdatesAreCommitted");
+        if ([table respondsToSelector:commit]) ((void (*)(id, SEL))objc_msgSend)(table, commit);
+        [table layoutIfNeeded];
+        // Anchor before the geometry replay reads its endpoints, so rows
+        // glide to where the reader's place stays put instead of jumping.
+        if (feedAnchor) {
+            ApolloDuoRestoreFeedAnchor(table, feedAnchor);
+            [table layoutIfNeeded];
+        }
+    };
+    if (!animate) {
+        [UIView performWithoutAnimation:updateColumns];
+        return;
+    }
+    // Finish containment with UIKit animation disabled (see the close path).
+    [UIView performWithoutAnimation:updateColumns];
+    [CATransaction begin];
+    [CATransaction setCompletionBlock:^{ ApolloDuoSplitScheduleUpdate(); }];
+    ApolloDuoPostsAnimateGeometry(feedGeometry, state.feed.view, surface, 0.32);
+    // Use the live navigation surface so async comment/media updates
+    // remain visible throughout the first push.
+    CGRect incomingPane = ApolloDuoPostsDetailPane(state);
+    CGFloat travel = CGRectGetMaxX(surface.bounds) - CGRectGetMinX(incomingPane);
+    if (!CGRectIsNull(incomingPane) && travel > 0)
+        ApolloDuoSlideView(state.secondary.view, travel, 0, 0.32, nil);
     [CATransaction commit];
 }
 
