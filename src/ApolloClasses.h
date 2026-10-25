@@ -30,6 +30,7 @@ extern Class ApolloClassASRatioLayoutSpec;
 extern Class ApolloClassASStackLayoutSpec;
 extern Class ApolloClassASTableNode;
 extern Class ApolloClassASTableView;
+extern Class ApolloClassASTableViewCell;
 extern Class ApolloClassASTableViewController;
 extern Class ApolloClassASTextNode;
 extern Class ApolloClassASTextNode2;

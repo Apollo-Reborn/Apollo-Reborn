@@ -20,6 +20,7 @@ Class ApolloClassASRatioLayoutSpec;
 Class ApolloClassASStackLayoutSpec;
 Class ApolloClassASTableNode;
 Class ApolloClassASTableView;
+Class ApolloClassASTableViewCell;
 Class ApolloClassASTableViewController;
 Class ApolloClassASTextNode;
 Class ApolloClassASTextNode2;
@@ -156,6 +157,7 @@ __attribute__((constructor)) static void ApolloClassesResolve(void) {
     ApolloClassASStackLayoutSpec = objc_getClass("ASStackLayoutSpec");
     ApolloClassASTableNode = objc_getClass("ASTableNode");
     ApolloClassASTableView = objc_getClass("ASTableView");
+    ApolloClassASTableViewCell = objc_getClass("_ASTableViewCell");
     ApolloClassASTableViewController = objc_getClass("_TtC6Apollo21ASTableViewController");
     ApolloClassASTextNode = objc_getClass("ASTextNode");
     ApolloClassASTextNode2 = objc_getClass("ASTextNode2");
