@@ -4,6 +4,75 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v4.0.0] - 2026-10-25
+
+### Features
+
+- Add **iPhone Duo** support with layouts that adapt to the closed display, open portrait, open landscape and partially folded positions, using the existing Apollo Reborn builds (#1245: @IllIIllIllIllII)
+  - Browse a feed beside its comments, choose Original or Focused content widths, and open the subreddit list in a Standard or Liquid Glass panel
+  - Inbox, Account and Settings gain sidebar/detail layouts in open landscape, while Search can keep results beside the page you open
+  - Pixel Pals is unavailable on Duo; regular iPhones keep it
+- Add an optional **iPad Layout (Beta)** on iPadOS 18 and later, with a native sidebar, adjustable feed and reader columns, and full-width Gallery View (#1385: @jordanearle)
+  - Try it from the one-time invitation or turn on iPad Layout under Interface; quit and reopen Apollo to apply it, or turn it off to return to the classic layout
+- Add **Restore Reading Session** to reopen your last feed, post and nearby reading position after iOS closes Apollo, including feed and comment sorting (#1441: @Thetromboneman1)
+  - On by default under Media → Browsing; explicit links and notifications take priority, and turning it off deletes the saved session
+- Add a **Setup Assistant** for new installations to connect or restore, choose Classic, Balanced or Full Featured preferences, select appearance, and review before applying (#1401: @jordanearle)
+  - Existing users can open it from Apollo Reborn settings with Keep My Settings selected; updating does not automatically apply a preset
+- Rework **Gallery View** with faster opening, pinch-to-resize tiles including a denser four-column layout, and native press-and-hold menus in the grid and fullscreen viewer (#1389, #1434: @icpryde, @IllIIllIllIllII)
+  - Sports clips can play silently in the grid, newly visible tiles start reliably, and returning from a fullscreen image no longer leaves a black screen
+- Open **Gallery View** for All Saved or a selected **Saved category**, with empty categories shown without an endless spinner (#1440: @IllIIllIllIllII)
+- Rebuild **Recently Read** as a native Apollo feed that follows your post layout, thumbnails, text size, themes, swipe actions and menus (#1442: @IllIIllIllIllII)
+  - Open it from its own row on your profile, switch its layout without changing other feeds, clear the history, or remove individual posts
+- Add **Recently Visited** subreddits to Search, with configurable section order and limits under Subreddits settings (#1404: @IllIIllIllIllII)
+  - History clears on restart or account change and is not saved to backups
+- Add **Add Downvote Tap** under Posts & Feeds → Info Row so tapping a score can cycle through upvote, downvote and no vote; off by default (#1403: @AcornElf)
+- Add a **Subreddit Icon** switch to Compact and Immersive subreddit header layouts, updating the preview and live header together (#1426: @IllIIllIllIllII)
+- Feature seasonal icons in **Daily Spotlight** around holidays, including Apollo's original holiday icons; the spotlight now shows six picks (#1390, #1245: @icpryde, @IllIIllIllIllII)
+- Tint **Apollo Reborn maintainer usernames** purple in posts, comments and the Inbox, while retaining their real profiles and normal moderator indicators (#1411: @IllIIllIllIllII)
+- Make **Bug Reports** attach a removable debug log automatically, and mask usernames, account details, links and sensitive values before logs are exported or shared (#1422, #1423: @icpryde)
+  - Export Debug Logs now shares a file that can be attached on GitHub; subreddit names, post/comment IDs and diagnostic details remain readable
+
+### Performance
+
+- Reduce unnecessary **API-Key-Free** requests by fetching subscriptions in larger pages and, with Reduce Rate Limiting on, batching feed avatars by page; interrupted subscription refreshes keep the existing list (#1416: @icpryde)
+  - Deleted or unavailable Bluesky previews stop repeatedly fetching themselves and using Reddit requests as a fallback
+
+### Fixes
+
+- Keep the same **Duo comments thread** when returning from a linked subreddit after rotation or folding, and let the drawer return to an older retained feed correctly (#1464: @jordanearle)
+- Correct **Duo video autoplay** around the side rail and both columns' navigation bars (#1466: @kiliantyler)
+- Keep **View All Comments** visible inside its Duo comments pane when opening a specific comment (#1468: @d0lb33)
+- Stop the hidden **subreddit index** swallowing favorite taps and scrolling near the stars on Duo (#1469: @kiliantyler)
+- Open **native action menus** from controls moved into UIKit's overflow menu instead of silently dismissing without showing the actions (#1474: @kiliantyler)
+- Keep loading **API-Key-Free Inbox** rows when looking up a reply's quoted parent fails, showing the messages without that quote (#1455: @icpryde, @DeltAndy123)
+- Keep **API-Key-Free infinite scrolling** retryable after Reddit returns a rate limit or block page, rather than treating the refusal as the end of the feed (#1424: @icpryde)
+- Load the next feed page when **Hide Read** hides every loaded post, including with Infinite Scrolling off (#1412: @icpryde)
+- Fix **Reddit image uploads** becoming broken links when Imgur is selected, single-photo comment uploads failing, and synthetic album links in comments (#1402, #1406: @jordanearle, @IllIIllIllIllII)
+  - Previously broken uploads still need to be uploaded again
+- Give **inline comment images and GIFs** Copy Image, Save Image and Share actions, and open loaded images fullscreen without a second loading fade (#1400: @IllIIllIllIllII)
+- Show the correct **image, GIF, video and album menus** when pressing and holding media inside a post, including Save All Media for albums (#1435: @IllIIllIllIllII)
+- Fix a crash when opening a **compact album** from its long-press preview (#1398: @IllIIllIllIllII)
+- Fix crashes while **feed videos** wait to play and while **deleted comments** are being prepared (#1428, #1450: @Thetromboneman1)
+- Keep a playing **feed video's sound and mute icon** in step when opening its post, including with the phone's silent switch on (#1425: @icpryde)
+- Stop **rich link cards** shifting the feed or changing their image crop after voting (#1457: @icpryde)
+- Open **Find in Comments** from the Liquid Glass post menu with its search field, keyboard and result navigation working correctly (#1446: @icpryde)
+- Keep a collapsed **feed search bar** hidden when returning from the fullscreen image viewer (#1447: @Thetromboneman1)
+- Bring back the complete **Liquid Glass tab bar** after swiping back from Edit Profile, including its glass background (#1431: @icpryde)
+- Refresh **subreddit icons and banners** from current Reddit artwork instead of retaining older images (#1396: @IllIIllIllIllII)
+- Preserve **usernames in comment and post headers** by shortening flair first, while keeping timestamps and other trailing details visible (#1366: @AcornElf)
+- Open **Reddit social links** on profiles directly in Apollo instead of the browser (#1407: @IllIIllIllIllII)
+- Explain why **Notifications settings** are unavailable when no notification backend is configured, instead of spinning forever (#1399: @IllIIllIllIllII)
+- Open **Poll, Media, Link and Text** post shortcuts in the correct editor even when the composer finishes preparing after its sheet appears (#1414: @IllIIllIllIllII)
+- Keep the separator below **Home's first post** visible after switching tabs and refreshing (#1405: @IllIIllIllIllII)
+- Stop the **Boxes title** truncating after returning from an inbox on Liquid Glass (#1395: @IllIIllIllIllII)
+- Apply a **custom theme's bar color** behind classic feed and comment search bars with Pure Black Dark Mode off (#1459: @icpryde)
+- Match the **Portrait Lock settings** page to the inset, rounded style of other settings screens (#1410: @IllIIllIllIllII)
+- Check for **updates** every 15 minutes while Apollo is active, and remember Later for the same version for 24 hours across restarts (#1436: @IllIIllIllIllII)
+
+### Known issues
+
+- Reddit currently blocks the **API-Key-Free** route used for Load More Comments and some post/subreddit lookups; the Inbox failure fallback above does not repair that route.
+
 ## [v3.9.0] - 2026-10-09
 
 ### Features
@@ -1082,6 +1151,7 @@ There are currently a few limitations:
 ## [v1.0.0] - 2023-10-13
 - Initial release
 
+[v4.0.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.9.0...v1.15.11_4.0.0
 [v3.9.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.8.5...v1.15.11_3.9.0
 [v3.8.5]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.8.0...v1.15.11_3.8.5
 [v3.8.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.7.1...v1.15.11_3.8.0

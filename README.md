@@ -357,6 +357,10 @@ Thank you to these wonderful people:
       <td align="center" valign="top" width="14.29%"><a href="https://github.com/jaredrossberg"><img src="https://avatars.githubusercontent.com/u/45674604?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="jaredrossberg"/></a><br /><sub><b>jaredrossberg</b></sub><br /><a href="https://github.com/Apollo-Reborn/Apollo-Reborn/commits?author=jaredrossberg" title="Code">Code</a></td>
       <td align="center" valign="top" width="14.29%"><a href="https://github.com/paradoxally"><img src="https://avatars.githubusercontent.com/u/1304041?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="paradoxally"/></a><br /><sub><b>paradoxally</b></sub><br /><a href="https://github.com/Apollo-Reborn/Apollo-Reborn/commits?author=paradoxally" title="Code">Code</a></td>
     </tr>
+    <tr>
+      <td align="center" valign="top" width="14.29%"><a href="https://github.com/kiliantyler"><img src="https://avatars.githubusercontent.com/u/22827191?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="kiliantyler"/></a><br /><sub><b>kiliantyler</b></sub><br /><a href="https://github.com/Apollo-Reborn/Apollo-Reborn/commits?author=kiliantyler" title="Code">Code</a></td>
+      <td align="center" valign="top" width="14.29%"><a href="https://github.com/d0lb33"><img src="https://avatars.githubusercontent.com/u/18106388?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="d0lb33"/></a><br /><sub><b>d0lb33</b></sub><br /><a href="https://github.com/Apollo-Reborn/Apollo-Reborn/commits?author=d0lb33" title="Code">Code</a></td>
+    </tr>
   </tbody>
 </table>
 
