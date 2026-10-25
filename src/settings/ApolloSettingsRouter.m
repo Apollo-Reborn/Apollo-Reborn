@@ -19,6 +19,7 @@
 #import "settings/ApolloLinkCompanionViewController.h"
 #import "settings/CustomAPIViewController.h"
 #import "crash/ApolloCrashReportsViewController.h"
+#import "settings/ApolloKeylessRouteStatusViewController.h"
 #import "settings/InfoRowSettingsViewController.h"
 #import "settings/InlineMediaSettingsViewController.h"
 #import "settings/SavedCategoriesViewController.h"
@@ -111,6 +112,7 @@ static void ApolloSettingsRouterEnsureRegistry(void) {
             return [[ApolloLinkCompanionViewController alloc] init]; // hero page, not a table
         });
         add(@"crash-reports", @"Crash Reports", @"Apollo Reborn → Privacy", ApolloSettingsInsetGrouped([ApolloCrashReportsViewController class]));
+        add(@"keyless-route-status", @"Routes", @"Apollo Reborn → Accounts & API Keys", ApolloSettingsInsetGrouped([ApolloKeylessRouteStatusViewController class]));
         add(@"theme-manager", @"Theme Manager", @"Appearance", ^UIViewController *{
             return [[ApolloThemeManagerViewController alloc] init]; // default init = hub/list mode
         });

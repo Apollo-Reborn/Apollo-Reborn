@@ -340,3 +340,51 @@ void ApolloWebJSONRouteHealthReset(void) {
         [sApolloWebJSONRouteHealth removeAllObjects];
     }
 }
+
+NSArray<NSDictionary<NSString *, id> *> *ApolloWebJSONRouteHealthSnapshot(NSString *account, NSTimeInterval now) {
+    NSString *wanted = account.lowercaseString;
+    NSMutableArray<NSDictionary *> *rows = [NSMutableArray array];
+    @synchronized (ApolloWebJSONRouteHealthLock()) {
+        for (NSString *key in sApolloWebJSONRouteHealth) {
+            NSArray<NSString *> *parts = [key componentsSeparatedByString:@"|"];
+            if (parts.count != 3) continue;
+            if (wanted.length && ![parts[0] isEqualToString:wanted]) continue;
+            NSInteger route = ApolloWebJSONRouteFromName(parts[2]);
+            if (route < 0) continue;
+            ApolloWebJSONRouteHealthEntry *entry = sApolloWebJSONRouteHealth[key];
+            [rows addObject:@{
+                @"account": parts[0], @"pattern": parts[1], @"route": @(route),
+                @"ok": @(entry.successes), @"blocked": @(entry.blocks),
+                @"lastOkAt": @(entry.lastSuccessAt), @"lastBlockedAt": @(entry.lastBlockAt),
+                @"cooldownRemaining": @(MAX(0, entry.cooldownUntil - now)),
+            }];
+        }
+    }
+    [rows sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        NSComparisonResult byAccount = [a[@"account"] compare:b[@"account"]];
+        if (byAccount != NSOrderedSame) return byAccount;
+        NSComparisonResult byPattern = [a[@"pattern"] compare:b[@"pattern"]];
+        return byPattern != NSOrderedSame ? byPattern : [a[@"route"] compare:b[@"route"]];
+    }];
+    return rows;
+}
+
+NSArray<NSString *> *ApolloWebJSONRouteFallbackEndpoints(void) {
+    NSMutableSet<NSString *> *keys = [NSMutableSet set];
+    for (NSArray<NSString *> *builtIn in @[ @[ @"GET", @"/api/info" ], @[ @"GET", @"/api/morechildren" ],
+                                           @[ @"POST", @"/api/morechildren" ] ]) {
+        if (ApolloWebJSONRoutesForRequest(builtIn[0], builtIn[1]).count > 1) {
+            [keys addObject:ApolloWebJSONRemoteTableKey(builtIn[0], builtIn[1])];
+        }
+    }
+    @synchronized (ApolloWebJSONRemoteTableLock()) {
+        [sApolloWebJSONRemoteTable enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSArray<NSNumber *> *routes, __unused BOOL *stop) {
+            if (routes.count > 1) [keys addObject:key];
+        }];
+    }
+    return [keys.allObjects sortedArrayUsingSelector:@selector(compare:)];
+}
+
+BOOL ApolloWebJSONRouteIsFromRemoteTable(NSString *method, NSString *path) {
+    return ApolloWebJSONRemoteRoutes(method, path) != nil;
+}

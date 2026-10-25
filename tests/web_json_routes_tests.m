@@ -264,6 +264,44 @@ static void TestRemoteTableMerge(void) {
     CHECK([ApolloWebJSONRouteRemoteTableDescription() containsString:@"built-in"], @"empty description");
 }
 
+static void TestHealthSnapshot(void) {
+    ApolloWebJSONRouteHealthReset();
+    BlockTimes(@"Alice", kInfo, ApolloWebJSONRouteWwwDotJSON, 3, 100);
+    ApolloWebJSONRouteHealthNoteSuccess(@"alice", kInfo, ApolloWebJSONRouteOld, 120);
+    ApolloWebJSONRouteHealthNoteSuccess(@"bob", @"/r/apple/hot.json", ApolloWebJSONRouteWww, 130);
+
+    NSArray<NSDictionary *> *alice = ApolloWebJSONRouteHealthSnapshot(@"ALICE", 160);
+    CHECK(alice.count == 2, @"alice's two routes (got %@)", alice);
+    NSDictionary *dot = alice.firstObject, *old = alice.lastObject;
+    CHECK([dot[@"route"] integerValue] == ApolloWebJSONRouteWwwDotJSON, @"sorted by route");
+    CHECK([dot[@"pattern"] isEqualToString:@"/api/info"] && [dot[@"blocked"] integerValue] == 3 && [dot[@"ok"] integerValue] == 0,
+          @"dotjson counts %@", dot);
+    CHECK([dot[@"lastBlockedAt"] doubleValue] == 100 && [dot[@"cooldownRemaining"] doubleValue] == 3600 - 60, @"times %@", dot);
+    CHECK([old[@"ok"] integerValue] == 1 && [old[@"lastOkAt"] doubleValue] == 120 && [old[@"cooldownRemaining"] doubleValue] == 0,
+          @"old %@", old);
+    CHECK(ApolloWebJSONRouteHealthSnapshot(nil, 160).count == 3, @"every account when nil");
+    CHECK([[ApolloWebJSONRouteHealthSnapshot(@"bob", 160).firstObject objectForKey:@"pattern"] isEqualToString:@"/r/*/hot"], @"bob");
+    CHECK(ApolloWebJSONRouteHealthSnapshot(@"carol", 160).count == 0, @"unknown account");
+}
+
+static void TestFallbackEndpoints(void) {
+    ApolloWebJSONRouteSetRemoteTable(nil);
+    NSArray *builtIn = @[ @"GET /api/info", @"GET /api/morechildren", @"POST /api/morechildren" ];
+    CHECK([ApolloWebJSONRouteFallbackEndpoints() isEqualToArray:builtIn], @"built-in (got %@)", ApolloWebJSONRouteFallbackEndpoints());
+    CHECK(!ApolloWebJSONRouteIsFromRemoteTable(@"GET", @"/api/info.json"), @"not remote");
+
+    ApolloWebJSONRouteSetRemoteTable(ParseJSON(@"{\"version\":1,\"endpoints\":{"
+        "\"GET /api/info\":{\"routes\":[\"old\"]},"
+        "\"GET /api/foo\":{\"routes\":[\"www-dotjson\",\"old\"]},"
+        "\"GET /api/bar\":{\"routes\":[\"www-dotjson\"]}}}", NULL));
+    NSArray *expected = @[ @"GET /api/foo", @"GET /api/morechildren", @"POST /api/morechildren" ];
+    CHECK([ApolloWebJSONRouteFallbackEndpoints() isEqualToArray:expected],
+          @"one route has no fallback; added ones with two do (got %@)", ApolloWebJSONRouteFallbackEndpoints());
+    CHECK(ApolloWebJSONRouteIsFromRemoteTable(@"GET", @"/api/info.json"), @"remote");
+    CHECK(ApolloWebJSONRouteIsFromRemoteTable(@"GET", @"api/foo"), @"remote added");
+    ApolloWebJSONRouteSetRemoteTable(nil);
+}
+
 static void TestRepositoryFile(const char *repoRoot) {
     NSString *path = [@(repoRoot) stringByAppendingPathComponent:@"keyless-routes.json"];
     NSArray<NSString *> *rejections = nil;
@@ -277,6 +315,8 @@ int main(int argc, const char *argv[]) {
         TestTableParseRejectsEntries();
         TestTableParseRejectsFile();
         TestRemoteTableMerge();
+        TestHealthSnapshot();
+        TestFallbackEndpoints();
         if (argc > 1) TestRepositoryFile(argv[1]);
         TestTableEndpoints();
         TestEverythingElseStaysOnWww();

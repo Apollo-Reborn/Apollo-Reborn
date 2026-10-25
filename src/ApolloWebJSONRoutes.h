@@ -96,6 +96,20 @@ NSString *ApolloWebJSONRoutePathPattern(NSString *path);
 // One line per tracked account, path and route, for logs.
 NSString *ApolloWebJSONRouteHealthDescription(NSTimeInterval now);
 
+// The health of `account`'s routes (all accounts when nil), one dictionary per
+// path pattern and route, sorted by pattern then route: "account", "pattern"
+// (NSString), "route" (NSNumber, an ApolloWebJSONRoute), "ok" and "blocked"
+// (NSNumber counts), "lastOkAt" and "lastBlockedAt" (NSNumber reference-date
+// seconds, 0 when never), "cooldownRemaining" (NSNumber seconds).
+NSArray<NSDictionary<NSString *, id> *> *ApolloWebJSONRouteHealthSnapshot(NSString *_Nullable account, NSTimeInterval now);
+
+// The endpoints that have more than one route, built-in and added by the
+// remote table, as "<METHOD> <endpoint>" keys ("GET /api/info"), sorted.
+NSArray<NSString *> *ApolloWebJSONRouteFallbackEndpoints(void);
+
+// YES when the remote table sets the routes for `method` and `path`.
+BOOL ApolloWebJSONRouteIsFromRemoteTable(NSString *method, NSString *path);
+
 // Forgets everything (tests and the sim debug bridge).
 void ApolloWebJSONRouteHealthReset(void);
 

@@ -70,6 +70,7 @@
 #import "ApolloWebJSON.h"
 #import "ApolloWebJSONRoutes.h"
 #import "ApolloToast.h"
+#import "ApolloWebJSONRouteUpdates.h"
 #import "ApolloState.h"
 #import "ApolloCommon.h"
 #import "ApolloUserProfileCache.h"
@@ -1141,6 +1142,7 @@ static BOOL ApolloWebJSONKeepSubscriptionListAfterFailedWalk(RDKUser *user, NSAr
             ApolloWebJSONLogRouteOutcomeOnce(requestMethod, requestPath, [NSString stringWithFormat:
                 @"route %@ got the block page, and every other route is blocked or cooling down", blockedName]);
             ApolloWebJSONShowRoutesBlockedToastOnce();
+            ApolloLog(@"[WebJSON] %@", ApolloWebJSONRouteStatusSummary());
         } else if (routesTried != 0 && usedRoute >= 0 && response.statusCode >= 200 && response.statusCode < 300) {
             ApolloWebJSONLogRouteOutcomeOnce(requestMethod, requestPath, [NSString stringWithFormat:@"answered by route %@",
                 ApolloWebJSONRouteName((ApolloWebJSONRoute)usedRoute)]);

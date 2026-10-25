@@ -3,6 +3,7 @@
 #import "ApolloCommon.h"
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
+#import "ApolloWebSessionStore.h"
 #import <UIKit/UIKit.h>
 
 static NSString *const kApolloRouteUpdatesURL =
@@ -21,6 +22,7 @@ static NSTimeInterval sLastFailedAt;
 static NSString *sCachedETag;
 static NSData *sCachedData;
 static NSTimer *sCheckTimer;
+static NSString *sLastResult;           // for the Route Status screen; nil before the first check
 
 static NSURL *ApolloRouteUpdatesURL(void) {
 #if APOLLO_SIM_BUILD
@@ -89,6 +91,7 @@ static void ApolloRouteUpdatesLoadCacheIfNeeded(void) {
     NSData *data = [stored[@"data"] isKindOfClass:[NSData class]] ? stored[@"data"] : nil;
     if (!ApolloRouteUpdatesApply(data, @"cached")) return;
     sCachedData = [data copy];
+    sLastResult = @"Using the saved copy";
     if ([stored[@"checkedAt"] isKindOfClass:[NSNumber class]]) {
         sLastCheckedAt = MIN([stored[@"checkedAt"] doubleValue], [NSDate timeIntervalSinceReferenceDate]);
     }
@@ -158,10 +161,12 @@ static void ApolloRouteUpdatesFetch(void) {
                 ? ((NSHTTPURLResponse *)response).statusCode : (data && !error ? 200 : 0);
             if (error || status == 0) {
                 ApolloLog(@"[WebJSON] Route updates: fetch failed (%@)", error.localizedDescription ?: @"no response");
+                sLastResult = @"Couldn't connect";
                 ApolloRouteUpdatesFinish(NO);
                 return;
             }
             if (status == 304) {
+                sLastResult = @"Unchanged";
                 if (sCachedData) ApolloRouteUpdatesSaveCache(url, sCachedData, sCachedETag, [NSDate timeIntervalSinceReferenceDate]);
                 ApolloRouteUpdatesFinish(YES);
                 return;
@@ -171,15 +176,19 @@ static void ApolloRouteUpdatesFetch(void) {
                 ApolloLog(@"[WebJSON] Route updates: keyless-routes.json isn't there, using the built-in routes");
                 ApolloWebJSONRouteSetRemoteTable(nil);
                 ApolloRouteUpdatesRemoveCache();
+                sLastResult = @"No file, using built-in routes";
                 ApolloRouteUpdatesFinish(YES);
                 return;
             }
             if (status != 200) {
                 ApolloLog(@"[WebJSON] Route updates: HTTP %ld", (long)status);
+                sLastResult = [NSString stringWithFormat:@"Failed (HTTP %ld)", (long)status];
                 ApolloRouteUpdatesFinish(NO);
                 return;
             }
-            if (ApolloRouteUpdatesApply(data, @"fetched")) {
+            BOOL applied = ApolloRouteUpdatesApply(data, @"fetched");
+            sLastResult = applied ? @"Updated" : @"File rejected, keeping the routes in use";
+            if (applied) {
                 NSString *etag = [response isKindOfClass:[NSHTTPURLResponse class]]
                     ? [(NSHTTPURLResponse *)response valueForHTTPHeaderField:@"ETag"] : nil;
                 sCachedETag = [etag copy];
@@ -237,4 +246,125 @@ void ApolloWebJSONRouteUpdatesSetEnabled(BOOL enabled) {
     }
     ApolloLog(@"[WebJSON] Route updates on");
     ApolloWebJSONRouteUpdatesCheckIfNeeded();
+}
+
+#pragma mark - Status (Route Status screen, logs)
+
+static NSString *ApolloRouteUpdatesRelativeTime(NSTimeInterval at, NSTimeInterval now) {
+    if (at <= 0) return @"never";
+    NSTimeInterval ago = MAX(0, now - at);
+    if (ago < 60) return @"just now";
+    if (ago < 3600) return [NSString stringWithFormat:@"%.0f min ago", floor(ago / 60.0)];
+    return [NSString stringWithFormat:@"%.0f h ago", floor(ago / 3600.0)];
+}
+
+NSDictionary<NSString *, id> *ApolloWebJSONRouteUpdatesStatus(void) {
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    NSMutableDictionary *status = [NSMutableDictionary dictionary];
+    status[@"enabled"] = @(sKeylessRouteUpdates);
+    status[@"lastChecked"] = ApolloRouteUpdatesRelativeTime(sLastCheckedAt, now);
+    status[@"result"] = !sKeylessRouteUpdates ? @"Off, using built-in routes" : (sLastResult ?: @"Not checked yet");
+    return status;
+}
+
+// Per fallback endpoint, for `account`: which route a request would take now,
+// and every route's counts. Methods of one path with the same routes share
+// their health (it's kept per path), so they're one entry ("GET/POST …").
+// Shared by the screen, the summary and the headline.
+static NSArray<NSDictionary *> *ApolloRouteUpdatesEndpointStatus(NSString *account, NSTimeInterval now) {
+    NSArray<NSDictionary *> *health = ApolloWebJSONRouteHealthSnapshot(account, now);
+    NSMutableArray<NSDictionary *> *endpoints = [NSMutableArray array];
+    for (NSString *key in ApolloWebJSONRouteFallbackEndpoints()) {
+        NSArray<NSString *> *parts = [key componentsSeparatedByString:@" "];
+        NSString *method = parts.firstObject, *path = parts.lastObject;
+        NSArray<NSNumber *> *order = ApolloWebJSONRoutesForRequest(method, path);
+        NSUInteger same = [endpoints indexOfObjectPassingTest:^BOOL(NSDictionary *e, __unused NSUInteger i, __unused BOOL *stop) {
+            return [e[@"path"] isEqualToString:path] && [e[@"order"] isEqualToArray:order];
+        }];
+        if (same != NSNotFound) {
+            NSMutableDictionary *merged = [endpoints[same] mutableCopy];
+            merged[@"key"] = [NSString stringWithFormat:@"%@/%@ %@", [merged[@"key"] componentsSeparatedByString:@" "].firstObject, method, path];
+            endpoints[same] = merged;
+            continue;
+        }
+        NSString *pattern = ApolloWebJSONRoutePathPattern(path);
+        NSMutableArray<NSDictionary *> *routes = [NSMutableArray array];
+        BOOL allCooling = YES;
+        for (NSNumber *route in ApolloWebJSONRoutesForRequest(method, path)) {
+            NSDictionary *found = nil;
+            for (NSDictionary *row in health) {
+                if ([row[@"pattern"] isEqualToString:pattern] && [row[@"route"] isEqual:route]) { found = row; break; }
+            }
+            NSTimeInterval cooling = ApolloWebJSONRouteCooldownRemaining(account, path, (ApolloWebJSONRoute)route.integerValue, now);
+            if (cooling <= 0) allCooling = NO;
+            [routes addObject:@{ @"route": route, @"ok": found[@"ok"] ?: @0, @"blocked": found[@"blocked"] ?: @0,
+                                 @"lastOkAt": found[@"lastOkAt"] ?: @0, @"cooldownRemaining": @(cooling) }];
+        }
+        NSInteger using = ApolloWebJSONRouteChoose(account, method, path, 0, now);
+        [endpoints addObject:@{ @"key": key, @"path": path, @"order": order, @"routes": routes, @"using": @(using),
+                                @"allCooling": @(allCooling), @"remote": @(ApolloWebJSONRouteIsFromRemoteTable(method, path)) }];
+    }
+    return endpoints;
+}
+
+NSArray<NSDictionary<NSString *, id> *> *ApolloWebJSONRouteStatusEndpoints(void) {
+    return ApolloRouteUpdatesEndpointStatus(ApolloActiveWebSessionUsername(), [NSDate timeIntervalSinceReferenceDate]);
+}
+
+NSArray<NSDictionary<NSString *, id> *> *ApolloWebJSONRouteStatusBlockedPaths(void) {
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    NSMutableSet<NSString *> *fallbackPatterns = [NSMutableSet set];
+    for (NSString *key in ApolloWebJSONRouteFallbackEndpoints()) {
+        [fallbackPatterns addObject:ApolloWebJSONRoutePathPattern([key componentsSeparatedByString:@" "].lastObject)];
+    }
+    NSMutableArray<NSDictionary *> *rows = [NSMutableArray array];
+    for (NSDictionary *row in ApolloWebJSONRouteHealthSnapshot(ApolloActiveWebSessionUsername(), now)) {
+        if ([row[@"blocked"] unsignedIntegerValue] == 0 || [fallbackPatterns containsObject:row[@"pattern"]]) continue;
+        [rows addObject:row];
+    }
+    [rows sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) { return [b[@"blocked"] compare:a[@"blocked"]]; }];
+    return rows;
+}
+
+NSString *ApolloWebJSONRouteStatusHeadline(void) {
+    NSString *account = ApolloActiveWebSessionUsername();
+    if (account.length == 0) return @"";
+    BOOL fallback = NO;
+    for (NSDictionary *endpoint in ApolloRouteUpdatesEndpointStatus(account, [NSDate timeIntervalSinceReferenceDate])) {
+        if ([endpoint[@"allCooling"] boolValue]) return @"Blocked";
+        for (NSDictionary *route in endpoint[@"routes"]) {
+            if ([route[@"cooldownRemaining"] doubleValue] > 0) fallback = YES;
+        }
+    }
+    if (fallback) return @"Using Fallback";
+    return ApolloWebJSONRouteStatusBlockedPaths().count ? @"Some Blocked" : @"Working";
+}
+
+NSString *ApolloWebJSONRouteStatusSummary(void) {
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    NSString *account = ApolloActiveWebSessionUsername();
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    [lines addObject:[NSString stringWithFormat:@"Route status for u/%@ (since launch)", account.length ? account : @"(none)"]];
+    for (NSDictionary *endpoint in ApolloRouteUpdatesEndpointStatus(account, now)) {
+        NSInteger using = [endpoint[@"using"] integerValue];
+        [lines addObject:[NSString stringWithFormat:@"%@: using %@%@%@", endpoint[@"key"],
+                          using >= 0 ? ApolloWebJSONRouteName((ApolloWebJSONRoute)using) : @"?",
+                          [endpoint[@"allCooling"] boolValue] ? @", every route blocked" : @"",
+                          [endpoint[@"remote"] boolValue] ? @", order from keyless-routes.json" : @""]];
+        for (NSDictionary *route in endpoint[@"routes"]) {
+            NSTimeInterval cooling = [route[@"cooldownRemaining"] doubleValue];
+            [lines addObject:[NSString stringWithFormat:@"  %@: %@ ok, %@ blocked%@",
+                              ApolloWebJSONRouteName((ApolloWebJSONRoute)[route[@"route"] integerValue]), route[@"ok"], route[@"blocked"],
+                              cooling > 0 ? [NSString stringWithFormat:@", skipped for %.0f more min", ceil(cooling / 60.0)] : @""]];
+        }
+    }
+    NSArray<NSDictionary *> *blocked = ApolloWebJSONRouteStatusBlockedPaths();
+    [lines addObject:blocked.count ? @"Blocked paths without another route:" : @"Blocked paths without another route: none"];
+    for (NSDictionary *row in blocked) {
+        [lines addObject:[NSString stringWithFormat:@"  %@: %@ blocked, %@ ok", row[@"pattern"], row[@"blocked"], row[@"ok"]]];
+    }
+    NSDictionary *updates = ApolloWebJSONRouteUpdatesStatus();
+    [lines addObject:[NSString stringWithFormat:@"Route updates: %@, last checked %@", updates[@"result"], updates[@"lastChecked"]]];
+    [lines addObject:[@"Overrides: " stringByAppendingString:ApolloWebJSONRouteRemoteTableDescription()]];
+    return [lines componentsJoinedByString:@"\n"];
 }
