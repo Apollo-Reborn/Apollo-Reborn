@@ -91,7 +91,14 @@ typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 - (UIView *)view { return self.viewIfLoaded; }
 - (BOOL)isViewLoaded { return self.viewIfLoaded != nil; }
 @end
-@interface UINavigationController : UIViewController
+// A real content page, as opposed to the split's plain placeholder.
+@interface TestPage : UIViewController @end
+@implementation TestPage @end
+@interface UINavigationController : UIViewController {
+@public
+    // Apollo's own Back pan, read through the runtime like the Swift ivar.
+    UIPanGestureRecognizer *leftScreenEdgePanGestureRecognizer;
+}
 @property(nonatomic, copy) NSArray<UIViewController *> *viewControllers;
 @property(nonatomic, strong) ApolloDuoSplitState *duoState;
 @property(nonatomic) CGRect pane;
@@ -407,6 +414,131 @@ int main(void) {
         highlights.contentSize = CGSizeMake(1800, 200); highlights.alwaysBounceHorizontal = NO;
         highlights.contentOffset = CGPointMake(600, 0);
         Check(![owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch], @"a pushed page with a carousel mid-way keeps it scrolling");
+
+        // Apollo's own interactive Back (its left edge pan) follows the
+        // finger. It owns every pop onto a real page of the same pane, with or
+        // without Disable Left Swipes, and the discrete pane swipe stands down.
+        leftSwipesDisabled = NO;
+        nav = Navigation();
+        Check(ApolloDuoSplitPopRevealsContent(nav) && ApolloDuoNativeBackPanOwns(nav),
+              @"folded / no split: the native pan owns every pop, as on a regular iPhone");
+        ApolloDuoInstallBackSwipe(nav); owner = objc_getAssociatedObject(nav, &kApolloDuoBackSwipe);
+        Check(ApolloDuoBackSwipeCanNavigate(nav) && ![owner gestureRecognizerShouldBegin:owner.swipe],
+              @"no split: the pane swipe stands down for the native pan");
+        owner.highlightGuard.velocity = CGPointMake(300, 40);
+        Check([owner gestureRecognizerShouldBegin:owner.highlightGuard], @"the highlight guard still begins so the row drops its highlight");
+        UIPanGestureRecognizer *nativeBack = [UIPanGestureRecognizer new];
+        Check(!ApolloDuoNativeBackPan(nav), @"no Apollo Back pan yet: nothing is read");
+        nav->leftScreenEdgePanGestureRecognizer = nativeBack;
+        Check(ApolloDuoNativeBackPan(nav) == nativeBack, @"Apollo's Back pan is read from its ivar");
+        Check(![owner gestureRecognizer:owner.swipe shouldBeRequiredToFailByGestureRecognizer:nativeBack],
+              @"Apollo's Back pan does not wait for a pane swipe that stood down: it follows the finger from the first point");
+        Check([owner gestureRecognizer:owner.swipe shouldBeRequiredToFailByGestureRecognizer:row],
+              @"row actions still wait for the edge strip's Back");
+        leftSwipesDisabled = YES;
+        Check(ApolloDuoNativeBackPanOwns(nav) && ![owner gestureRecognizerShouldBegin:owner.swipe],
+              @"Disable Left Swipes does not change who owns the pop");
+        leftSwipesDisabled = NO; resizing = YES;
+        Check(!ApolloDuoNativeBackPanOwns(nav), @"a fold or rotation in progress keeps the native pan from starting");
+        resizing = NO;
+        nav.viewControllers = @[[UIViewController new]];
+        Check(!ApolloDuoNativeBackPanOwns(nav), @"nothing for the native pan to pop at a root");
+
+        // The Posts split: a thread right above its backstop closes with the
+        // column change, never with a native pop onto the backstop.
+        UINavigationController *ownFeed = Navigation(), *ownThread = Navigation();
+        ownFeed.viewControllers = @[[UIViewController new]];
+        UIViewController *backstop = [UIViewController new];
+        ownThread.viewControllers = @[backstop, [TestPage new]];
+        ApolloDuoSplitState *ownPosts = [ApolloDuoSplitState new];
+        ownPosts.split = [NSObject new]; ownPosts.host = [TestDuoHost new]; ownPosts.host.postsShowingDetail = YES;
+        ownPosts.feed = ownFeed; ownPosts.secondary = ownThread; ownFeed.duoState = ownPosts; ownThread.duoState = ownPosts;
+        Check(!ApolloDuoSplitPopRevealsContent(ownThread) && !ApolloDuoNativeBackPanOwns(ownThread),
+              @"thread right above the backstop: not a native pop");
+        ApolloDuoInstallBackSwipe(ownThread); owner = objc_getAssociatedObject(ownThread, &kApolloDuoBackSwipe);
+        ownThread->leftScreenEdgePanGestureRecognizer = nativeBack;
+        Check([owner gestureRecognizerShouldBegin:owner.swipe], @"the pane swipe closes that thread");
+        Check([owner gestureRecognizer:owner.swipe shouldBeRequiredToFailByGestureRecognizer:nativeBack],
+              @"where the pane swipe owns Back, Apollo's pan keeps waiting for it");
+        ownThread.viewControllers = @[backstop, [TestPage new], [TestPage new]];
+        Check(ApolloDuoSplitPopRevealsContent(ownThread) && ApolloDuoNativeBackPanOwns(ownThread),
+              @"a profile pushed over a thread: the native pan owns the pop back to the thread");
+        Check(![owner gestureRecognizerShouldBegin:owner.swipe], @"the pane swipe stands down for that pop");
+        Check(!ApolloDuoNativeBackPanOwns(ownFeed), @"the feed root reveals the list, not a native pop");
+        ownFeed.viewControllers = @[[UIViewController new], [TestPage new]];
+        Check(!ApolloDuoSplitPopRevealsContent(ownFeed) && !ApolloDuoNativeBackPanOwns(ownFeed),
+              @"a feed page beside an open thread: the pane swipe keeps that pop, since Apollo's pans stay off the feed there");
+        ownPosts.host.postsShowingDetail = NO; ownThread.viewControllers = @[backstop];
+        Check(ApolloDuoNativeBackPanOwns(ownFeed), @"a feed-link page with no thread beside it pops natively");
+        ownPosts.changing = YES;
+        Check(!ApolloDuoSplitPopRevealsContent(ownFeed) && !ApolloDuoNativeBackPanOwns(ownFeed),
+              @"column changes never hand a pop to the native pan");
+        ownPosts.changing = NO;
+        UINavigationController *ownOuter = Navigation(), *ownList = Navigation();
+        ownOuter.duoState = ownPosts; ownList.duoState = ownPosts; ownPosts.primary = ownList;
+        Check(!ApolloDuoNativeBackPanOwns(ownOuter) && !ApolloDuoNativeBackPanOwns(ownList),
+              @"the outer host and the drawer list are not panes");
+
+        // A native pop that still lands on the backstop (a Swift-direct pop:
+        // the tab-bar pan, the goBack key command) closes the column.
+        ownPosts.host.postsShowingDetail = YES;
+        ownThread.viewControllers = @[backstop, [TestPage new]];
+        Check(!ApolloDuoPostsPopReachedBackstop(ownPosts, ownThread, ownThread.viewControllers.lastObject),
+              @"while the thread is still on top, nothing closes the column");
+        UIViewController *poppedThread = ownThread.viewControllers.lastObject;
+        ownThread.viewControllers = @[backstop];
+        Check(ApolloDuoPostsPopReachedBackstop(ownPosts, ownThread, backstop), @"a completed pop onto the backstop closes the thread column");
+        Check(!ApolloDuoPostsPopReachedBackstop(ownPosts, ownFeed, backstop)
+              && !ApolloDuoPostsPopReachedBackstop(ownPosts, ownThread, poppedThread),
+              @"only the thread pane showing its backstop closes the column");
+        ownPosts.changing = YES;
+        Check(!ApolloDuoPostsPopReachedBackstop(ownPosts, ownThread, backstop),
+              @"the split's own close (setViewControllers while changing) is not mistaken for a native pop");
+        ownPosts.changing = NO; ownPosts.host.postsShowingDetail = NO;
+        Check(!ApolloDuoPostsPopReachedBackstop(ownPosts, ownThread, backstop), @"an already closed column is not closed again");
+        ApolloDuoSplitState *noFeed = [ApolloDuoSplitState new];
+        noFeed.split = [NSObject new]; noFeed.host = [TestDuoHost new]; noFeed.host.postsShowingDetail = YES;
+        noFeed.secondary = ownThread;
+        Check(!ApolloDuoPostsPopReachedBackstop(noFeed, ownThread, backstop), @"other splits have no thread backstop");
+        ownPosts.split = nil; ownPosts.host.postsShowingDetail = YES;
+        Check(!ApolloDuoPostsPopReachedBackstop(ownPosts, ownThread, backstop), @"no split, no column to close");
+
+        // Sidebar splits: a real previous page pops natively; the empty
+        // detail's placeholder and Account's Overview stay the split's own.
+        UINavigationController *detailPane = Navigation();
+        ApolloDuoSplitState *settings = [ApolloDuoSplitState new];
+        settings.split = [NSObject new]; settings.host = [TestDuoHost new]; settings.kind = @"settings";
+        settings.secondary = detailPane; detailPane.duoState = settings;
+        detailPane.viewControllers = @[[TestPage new], [TestPage new]];
+        Check(ApolloDuoSplitPopRevealsContent(detailPane) && ApolloDuoNativeBackPanOwns(detailPane),
+              @"a deeper Settings page: the native pan owns the pop");
+        ApolloDuoInstallBackSwipe(detailPane); owner = objc_getAssociatedObject(detailPane, &kApolloDuoBackSwipe);
+        Check(![owner gestureRecognizerShouldBegin:owner.swipe], @"the pane swipe stands down for a deeper Settings page");
+        detailPane.viewControllers = @[[TestPage new]];
+        Check(!ApolloDuoNativeBackPanOwns(detailPane), @"a sidebar detail root: nothing to pop");
+        detailPane.viewControllers = @[[UIViewController new], [TestPage new]];
+        Check(!ApolloDuoSplitPopRevealsContent(detailPane) && !ApolloDuoNativeBackPanOwns(detailPane),
+              @"an empty detail's placeholder is not content");
+        Check([owner gestureRecognizerShouldBegin:owner.swipe], @"the pane swipe keeps the pop onto the placeholder");
+        UINavigationController *accountPane = Navigation();
+        ApolloDuoSplitState *accountDetail = [ApolloDuoSplitState new];
+        accountDetail.split = [NSObject new]; accountDetail.host = [TestDuoHost new]; accountDetail.kind = @"account";
+        accountDetail.root = [TestPage new]; accountDetail.secondary = accountPane; accountPane.duoState = accountDetail;
+        accountPane.viewControllers = @[accountDetail.root, [TestPage new]];
+        Check(!ApolloDuoSplitPopRevealsContent(accountPane) && !ApolloDuoNativeBackPanOwns(accountPane),
+              @"Back to the Account Overview stays the split's own transition");
+        accountPane.viewControllers = @[accountDetail.root, [TestPage new], [TestPage new]];
+        Check(ApolloDuoNativeBackPanOwns(accountPane), @"a deeper Account page pops natively to the page below it");
+        UINavigationController *ownProfile = Navigation();
+        ownProfile.viewControllers = @[[UIViewController new]];
+        ApolloDuoSplitState *ownAccount = [ApolloDuoSplitState new];
+        ownAccount.split = [NSObject new]; ownAccount.host = [TestDuoHost new];
+        ownAccount.kind = @"account"; ownAccount.tabKind = @"subreddits";
+        ownAccount.profilePrefix = @[[UIViewController new]];
+        ownAccount.secondary = ownProfile; ownAccount.root = ownProfile.viewControllers.firstObject;
+        ownProfile.duoState = ownAccount;
+        Check(ApolloDuoSplitCanReturnFromVisitedProfile(ownProfile) && !ApolloDuoNativeBackPanOwns(ownProfile),
+              @"leaving a visited profile is not a native pop");
 
         // A visited profile is the account split's one-page detail root: Back
         // leaves it the way its Back button does, with or without the setting.

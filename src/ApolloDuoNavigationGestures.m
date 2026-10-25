@@ -41,6 +41,27 @@ static BOOL ApolloDuoBackSwipeStartsAnywhere(void) {
     return [NSUserDefaults.standardUserDefaults boolForKey:@"DisableLeftSwipeGestureActions"];
 }
 
+// Apollo's own interactive Back: its left edge pan, a Swift ivar. UIKit's
+// interactivePopGestureRecognizer never runs on Apollo's stacks.
+UIGestureRecognizer *ApolloDuoNativeBackPan(UINavigationController *navigation) {
+    Ivar ivar = navigation ? class_getInstanceVariable(navigation.class, "leftScreenEdgePanGestureRecognizer") : NULL;
+    id pan = ivar ? object_getIvar(navigation, ivar) : nil;
+    return [pan isKindOfClass:UIGestureRecognizer.class] ? pan : nil;
+}
+
+// Apollo's own Back pan follows the finger. Let it own every pop onto a real
+// page of the same pane, and every pop with no split (folded, portrait), with
+// or without Disable Left Swipes; the discrete pane swipe stands down for it.
+// The pane swipe keeps what that pan can't do: closing the thread right above
+// the Posts backstop (a column change, not a page pop), leaving a visited
+// profile, revealing the drawer at the feed root, and the pops onto a page
+// only the split lays out, or beside a thread (ApolloDuoSplitPopRevealsContent).
+BOOL ApolloDuoNativeBackPanOwns(UINavigationController *navigation) {
+    return navigation.viewControllers.count > 1 && !ApolloDuoSplitIsResizing()
+        && !ApolloDuoSplitCanReturnFromVisitedProfile(navigation)
+        && ApolloDuoSplitPopRevealsContent(navigation);
+}
+
 static CGRect ApolloDuoBackSwipePane(UINavigationController *navigation) {
     UIView *view = navigation.view;
     CGRect pane = ApolloDuoSplitContentFrame(navigation, view);
@@ -168,7 +189,8 @@ static const NSTimeInterval kApolloDuoHighlightGuardDelay = 0.12;
         CGPoint velocity = [self.highlightGuard velocityInView:self.navigation.view];
         return fabs(velocity.x) > fabs(velocity.y) * 1.5;
     }
-    return gesture == self.swipe && ApolloDuoBackSwipeCanNavigate(self.navigation);
+    return gesture == self.swipe && ApolloDuoBackSwipeCanNavigate(self.navigation)
+        && !ApolloDuoNativeBackPanOwns(self.navigation);
 }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture
         shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
@@ -183,10 +205,14 @@ static const NSTimeInterval kApolloDuoHighlightGuardDelay = 0.12;
     // At the narrow edge strip, give Back priority over horizontal row actions.
     // Away from that strip shouldReceiveTouch: rejects this recognizer outright
     // unless Disable Left Swipes has already turned those row actions off.
+    // Apollo's own Back pan never waits for a swipe that stands down for it,
+    // or the page would only start following the finger once the swipe failed.
     BOOL scrollPan = [other.view isKindOfClass:UIScrollView.class]
         && other == ((UIScrollView *)other.view).panGestureRecognizer;
+    BOOL nativeBack = other == ApolloDuoNativeBackPan(self.navigation)
+        && ApolloDuoNativeBackPanOwns(self.navigation);
     return gesture == self.swipe && other != self.highlightGuard
-        && [other isKindOfClass:UIPanGestureRecognizer.class] && !scrollPan;
+        && [other isKindOfClass:UIPanGestureRecognizer.class] && !scrollPan && !nativeBack;
 }
 - (void)guardMoved:(UIPanGestureRecognizer *)gesture {
     // Nothing to do: recognizing is the point (cancelsTouchesInView clears the row highlight).
