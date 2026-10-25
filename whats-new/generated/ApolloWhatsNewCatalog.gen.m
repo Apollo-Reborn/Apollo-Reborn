@@ -90,7 +90,7 @@ static const ApolloWhatsNewItemEntry kWhatsNewItems[] = {
     { "4.0.0", "clock.fill", "Recently Read, Rebuilt", "Your reading history now uses Apollo's native feed, layouts, swipe actions and post menus." },
     { "4.0.0", "magnifyingglass.circle.fill", "Make Search Yours", "Find recently visited subreddits and choose the order and limits of Search's sections." },
     { "4.0.0", "slider.horizontal.3", "Setup Assistant", "Connect or restore an account, choose a starting layout, and review your preferences before applying them." },
-    { "4.0.0", "checkmark.shield.fill", "Safer Bug Reports", "Debug logs mask usernames and sensitive values, and bug reports attach a removable log automatically." },
+    { "4.0.0", "arrow.down.circle.fill", "Downvote by Tapping", "Tap a post or comment score to cycle through upvote, downvote and no vote. Enable Add Downvote Tap in Posts & Feeds \342\206\222 Info Row." },
 };
 
 static NSString *S(const char *value) { return [NSString stringWithUTF8String:value]; }
