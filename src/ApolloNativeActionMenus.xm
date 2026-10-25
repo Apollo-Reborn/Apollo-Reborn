@@ -592,7 +592,10 @@ static CGRect ApolloNativeActionMenuOpaqueBounds(UIImage *image) {
 }
 
 UIImage *ApolloNativeActionMenuAssetIcon(NSString *assetName, CGFloat side) {
-    UIImage *image = [UIImage imageNamed:assetName];
+    return ApolloNativeActionMenuFittedIcon([UIImage imageNamed:assetName], side);
+}
+
+UIImage *ApolloNativeActionMenuFittedIcon(UIImage *image, CGFloat side) {
     CGRect glyph = image ? ApolloNativeActionMenuOpaqueBounds(image) : CGRectZero;
     if (glyph.size.width <= 0.0 || glyph.size.height <= 0.0) return ApolloNativeActionMenuSizedIcon(image);
     // Unlike the native rows' helper, trim the transparent margin and scale UP:

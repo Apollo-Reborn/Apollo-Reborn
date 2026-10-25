@@ -106,6 +106,7 @@ Class ApolloClassThickSeparatorCellNode;
 Class ApolloClassThinSeparatorCellNode;
 Class ApolloClassTranslatorViewController;
 Class ApolloClassUIBarBadgeView;
+Class ApolloClassUIButtonBarButton;
 Class ApolloClassUIButtonLabel;
 Class ApolloClassUIContextMenuListView;
 Class ApolloClassUIContextMenuPlatformMetricsGlass;
@@ -242,6 +243,7 @@ __attribute__((constructor)) static void ApolloClassesResolve(void) {
     ApolloClassThinSeparatorCellNode = objc_getClass("_TtC6Apollo21ThinSeparatorCellNode");
     ApolloClassTranslatorViewController = objc_getClass("_TtC6Apollo24TranslatorViewController");
     ApolloClassUIBarBadgeView = objc_getClass("_UIBarBadgeView");
+    ApolloClassUIButtonBarButton = objc_getClass("_UIButtonBarButton");
     ApolloClassUIButtonLabel = objc_getClass("UIButtonLabel");
     ApolloClassUIContextMenuListView = objc_getClass("_UIContextMenuListView");
     ApolloClassUIContextMenuPlatformMetricsGlass = objc_getClass("_UIContextMenuPlatformMetrics_Glass");

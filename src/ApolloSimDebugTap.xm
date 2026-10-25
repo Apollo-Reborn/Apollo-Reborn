@@ -1793,6 +1793,62 @@ static void ApolloSimDebugMutateNavigationItem(NSString *columnName) {
               ApolloSimDebugNavigationItemSummary(top.navigationItem));
 }
 
+// "railpad <n>" pads the top controller's trailing items with n dummy icons
+// (0 removes them), so a Duo rail can be pushed into UIKit's overflow without
+// a Live Activity, which the simulator can't show for another app.
+// The rail shows the trailing items of the visible page, which can sit inside
+// a container (the Duo split host): take the first controller that has some.
+static UIViewController *ApolloSimDebugTrailingItemsOwner(UIViewController *controller) {
+    if (!controller.isViewLoaded || !controller.view.window) return nil;
+    for (UIViewController *child in controller.childViewControllers) {
+        UIViewController *owner = ApolloSimDebugTrailingItemsOwner(child);
+        if (owner) return owner;
+    }
+    return controller.navigationItem.rightBarButtonItems.count ? controller : nil;
+}
+
+// "railprobe" logs every bar button view in the window: frame, labels, and
+// the ivars that might tie it back to its UIBarButtonItem.
+static void ApolloSimDebugProbeRailView(UIView *view) {
+    if ([NSStringFromClass(view.class) isEqualToString:@"_UIButtonBarButton"]) {
+        CGRect frame = [view convertRect:view.bounds toView:nil];
+        NSMutableString *ivars = [NSMutableString string];
+        for (Class cls = view.class; cls && cls != UIView.class; cls = class_getSuperclass(cls)) {
+            unsigned int count = 0;
+            Ivar *list = class_copyIvarList(cls, &count);
+            for (unsigned int index = 0; index < count; index++) {
+                const char *type = ivar_getTypeEncoding(list[index]);
+                id value = type && type[0] == '@' ? object_getIvar(view, list[index]) : nil;
+                [ivars appendFormat:@" %s=%@", ivar_getName(list[index]), value ? NSStringFromClass([value class]) : @"-"];
+            }
+            free(list);
+        }
+        ApolloLog(@"[SimDebugTap] railprobe %@ label=%@ id=%@ hidden=%d alpha=%.2f%@",
+                  NSStringFromCGRect(frame), view.accessibilityLabel, view.accessibilityIdentifier,
+                  view.hidden, view.alpha, ivars);
+    }
+    for (UIView *subview in view.subviews) ApolloSimDebugProbeRailView(subview);
+}
+
+static void ApolloSimDebugPadRail(NSInteger count) {
+    UIViewController *top = ApolloSimDebugSelectedNavigationController(@"primary").topViewController;
+    top = ApolloSimDebugTrailingItemsOwner(top) ?: top;
+    UINavigationItem *item = top.navigationItem;
+    NSMutableArray<UIBarButtonItem *> *items = [NSMutableArray array];
+    for (UIBarButtonItem *candidate in item.rightBarButtonItems ?: @[]) {
+        if (![candidate.accessibilityIdentifier isEqualToString:@"ApolloSimRailPad"]) [items addObject:candidate];
+    }
+    for (NSInteger index = 0; index < count; index++) {
+        UIBarButtonItem *pad = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"circle"]
+                                                                style:UIBarButtonItemStylePlain target:nil action:nil];
+        pad.accessibilityIdentifier = @"ApolloSimRailPad";
+        [items insertObject:pad atIndex:0];
+    }
+    [item setRightBarButtonItems:items animated:NO];
+    ApolloLog(@"[SimDebugTap] railpad %ld on %@ (%lu trailing items)", (long)count,
+              NSStringFromClass(top.class), (unsigned long)items.count);
+}
+
 // "navback [primary|detail]" command: perform the navigation-controller pop that UIKit's Back
 // button would request. Xcode 27 currently drops idb HID events, so this keeps
 // compact ownership tests deterministic while still exercising the real stack
@@ -2664,6 +2720,14 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
                 return;
             }
             ApolloSimDebugRunInteractiveTransitionRace([outcome isEqualToString:@"commit"]);
+            return;
+        }
+        if ([contents hasPrefix:@"railprobe"]) {
+            for (UIWindow *window in ApolloAllWindows()) ApolloSimDebugProbeRailView(window);
+            return;
+        }
+        if ([contents hasPrefix:@"railpad"]) {
+            ApolloSimDebugPadRail([[contents substringFromIndex:@"railpad".length] integerValue]);
             return;
         }
         if ([contents hasPrefix:@"navitemdump"]) {
