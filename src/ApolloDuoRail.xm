@@ -95,16 +95,7 @@ static CGRect ApolloDuoFullThreadFrame(ASDisplayNode *node, CGRect frame) {
 %end
 %end
 
-@interface ApolloDuoComposeTextView : UITextView
-@end
-
-%group ApolloDuoComposeHooks
-%hook ApolloDuoComposeTextView
-- (void)setFrame:(CGRect)frame {
-    __unsafe_unretained UITextView *editor = (id)self;
-    // Apollo lays its markdown editor out using the scroll view's full width,
-    // which includes the cover display's reserved trailing strip. Repair the
-    // original frame write; leave native text/keyboard insets and height alone.
+static CGFloat ApolloDuoComposeContentWidth(UITextView *editor, CGFloat x, CGFloat proposedWidth) {
     if (NSThread.isMainThread && ApolloDuoUsesCoverContentInsets() && editor.superview) {
         UIViewController *compose = nil;
         for (UIResponder *responder = editor; responder; responder = responder.nextResponder) {
@@ -119,13 +110,34 @@ static CGRect ApolloDuoFullThreadFrame(ASDisplayNode *node, CGRect frame) {
             UIEdgeInsets insets = ApolloDeviceChromeInsetsForView(root);
             CGRect usable = UIEdgeInsetsInsetRect(root.bounds, insets);
             usable = [root convertRect:usable toView:editor.superview];
-            CGFloat right = MIN(CGRectGetMaxX(frame), CGRectGetMaxX(usable));
-            CGFloat width = right - CGRectGetMinX(frame);
+            CGFloat right = MIN(x + proposedWidth, CGRectGetMaxX(usable));
+            CGFloat width = right - x;
             if (!CGRectIsNull(usable) && !CGRectIsInfinite(usable) && isfinite(width) && width > 20.0) {
-                frame.size.width = width;
+                return width;
             }
         }
     }
+    return proposedWidth;
+}
+
+@interface ApolloDuoComposeTextView : UITextView
+@end
+
+%group ApolloDuoComposeHooks
+%hook ApolloDuoComposeTextView
+- (CGSize)sizeThatFits:(CGSize)size {
+    __unsafe_unretained UITextView *editor = (id)self;
+    // The native composer measures height before assigning the editor frame.
+    // Measure at the same usable width so wrapped final lines are not clipped
+    // and Apollo can size its scroll content/quoted reply from the real height.
+    size.width = ApolloDuoComposeContentWidth(editor, CGRectGetMinX(editor.frame), size.width);
+    return %orig(size);
+}
+- (void)setFrame:(CGRect)frame {
+    __unsafe_unretained UITextView *editor = (id)self;
+    // Repair Apollo's original full-width write without a second layout pass;
+    // native measurement still owns height and keyboard/text insets.
+    frame.size.width = ApolloDuoComposeContentWidth(editor, CGRectGetMinX(frame), CGRectGetWidth(frame));
     %orig(frame);
 }
 %end
