@@ -73,6 +73,41 @@ int main(void) {
           "an already-placed FAB is a no-op");
     Check(ApolloDuoSubsChromeShouldNudgeFrame(fab.x + 8.0, fab.y, fab.x, fab.y),
           "a FAB sitting in the corner is nudged once");
+    /* Subreddit drawer spring: continue a release's speed toward the
+       target without overshooting it. */
+    double omega = ApolloDuoDrawerSpringOmega();
+    Check(omega > 17.9 && omega < 18.0,
+          "drawer spring settles with a 0.35 s response");
+    Check(ApolloDuoDrawerSpringInitialVelocity(-372, 0, 0) == 0,
+          "a programmatic open starts at rest");
+    Check(ApolloDuoDrawerSpringInitialVelocity(-372, 0, 1860) == 5,
+          "an opening flick becomes travel fractions per second");
+    Check(ApolloDuoDrawerSpringInitialVelocity(-100, -372, -1360) == 5,
+          "a closing flick keeps its speed toward the edge");
+    Check(ApolloDuoDrawerSpringInitialVelocity(-100, 0, -800) == 0,
+          "a release away from the target starts at rest");
+    Check(ApolloDuoDrawerSpringInitialVelocity(-20, 0, 4000) == omega,
+          "a fast release near the target is capped so it does not overshoot");
+    Check(ApolloDuoDrawerSpringInitialVelocity(0, 0, 900) == 0,
+          "a zero-distance slide has no velocity");
+
+    /* Feed anchor across a column resize: the same point of the same row
+       stays at the same height on screen, within the scrollable range. */
+    Check(ApolloDuoAnchoredOffset(1000, 200, 0.5, 300, -50, 5000) == 800,
+          "a row that keeps its height keeps its screen position");
+    Check(ApolloDuoAnchoredOffset(1200, 300, 0.5, 300, -50, 5000) == 1050,
+          "a row that rewraps taller keeps its middle under the same point");
+    Check(ApolloDuoAnchoredOffset(100, 200, 0.0, 400, -50, 5000) == -50,
+          "the offset never scrolls above the top inset");
+    Check(ApolloDuoAnchoredOffset(9000, 200, 1.0, 0, -50, 5000) == 5000,
+          "the offset never scrolls past the end");
+    /* A feed resting at its top stays at its top: anchoring a row there
+       scrolls the first post under the search bar, which then collapses. */
+    Check(ApolloDuoFeedRestsAtTop(-136, -136), "the top rest is the top");
+    Check(ApolloDuoFeedRestsAtTop(-135.5, -136), "half a point below the rest is still the top");
+    Check(!ApolloDuoFeedRestsAtTop(-122.5, -136), "a feed scrolled a little is anchored");
+    Check(!ApolloDuoFeedRestsAtTop(400, -136), "a feed scrolled down is anchored");
+
     printf("OK: %u checks\n", checks);
     return 0;
 }

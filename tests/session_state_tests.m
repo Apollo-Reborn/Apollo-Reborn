@@ -97,6 +97,20 @@ int main(void) {
         Check(!ApolloSessionStateFeedURLMatchesSavedRoute(
                    @"apollo://reddit.com/r/apolloapp", @"apollo://reddit.com/r/ios"),
               @"unrelated feed cannot receive saved sort state");
+        Check(ApolloSessionStateBuiltInFeedIndex(@"apollo://reddit.com/r/all") == 2,
+              @"saved r/all restores Apollo's built-in All feed");
+        Check(ApolloSessionStateBuiltInFeedIndex(@"apollo://reddit.com/r/All") == 2,
+              @"built-in All matches case-insensitively");
+        Check(ApolloSessionStateBuiltInFeedIndex(@"apollo://reddit.com/r/popular") == 1,
+              @"saved r/popular restores Apollo's built-in Popular feed");
+        Check(ApolloSessionStateBuiltInFeedIndex(@"apollo://reddit.com/r/allthingsapple") == NSNotFound,
+              @"a subreddit merely starting with all is not the All feed");
+        Check(ApolloSessionStateBuiltInFeedIndex(@"apollo://reddit.com/r/all/comments/abc/x") == NSNotFound,
+              @"an r/all post route is not the All feed");
+        Check(ApolloSessionStateBuiltInFeedIndex(@"apollo://reddit.com/r/apolloapp") == NSNotFound,
+              @"ordinary subreddits keep URL routing");
+        Check(ApolloSessionStateBuiltInFeedIndex(nil) == NSNotFound,
+              @"missing route is not a built-in feed");
         Check([ApolloSessionStatePreferredAccountScope(@"persisted-a", @"live-b", YES)
                   isEqual:@"live-b"],
               @"account-ready retry prefers coherent live identity");

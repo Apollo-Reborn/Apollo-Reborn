@@ -217,6 +217,14 @@ BOOL ApolloDuoCoverChromeIsActive(void) {
     return ApolloDuoCoverShouldApplyForTabs(tabs);
 }
 
+BOOL ApolloDuoUsesCoverContentInsets(void) {
+    UITabBarController *tabs = (id)ApolloMainTabBarController();
+    return ApolloDeviceIsDuo()
+        && UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone
+        && [tabs isKindOfClass:UITabBarController.class] && tabs.isViewLoaded
+        && !ApolloDuoSplitIsUnfolded();
+}
+
 static BOOL ApolloDuoCoverClassLooksLikeComments(Class cls) {
     const char *name = class_getName(cls);
     return name && strstr(name, "CommentsViewController");
