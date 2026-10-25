@@ -28,7 +28,9 @@
 @property(nonatomic) NSUInteger superMoves, targetCount, disables;
 // Starts enabled; counts every disable (UIKit cancels a recognizer then).
 @property(nonatomic, getter=isEnabled) BOOL enabled;
+@property(nonatomic) CGPoint location;
 - (instancetype)initWithTarget:(id)target action:(SEL)action;
+- (CGPoint)locationInView:(UIView *)view;
 - (void)addTarget:(id)target action:(SEL)action;
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event;
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event;
@@ -38,6 +40,7 @@
 - (instancetype)init { if ((self = [super init])) _enabled = YES; return self; }
 - (instancetype)initWithTarget:(__unused id)target action:(__unused SEL)action { return [self init]; }
 - (void)setEnabled:(BOOL)enabled { if (!enabled) self.disables++; _enabled = enabled; }
+- (CGPoint)locationInView:(__unused UIView *)view { return self.location; }
 - (void)addTarget:(__unused id)target action:(__unused SEL)action { self.targetCount++; }
 - (void)touchesBegan:(__unused NSSet<UITouch *> *)touches withEvent:(__unused UIEvent *)event {}
 - (void)touchesMoved:(__unused NSSet<UITouch *> *)touches withEvent:(__unused UIEvent *)event { self.superMoves++; }
@@ -189,13 +192,13 @@ static UINavigationController *Navigation(void) {
 }
 // A clear rightward move: may the pane Back begin?
 static BOOL Begins(ApolloDuoBackSwipe *owner) {
-    owner.pan.velocity = CGPointMake(300, 40);
+    owner.pan.velocity = CGPointMake(300, 40); owner.pan.translation = CGPointMake(12, 1);
     return [owner gestureRecognizerShouldBegin:owner.pan];
 }
 // Drives the pane Back through began, changed and ended, as UIKit does once
 // it has begun; the release has translation dx and horizontal velocity vx.
 static void Drag(ApolloDuoBackSwipe *owner, CGFloat dx, CGFloat vx) {
-    UIPanGestureRecognizer *pan = owner.pan;
+    ApolloDuoPaneBackPan *pan = owner.pan;
     pan.translation = CGPointZero; pan.velocity = CGPointMake(300, 40);
     pan.state = UIGestureRecognizerStateBegan; [owner panned:pan];
     pan.translation = CGPointMake(dx, 4); pan.velocity = CGPointMake(vx, 10);
@@ -247,7 +250,7 @@ int main(void) {
         ApolloDuoInstallBackSwipe(nav); ApolloDuoInstallBackSwipe(nav);
         Check(ApolloDuoHasBackSwipe(nav) && nav.view.gestureRecognizers.count == 2, @"recognizer installation is idempotent (swipe + highlight guard)");
         ApolloDuoBackSwipe *owner = objc_getAssociatedObject(nav, &kApolloDuoBackSwipe);
-        Check([owner.pan isMemberOfClass:UIPanGestureRecognizer.class] && owner.pan.maximumNumberOfTouches == 1
+        Check([owner.pan isMemberOfClass:ApolloDuoPaneBackPan.class] && owner.pan.maximumNumberOfTouches == 1
               && [owner.pan.name isEqualToString:@"ApolloReborn.Duo.PaneBack"] && owner.pan.delegate == owner
               && [nav.view.gestureRecognizers containsObject:owner.pan],
               @"Back is a one-finger pan, ApolloReborn.Duo.PaneBack, beside its highlight guard");
@@ -774,7 +777,10 @@ int main(void) {
         routeThread.viewControllers = @[routeBackstop, [TestPage new]];
         ApolloDuoInstallBackSwipe(routeThread);
         ApolloDuoBackSwipe *routeOwner = objc_getAssociatedObject(routeThread, &kApolloDuoBackSwipe);
-        UIPanGestureRecognizer *paneBack = routeOwner.pan;
+        ApolloDuoPaneBackPan *paneBack = routeOwner.pan;
+        // A rightward motion so far that is not clear on its own: the
+        // velocity decides these.
+        paneBack.translation = CGPointMake(10, 8);
         paneBack.velocity = CGPointMake(300, 40);
         Check([routeOwner gestureRecognizerShouldBegin:paneBack], @"begin: a clearly rightward move");
         paneBack.velocity = CGPointMake(300, 199);
@@ -789,8 +795,34 @@ int main(void) {
         Check(![routeOwner gestureRecognizerShouldBegin:paneBack], @"begin: a vertical move is scrolling");
         paneBack.velocity = CGPointZero;
         Check(![routeOwner gestureRecognizerShouldBegin:paneBack], @"begin: no move, no Back");
+        // Or the motion so far decides: the velocity at hysteresis can carry
+        // a finger's first jitter (ApolloFeedGalleryCarousel.xm records it).
+        paneBack.translation = CGPointMake(14, 2); paneBack.velocity = CGPointMake(300, 400);
+        Check([routeOwner gestureRecognizerShouldBegin:paneBack], @"begin: a clean rightward motion survives a jittery velocity");
+        paneBack.velocity = CGPointMake(-200, 10);
+        Check([routeOwner gestureRecognizerShouldBegin:paneBack], @"begin: a clean rightward motion survives a backward jitter");
+        paneBack.translation = CGPointMake(-14, 1); paneBack.velocity = CGPointMake(300, 10);
+        Check(![routeOwner gestureRecognizerShouldBegin:paneBack], @"begin: a leftward motion never begins Back, whatever the velocity");
+        paneBack.translation = CGPointMake(5, 14);
+        Check(![routeOwner gestureRecognizerShouldBegin:paneBack], @"begin: a mostly vertical motion is a scroll, whatever the velocity");
+        paneBack.translation = CGPointMake(0, 12);
+        Check(![routeOwner gestureRecognizerShouldBegin:paneBack], @"begin: a straight vertical motion is a scroll");
+        paneBack.translation = CGPointMake(10, 8); paneBack.velocity = CGPointMake(300, 250);
+        Check(![routeOwner gestureRecognizerShouldBegin:paneBack], @"begin: neither the motion nor the velocity is clear");
+        // UIKit strips its hysteresis from the translation before this
+        // callback, so the motion is measured from the first finger's touch-down.
+        UITouch *firstFinger = [UITouch new]; firstFinger.point = CGPointMake(6, 300);
+        [paneBack touchesBegan:[NSSet setWithObject:firstFinger] withEvent:[UIEvent new]];
+        paneBack.translation = CGPointZero; paneBack.location = CGPointMake(20, 302);
+        paneBack.velocity = CGPointMake(300, 400);
+        Check([routeOwner gestureRecognizerShouldBegin:paneBack], @"begin: the motion since touch-down counts even when the translation is empty");
+        paneBack.location = CGPointMake(9, 316);
+        paneBack.velocity = CGPointMake(300, 10);
+        Check(![routeOwner gestureRecognizerShouldBegin:paneBack], @"begin: a vertical motion since touch-down is a scroll");
+        [paneBack reset];
+        paneBack.translation = CGPointMake(10, 8);
         routeThread.viewControllers = @[routeBackstop, [TestPage new], [TestPage new]];
-        paneBack.velocity = CGPointMake(300, 40);
+        paneBack.velocity = CGPointMake(300, 40); paneBack.translation = CGPointMake(12, 1);
         Check(![routeOwner gestureRecognizerShouldBegin:paneBack], @"begin: never where the native pan owns the pop");
         routeThread.viewControllers = @[routeBackstop, [TestPage new]];
 
@@ -804,16 +836,27 @@ int main(void) {
         Check([routeOwner gestureRecognizer:paneBack shouldReceiveTouch:touch]
               && [routeOwner gestureRecognizer:paneBack shouldRecognizeSimultaneouslyWithGestureRecognizer:table.panGestureRecognizer],
               @"the pan takes the edge touch and runs alongside the table's scroll pan");
+        [paneBack touchesBegan:[NSSet setWithObject:touch] withEvent:[UIEvent new]];
+        UIView *secondCell = [UIView new]; secondCell.superview = elsewhere;
+        UITouch *secondFinger = [UITouch new]; secondFinger.point = CGPointMake(400, 500); secondFinger.view = secondCell;
+        [paneBack touchesBegan:[NSSet setWithObject:secondFinger] withEvent:[UIEvent new]];
+        Check(paneBack.touchView == routeCell && CGPointEqualToPoint(paneBack.touchStart, CGPointMake(6, 300)),
+              @"a second finger never replaces the first finger's touch-down");
         Check(table.panGestureRecognizer.disables == 0, @"no scroll pan is touched before the pan begins");
         NSUInteger routePops = routeThread.pops;
         Drag(routeOwner, 100, 200);
         Check(table.panGestureRecognizer.disables == 1 && table.panGestureRecognizer.enabled
               && elsewhere.panGestureRecognizer.disables == 0,
-              @"the table's scroll pan under the finger is cancelled once and re-enabled when the pan begins");
+              @"the table's scroll pan under the first finger is cancelled once and re-enabled when the pan begins");
+        Check(!paneBack.touchView, @"once the pan began, its touch-down view is let go");
+        [paneBack reset];
+        Check(!paneBack.touchView && !paneBack.tracksTouch, @"reset forgets the touch-down");
+        [paneBack touchesBegan:[NSSet setWithObject:touch] withEvent:[UIEvent new]];
         Check(routeThread.pops == routePops && routeThread.viewControllers.count == 2,
               @"a slow drag short of the threshold does nothing");
         Drag(routeOwner, 1280 * 0.35, 0);
         Check(routeThread.pops == routePops + 1, @"a slow drag past a third of the pane closes the thread");
+        [paneBack reset];
         Check(table.panGestureRecognizer.disables == 2 && table.panGestureRecognizer.enabled, @"each pan cancels the scroll once");
 
         // The route is decided again on release: a Back that changed owner
@@ -848,7 +891,7 @@ int main(void) {
         leftSwipesDisabled = YES; routePosts.host.listVisible = NO; routePosts.host.postsShowingDetail = YES;
         routeThread.viewControllers = @[routeBackstop, [TestPage new]]; routePops = routeThread.pops;
         routeReveals = drawerReveals;
-        UIPanGestureRecognizer *feedBack = drawerOwner.pan;
+        ApolloDuoPaneBackPan *feedBack = drawerOwner.pan;
         feedBack.velocity = CGPointMake(300, 40); feedBack.translation = CGPointZero;
         feedBack.state = UIGestureRecognizerStateBegan; [drawerOwner panned:feedBack];
         Check(drawerOwner.route.owner == ApolloDuoBackOwnerDrawer, @"the feed-pane pan beside a thread began as the drawer");

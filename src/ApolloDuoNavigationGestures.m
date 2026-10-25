@@ -221,14 +221,45 @@ static const NSTimeInterval kApolloDuoHighlightGuardDelay = 0.12;
 }
 @end
 
+// The pane Back keeps its first finger's touch-down: where the drag started,
+// for the direction check, and the view under it, whose scrollers stop when
+// Back begins. A second finger never replaces either; reset forgets both.
+@interface ApolloDuoPaneBackPan : UIPanGestureRecognizer
+@property(nonatomic, weak) UIView *touchView;
+@property(nonatomic) CGPoint touchStart;
+@property(nonatomic) BOOL tracksTouch;
+@end
+
+@implementation ApolloDuoPaneBackPan
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesBegan:touches withEvent:event];
+    if (self.tracksTouch || self.state != UIGestureRecognizerStatePossible) return;
+    UITouch *touch = touches.anyObject;
+    self.tracksTouch = YES;
+    self.touchView = touch.view;
+    self.touchStart = [touch locationInView:self.view];
+}
+// The motion since touch-down. UIKit strips its pan hysteresis from the
+// translation before gestureRecognizerShouldBegin:, which leaves only the
+// last few points there.
+- (CGPoint)motionSoFar {
+    if (!self.tracksTouch) return [self translationInView:self.view];
+    CGPoint now = [self locationInView:self.view];
+    return CGPointMake(now.x - self.touchStart.x, now.y - self.touchStart.y);
+}
+- (void)reset {
+    [super reset];
+    self.tracksTouch = NO;
+    self.touchView = nil;
+}
+@end
+
 @interface ApolloDuoBackSwipe : NSObject <UIGestureRecognizerDelegate>
 @property(nonatomic, weak) UINavigationController *navigation;
 // The pane Back. It begins on a clearly rightward move and is routed once,
 // then decided again on release (ApolloDuoBackRoute, ApolloDuoBackShouldCommit).
-@property(nonatomic, strong) UIPanGestureRecognizer *pan;
+@property(nonatomic, strong) ApolloDuoPaneBackPan *pan;
 @property(nonatomic) ApolloDuoBackRouting route;
-// The view under the pan's touch, whose scrollers stop when Back begins.
-@property(nonatomic, weak) UIView *touchView;
 // Recognizes as soon as a touch the Back pan accepts moves clearly sideways, so the
 // row under the finger gets touchesCancelled and drops its highlight, before the
 // pan has moved far enough to begin.
@@ -260,10 +291,8 @@ BOOL ApolloDuoNativeBackInFlight(UINavigationController *navigation) {
     CGPoint point = [touch locationInView:navigation.view];
     if ((gesture != self.pan && gesture != self.highlightGuard)
         || !ApolloDuoBackSwipeAcceptsPoint(navigation, point)) return NO;
-    BOOL accepts = ApolloDuoBackSwipeInEdgeStrip(ApolloDuoBackSwipePane(navigation), point)
+    return ApolloDuoBackSwipeInEdgeStrip(ApolloDuoBackSwipePane(navigation), point)
         || !ApolloDuoBackSwipeTouchOwnsHorizontalDrag(touch.view, navigation.view, ApolloDuoBackSwipeRevealsAtRoot(navigation));
-    if (accepts && gesture == self.pan) self.touchView = touch.view;
-    return accepts;
 }
 // The pane Back may not act on a navigation Apollo's own Back is popping.
 - (BOOL)backIsFree:(ApolloDuoBackRouting)route {
@@ -279,10 +308,16 @@ BOOL ApolloDuoNativeBackInFlight(UINavigationController *navigation) {
     }
     if (gesture != self.pan) return NO;
     // Rightward and clearly sideways: a leftward move is a row action, a
-    // steep one is scrolling, and both fail this pan at once.
+    // steep one is scrolling, and both fail this pan at once. The motion so
+    // far must head right and not mostly up or down; then either it or the
+    // velocity at hysteresis must be clearly sideways, since a finger's first
+    // points can carry vertical jitter the motion as a whole does not.
+    CGPoint motion = [self.pan motionSoFar];
     CGPoint velocity = [self.pan velocityInView:self.navigation.view];
-    return velocity.x > 0.0 && fabs(velocity.x) > fabs(velocity.y) * 1.5
-        && [self backIsFree:ApolloDuoBackRouteForNavigation(self.navigation)];
+    BOOL rightward = motion.x > 0.0 && fabs(motion.y) <= fabs(motion.x);
+    BOOL sideways = (velocity.x > 0.0 && fabs(velocity.x) > fabs(velocity.y) * 1.5)
+        || fabs(motion.x) > fabs(motion.y) * 1.5;
+    return rightward && sideways && [self backIsFree:ApolloDuoBackRouteForNavigation(self.navigation)];
 }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture
         shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
@@ -314,11 +349,12 @@ BOOL ApolloDuoNativeBackInFlight(UINavigationController *navigation) {
 - (void)guardMoved:(UIPanGestureRecognizer *)gesture {
     // Nothing to do: recognizing is the point (cancelsTouchesInView clears the row highlight).
 }
-- (void)panned:(UIPanGestureRecognizer *)pan {
+- (void)panned:(ApolloDuoPaneBackPan *)pan {
     UINavigationController *navigation = self.navigation;
     if (pan.state == UIGestureRecognizerStateBegan) {
         self.route = ApolloDuoBackRouteForNavigation(navigation);
         [self stopScrollingUnderPan];
+        pan.touchView = nil;
         return;
     }
     if (pan.state != UIGestureRecognizerStateEnded) return;
@@ -335,7 +371,7 @@ BOOL ApolloDuoNativeBackInFlight(UINavigationController *navigation) {
 // never waits for it. Once it begins it is Back: cancel their pans.
 - (void)stopScrollingUnderPan {
     UIView *container = self.navigation.view;
-    for (UIView *candidate = self.touchView; candidate && candidate != container; candidate = candidate.superview) {
+    for (UIView *candidate = self.pan.touchView; candidate && candidate != container; candidate = candidate.superview) {
         if (![candidate isKindOfClass:UIScrollView.class]) continue;
         UIPanGestureRecognizer *scrollPan = ((UIScrollView *)candidate).panGestureRecognizer;
         if (!scrollPan.enabled) continue;
@@ -438,7 +474,7 @@ void ApolloDuoInstallBackSwipe(UINavigationController *navigation) {
     if (!ApolloDeviceIsDuo() || !navigation.isViewLoaded || ApolloDuoHasBackSwipe(navigation)) return;
     ApolloDuoBackSwipe *owner = [ApolloDuoBackSwipe new];
     owner.navigation = navigation;
-    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:owner action:@selector(panned:)];
+    ApolloDuoPaneBackPan *pan = [[ApolloDuoPaneBackPan alloc] initWithTarget:owner action:@selector(panned:)];
     pan.maximumNumberOfTouches = 1;
     pan.delegate = owner;
     pan.name = kApolloDuoPaneBackName;
