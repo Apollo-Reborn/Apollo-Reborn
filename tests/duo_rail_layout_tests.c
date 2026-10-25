@@ -108,6 +108,27 @@ int main(void) {
     Check(!ApolloDuoFeedRestsAtTop(-122.5, -136), "a feed scrolled a little is anchored");
     Check(!ApolloDuoFeedRestsAtTop(400, -136), "a feed scrolled down is anchored");
 
+    /* Comment jump button: Apollo stores CommentJumpButtonPosition as a
+       string. Only "center" is recentered on a split pane's column. */
+    Check(ApolloDuoJumpButtonPositionIsCentered("center"),
+          "the center jump button position is centered");
+    Check(!ApolloDuoJumpButtonPositionIsCentered("bottom-right"),
+          "a right jump button position is not centered");
+    Check(!ApolloDuoJumpButtonPositionIsCentered("middle-left"),
+          "a left jump button position is not centered");
+    Check(!ApolloDuoJumpButtonPositionIsCentered(""),
+          "an empty jump button position is not centered");
+    Check(!ApolloDuoJumpButtonPositionIsCentered(0),
+          "the unset default (bottom right) is not centered");
+    Check(ApolloDuoJumpButtonPaneX(1, 1, 400.0, 600.0, 56.0, 572.0) == 672.0,
+          "a centered jump button centers on the split pane's column");
+    Check(ApolloDuoJumpButtonPaneX(1, 0, 0.0, 0.0, 56.0, 572.0) == 572.0,
+          "a centered jump button outside a split keeps Apollo's x");
+    Check(ApolloDuoJumpButtonPaneX(0, 1, 400.0, 600.0, 56.0, 920.0) == 920.0,
+          "a right jump button in a split pane keeps Apollo's x");
+    Check(ApolloDuoJumpButtonPaneX(1, 1, 400.0, 0.0, 56.0, 572.0) == 572.0,
+          "a collapsed pane keeps Apollo's x");
+
     printf("OK: %u checks\n", checks);
     return 0;
 }

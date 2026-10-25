@@ -276,12 +276,29 @@ void ApolloDuoCoverAdjustJumpButton(UIViewController *comments) {
     if (!comments || !ApolloDuoCoverClassLooksLikeComments(comments.class)) return;
     BOOL coverChrome = ApolloDuoCoverChromeIsActive();
     BOOL trailingRail = ApolloDuoRailHasVisibleSideBar();
-    if ((!coverChrome && !trailingRail) || !comments.isViewLoaded) return;
+    NSString *position = [NSUserDefaults.standardUserDefaults stringForKey:@"CommentJumpButtonPosition"];
+    BOOL centered = ApolloDuoJumpButtonPositionIsCentered(position.UTF8String);
+    if ((!coverChrome && !trailingRail && !centered) || !comments.isViewLoaded) return;
 
     UIView *button = ApolloDuoCoverFindJumpButton(comments);
     if (![button isKindOfClass:[UIView class]] || !button.superview) return;
     UIView *container = button.superview;
     CGRect frame = button.frame;
+    BOOL moved = NO;
+    // Apollo centers on the comments table, which a split pane keeps
+    // full-screen beneath the posts column. Center on the visible pane in
+    // the button's (content) coordinates and keep Apollo's Y.
+    CGRect pane = centered ? ApolloDuoSplitContentFrame(comments, container) : CGRectNull;
+    CGFloat paneX = ApolloDuoJumpButtonPaneX(centered, !CGRectIsNull(pane), CGRectGetMinX(pane),
+                                             CGRectGetWidth(pane), CGRectGetWidth(frame), CGRectGetMinX(frame));
+    if (fabs(paneX - CGRectGetMinX(frame)) > 0.5) {
+        frame.origin.x = paneX;
+        moved = YES;
+    }
+    if (!coverChrome && !trailingRail) {
+        if (moved) button.frame = frame;
+        return;
+    }
     // The button is a child of ASTableView. Its frame is in *content*
     // coordinates, while bounds.origin tracks scrolling. Using height alone
     // clamps the native contentOffset-adjusted Y back to a fixed content Y,
@@ -304,7 +321,6 @@ void ApolloDuoCoverAdjustJumpButton(UIViewController *comments) {
             limitX = MIN(limitX, CGRectGetMinX(railFrame) - 15.0);
         }
     }
-    BOOL moved = NO;
     if (CGRectGetMaxX(frame) > limitX + 0.5) {
         frame.origin.x -= (CGRectGetMaxX(frame) - limitX);
         moved = YES;

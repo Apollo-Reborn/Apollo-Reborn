@@ -1,6 +1,8 @@
 #ifndef APOLLO_DUO_RAIL_LAYOUT_H
 #define APOLLO_DUO_RAIL_LAYOUT_H
 
+#include <string.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -151,6 +153,22 @@ static inline double ApolloDuoAnchoredOffset(double rowMinY, double rowHeight, d
 // search bar, and UIKit collapses a bar the list has scrolled into.
 static inline int ApolloDuoFeedRestsAtTop(double offset, double minimum) {
     return offset <= minimum + 1.0;
+}
+
+// Apollo stores CommentJumpButtonPosition as a string raw value ("top-left"
+// ... "bottom-right", or "center"); unset means bottom right.
+static inline int ApolloDuoJumpButtonPositionIsCentered(const char *position) {
+    return position && strcmp(position, "center") == 0;
+}
+
+// Apollo centers the jump button on the comments table, which a split pane
+// keeps full-screen beneath the primary column. Center it on the pane's
+// visible column instead; other positions and unsplit layouts keep Apollo's x.
+static inline double ApolloDuoJumpButtonPaneX(int centered, int split,
+                                              double paneMinX, double paneWidth,
+                                              double buttonWidth, double currentX) {
+    if (!centered || !split || paneWidth <= 0.0 || buttonWidth <= 0.0) return currentX;
+    return paneMinX + (paneWidth - buttonWidth) / 2.0;
 }
 
 #ifdef __cplusplus
