@@ -1952,6 +1952,12 @@ static void ApolloDuoRestoreFeedAnchor(UITableView *table, ApolloDuoFeedAnchor *
     [table setContentOffset:CGPointMake(table.contentOffset.x, offset) animated:NO];
 }
 
+// The comments thread is open beside the feed in the paired columns.
+static BOOL ApolloDuoPairedThread(ApolloDuoSplitState *state, UINavigationController *nav) {
+    return nav == state.secondary && nav.viewControllers.count == 2 && state.feed
+        && state.host.postsShowingDetail && ApolloDuoPostsUsesSplit(state) && !state.host.listVisible;
+}
+
 static void ApolloDuoPostsSetDetail(ApolloDuoSplitState *state, UIViewController *page, BOOL animated) {
     UIView *surface = state.host.view;
     BOOL entering = page != nil;
@@ -3519,12 +3525,13 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     // split mid-reflow (feed widening, drawer/primary column flashing in). Close
     // the thread through the same Duo transition as the Back button instead,
     // keeping Apollo's own rules for where a Back swipe may start.
-    if (result && back && self == state.secondary && state.secondary.viewControllers.count == 2
-        && state.feed && state.host.postsShowingDetail && ApolloDuoPostsUsesSplit(state)
-        && !state.host.listVisible && !state.closingBySwipe
+    if (result && back && ApolloDuoPairedThread(state, nav)
         && [gesture isKindOfClass:UIPanGestureRecognizer.class]) {
+        // Apollo's native pop is what flashes here, so the pan never begins in
+        // paired columns; only a rightward drag also closes the thread.
+        if (state.closingBySwipe) return NO;
         CGPoint closeVelocity = [(UIPanGestureRecognizer *)gesture velocityInView:nav.view];
-        if (closeVelocity.x <= 0.0 || fabs(closeVelocity.x) < fabs(closeVelocity.y)) return result;
+        if (closeVelocity.x <= 0.0 || fabs(closeVelocity.x) < fabs(closeVelocity.y)) return NO;
         state.closingBySwipe = YES;
         ApolloLog(@"[DuoSplit] back swipe in paired columns: closing the thread through the Duo transition");
         __weak UINavigationController *weakNav = nav;
@@ -3534,7 +3541,7 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
             ApolloDuoSplitState *strongState = weakState;
             strongState.closingBySwipe = NO;
             if (!strongNav || !strongState || strongState.changing || strongNav.transitionCoordinator
-                || strongNav.viewControllers.count != 2) return;
+                || !ApolloDuoPairedThread(strongState, strongNav)) return;
             [strongNav popViewControllerAnimated:YES];
         });
         return NO;
