@@ -178,12 +178,39 @@ static BOOL ApolloDuoSplitReturnFromVisitedProfile(UINavigationController *nav) 
 }
 static BOOL UIAccessibilityIsReduceMotionEnabled(void) { return reduceMotion; }
 #define ApolloLog(...) ((void)0)
+// The split's interactive thread close, as the pan drives it. Begin answers
+// closeBegins; Update answers closeUpdates.
+static BOOL closeBegins, closeTracks = YES;
+static NSUInteger closeBegun, closeUpdated, closeCommits, closeSpringBacks, closeCancels, closeAnimatedCancels;
+static CGFloat closeOffset, closeVelocity;
+static __weak UINavigationController *closeNavigation;
+static BOOL ApolloDuoSplitInteractiveCloseBegin(UINavigationController *nav) {
+    closeNavigation = nav;
+    if (closeBegins) closeBegun++;
+    return closeBegins;
+}
+static BOOL ApolloDuoSplitInteractiveCloseUpdate(UINavigationController *nav, CGFloat offset) {
+    if (nav != closeNavigation) return NO;
+    closeUpdated++; closeOffset = offset;
+    return closeTracks;
+}
+static void ApolloDuoSplitInteractiveCloseFinish(UINavigationController *nav, BOOL commit, CGFloat velocity) {
+    if (nav != closeNavigation) return;
+    if (commit) closeCommits++; else closeSpringBacks++;
+    closeVelocity = velocity;
+}
+static void ApolloDuoSplitInteractiveCloseCancel(UINavigationController *nav, BOOL animated) {
+    if (nav != closeNavigation) return;
+    closeCancels++;
+    if (animated) closeAnimatedCancels++;
+}
 // INCLUDE_PRODUCTION_GESTURES
 static NSUInteger checks;
 static void Check(BOOL valid, NSString *message) {
     checks++;
     if (!valid) { fprintf(stderr, "FAIL: %s\n", message.UTF8String); exit(1); }
 }
+static BOOL Near(CGFloat a, CGFloat b) { return fabs(a - b) < 0.0001; }
 static UINavigationController *Navigation(void) {
     UINavigationController *nav = [UINavigationController new];
     nav.viewControllers = @[[UIViewController new], [UIViewController new]];
@@ -1116,6 +1143,108 @@ int main(void) {
               @"nested release: the outer pan is scaled again once the inner one returns");
         Check(sDuoSplitReleaseGesture == NULL && sDuoSplitReleaseView == NULL && sDuoSplitReleaseScale == 1.0,
               @"nested release: both windows closed afterwards");
+
+        // The thread close follows the finger: which routes the split's
+        // driver takes, and what a release does with it.
+        Check(ApolloDuoBackRouteTracks((ApolloDuoBackRouting){ApolloDuoBackOwnerThreadClose}),
+              @"tracks: the interactive thread close has a driver");
+        Check(!ApolloDuoBackRouteTracks((ApolloDuoBackRouting){ApolloDuoBackOwnerDrawer})
+              && !ApolloDuoBackRouteTracks((ApolloDuoBackRouting){ApolloDuoBackOwnerVisitedProfile})
+              && !ApolloDuoBackRouteTracks((ApolloDuoBackRouting){ApolloDuoBackOwnerSplitPop})
+              && !ApolloDuoBackRouteTracks((ApolloDuoBackRouting){ApolloDuoBackOwnerNative}),
+              @"tracks: no other route (the drawer has no driver yet)");
+        Check(ApolloDuoBackReleaseFor(YES, YES, NO) == ApolloDuoBackReleaseCommit, @"release: past the threshold, same Back: commit");
+        Check(ApolloDuoBackReleaseFor(NO, YES, NO) == ApolloDuoBackReleaseSpringBack, @"release: short of it: spring back");
+        Check(ApolloDuoBackReleaseFor(YES, NO, NO) == ApolloDuoBackReleaseSpringBack,
+              @"release: a Back that changed hands under the finger springs back rather than act twice");
+        Check(ApolloDuoBackReleaseFor(YES, YES, YES) == ApolloDuoBackReleaseCancel
+              && ApolloDuoBackReleaseFor(NO, NO, YES) == ApolloDuoBackReleaseCancel,
+              @"release: an interrupted drag is removed at once, without animation");
+
+        // The thread pane: the snapshot follows the finger, and the release
+        // commits through the driver only: no pop, so no second Back.
+        leftSwipesDisabled = NO; closeBegins = YES; closeTracks = YES;
+        routePosts.host.postsShowingDetail = YES; routePosts.host.listVisible = NO;
+        routeThread.viewControllers = @[routeBackstop, [TestPage new]];
+        routePops = routeThread.pops;
+        Drag(routeOwner, 1280 * 0.35, 0);
+        Check(closeBegun == 1 && closeNavigation == routeThread, @"drive: the thread-pane Back begins the split's interactive close");
+        Check(closeUpdated == 1 && Near(closeOffset, 1280 * 0.35), @"drive: the drag moves the thread by the finger's translation");
+        Check(closeCommits == 1 && closeSpringBacks == 0 && routeThread.pops == routePops,
+              @"drive: a release past the threshold commits through the driver, never with a pop as well");
+        Drag(routeOwner, 100, 200);
+        Check(closeBegun == 2 && closeSpringBacks == 1 && closeCommits == 1 && routeThread.pops == routePops,
+              @"drive: a short release springs back");
+        Check(Near(closeVelocity, 200), @"drive: the release velocity is handed to the spring");
+        reduceMotion = YES;
+        Drag(routeOwner, 1280 * 0.5, 0);
+        Check(closeBegun == 3 && closeCommits == 2, @"drive: Reduce Motion still tracks the finger");
+        reduceMotion = NO;
+
+        // The split could not cover the thread: the route acts on release.
+        closeBegins = NO;
+        Drag(routeOwner, 1280 * 0.35, 0);
+        Check(routeThread.pops == routePops + 1 && closeCommits == 2 && closeUpdated == 3,
+              @"drive: without a driver the thread close is the discrete pop, and nothing is tracked");
+        routeThread.viewControllers = @[routeBackstop, [TestPage new]]; routePops = routeThread.pops;
+        closeBegins = YES;
+
+        // Interruptions: the split let the drag go, or a sheet arrived.
+        NSUInteger disablesBefore = paneBack.disables, cancelsBefore = closeCancels;
+        closeTracks = NO;
+        Drag(routeOwner, 1280 * 0.5, 900);
+        Check(closeCancels == cancelsBefore + 1 && closeAnimatedCancels == 0 && paneBack.disables == disablesBefore + 1,
+              @"interrupt: a drag the split let go is removed at once and its pan is cancelled");
+        Check(closeCommits == 2 && closeSpringBacks == 1 && routeThread.pops == routePops,
+              @"interrupt: its release is no Back of any kind");
+        closeTracks = YES;
+        paneBack.velocity = CGPointMake(300, 40); paneBack.translation = CGPointZero;
+        paneBack.state = UIGestureRecognizerStateBegan; [routeOwner panned:paneBack];
+        routeThread.viewControllers.lastObject.presentedViewController = [UIViewController new];
+        paneBack.translation = CGPointMake(500, 0); paneBack.state = UIGestureRecognizerStateChanged; [routeOwner panned:paneBack];
+        Check(closeCancels == cancelsBefore + 2 && closeAnimatedCancels == 0 && paneBack.disables == disablesBefore + 2,
+              @"interrupt: a sheet presented mid-drag cancels without animation");
+        paneBack.state = UIGestureRecognizerStateCancelled; [routeOwner panned:paneBack];
+        paneBack.state = UIGestureRecognizerStatePossible;
+        Check(closeCancels == cancelsBefore + 2, @"interrupt: the pan's own cancel after that does nothing more");
+        routeThread.viewControllers.lastObject.presentedViewController = nil;
+        paneBack.state = UIGestureRecognizerStateBegan; [routeOwner panned:paneBack];
+        paneBack.translation = CGPointMake(500, 0); paneBack.state = UIGestureRecognizerStateChanged; [routeOwner panned:paneBack];
+        routeThread.viewControllers.lastObject.presentedViewController = [UIViewController new];
+        paneBack.state = UIGestureRecognizerStateEnded; [routeOwner panned:paneBack];
+        paneBack.state = UIGestureRecognizerStatePossible;
+        Check(closeCancels == cancelsBefore + 3 && closeAnimatedCancels == 0 && closeCommits == 2,
+              @"interrupt: a sheet that arrived before the release cancels instead of committing");
+        routeThread.viewControllers.lastObject.presentedViewController = nil;
+        paneBack.state = UIGestureRecognizerStateBegan; [routeOwner panned:paneBack];
+        paneBack.state = UIGestureRecognizerStateCancelled; [routeOwner panned:paneBack];
+        paneBack.state = UIGestureRecognizerStatePossible;
+        Check(closeCancels == cancelsBefore + 4 && closeAnimatedCancels == 0 && closeCommits == 2,
+              @"interrupt: a pan the system cancelled (resign active) removes the drag at once");
+        // A Back that changed hands under the finger springs back.
+        NSUInteger springBacks = closeSpringBacks;
+        paneBack.state = UIGestureRecognizerStateBegan; [routeOwner panned:paneBack];
+        routeThread.viewControllers = @[routeBackstop, [TestPage new], [TestPage new]];
+        paneBack.translation = CGPointMake(600, 0); paneBack.velocity = CGPointMake(900, 0);
+        paneBack.state = UIGestureRecognizerStateEnded; [routeOwner panned:paneBack];
+        paneBack.state = UIGestureRecognizerStatePossible;
+        Check(closeSpringBacks == springBacks + 1 && closeCommits == 2 && routeThread.pops == routePops,
+              @"drive: a route that became native mid-drag springs back, with no pop");
+        routeThread.viewControllers = @[routeBackstop, [TestPage new]];
+
+        // The feed pane beside the thread, swipe-anywhere: the feed's own
+        // Back, never the thread close's driver.
+        leftSwipesDisabled = YES; routePosts.host.postsShowingDetail = YES; routePosts.host.listVisible = NO;
+        NSUInteger feedPops = routeFeed.pops, begunNow = closeBegun, revealsNow = drawerReveals;
+        routePops = routeThread.pops;
+        Drag(drawerOwner, 640 * 0.5, 0);
+        Check(closeBegun == begunNow && routeThread.pops == routePops && routeFeed.pops == feedPops
+              && drawerReveals == revealsNow + 1,
+              @"drive: the feed-pane Back beside a thread opens the list and leaves the thread's driver alone");
+        leftSwipesDisabled = NO; routePosts.host.postsShowingDetail = NO; routePosts.host.listVisible = NO;
+        Drag(drawerOwner, 60, 700);
+        Check(closeBegun == begunNow && drawerReveals == revealsNow + 2, @"drive: the drawer route never takes the driver");
+        closeBegins = NO;
         printf("OK: %lu checks\n", (unsigned long)checks);
     }
     return 0;

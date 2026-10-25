@@ -111,8 +111,9 @@ static BOOL ApolloDuoBackSwipeRevealsAtRoot(UINavigationController *navigation) 
     return navigation.viewControllers.count == 1 && !ApolloDuoSplitCanReturnFromVisitedProfile(navigation);
 }
 
-// Who performs a Back the pane pan qualified. Every Duo route acts once, on
-// release past the commit threshold.
+// Who performs a Back the pane pan qualified. A route with a driver of its
+// own follows the finger (ApolloDuoBackRouteTracks); every other route acts
+// once, on release past the commit threshold.
 typedef NS_ENUM(NSInteger, ApolloDuoBackOwner) {
     ApolloDuoBackOwnerNative,          // Apollo's own Back pan; the pane pan stands down
     ApolloDuoBackOwnerThreadClose,     // the Posts split closes the thread column
@@ -167,6 +168,31 @@ static ApolloDuoBackRouting ApolloDuoBackRouteForNavigation(UINavigationControll
 static BOOL ApolloDuoBackShouldCommit(CGFloat progress, CGFloat velocity) {
     return velocity > -500.0 && (progress >= 0.35 || (velocity >= 500.0 && progress >= 0.05));
 }
+
+// Routes with a driver of their own follow the finger from Began. Only the
+// Posts thread close does so far (ApolloDuoSplitInteractiveClose*); every
+// other route, the drawer included, acts once on release.
+static BOOL ApolloDuoBackRouteTracks(ApolloDuoBackRouting route) {
+    return route.owner == ApolloDuoBackOwnerThreadClose;
+}
+
+// What the release of a tracked drag does. The driver alone finishes it, so
+// the route never also acts: that would be a second Back from one swipe.
+typedef NS_ENUM(NSInteger, ApolloDuoBackRelease) {
+    ApolloDuoBackReleaseCommit,      // past the threshold, and still this pan's Back
+    ApolloDuoBackReleaseSpringBack,  // short of it, or the Back changed hands under the finger
+    ApolloDuoBackReleaseCancel,      // interrupted (a sheet, a fold): removed at once, no animation
+};
+static ApolloDuoBackRelease ApolloDuoBackReleaseFor(BOOL commits, BOOL sameBack, BOOL interrupted) {
+    if (interrupted) return ApolloDuoBackReleaseCancel;
+    return commits && sameBack ? ApolloDuoBackReleaseCommit : ApolloDuoBackReleaseSpringBack;
+}
+
+typedef NS_ENUM(NSInteger, ApolloDuoBackDrag) {
+    ApolloDuoBackDragNone,       // the route acts on release, if at all
+    ApolloDuoBackDragTracking,   // the split's driver follows the finger
+    ApolloDuoBackDragAbandoned,  // the driver let the drag go; this pan is no Back any more
+};
 
 // The row under the finger highlights on touchesBegan, before any swipe has
 // moved far enough to recognize. Like UIScrollView's delaysContentTouches,
@@ -260,6 +286,7 @@ static const NSTimeInterval kApolloDuoHighlightGuardDelay = 0.12;
 // then decided again on release (ApolloDuoBackRoute, ApolloDuoBackShouldCommit).
 @property(nonatomic, strong) ApolloDuoPaneBackPan *pan;
 @property(nonatomic) ApolloDuoBackRouting route;
+@property(nonatomic) ApolloDuoBackDrag drag;
 // Recognizes as soon as a touch the Back pan accepts moves clearly sideways, so the
 // row under the finger gets touchesCancelled and drops its highlight, before the
 // pan has moved far enough to begin.
@@ -351,21 +378,66 @@ BOOL ApolloDuoNativeBackInFlight(UINavigationController *navigation) {
 }
 - (void)panned:(ApolloDuoPaneBackPan *)pan {
     UINavigationController *navigation = self.navigation;
+    // Measured in the window: a tracked drag moves views under the finger.
+    CGFloat translation = [pan translationInView:nil].x;
     if (pan.state == UIGestureRecognizerStateBegan) {
         self.route = ApolloDuoBackRouteForNavigation(navigation);
         [self stopScrollingUnderPan];
         pan.touchView = nil;
+        // A close the split can't cover (no window, another transition
+        // still moving the panes) acts on release, as before.
+        self.drag = ApolloDuoBackRouteTracks(self.route) && ApolloDuoSplitInteractiveCloseBegin(navigation)
+            ? ApolloDuoBackDragTracking : ApolloDuoBackDragNone;
         return;
     }
-    if (pan.state != UIGestureRecognizerStateEnded) return;
+    if (pan.state == UIGestureRecognizerStateChanged) {
+        if (self.drag != ApolloDuoBackDragTracking) return;
+        // A sheet presented mid-drag, a resize, or a split that let the drag go.
+        if (ApolloDuoBackSwipeCanNavigate(navigation) && ApolloDuoSplitInteractiveCloseUpdate(navigation, translation)) return;
+        [self abandonDrag:pan];
+        return;
+    }
+    ApolloDuoBackDrag drag = self.drag;
+    self.drag = ApolloDuoBackDragNone;
+    if (pan.state != UIGestureRecognizerStateEnded) {
+        // Cancelled (the app resigned active, the system took the touch) or failed.
+        if (drag == ApolloDuoBackDragTracking) ApolloDuoSplitInteractiveCloseCancel(navigation, NO);
+        return;
+    }
+    if (drag == ApolloDuoBackDragAbandoned) return;
     CGFloat width = CGRectGetWidth(ApolloDuoBackSwipePane(navigation));
-    CGFloat progress = width > 0.0 ? [pan translationInView:navigation.view].x / width : 0.0;
-    if (!ApolloDuoBackShouldCommit(progress, [pan velocityInView:navigation.view].x)) return;
+    CGFloat progress = width > 0.0 ? translation / width : 0.0;
+    CGFloat velocity = [pan velocityInView:nil].x;
+    BOOL commits = ApolloDuoBackShouldCommit(progress, velocity);
+    if (!commits && drag != ApolloDuoBackDragTracking) return;
     // Ownership is decided again on release: Apollo's own Back may have begun
     // since this pan did, and changed the stack under it.
     ApolloDuoBackRouting route = ApolloDuoBackRouteForNavigation(navigation);
-    if (route.owner != self.route.owner || ![self backIsFree:route]) return;
+    BOOL sameBack = route.owner == self.route.owner && [self backIsFree:route];
+    if (drag == ApolloDuoBackDragTracking) {
+        switch (ApolloDuoBackReleaseFor(commits, sameBack, !ApolloDuoBackSwipeCanNavigate(navigation))) {
+            case ApolloDuoBackReleaseCommit:
+                ApolloLog(@"[DuoSwipe] thread pane: close the thread that followed the finger");
+                ApolloDuoSplitInteractiveCloseFinish(navigation, YES, velocity);
+                return;
+            case ApolloDuoBackReleaseSpringBack:
+                ApolloDuoSplitInteractiveCloseFinish(navigation, NO, velocity);
+                return;
+            case ApolloDuoBackReleaseCancel:
+                ApolloDuoSplitInteractiveCloseCancel(navigation, NO);
+                return;
+        }
+    }
+    if (!sameBack) return;
     [self performBack:route];
+}
+// The split let the drag go (a fold, a tab switch, a push), or can't take it
+// any more: remove it at once and cancel this pan, so its release is no Back.
+- (void)abandonDrag:(UIPanGestureRecognizer *)pan {
+    self.drag = ApolloDuoBackDragAbandoned;
+    ApolloDuoSplitInteractiveCloseCancel(self.navigation, NO);
+    pan.enabled = NO;
+    pan.enabled = YES;
 }
 // The pan runs alongside the scrollers under the finger so vertical scrolling
 // never waits for it. Once it begins it is Back: cancel their pans.

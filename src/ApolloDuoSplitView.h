@@ -34,6 +34,16 @@ BOOL ApolloDuoSplitPopRevealsContent(UINavigationController *nav);
 BOOL ApolloDuoSplitIsActive(UINavigationController *nav);
 /// Back in `nav` is the Posts thread close: the thread right above its backstop.
 BOOL ApolloDuoSplitBackClosesThread(UINavigationController *nav);
+/// The Posts thread close that follows the finger, driven by the pane Back
+/// from the thread pane. Begin covers the live
+/// thread with its snapshot; NO when it can't, and the Back then acts on
+/// release. Update moves the thread by the drag's translation and returns NO
+/// once the drag was let go (a fold, a tab switch, a push). Finish commits
+/// the close or springs the thread back; Cancel removes the drag at once.
+BOOL ApolloDuoSplitInteractiveCloseBegin(UINavigationController *nav);
+BOOL ApolloDuoSplitInteractiveCloseUpdate(UINavigationController *nav, CGFloat translation);
+void ApolloDuoSplitInteractiveCloseFinish(UINavigationController *nav, BOOL commit, CGFloat velocity);
+void ApolloDuoSplitInteractiveCloseCancel(UINavigationController *nav, BOOL animated);
 BOOL ApolloDuoSplitShowSidebar(UINavigationController *navigation);
 __END_DECLS
 
