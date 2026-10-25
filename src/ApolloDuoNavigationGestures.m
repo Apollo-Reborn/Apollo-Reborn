@@ -11,14 +11,17 @@
 // native pop entry point keeps the author's feed/thread restoration animation.
 // Keep row swipe actions elsewhere, and honor Apollo's navigation-gesture opt-out.
 static BOOL ApolloDuoBackSwipeCanNavigate(UINavigationController *navigation) {
+    // A visited profile is a visit of the whole account split, header column
+    // included: from either column, Back leaves the profile.
+    BOOL pane = (navigation.viewControllers.count > 1 || ApolloDuoSplitCanRevealPostsListWithSwipe(navigation))
+        && ApolloDuoSplitAllowsNavigationSwipe(navigation)
+        && ApolloDuoSplitDetailNavigation(navigation) == navigation;
     BOOL eligible = ApolloDeviceIsDuo() && navigation.viewIfLoaded.window
-        && (navigation.viewControllers.count > 1 || ApolloDuoSplitCanRevealPostsListWithSwipe(navigation))
+        && (pane || ApolloDuoSplitCanReturnFromVisitedProfile(navigation))
         && ![NSUserDefaults.standardUserDefaults boolForKey:@"DisableNavigationGestures"]
         && !ApolloDuoSplitIsResizing() && !navigation.transitionCoordinator
         && !navigation.presentedViewController && !navigation.topViewController.presentedViewController
-        && !navigation.isBeingDismissed
-        && ApolloDuoSplitAllowsNavigationSwipe(navigation)
-        && ApolloDuoSplitDetailNavigation(navigation) == navigation;
+        && !navigation.isBeingDismissed;
     if (!eligible) return NO;
     // Sheets can belong to the containing split, tab, or outer navigation
     // controller rather than the pane itself. Never navigate behind one.
@@ -106,13 +109,27 @@ static BOOL ApolloDuoBackSwipeTouchOwnsHorizontalDrag(UIView *view, UIView *cont
 - (void)swiped:(UISwipeGestureRecognizer *)gesture {
     UINavigationController *navigation = self.navigation;
     if (gesture.state != UIGestureRecognizerStateRecognized || !ApolloDuoBackSwipeCanNavigate(navigation)) return;
+    BOOL animated = !UIAccessibilityIsReduceMotionEnabled();
+    // Swipe-anywhere is Apollo's Back: the thread opened beside the feed is the
+    // most recent navigation, so it closes before the feed itself moves.
+    UINavigationController *thread = ApolloDuoBackSwipeStartsAnywhere()
+        ? ApolloDuoSplitPairedThreadNavigation(navigation) : nil;
+    if (thread) {
+        ApolloLog(@"[DuoSwipe] feed pane: close the thread beside it first");
+        [thread popViewControllerAnimated:animated];
+        return;
+    }
+    if (ApolloDuoSplitReturnFromVisitedProfile(navigation)) {
+        ApolloLog(@"[DuoSwipe] visited profile: Back out of the profile");
+        return;
+    }
     if (navigation.viewControllers.count == 1) {
         ApolloLog(@"[DuoSwipe] feed root: reveal subreddit drawer");
         ApolloDuoSplitRevealPostsList(navigation);
         return;
     }
     ApolloLog(@"[DuoSwipe] Back in pane; stack pages=%lu", (unsigned long)navigation.viewControllers.count);
-    [navigation popViewControllerAnimated:!UIAccessibilityIsReduceMotionEnabled()];
+    [navigation popViewControllerAnimated:animated];
 }
 @end
 

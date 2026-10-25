@@ -95,13 +95,16 @@ typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 @implementation TestDuoHost @end
 @interface ApolloDuoSplitState : NSObject
 @property(nonatomic, strong) NSObject *split;
-@property(nonatomic, weak) UINavigationController *feed, *secondary;
+@property(nonatomic, weak) UINavigationController *feed, *secondary, *primary;
+@property(nonatomic, copy) NSString *kind, *tabKind;
+@property(nonatomic, copy) NSArray *profilePrefix;
+@property(nonatomic, strong) UIViewController *root;
 @property(nonatomic, strong) TestDuoHost *host;
 @property(nonatomic) BOOL changing;
 @end
 @implementation ApolloDuoSplitState @end
 static BOOL duo = YES, disabled, leftSwipesDisabled, resizing, reduceMotion;
-static NSUInteger drawerReveals;
+static NSUInteger drawerReveals, profileReturns;
 @interface TestDefaults : NSObject
 + (instancetype)standardUserDefaults;
 - (BOOL)boolForKey:(NSString *)key;
@@ -122,6 +125,12 @@ static ApolloDuoSplitState *ApolloDuoSplitStateForNavigation(UINavigationControl
 static BOOL ApolloDuoSplitRevealPostsList(UINavigationController *nav) {
     nav.duoState.host.listVisible = YES;
     drawerReveals++;
+    return YES;
+}
+static BOOL ApolloDuoSplitReturnFromVisitedProfile(UINavigationController *nav) {
+    if (!ApolloDuoSplitCanReturnFromVisitedProfile(nav)) return NO;
+    nav.duoState.profilePrefix = nil;
+    profileReturns++;
     return YES;
 }
 static CGRect ApolloDuoSplitContentFrame(UINavigationController *nav, __unused UIView *view) { return nav.pane; }
@@ -281,6 +290,59 @@ int main(void) {
         Check([owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch], @"a scroll view that cannot scroll does not block Back");
         UISlider *slider = [UISlider new]; slider.superview = cell; touch.view = slider;
         Check(![owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch], @"a slider keeps its drag");
+
+        // A visited profile is the account split's one-page detail root: Back
+        // leaves it the way its Back button does, with or without the setting.
+        leftSwipesDisabled = NO;
+        UINavigationController *profile = Navigation();
+        profile.viewControllers = @[[UIViewController new]];
+        ApolloDuoSplitState *account = [ApolloDuoSplitState new];
+        account.split = [NSObject new]; account.host = [TestDuoHost new];
+        account.kind = @"account"; account.tabKind = @"subreddits";
+        account.profilePrefix = @[[UIViewController new]];
+        account.secondary = profile; account.root = profile.viewControllers.firstObject;
+        profile.duoState = account;
+        Check(ApolloDuoBackSwipeCanNavigate(profile), @"a visited profile's pane can swipe Back out of the profile");
+        ApolloDuoInstallBackSwipe(profile); owner = objc_getAssociatedObject(profile, &kApolloDuoBackSwipe);
+        owner.swipe.state = UIGestureRecognizerStateRecognized; [owner swiped:owner.swipe];
+        Check(profileReturns == 1 && profile.pops == 0, @"the swipe leaves the visited profile through its Back transition");
+        Check(!ApolloDuoBackSwipeCanNavigate(profile), @"once left, the profile pane has nothing to go Back to");
+        // The profile's left column (header and shortcuts) belongs to the
+        // same visit, so a swipe there leaves the profile too.
+        account.profilePrefix = @[[UIViewController new]];
+        UINavigationController *header = Navigation();
+        header.viewControllers = @[[UIViewController new]];
+        header.duoState = account; account.primary = header;
+        Check(ApolloDuoBackSwipeCanNavigate(header), @"the visited profile's left column can swipe Back out of the profile");
+        ApolloDuoInstallBackSwipe(header); owner = objc_getAssociatedObject(header, &kApolloDuoBackSwipe);
+        owner.swipe.state = UIGestureRecognizerStateRecognized; [owner swiped:owner.swipe];
+        Check(profileReturns == 2 && header.pops == 0, @"a left-column swipe leaves the visited profile the same way");
+        Check(!ApolloDuoBackSwipeCanNavigate(header), @"after leaving, the left column swipe stands down");
+        account.profilePrefix = @[[UIViewController new]]; account.tabKind = @"profile";
+        Check(!ApolloDuoBackSwipeCanNavigate(profile), @"the Account tab's own profile is a root, not a visit");
+
+        // Swipe-anywhere means Back: a thread opened beside the feed is the
+        // most recent navigation, so a swipe in the feed pane closes it first.
+        UINavigationController *feed2 = Navigation(); UINavigationController *thread = Navigation();
+        feed2.viewControllers = @[[UIViewController new]];
+        ApolloDuoSplitState *posts = [ApolloDuoSplitState new];
+        posts.split = [NSObject new]; posts.host = [TestDuoHost new]; posts.host.postsShowingDetail = YES;
+        posts.feed = feed2; posts.secondary = thread; feed2.duoState = posts; thread.duoState = posts;
+        ApolloDuoInstallBackSwipe(feed2); owner = objc_getAssociatedObject(feed2, &kApolloDuoBackSwipe);
+        owner.swipe.state = UIGestureRecognizerStateRecognized;
+        NSUInteger revealsBefore = drawerReveals;
+        leftSwipesDisabled = YES;
+        [owner swiped:owner.swipe];
+        Check(thread.pops == 1 && drawerReveals == revealsBefore && feed2.pops == 0,
+              @"Disable Left Swipes: a feed-pane swipe closes the open thread before anything else");
+        posts.host.postsShowingDetail = NO;
+        [owner swiped:owner.swipe];
+        Check(drawerReveals == revealsBefore + 1, @"with the thread closed, the next feed-root swipe opens the list");
+        posts.host.listVisible = NO; posts.host.postsShowingDetail = YES; thread.viewControllers = @[[UIViewController new], [UIViewController new]];
+        leftSwipesDisabled = NO;
+        [owner swiped:owner.swipe];
+        Check(thread.pops == 1 && drawerReveals == revealsBefore + 2,
+              @"with left swipes on, the feed edge keeps #1245's per-pane behavior (opens the list)");
         leftSwipesDisabled = NO;
         touch.view = cell;
         Check(![owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch], @"with left swipes on, interior touches stay with row actions");
