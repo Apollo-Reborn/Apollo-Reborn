@@ -2,6 +2,7 @@
 #import "ApolloDuoSplitView.h"
 #import "ApolloCommon.h"
 #import <objc/runtime.h>
+#import <UIKit/UIGestureRecognizerSubclass.h>
 
 // Apollo's pans use the whole navigation surface for edge checks. On Duo a
 // visible pane can start well inside that surface, and the outer stack is a
@@ -75,13 +76,67 @@ static BOOL ApolloDuoBackSwipeTouchOwnsHorizontalDrag(UIView *view, UIView *cont
     return NO;
 }
 
+// The row under the finger highlights on touchesBegan, before any swipe has
+// moved far enough to recognize. Like UIScrollView's delaysContentTouches,
+// hold that touch-down back while the guard is undecided: it recognizes on a
+// clear sideways move (cancelling the row's touch), and otherwise fails on a
+// vertical move or after a short delay, when UIKit delivers the withheld
+// touches. Taps and press-and-hold still highlight, only that much later.
+static const NSTimeInterval kApolloDuoHighlightGuardDelay = 0.12;
+
+@interface ApolloDuoHighlightGuard : UIPanGestureRecognizer
+@property(nonatomic) CGPoint touchStart;
+@property(nonatomic) NSUInteger touchGeneration;
+@end
+
+@implementation ApolloDuoHighlightGuard
+- (instancetype)initWithTarget:(id)target action:(SEL)action {
+    if ((self = [super initWithTarget:target action:action])) {
+        self.maximumNumberOfTouches = 1;
+        self.cancelsTouchesInView = YES;
+        self.delaysTouchesBegan = YES;
+    }
+    return self;
+}
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesBegan:touches withEvent:event];
+    if (self.state != UIGestureRecognizerStatePossible) return;
+    self.touchStart = [touches.anyObject locationInView:self.view];
+    NSUInteger generation = ++self.touchGeneration;
+    __weak ApolloDuoHighlightGuard *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kApolloDuoHighlightGuardDelay * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ [weakSelf failIfUndecided:generation]; });
+}
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    if (self.state == UIGestureRecognizerStatePossible) {
+        CGPoint point = [touches.anyObject locationInView:self.view];
+        CGFloat dx = point.x - self.touchStart.x, dy = point.y - self.touchStart.y;
+        // Scrolling: give the row its touch back at once.
+        if (fabs(dy) > 6.0 && fabs(dy) > fabs(dx)) {
+            self.state = UIGestureRecognizerStateFailed;
+            return;
+        }
+    }
+    [super touchesMoved:touches withEvent:event];
+}
+- (void)failIfUndecided:(NSUInteger)generation {
+    if (generation == self.touchGeneration && self.state == UIGestureRecognizerStatePossible)
+        self.state = UIGestureRecognizerStateFailed;
+}
+- (void)reset {
+    [super reset];
+    self.touchGeneration++;
+}
+@end
+
 @interface ApolloDuoBackSwipe : NSObject <UIGestureRecognizerDelegate>
 @property(nonatomic, weak) UINavigationController *navigation;
 @property(nonatomic, strong) UISwipeGestureRecognizer *swipe;
-// Recognizes as soon as a touch the Back swipe accepts moves clearly rightward, so the
+// Recognizes as soon as a touch the Back swipe accepts moves clearly sideways, so the
 // row under the finger gets touchesCancelled and drops its highlight. The discrete
 // swipe only recognizes after the motion, which left the post highlighted throughout.
-@property(nonatomic, strong) UIPanGestureRecognizer *highlightGuard;
+// Either direction: a leftward move is a row action, which still runs alongside.
+@property(nonatomic, strong) ApolloDuoHighlightGuard *highlightGuard;
 @end
 
 @implementation ApolloDuoBackSwipe
@@ -97,7 +152,7 @@ static BOOL ApolloDuoBackSwipeTouchOwnsHorizontalDrag(UIView *view, UIView *cont
     if (gesture == self.highlightGuard) {
         if (!ApolloDuoBackSwipeCanNavigate(self.navigation)) return NO;
         CGPoint velocity = [self.highlightGuard velocityInView:self.navigation.view];
-        return velocity.x > 0 && fabs(velocity.x) > fabs(velocity.y) * 1.5;
+        return fabs(velocity.x) > fabs(velocity.y) * 1.5;
     }
     return gesture == self.swipe && ApolloDuoBackSwipeCanNavigate(self.navigation);
 }
@@ -164,9 +219,7 @@ void ApolloDuoInstallBackSwipe(UINavigationController *navigation) {
     swipe.delegate = owner;
     swipe.name = @"ApolloReborn.Duo.PaneBack";
     owner.swipe = swipe;
-    UIPanGestureRecognizer *highlightGuard = [[UIPanGestureRecognizer alloc] initWithTarget:owner action:@selector(guardMoved:)];
-    highlightGuard.maximumNumberOfTouches = 1;
-    highlightGuard.cancelsTouchesInView = YES;
+    ApolloDuoHighlightGuard *highlightGuard = [[ApolloDuoHighlightGuard alloc] initWithTarget:owner action:@selector(guardMoved:)];
     highlightGuard.delegate = owner;
     highlightGuard.name = @"ApolloReborn.Duo.PaneBackHighlightGuard";
     owner.highlightGuard = highlightGuard;

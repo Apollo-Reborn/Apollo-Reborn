@@ -16,15 +16,26 @@
 @property(nonatomic, strong) NSMutableArray *gestureRecognizers;
 - (void)addGestureRecognizer:(UIGestureRecognizer *)gesture;
 @end
+@interface UIEvent : NSObject @end
+@implementation UIEvent @end
+@class UITouch;
 @interface UIGestureRecognizer : NSObject
 @property(nonatomic, weak) UIView *view;
 @property(nonatomic, weak) id delegate;
 @property(nonatomic, copy) NSString *name;
 @property(nonatomic) NSInteger state;
+@property(nonatomic) BOOL delaysTouchesBegan;
+@property(nonatomic) NSUInteger superMoves;
 - (instancetype)initWithTarget:(id)target action:(SEL)action;
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event;
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event;
+- (void)reset;
 @end
 @implementation UIGestureRecognizer
 - (instancetype)initWithTarget:(__unused id)target action:(__unused SEL)action { return [super init]; }
+- (void)touchesBegan:(__unused NSSet<UITouch *> *)touches withEvent:(__unused UIEvent *)event {}
+- (void)touchesMoved:(__unused NSSet<UITouch *> *)touches withEvent:(__unused UIEvent *)event { self.superMoves++; }
+- (void)reset { self.state = 0; }
 @end
 @implementation UIView
 - (void)addGestureRecognizer:(UIGestureRecognizer *)gesture {
@@ -142,7 +153,8 @@ static BOOL ApolloDuoSplitReturnFromVisitedProfile(UINavigationController *nav) 
 }
 static CGRect ApolloDuoSplitContentFrame(UINavigationController *nav, __unused UIView *view) { return nav.pane; }
 static BOOL UIAccessibilityIsReduceMotionEnabled(void) { return reduceMotion; }
-enum { UISwipeGestureRecognizerDirectionRight = 1, UIGestureRecognizerStateRecognized = 3 };
+enum { UISwipeGestureRecognizerDirectionRight = 1, UIGestureRecognizerStatePossible = 0,
+       UIGestureRecognizerStateRecognized = 3, UIGestureRecognizerStateFailed = 5 };
 #define ApolloLog(...) ((void)0)
 // INCLUDE_PRODUCTION_GESTURES
 static NSUInteger checks;
@@ -222,6 +234,30 @@ int main(void) {
         UIPanGestureRecognizer *guard = owner.highlightGuard;
         Check(guard && [nav.view.gestureRecognizers containsObject:guard] && guard.maximumNumberOfTouches == 1
               && guard.cancelsTouchesInView, @"highlight guard is installed once, one finger, cancelling the row's touch");
+        Check(guard.delaysTouchesBegan, @"highlight guard withholds the row's touch-down while undecided");
+        UITouch *down = [UITouch new]; down.point = CGPointMake(5, 300);
+        NSSet *downs = [NSSet setWithObject:down];
+        [guard touchesBegan:downs withEvent:[UIEvent new]];
+        Check(guard.state == UIGestureRecognizerStatePossible, @"highlight guard starts undecided");
+        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:kApolloDuoHighlightGuardDelay / 2]];
+        Check(guard.state == UIGestureRecognizerStatePossible, @"highlight guard stays undecided within the delay");
+        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:kApolloDuoHighlightGuardDelay]];
+        Check(guard.state == UIGestureRecognizerStateFailed, @"an undecided guard fails after the delay, releasing the touch-down (tap/hold highlight)");
+        [guard reset]; [guard touchesBegan:downs withEvent:[UIEvent new]];
+        down.point = CGPointMake(7, 312);
+        [guard touchesMoved:downs withEvent:[UIEvent new]];
+        Check(guard.state == UIGestureRecognizerStateFailed, @"a clearly vertical move fails the guard at once, so scrolling is unaffected");
+        [guard reset]; down.point = CGPointMake(5, 300); [guard touchesBegan:downs withEvent:[UIEvent new]];
+        NSUInteger superMoves = guard.superMoves;
+        down.point = CGPointMake(25, 303);
+        [guard touchesMoved:downs withEvent:[UIEvent new]];
+        down.point = CGPointMake(-15, 303);
+        [guard touchesMoved:downs withEvent:[UIEvent new]];
+        Check(guard.state == UIGestureRecognizerStatePossible && guard.superMoves == superMoves + 2,
+              @"horizontal moves either way go on to the pan (which begins via the delegate)");
+        [guard reset];
+        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:kApolloDuoHighlightGuardDelay * 1.5]];
+        Check(guard.state == UIGestureRecognizerStatePossible, @"a stale timer cannot fail the next touch after reset");
         touch.point = CGPointMake(5, 300);
         Check([owner gestureRecognizer:guard shouldReceiveTouch:touch], @"highlight guard receives the touches the swipe accepts (edge)");
         touch.point = CGPointMake(200, 300);
@@ -231,7 +267,9 @@ int main(void) {
         guard.velocity = CGPointMake(300, 250);
         Check(![owner gestureRecognizerShouldBegin:guard], @"highlight guard ignores a diagonal move");
         guard.velocity = CGPointMake(-300, 10);
-        Check(![owner gestureRecognizerShouldBegin:guard], @"highlight guard ignores a leftward move");
+        Check([owner gestureRecognizerShouldBegin:guard], @"highlight guard also begins for a clearly leftward move (row actions run alongside)");
+        guard.velocity = CGPointMake(20, 300);
+        Check(![owner gestureRecognizerShouldBegin:guard], @"highlight guard ignores a vertical move");
         guard.velocity = CGPointMake(300, 40); disabled = YES;
         Check(![owner gestureRecognizerShouldBegin:guard], @"highlight guard stands down when Back cannot navigate");
         disabled = NO;
