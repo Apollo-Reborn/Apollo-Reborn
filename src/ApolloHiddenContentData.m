@@ -472,6 +472,29 @@ static ApolloHiddenContentItem *ApolloHiddenContentItemFromArcticDict(NSDictiona
     return item;
 }
 
+// The archived copy is the content: Reddit rewrites a live title or body once
+// the item is removed, even when it still shows as Hidden here. Live counts and
+// the account's own vote and save are layered on when the item still
+// resolves. The fields Apollo's cells read for context (name, parent title)
+// are filled in when the archive lacks them.
+static NSDictionary *ApolloHiddenContentRedditData(NSDictionary *archiveRaw, ApolloHiddenContentItem *item, NSDictionary * _Nullable liveData) {
+    NSMutableDictionary *data = [archiveRaw mutableCopy];
+    for (NSString *key in @[@"score", @"ups", @"num_comments", @"upvote_ratio", @"saved"]) {
+        if ([liveData[key] isKindOfClass:NSNumber.class]) data[key] = liveData[key];
+    }
+    // `likes` is true/false for a vote and null for none; the archive's copy
+    // is never the viewer's.
+    if (liveData) data[@"likes"] = liveData[@"likes"] ?: NSNull.null;
+    data[@"name"] = item.fullName;
+    if (item.fullName.length > 3 && ![data[@"id"] isKindOfClass:NSString.class]) {
+        data[@"id"] = [item.fullName substringFromIndex:3];
+    }
+    if (item.kind == ApolloHiddenContentKindComment && ![data[@"link_title"] isKindOfClass:NSString.class] && item.parentPostTitle.length) {
+        data[@"link_title"] = item.parentPostTitle;
+    }
+    return data;
+}
+
 #pragma mark - Public entry point
 
 void ApolloHiddenContentFetchWithProgress(NSString *username, ApolloHiddenContentKind kind, BOOL forceRefresh, ApolloHiddenContentProgress progress, ApolloHiddenContentFetchCompletion completion) {
@@ -591,6 +614,7 @@ void ApolloHiddenContentFetchWithProgress(NSString *username, ApolloHiddenConten
                         if (!item.parentPostTitle.length && [parent[@"title"] isKindOfClass:NSString.class]) {
                             item.parentPostTitle = parent[@"title"];
                         }
+                        item.redditData = ApolloHiddenContentRedditData(raw, item, liveChildrenByFullName[name]);
                         [results addObject:item];
                     }
                 }

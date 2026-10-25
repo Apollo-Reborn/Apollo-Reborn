@@ -258,14 +258,15 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/settings/ApolloSettings.xm \
     $(SRC_DIR)/settings/ApolloSettingsTabMenu.xm \
     $(SRC_DIR)/settings/ApolloShortcutListEditing.xm \
+    $(SRC_DIR)/ApolloUpvotedPostsFeed.m \
     $(SRC_DIR)/ApolloRecentlyRead.xm \
     $(SRC_DIR)/ApolloIntelligenceBridge.xm \
     $(SRC_DIR)/settings/ApolloSiriSettingsViewController.m \
     $(SRC_DIR)/ApolloProfileMoreMenu.xm \
     $(SRC_DIR)/ApolloHiddenContentData.m \
     $(SRC_DIR)/ApolloHiddenContentViewController.m \
-    $(SRC_DIR)/ApolloHiddenContentMedia.m \
     $(SRC_DIR)/ApolloHiddenContentMediaBridge.swift \
+    $(SRC_DIR)/ApolloHiddenContentNative.xm \
     $(SRC_DIR)/ApolloHiddenContentMenu.xm \
     $(SRC_DIR)/ApolloHideLinksBatchFix.xm \
     $(SRC_DIR)/ApolloSavedItemsDeduplicator.m \

@@ -37,6 +37,9 @@ typedef NS_ENUM(NSInteger, ApolloHiddenContentReason) {
 @property (nonatomic, copy, nullable) NSString *subreddit;
 @property (nonatomic, copy, nullable) NSString *permalink;
 @property (nonatomic, strong, nullable) NSDate *createdDate;
+// Reddit's JSON for the item (the archived copy, with live counts when it
+// still resolves), which the native lists turn into an RDKLink/RDKComment.
+@property (nonatomic, copy, nullable) NSDictionary *redditData;
 @end
 
 typedef void (^ApolloHiddenContentProgress)(double fraction, NSString *stage);
