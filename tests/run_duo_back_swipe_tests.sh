@@ -26,6 +26,18 @@ fixture = fixture.replace('// INCLUDE_PRODUCTION_SPLIT_POLICIES', '\n'.join(poli
 fixture = fixture.replace('// INCLUDE_PRODUCTION_GESTURES', source)
 (build / 'duo_back_swipe_tests.m').write_text(fixture)
 PY
+# Feed galleries make ancestor pans wait for their own drag. The Duo pane
+# Back is a pan too, and must stay exempt in the gallery's wiring loop.
+# (Community Highlights makes it wait on purpose and hands it the swipe at the
+# first highlight; run_highlights_carousel_gesture_policy_tests.sh checks that.)
+for exemption in 'ApolloFeedGalleryCarousel.xm:1'; do
+    file=${exemption%%:*}; expected=${exemption##*:}
+    found=$(grep -c 'ApolloDuoIsPaneBackPan(' "$swipe_root/src/$file" || true)
+    if [ "$found" -lt "$expected" ]; then
+        echo "FAIL: $file no longer exempts the Duo pane Back from its carousel failure requirement" >&2
+        exit 1
+    fi
+done
 xcrun --sdk macosx clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
     -fsanitize=address,undefined -framework Foundation -framework CoreGraphics \
     "$swipe_build/duo_back_swipe_tests.m" -o "$swipe_build/duo_back_swipe_tests"

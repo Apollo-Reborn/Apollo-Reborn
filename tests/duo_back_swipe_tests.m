@@ -765,6 +765,10 @@ int main(void) {
         Check(ApolloDuoBackShouldCommit(0.05, 500) && ApolloDuoBackShouldCommit(0.2, 1500), @"commit: a 500 pt/s flick past 0.05");
         Check(!ApolloDuoBackShouldCommit(0.049, 500) && !ApolloDuoBackShouldCommit(0, 3000), @"commit: a flick that has barely moved does not");
         Check(!ApolloDuoBackShouldCommit(0.05, 499.9) && !ApolloDuoBackShouldCommit(0.3, -900), @"commit: short of 0.35 the flick must be rightward and fast");
+        Check(!ApolloDuoBackShouldCommit(0.5, -500) && !ApolloDuoBackShouldCommit(1.0, -2000),
+              @"commit: a backward flick at 500 pt/s cancels at any progress, like a native pop");
+        Check(ApolloDuoBackShouldCommit(0.5, -499.9) && ApolloDuoBackShouldCommit(0.35, -100),
+              @"commit: a small backward jitter at lift past 0.35 still commits");
 
         // The pan begins only for a clearly rightward move.
         routeThread.viewControllers = @[routeBackstop, [TestPage new]];
@@ -855,6 +859,27 @@ int main(void) {
         Check(drawerReveals == routeReveals + 1 && routeThread.pops == routePops,
               @"the thread closing under the finger leaves the feed's route alone: the drawer opens, the thread is untouched");
         leftSwipesDisabled = NO;
+        // Carousels make ancestor pans wait for their own pan; they exempt the
+        // pane Back, which already decides between carousel and Back itself.
+        Check(ApolloDuoIsPaneBackPan(routeOwner.pan) && ApolloDuoIsPaneBackPan(drawerOwner.pan),
+              @"the pane Back pan is recognized for the carousel exemption");
+        UIPanGestureRecognizer *impostor = [UIPanGestureRecognizer new]; impostor.name = @"ApolloReborn.Duo.PaneBack";
+        Check(!ApolloDuoIsPaneBackPan(routeOwner.highlightGuard) && !ApolloDuoIsPaneBackPan(row)
+              && !ApolloDuoIsPaneBackPan(impostor) && !ApolloDuoIsPaneBackPan(nil),
+              @"the highlight guard, row pans and unowned pans keep waiting for carousels");
+
+        // Nested pane Backs (a visited profile's outer navigation and its
+        // columns) exclude each other instead of waiting on each other.
+        Check(![routeOwner gestureRecognizer:routeOwner.pan shouldBeRequiredToFailByGestureRecognizer:drawerOwner.pan]
+              && ![drawerOwner gestureRecognizer:drawerOwner.pan shouldBeRequiredToFailByGestureRecognizer:routeOwner.pan],
+              @"two pane Backs never wait on each other");
+        Check(![routeOwner gestureRecognizer:routeOwner.pan shouldBeRequiredToFailByGestureRecognizer:drawerOwner.highlightGuard],
+              @"another pane's highlight guard does not wait for this pane's Back");
+        Check(![routeOwner gestureRecognizer:routeOwner.pan shouldRecognizeSimultaneouslyWithGestureRecognizer:drawerOwner.pan]
+              && ![drawerOwner gestureRecognizer:drawerOwner.pan shouldRecognizeSimultaneouslyWithGestureRecognizer:routeOwner.pan],
+              @"two pane Backs stay exclusive: only one begins");
+        Check([routeOwner gestureRecognizer:routeOwner.pan shouldBeRequiredToFailByGestureRecognizer:row],
+              @"row actions still wait for the pane Back");
         printf("OK: %lu checks\n", (unsigned long)checks);
     }
     return 0;

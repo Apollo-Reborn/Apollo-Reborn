@@ -162,9 +162,10 @@ static ApolloDuoBackRouting ApolloDuoBackRouteForNavigation(UINavigationControll
 }
 
 // The iPad pane Back's thresholds: a third of the pane, or a rightward flick
-// once the finger has moved at all. Progress is the drag over the pane width.
+// once the finger has moved at all. A backward flick cancels at any progress,
+// like a native pop. Progress is the drag over the pane width.
 static BOOL ApolloDuoBackShouldCommit(CGFloat progress, CGFloat velocity) {
-    return progress >= 0.35 || (velocity >= 500.0 && progress >= 0.05);
+    return velocity > -500.0 && (progress >= 0.35 || (velocity >= 500.0 && progress >= 0.05));
 }
 
 // The row under the finger highlights on touchesBegan, before any swipe has
@@ -299,11 +300,15 @@ BOOL ApolloDuoNativeBackInFlight(UINavigationController *navigation) {
     // unless Disable Left Swipes has already turned those row actions off.
     // Apollo's own Back pan never waits for a pan that stands down for it,
     // or the page would only start following the finger once that pan failed.
+    // Another pane's Back (a visited profile's outer navigation and its
+    // columns) and its highlight guard don't wait either: the pane Backs
+    // exclude each other, and waiting both ways would lose the Back.
     BOOL scrollPan = [other.view isKindOfClass:UIScrollView.class]
         && other == ((UIScrollView *)other.view).panGestureRecognizer;
     BOOL nativeBack = other == ApolloDuoNativeBackPan(self.navigation)
         && ApolloDuoNativeBackPanOwns(self.navigation);
-    return gesture == self.pan && other != self.highlightGuard
+    BOOL duoBack = [other.delegate isKindOfClass:ApolloDuoBackSwipe.class];
+    return gesture == self.pan && !duoBack
         && [other isKindOfClass:UIPanGestureRecognizer.class] && !scrollPan && !nativeBack;
 }
 - (void)guardMoved:(UIPanGestureRecognizer *)gesture {
@@ -413,6 +418,18 @@ void ApolloDuoNoteNativeBackShown(UINavigationController *navigation) {
     owner.nativeBackInFlight = NO;
 }
 
+static NSString *const kApolloDuoPaneBackName = @"ApolloReborn.Duo.PaneBack";
+
+// Feed galleries make ancestor pans wait for their own drag but exempt this
+// one: its touch admission already leaves a carousel that can scroll its
+// drag, and takes the edge strip. Community Highlights keeps it waiting and
+// releases it at the first highlight (ahlShouldYieldToNavigation).
+BOOL ApolloDuoIsPaneBackPan(UIGestureRecognizer *gesture) {
+    return [gesture.name isEqualToString:kApolloDuoPaneBackName]
+        && [gesture.delegate isKindOfClass:ApolloDuoBackSwipe.class]
+        && gesture == ((ApolloDuoBackSwipe *)gesture.delegate).pan;
+}
+
 BOOL ApolloDuoHasBackSwipe(UINavigationController *navigation) {
     return objc_getAssociatedObject(navigation, &kApolloDuoBackSwipe) != nil;
 }
@@ -424,7 +441,7 @@ void ApolloDuoInstallBackSwipe(UINavigationController *navigation) {
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:owner action:@selector(panned:)];
     pan.maximumNumberOfTouches = 1;
     pan.delegate = owner;
-    pan.name = @"ApolloReborn.Duo.PaneBack";
+    pan.name = kApolloDuoPaneBackName;
     owner.pan = pan;
     ApolloDuoHighlightGuard *highlightGuard = [[ApolloDuoHighlightGuard alloc] initWithTarget:owner action:@selector(guardMoved:)];
     highlightGuard.delegate = owner;
