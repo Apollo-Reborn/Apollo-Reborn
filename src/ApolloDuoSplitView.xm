@@ -29,6 +29,13 @@
 
 static UITableView *ApolloDuoSplitFindTable(UIView *view);
 static void ApolloDuoPostsStopGeometry(UIView *feed);
+static BOOL sDuoPostsSetDetailActive;
+@class ApolloDuoFeedAnchor, ApolloDuoPostsGeometry;
+static NSArray<ApolloDuoPostsGeometry *> *ApolloDuoPostsCaptureGeometry(UIView *feed, UIView *surface);
+static void ApolloDuoPostsAnimateGeometry(NSArray<ApolloDuoPostsGeometry *> *geometry,
+                                         UIView *feed, UIView *surface, NSTimeInterval duration);
+static ApolloDuoFeedAnchor *ApolloDuoCaptureFeedAnchor(UITableView *table);
+static void ApolloDuoRestoreFeedAnchor(UITableView *table, ApolloDuoFeedAnchor *anchor);
 @class ApolloDuoSplitHost;
 static void ApolloDuoToggleFeedLayout(ApolloDuoSplitHost *host);
 static void ApolloDuoToggleVisibleFeedLayout(UIViewController *controller, BOOL enabled);
@@ -1409,6 +1416,29 @@ static void ApolloDuoPostsSyncColumnsWithAnimation(ApolloDuoSplitState *state, B
         && [split viewControllerForColumn:UISplitViewControllerColumnSecondary] == (detail ? state.secondary : state.feed);
     BOOL unchanged = state.host.postsShowingDetail == detail && state.host.postsColumnsPaired == paired && columnsMatch;
     if (unchanged) return;
+    // Comments closed outside ApolloDuoPostsSetDetail (Apollo's own interactive
+    // edge pan pops the secondary stack natively). Do not re-parent columns
+    // while that transition runs; wait for it, then replay the feed geometry
+    // like the Back-button path so the feed widens instead of jumping.
+    BOOL nativePop = !detail && state.host.postsShowingDetail && !sDuoPostsSetDetailActive;
+    if (nativePop && state.secondary.transitionCoordinator) {
+        [state.secondary.transitionCoordinator animateAlongsideTransition:nil completion:^(id<UIViewControllerTransitionCoordinatorContext> context) {
+            ApolloDuoSplitScheduleUpdate();
+        }];
+        return;
+    }
+    UIView *nativeSurface = state.host.viewIfLoaded;
+    BOOL nativeAnimate = nativePop && nativeSurface.window && !UIAccessibilityIsReduceMotionEnabled()
+        && !sDuoSplitResizingTabs && !state.postsTogglingSplit && ApolloDuoPostsHasLandscapeColumns(state);
+    NSArray<ApolloDuoPostsGeometry *> *nativeGeometry = nil;
+    ApolloDuoFeedAnchor *nativeAnchor = nil;
+    if (nativeAnimate) {
+        [nativeSurface layoutIfNeeded];
+        nativeGeometry = ApolloDuoPostsCaptureGeometry(state.feed.view, nativeSurface);
+        ApolloDuoPostsStopGeometry(state.feed.viewIfLoaded);
+        ApolloDuoPostsStopGeometry(state.secondary.viewIfLoaded);
+        nativeAnchor = ApolloDuoCaptureFeedAnchor(ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded));
+    }
     state.changing = YES;
     state.host.postsShowingDetail = detail;
     state.host.postsColumnsPaired = paired;
@@ -1477,7 +1507,27 @@ static void ApolloDuoPostsSyncColumnsWithAnimation(ApolloDuoSplitState *state, B
         [split hideColumn:UISplitViewControllerColumnPrimary];
     }
     [state.host.view setNeedsLayout];
+    if (nativeAnimate) {
+        [nativeSurface layoutIfNeeded];
+        ApolloNativeFeedSearchFinishColumnMove(state.feed.topViewController);
+        UITableView *table = ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded);
+        ApolloDuoMediaPrepareTableForTransition(table);
+        SEL commit = NSSelectorFromString(@"waitUntilAllUpdatesAreCommitted");
+        if ([table respondsToSelector:commit]) ((void (*)(id, SEL))objc_msgSend)(table, commit);
+        [table layoutIfNeeded];
+        if (nativeAnchor) {
+            ApolloDuoRestoreFeedAnchor(table, nativeAnchor);
+            [table layoutIfNeeded];
+        }
+    }
     state.changing = NO;
+    if (nativeAnimate) {
+        ApolloLog(@"[DuoSplit] native pop reflow");
+        [CATransaction begin];
+        [CATransaction setCompletionBlock:^{ ApolloDuoSplitScheduleUpdate(); }];
+        ApolloDuoPostsAnimateGeometry(nativeGeometry, state.feed.view, nativeSurface, 0.32);
+        [CATransaction commit];
+    }
 }
 
 static void ApolloDuoPostsSyncColumns(ApolloDuoSplitState *state) {
@@ -1988,7 +2038,9 @@ static void ApolloDuoPostsSetDetail(ApolloDuoSplitState *state, UIViewController
         state.changing = YES;
         [state.secondary setViewControllers:page ? @[backstop, page] : @[backstop] animated:NO];
         state.changing = NO;
+        sDuoPostsSetDetailActive = YES;
         ApolloDuoPostsSyncColumns(state);
+        sDuoPostsSetDetailActive = NO;
         [surface layoutIfNeeded];
         ApolloNativeFeedSearchFinishColumnMove(state.feed.topViewController);
         // Texture schedules its row geometry separately from UIKit's column
