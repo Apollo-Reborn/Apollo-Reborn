@@ -277,20 +277,35 @@ void ApolloDuoCoverAdjustJumpButton(UIViewController *comments) {
     BOOL coverChrome = ApolloDuoCoverChromeIsActive();
     BOOL trailingRail = ApolloDuoRailHasVisibleSideBar();
     NSString *position = [NSUserDefaults.standardUserDefaults stringForKey:@"CommentJumpButtonPosition"];
-    BOOL centered = ApolloDuoJumpButtonPositionIsCentered(position.UTF8String);
-    if ((!coverChrome && !trailingRail && !centered) || !comments.isViewLoaded) return;
+    int kind = ApolloDuoJumpButtonPositionKind(position.UTF8String);
+    if (!comments.isViewLoaded) return;
+    if (!coverChrome && !trailingRail && CGRectIsNull(ApolloDuoSplitContentFrame(comments, comments.view))) return;
 
     UIView *button = ApolloDuoCoverFindJumpButton(comments);
     if (![button isKindOfClass:[UIView class]] || !button.superview) return;
     UIView *container = button.superview;
     CGRect frame = button.frame;
     BOOL moved = NO;
-    // Apollo centers on the comments table, which a split pane keeps
-    // full-screen beneath the posts column. Center on the visible pane in
-    // the button's (content) coordinates and keep Apollo's Y.
-    CGRect pane = centered ? ApolloDuoSplitContentFrame(comments, container) : CGRectNull;
-    CGFloat paneX = ApolloDuoJumpButtonPaneX(centered, !CGRectIsNull(pane), CGRectGetMinX(pane),
-                                             CGRectGetWidth(pane), CGRectGetWidth(frame), CGRectGetMinX(frame));
+    CGRect railFrame = CGRectNull;
+    if (trailingRail) {
+        UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
+        UIView *sideBar = nil;
+        if ([tabs isKindOfClass:[UITabBarController class]]) {
+            sideBar = tabs.tabBar;
+        }
+        if (sideBar.window) {
+            railFrame = [sideBar convertRect:sideBar.bounds toView:container];
+        }
+    }
+    // Apollo's x for each position comes from geometry a split pane does not
+    // match (the full-screen table beneath the posts column, or a narrower
+    // width for right positions). Place every position from the visible pane
+    // instead, in the button's (content) coordinates, and keep Apollo's Y.
+    CGRect pane = ApolloDuoSplitContentFrame(comments, container);
+    BOOL split = !CGRectIsNull(pane) && CGRectGetWidth(pane) > 0.0;
+    CGFloat paneX = ApolloDuoJumpButtonPaneX(kind, split, CGRectGetMinX(pane), CGRectGetWidth(pane),
+                                             !CGRectIsNull(railFrame), CGRectGetMinX(railFrame),
+                                             CGRectGetWidth(frame), CGRectGetMinX(frame));
     if (fabs(paneX - CGRectGetMinX(frame)) > 0.5) {
         frame.origin.x = paneX;
         moved = YES;
@@ -309,17 +324,9 @@ void ApolloDuoCoverAdjustJumpButton(UIViewController *comments) {
         limitX -= (CGFloat)ApolloDuoCoverPillWidth;
         limitY -= (CGFloat)ApolloDuoCoverPillBottom;
     }
-    if (trailingRail) {
-        UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
-        UIView *sideBar = nil;
-        if ([tabs isKindOfClass:[UITabBarController class]]) {
-            sideBar = tabs.tabBar;
-        }
-        if (sideBar.window) {
-            CGRect railFrame = [sideBar convertRect:sideBar.bounds toView:container];
-            // Match the 15pt gap used by Duo settings rows and profile cards.
-            limitX = MIN(limitX, CGRectGetMinX(railFrame) - 15.0);
-        }
+    if (!CGRectIsNull(railFrame)) {
+        // Match the 15pt gap used by Duo settings rows and profile cards.
+        limitX = MIN(limitX, CGRectGetMinX(railFrame) - (CGFloat)ApolloDuoJumpButtonRailGap);
     }
     if (CGRectGetMaxX(frame) > limitX + 0.5) {
         frame.origin.x -= (CGRectGetMaxX(frame) - limitX);
@@ -329,8 +336,11 @@ void ApolloDuoCoverAdjustJumpButton(UIViewController *comments) {
         frame.origin.y -= (CGRectGetMaxY(frame) - limitY);
         moved = YES;
     }
-    if (frame.origin.x < CGRectGetMinX(container.bounds)) {
-        frame.origin.x = CGRectGetMinX(container.bounds);
+    // The clamps must not push the button behind the posts column.
+    CGFloat minX = split ? MAX(CGRectGetMinX(container.bounds), CGRectGetMinX(pane))
+                         : CGRectGetMinX(container.bounds);
+    if (frame.origin.x < minX) {
+        frame.origin.x = minX;
         moved = YES;
     }
     if (frame.origin.y < CGRectGetMinY(container.bounds)) {
