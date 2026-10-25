@@ -4,6 +4,7 @@
 #import "ApolloUpvotedPostsFeed.h"
 #import <objc/runtime.h>
 #import "ApolloThemeRuntime.h"
+#import "ApolloCommon.h"
 
 // A split secondary can extend beneath the sidebar. Keep status text and
 // progress inside the visible pane, including while its width changes.
@@ -71,9 +72,6 @@
 
 @interface ApolloHiddenContentViewController () <ApolloHiddenContentNativeListOwner>
 @property (nonatomic, copy) NSString *username;
-@property (nonatomic) BOOL loading;
-@property (nonatomic) BOOL loaded;
-@property (nonatomic) BOOL listsRevealed;
 @property (nonatomic, strong) UISegmentedControl *contentTabs;
 // Posts tab only: switches between compact posts and large thumbnails.
 @property (nonatomic, strong) UIBarButtonItem *postSizeItem;
@@ -94,7 +92,16 @@
 @property (nonatomic, strong) UILabel *emptyStateLabel;
 @end
 
-@implementation ApolloHiddenContentViewController
+@implementation ApolloHiddenContentViewController {
+    // Per tab (0 posts, 1 comments): each loads and shows on its own.
+    BOOL _tabLoading[2];
+    BOOL _tabLoaded[2];
+    // Shown once its first results (or an error) arrive: the progress ring
+    // stands in for the list's own loading spinner until then.
+    BOOL _tabRevealed[2];
+    double _tabProgress[2];
+    NSString *_tabStage[2];
+}
 
 + (void)presentForUsername:(NSString *)username fromViewController:(UIViewController *)presenter {
     if (username.length == 0 || !presenter.navigationController) return;
@@ -126,8 +133,6 @@
         list.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         [self.view addSubview:list.view];
         [list didMoveToParentViewController:self];
-        // Shown once the first results (or an error) arrive: the progress ring
-        // stands in for the list's own loading spinner until then.
         list.view.hidden = YES;
         ApolloHiddenContentNativeListScrollView(list).scrollsToTop = tab == 0;
     }
@@ -185,7 +190,9 @@
         [self.progressLabel.trailingAnchor constraintEqualToAnchor:self.statusContentView.trailingAnchor constant:-20],
     ]];
 
-    [self apollo_fetchForceRefresh:NO];
+    // Both tabs load at once, and each shows as soon as its own results are in.
+    [self apollo_fetchTab:0 forceRefresh:NO];
+    [self apollo_fetchTab:1 forceRefresh:NO];
 }
 
 - (void)apollo_applyTabTheme {
@@ -216,10 +223,9 @@
     previous.view.hidden = YES;
     self.selectedTab = self.contentTabs.selectedSegmentIndex;
     UIViewController *current = self.lists[self.selectedTab];
-    current.view.hidden = !self.listsRevealed;
     [self apollo_updatePostSizeItem];
     ApolloHiddenContentNativeListScrollView(current).scrollsToTop = YES;
-    [self apollo_updateEmptyState];
+    [self apollo_updateTabStatus];
 }
 
 - (void)apollo_updatePostSizeItem {
@@ -244,42 +250,32 @@
     [self apollo_applyTabTheme];
 }
 
-- (void)apollo_fetchForceRefresh:(BOOL)forceRefresh {
-    if (self.loading) return;
-    self.loading = YES;
-    [self.progressTimer invalidate];
-    self.progressTimer = nil;
-    self.progressTarget = 0;
-    self.progressRing.progress = 0;
-    // A refresh shows the lists' own pull-to-refresh spinner instead.
-    self.progressRing.hidden = self.loaded;
-    self.progressLabel.hidden = self.loaded;
-    [self.emptyStateLabel removeFromSuperview];
+- (void)apollo_fetchTab:(NSInteger)tab forceRefresh:(BOOL)forceRefresh {
+    if (_tabLoading[tab]) return;
+    _tabLoading[tab] = YES;
+    _tabProgress[tab] = 0;
+    _tabStage[tab] = nil;
+    if (tab == self.selectedTab) [self apollo_updateTabStatus];
+    ApolloLog(@"[HiddenContent] Fetching %@%@", tab == 0 ? @"posts" : @"comments", forceRefresh ? @" (refresh)" : @"");
+    ApolloHiddenContentKind kind = tab == 0 ? ApolloHiddenContentKindPost : ApolloHiddenContentKindComment;
     __weak __typeof(self) weakSelf = self;
-    // Fetch sequentially: the shared archive service rate-limits concurrent
-    // posts/comments requests. Commit one complete snapshot, preserving the
-    // previous results if either request fails.
-    ApolloHiddenContentFetchWithProgress(self.username, ApolloHiddenContentKindPost, forceRefresh, ^(double fraction, NSString *stage) {
-        [weakSelf apollo_updateProgress:fraction * 0.5 stage:[@"Posts: " stringByAppendingString:stage]];
-    }, ^(NSArray *posts, NSString *postError) {
-        __strong __typeof(weakSelf) owner = weakSelf;
-        if (!owner) return;
-        if (postError) {
-            [owner apollo_finishWithPosts:nil comments:nil error:postError];
-            return;
-        }
-        ApolloHiddenContentFetchWithProgress(owner.username, ApolloHiddenContentKindComment, forceRefresh, ^(double fraction, NSString *stage) {
-            [weakSelf apollo_updateProgress:0.5 + fraction * 0.5 stage:[@"Comments: " stringByAppendingString:stage]];
-        }, ^(NSArray *comments, NSString *commentError) {
-            [weakSelf apollo_finishWithPosts:posts comments:comments error:commentError];
-        });
+    ApolloHiddenContentFetchWithProgress(self.username, kind, forceRefresh, ^(double fraction, NSString *stage) {
+        [weakSelf apollo_tab:tab progress:fraction stage:stage];
+    }, ^(NSArray *items, NSString *error) {
+        [weakSelf apollo_finishTab:tab items:items error:error];
     });
 }
 
-- (void)apollo_updateProgress:(double)fraction stage:(NSString *)stage {
-    // Updates arrive only when network work completes; never advance a timer
-    // toward an invented completion percentage while a request is stalled.
-    double progress = MAX(self.progressTarget, MIN(1, fraction));
+- (void)apollo_tab:(NSInteger)tab progress:(double)fraction stage:(NSString *)stage {
+    // Updates arrive only when network work completes, and never go backwards.
+    _tabProgress[tab] = MAX(_tabProgress[tab], MIN(1, fraction));
+    _tabStage[tab] = stage;
+    if (tab == self.selectedTab) [self apollo_updateProgress:_tabProgress[tab] stage:stage];
+}
+
+- (void)apollo_updateProgress:(double)progress stage:(NSString *)stage {
+    // Never advance a timer toward an invented completion percentage while a
+    // request is stalled; only ease toward the progress actually reported.
     self.progressStart = self.progressRing.progress;
     self.progressTarget = progress;
     self.progressStartedAt = CACurrentMediaTime();
@@ -299,62 +295,82 @@
     self.progressLabel.text = stage;
 }
 
-- (void)apollo_finishWithPosts:(NSArray *)posts comments:(NSArray *)comments error:(NSString *)error {
-    self.loading = NO;
-    if (error) {
-        [self.progressTimer invalidate];
-        self.progressTimer = nil;
-        self.progressRing.hidden = YES;
-        self.progressLabel.hidden = YES;
-        for (UIViewController *list in self.lists) ApolloHiddenContentNativeListEndRefresh(list);
-        [self apollo_revealLists];
-        [self apollo_showError:error];
-        return;
-    }
-    [self apollo_updateProgress:1 stage:@"Loaded"];
-    __weak typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (!weakSelf.loading) {
-            weakSelf.progressRing.hidden = YES;
-            weakSelf.progressLabel.hidden = YES;
-        }
-    });
-    self.loaded = YES;
-    self.tabItems = @[posts ?: @[], comments ?: @[]];
-    for (NSUInteger tab = 0; tab < self.lists.count; tab++) {
-        ApolloHiddenContentNativeListSetItems(self.lists[tab], self.tabItems[tab]);
-    }
-    [self apollo_revealLists];
+// Shows the selected tab's state: its progress while its first results load
+// (a refresh shows the list's own pull-to-refresh spinner instead), then its
+// list or a message.
+- (void)apollo_updateTabStatus {
+    NSInteger tab = self.selectedTab;
+    BOOL showProgress = _tabLoading[tab] && !_tabLoaded[tab];
+    [self.progressTimer invalidate];
+    self.progressTimer = nil;
+    self.progressTarget = _tabProgress[tab];
+    self.progressRing.progress = _tabProgress[tab];
+    self.progressRing.accessibilityValue = [NSString stringWithFormat:@"%.0f%%", _tabProgress[tab] * 100];
+    self.progressLabel.text = _tabStage[tab];
+    self.progressRing.hidden = !showProgress;
+    self.progressLabel.hidden = !showProgress;
     [self apollo_updateEmptyState];
 }
 
-- (void)apollo_revealLists {
-    if (self.listsRevealed) return;
-    self.listsRevealed = YES;
-    self.lists[self.selectedTab].view.hidden = NO;
+- (void)apollo_finishTab:(NSInteger)tab items:(NSArray *)items error:(NSString *)error {
+    _tabLoading[tab] = NO;
+    _tabRevealed[tab] = YES;
+    UIViewController *list = self.lists[tab];
+    if (error) {
+        // Keeps the results already shown; a tab that never loaded offers a retry.
+        ApolloLog(@"[HiddenContent] %@ failed: %@", tab == 0 ? @"Posts" : @"Comments", error);
+        ApolloHiddenContentNativeListEndRefresh(list);
+        if (tab == self.selectedTab) [self apollo_updateTabStatus];
+        [self apollo_showError:error];
+        return;
+    }
+    BOOL firstLoad = !_tabLoaded[tab];
+    _tabLoaded[tab] = YES;
+    NSMutableArray *tabItems = [self.tabItems mutableCopy];
+    tabItems[tab] = items ?: @[];
+    self.tabItems = tabItems;
+    ApolloHiddenContentNativeListSetItems(list, self.tabItems[tab]);
+    if (tab != self.selectedTab) return;
+    [self apollo_updateEmptyState];
+    if (!firstLoad) return;
+    // Let the ring reach full before it goes.
+    [self apollo_updateProgress:1 stage:@"Loaded"];
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        typeof(self) owner = weakSelf;
+        if (owner && owner.selectedTab == tab) [owner apollo_updateTabStatus];
+    });
 }
 
 - (void)apollo_updateEmptyState {
     [self.emptyStateLabel removeFromSuperview];
+    NSInteger tab = self.selectedTab;
+    UIViewController *list = self.lists[tab];
+    if (!_tabRevealed[tab]) {
+        list.view.hidden = YES;
+        return;
+    }
+    BOOL failed = !_tabLoaded[tab] && !_tabLoading[tab];
+    BOOL empty = _tabLoaded[tab] && !_tabLoading[tab] && self.tabItems[tab].count == 0;
     // An empty list shows only the message (Apollo's list would keep its
     // loading spinner under it).
-    BOOL empty = self.loaded && !self.loading && self.tabItems[self.selectedTab].count == 0;
-    if (self.listsRevealed) self.lists[self.selectedTab].view.hidden = empty;
-    if (!empty) return;
-    NSString *kind = self.selectedTab == 0 ? @"posts" : @"comments";
-    [self apollo_showStatusText:[NSString stringWithFormat:@"No hidden or deleted %@ found in the archive for this account.", kind]];
+    list.view.hidden = empty;
+    if (failed) {
+        [self apollo_showStatusText:@"Couldn't load results. Pull down to try again."];
+    } else if (empty) {
+        NSString *kind = tab == 0 ? @"posts" : @"comments";
+        [self apollo_showStatusText:[NSString stringWithFormat:@"No hidden or deleted %@ found in the archive for this account.", kind]];
+    }
 }
 
-// Preserve loaded results on refresh failure; an empty list offers retry.
 - (void)apollo_showError:(NSString *)message {
+    // Both tabs can fail together (no session yet); one alert covers it.
+    if ([self.presentedViewController isKindOfClass:UIAlertController.class]) return;
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Couldn't Fetch Hidden Content"
                                                                      message:message
                                                               preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
-    if (!self.loaded) {
-        [self apollo_showStatusText:@"Couldn't load results. Pull down to try again."];
-    }
 }
 
 - (void)apollo_showStatusText:(NSString *)text {
@@ -377,7 +393,9 @@
 #pragma mark - ApolloHiddenContentNativeListOwner
 
 - (void)apollo_nativeListRequestedRefresh:(UIViewController *)list {
-    [self apollo_fetchForceRefresh:YES];
+    // Refreshes only the tab that was pulled.
+    NSUInteger tab = [self.lists indexOfObjectIdenticalTo:list];
+    if (tab != NSNotFound) [self apollo_fetchTab:(NSInteger)tab forceRefresh:YES];
 }
 
 @end
