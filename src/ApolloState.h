@@ -273,6 +273,7 @@ extern BOOL sThreeStateVoting;
 // while you're at the top, and shows a "N new comments" jump pill when you've scrolled down
 // to read/reply. See ApolloLiveCommentsFollow.xm. Default ON via registerDefaults.
 extern BOOL sLiveCommentsFollow;
+extern NSInteger sCommentNavigationMode; // 0 = parent threads; 1 = new comments
 // Per-post comment sort memory (issue #555): reopening a post restores the comment
 // sort last picked inside it; other posts keep Apollo's native sort chain. Opt-in;
 // default OFF via registerDefaults. See ApolloPerPostCommentSort.xm.
