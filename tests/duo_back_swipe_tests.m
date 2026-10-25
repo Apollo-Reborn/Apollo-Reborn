@@ -10,6 +10,7 @@
 @implementation UILayoutGuide @end
 @interface UIView : NSObject
 @property(nonatomic) CGRect bounds;
+@property(nonatomic, weak) UIView *superview;
 @property(nonatomic, strong) NSObject *window;
 @property(nonatomic, strong) UILayoutGuide *safeAreaLayoutGuide;
 @property(nonatomic, strong) NSMutableArray *gestureRecognizers;
@@ -37,12 +38,22 @@
 @property(nonatomic) NSUInteger direction, numberOfTouchesRequired;
 @end
 @implementation UISwipeGestureRecognizer @end
+typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 @interface UIScrollView : UIView
 @property(nonatomic, strong) UIPanGestureRecognizer *panGestureRecognizer;
+@property(nonatomic) CGSize contentSize;
+@property(nonatomic) CGPoint contentOffset;
+@property(nonatomic) UIEdgeInsets adjustedContentInset;
+@property(nonatomic, getter=isScrollEnabled) BOOL scrollEnabled;
 @end
 @implementation UIScrollView @end
+@interface UISlider : UIView @end
+@implementation UISlider @end
+@interface UISwitch : UIView @end
+@implementation UISwitch @end
 @interface UITouch : NSObject
 @property(nonatomic) CGPoint point;
+@property(nonatomic, strong) UIView *view;
 - (CGPoint)locationInView:(UIView *)view;
 @end
 @implementation UITouch
@@ -89,7 +100,7 @@
 @property(nonatomic) BOOL changing;
 @end
 @implementation ApolloDuoSplitState @end
-static BOOL duo = YES, disabled, resizing, reduceMotion;
+static BOOL duo = YES, disabled, leftSwipesDisabled, resizing, reduceMotion;
 static NSUInteger drawerReveals;
 @interface TestDefaults : NSObject
 + (instancetype)standardUserDefaults;
@@ -97,7 +108,11 @@ static NSUInteger drawerReveals;
 @end
 @implementation TestDefaults
 + (instancetype)standardUserDefaults { static TestDefaults *d; if (!d) d=[self new]; return d; }
-- (BOOL)boolForKey:(__unused NSString *)key { return disabled; }
+- (BOOL)boolForKey:(NSString *)key {
+    if ([key isEqualToString:@"DisableNavigationGestures"]) return disabled;
+    if ([key isEqualToString:@"DisableLeftSwipeGestureActions"]) return leftSwipesDisabled;
+    return NO;
+}
 @end
 #define NSUserDefaults TestDefaults
 static BOOL ApolloDeviceIsDuo(void) { return duo; }
@@ -237,6 +252,38 @@ int main(void) {
         nav.parentViewController.presentedViewController = nil;
         nav.parentViewController.transitionCoordinator = [NSObject new];
         Check(!ApolloDuoBackSwipeCanNavigate(nav), @"containing transition blocks underlying swipe");
+
+        // Gestures > Disable Left Swipes frees the right swipe from row
+        // actions; Apollo's own Back then starts anywhere on the page, so a
+        // Duo pane's does too. Off, nothing changes (checked above).
+        leftSwipesDisabled = YES;
+        nav = Navigation();
+        Check(ApolloDuoBackSwipeAcceptsPoint(nav, CGPointMake(600, 300)), @"Disable Left Swipes: Back starts anywhere in a full-width page");
+        Check(!ApolloDuoBackSwipeAcceptsPoint(nav, CGPointMake(600, 20)), @"Disable Left Swipes: navigation/header controls are still not swallowed");
+        nav.pane = CGRectMake(640, 80, 500, 720);
+        Check(ApolloDuoBackSwipeAcceptsPoint(nav, CGPointMake(900, 300)), @"Disable Left Swipes: right pane accepts a swipe anywhere inside it");
+        Check(!ApolloDuoBackSwipeAcceptsPoint(nav, CGPointMake(300, 300)), @"Disable Left Swipes: a pane still never takes a swipe from the other pane");
+        nav.pane = CGRectNull;
+        ApolloDuoInstallBackSwipe(nav); owner = objc_getAssociatedObject(nav, &kApolloDuoBackSwipe);
+        UIView *cell = [UIView new]; cell.superview = nav.view;
+        touch = [UITouch new]; touch.point = CGPointMake(600, 300); touch.view = cell;
+        Check([owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch], @"Disable Left Swipes: the real delegate accepts an interior touch on a row");
+        UIScrollView *gallery = [UIScrollView new]; gallery.superview = cell; gallery.scrollEnabled = YES;
+        gallery.bounds = CGRectMake(0, 0, 400, 300); gallery.contentSize = CGSizeMake(1200, 300);
+        UIView *page = [UIView new]; page.superview = gallery; touch.view = page;
+        Check([owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch], @"a gallery on its first page has nothing to page back to");
+        gallery.contentOffset = CGPointMake(400, 0);
+        Check(![owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch], @"a gallery that can page back keeps its own swipe");
+        touch.point = CGPointMake(10, 300);
+        Check([owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch], @"the edge strip still goes Back over a gallery, as without the setting");
+        touch.point = CGPointMake(600, 300);
+        gallery.scrollEnabled = NO;
+        Check([owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch], @"a scroll view that cannot scroll does not block Back");
+        UISlider *slider = [UISlider new]; slider.superview = cell; touch.view = slider;
+        Check(![owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch], @"a slider keeps its drag");
+        leftSwipesDisabled = NO;
+        touch.view = cell;
+        Check(![owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch], @"with left swipes on, interior touches stay with row actions");
         printf("OK: %lu checks\n", (unsigned long)checks);
     }
     return 0;

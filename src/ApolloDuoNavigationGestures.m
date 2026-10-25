@@ -28,8 +28,14 @@ static BOOL ApolloDuoBackSwipeCanNavigate(UINavigationController *navigation) {
     return YES;
 }
 
-static BOOL ApolloDuoBackSwipeAcceptsPoint(UINavigationController *navigation, CGPoint point) {
-    if (!ApolloDuoBackSwipeCanNavigate(navigation)) return NO;
+// Gestures > Disable Left Swipes turns off the row actions a right swipe would
+// trigger, and Apollo's own Back pan then starts anywhere on the page. Give a
+// Duo pane the same reach; with the setting off only the edge strip qualifies.
+static BOOL ApolloDuoBackSwipeStartsAnywhere(void) {
+    return [NSUserDefaults.standardUserDefaults boolForKey:@"DisableLeftSwipeGestureActions"];
+}
+
+static CGRect ApolloDuoBackSwipePane(UINavigationController *navigation) {
     UIView *view = navigation.view;
     CGRect pane = ApolloDuoSplitContentFrame(navigation, view);
     if (CGRectIsNull(pane)) {
@@ -39,8 +45,31 @@ static BOOL ApolloDuoBackSwipeAcceptsPoint(UINavigationController *navigation, C
         pane = CGRectMake(CGRectGetMinX(view.bounds), CGRectGetMinY(safe),
                           CGRectGetWidth(view.bounds), CGRectGetHeight(safe));
     }
-    if (CGRectIsEmpty(pane) || !CGRectContainsPoint(pane, point)) return NO;
+    return pane;
+}
+
+static BOOL ApolloDuoBackSwipeInEdgeStrip(CGRect pane, CGPoint point) {
     return point.x <= CGRectGetMinX(pane) + 28.0;
+}
+
+static BOOL ApolloDuoBackSwipeAcceptsPoint(UINavigationController *navigation, CGPoint point) {
+    if (!ApolloDuoBackSwipeCanNavigate(navigation)) return NO;
+    CGRect pane = ApolloDuoBackSwipePane(navigation);
+    if (CGRectIsEmpty(pane) || !CGRectContainsPoint(pane, point)) return NO;
+    return ApolloDuoBackSwipeInEdgeStrip(pane, point) || ApolloDuoBackSwipeStartsAnywhere();
+}
+
+// Away from the edge strip, content with its own sideways drag keeps it: a
+// gallery or carousel that can still page back, and sliders/switches.
+static BOOL ApolloDuoBackSwipeTouchOwnsHorizontalDrag(UIView *view, UIView *container) {
+    for (UIView *candidate = view; candidate && candidate != container; candidate = candidate.superview) {
+        if ([candidate isKindOfClass:UISlider.class] || [candidate isKindOfClass:UISwitch.class]) return YES;
+        if (![candidate isKindOfClass:UIScrollView.class]) continue;
+        UIScrollView *scroll = (UIScrollView *)candidate;
+        if (scroll.scrollEnabled && scroll.contentSize.width > CGRectGetWidth(scroll.bounds) + 1.0
+            && scroll.contentOffset.x > -scroll.adjustedContentInset.left + 0.5) return YES;
+    }
+    return NO;
 }
 
 @interface ApolloDuoBackSwipe : NSObject <UIGestureRecognizerDelegate>
@@ -50,8 +79,11 @@ static BOOL ApolloDuoBackSwipeAcceptsPoint(UINavigationController *navigation, C
 
 @implementation ApolloDuoBackSwipe
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldReceiveTouch:(UITouch *)touch {
-    return gesture == self.swipe
-        && ApolloDuoBackSwipeAcceptsPoint(self.navigation, [touch locationInView:self.navigation.view]);
+    UINavigationController *navigation = self.navigation;
+    CGPoint point = [touch locationInView:navigation.view];
+    if (gesture != self.swipe || !ApolloDuoBackSwipeAcceptsPoint(navigation, point)) return NO;
+    return ApolloDuoBackSwipeInEdgeStrip(ApolloDuoBackSwipePane(navigation), point)
+        || !ApolloDuoBackSwipeTouchOwnsHorizontalDrag(touch.view, navigation.view);
 }
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gesture {
     return gesture == self.swipe && ApolloDuoBackSwipeCanNavigate(self.navigation);
@@ -65,7 +97,8 @@ static BOOL ApolloDuoBackSwipeAcceptsPoint(UINavigationController *navigation, C
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture
         shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)other {
     // At the narrow edge strip, give Back priority over horizontal row actions.
-    // Away from that strip shouldReceiveTouch: rejects this recognizer outright.
+    // Away from that strip shouldReceiveTouch: rejects this recognizer outright
+    // unless Disable Left Swipes has already turned those row actions off.
     BOOL scrollPan = [other.view isKindOfClass:UIScrollView.class]
         && other == ((UIScrollView *)other.view).panGestureRecognizer;
     return gesture == self.swipe && [other isKindOfClass:UIPanGestureRecognizer.class] && !scrollPan;
