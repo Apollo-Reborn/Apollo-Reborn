@@ -113,11 +113,34 @@ static void TestNavigation(void) {
     CHECK(ApolloCommentNavigationTargetIndex(positions, 0, 1, NSNotFound, NO, NULL) == 0, @"wrap output is optional");
 }
 
+static void TestReplyGroupTraversal(void) {
+    // Search candidates contain both eligible comments and unresolved reply
+    // groups. Stop at a group before advancing to a later loaded comment.
+    ExpectTarget(@[@100, @200, @300], 100, 1, 0, YES, 1, NO,
+                 @"forward search encounters unloaded replies before a later comment");
+    ExpectTarget(@[@100, @200, @300], 300, -1, 2, YES, 1, NO,
+                 @"backward search encounters unloaded replies before an earlier comment");
+
+    // The group at 200 becomes two new comments; the original comment ID
+    // remains the cursor even when insertion moves its index or geometry.
+    ExpectTarget(@[@100, @200, @260, @450], 100, 1, 0, YES, 1, NO,
+                 @"forward resumes at the first revealed new reply");
+    ExpectTarget(@[@100, @200, @260, @450], 300, -1, 3, YES, 2, NO,
+                 @"backward resumes at the last revealed new reply after its anchor moves");
+    ExpectTarget(@[@100, @450], 100, 1, 0, YES, 1, NO,
+                 @"group containing only old or deleted replies advances to the next eligible comment");
+    ExpectTarget(@[@100, @200, @260, @450], 0, 1, 3, YES, 0, YES,
+                 @"forward still wraps after revealed comments");
+    ExpectTarget(@[@100, @200, @260, @450], 0, -1, 0, YES, 3, YES,
+                 @"backward still wraps after revealed comments");
+}
+
 int main(void) {
     @autoreleasepool {
         TestBaselines();
         TestNewComments();
         TestNavigation();
+        TestReplyGroupTraversal();
         fprintf(stdout, "Comment navigation: %lu checks, %lu failures\n", (unsigned long)sChecks, (unsigned long)sFailures);
     }
     return sFailures ? 1 : 0;
