@@ -14,6 +14,7 @@
 #import "ApolloCommon.h"
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
+#import "ApolloDuoSplitStops.h"
 #import "ApolloDuoRail.h"
 #import "ApolloDuoCompatibility.h"
 #import "ApolloDuoRailLayout.h"
@@ -1351,6 +1352,29 @@ BOOL ApolloDuoSplitIsUnfoldedPortrait(void) {
     return size.height > size.width;
 }
 
+// The adjustable split applies to the unfolded Posts split only; anywhere
+// else, or with the setting off, the feed keeps half the canvas.
+static BOOL ApolloDuoPostsAdjustableSplit(void) {
+    return [NSUserDefaults.standardUserDefaults boolForKey:UDKeyDuoAdjustableSplit] && ApolloDuoSplitIsUnfolded();
+}
+
+// The divider x the Posts landscape split should use now on `canvas`: the
+// remembered stop with the setting on, else half the canvas. Half with the
+// setting on ends the feed at the fold; mid-resize the region may still
+// describe the old canvas, so Half takes mid-canvas until the next update.
+static CGFloat ApolloDuoPostsWantedDivider(ApolloDuoSplitState *state, CGSize canvas) {
+    BOOL adjustable = ApolloDuoPostsAdjustableSplit();
+    CGFloat foldX = 0.0;
+    if (adjustable && !sDuoSplitResizingTabs) {
+        CGRect fold = ApolloDuoActiveVerticalDivision(state.host.view);
+        if (!CGRectIsNull(fold) && CGRectGetMinX(fold) > 0.0 && CGRectGetMinX(fold) < canvas.width)
+            foldX = CGRectGetMinX(fold);
+    }
+    ApolloDuoSplitStop stop = ApolloDuoSplitStopSanitized(
+        [NSUserDefaults.standardUserDefaults integerForKey:UDKeyDuoSplitStop]);
+    return ApolloDuoPostsPrimaryWidth(adjustable, stop, canvas.width, foldX);
+}
+
 // Apollo's native navigation delegate tests a 70pt edge band in its view.
 // UIKit extends the secondary view under the sidebar and the trailing rail;
 // translate only that delegate's location query into the visible pane's band.
@@ -1411,7 +1435,10 @@ CGFloat ApolloDuoSplitTransitionContentWidth(UIView *view, CGFloat trailingInset
     if (state.feed && state.split && MIN(sDuoSplitTargetSize.width, sDuoSplitTargetSize.height) >= 600) {
         if (owner.navigationController == state.primary) return MIN(360, width - 96);
         BOOL paired = state.host.postsSplitEnabled && sDuoSplitTargetSize.width > sDuoSplitTargetSize.height && (state.secondary.viewControllers.count > 1 || state.feed.viewControllers.count > 1);
-        if (paired) width *= 0.5;
+        if (paired) {
+            CGFloat divider = ApolloDuoPostsWantedDivider(state, sDuoSplitTargetSize);
+            width = owner.navigationController == state.feed ? divider : width - divider;
+        }
         BOOL feedColumn = paired && owner.navigationController == state.feed;
         return MAX(0, width - (!feedColumn && sDuoSplitTargetSize.width > sDuoSplitTargetSize.height ? trailingInset : 0));
     }
@@ -1871,17 +1898,21 @@ static void ApolloDuoSplitApplySidebarWidth(ApolloDuoSplitState *state, BOOL hal
     CGSize canvas = sDuoSplitResizingTabs ? sDuoSplitTargetSize : state.host.view.bounds.size;
     BOOL postsLandscape = state.feed && canvas.width > canvas.height;
     CGFloat half = canvas.width * 0.5;
+    BOOL adjustable = postsLandscape && ApolloDuoPostsAdjustableSplit();
+    CGFloat postsWidth = postsLandscape ? ApolloDuoPostsWantedDivider(state, canvas) : half;
     // UIKit may keep an earlier sidebar width across column replacement.
-    // Bound both ends for Posts so its actual divider stays at the midpoint.
-    CGFloat maximum = postsLandscape ? half : (state.feed || halfWidth ? CGFLOAT_MAX : 420.0);
+    // Bound both ends for Posts so its actual divider stays at the midpoint,
+    // or at the remembered stop with the adjustable split on.
+    CGFloat maximum = postsLandscape ? postsWidth : (state.feed || halfWidth ? CGFLOAT_MAX : 420.0);
     // Settings' widest native row is "Touch ID & Passcode" + its value +
     // disclosure: a third of the flat inner display (~317pt) cut "Off" to "O".
     // Give that sidebar enough room for the value at the default text size.
     CGFloat sidebarMinimum = [state.kind isEqualToString:@"settings"] ? 340.0 : 240.0;
-    CGFloat minimum = postsLandscape ? half : sidebarMinimum;
+    CGFloat minimum = postsLandscape ? postsWidth : sidebarMinimum;
     if (split.maximumPrimaryColumnWidth != maximum) split.maximumPrimaryColumnWidth = maximum;
     if (split.minimumPrimaryColumnWidth != minimum) split.minimumPrimaryColumnWidth = minimum;
     CGFloat fraction = halfWidth || state.feed ? 0.5 : 1.0 / 3.0;
+    if (adjustable && canvas.width > 0.0) fraction = postsWidth / canvas.width;
     if (halfWidth && !state.feed && canvas.width > 0.0) {
         // End the sidebar at the fold itself rather than an assumed midpoint.
         CGRect fold = ApolloDuoActiveVerticalDivision(state.host.view);
@@ -1892,6 +1923,10 @@ static void ApolloDuoSplitApplySidebarWidth(ApolloDuoSplitState *state, BOOL hal
         // UIKit's default secondary minimum (532pt on this inner display)
         // otherwise caps the primary at 419pt even with a 50% preference.
         CGFloat secondaryMinimum = state.feed || halfWidth ? 240.0 : UISplitViewControllerAutomaticDimension;
+        // A thread beside a three-quarter feed is 238pt wide: keep the
+        // minimum under it, with room for pixel rounding, so it never caps
+        // the pinned feed.
+        if (adjustable) secondaryMinimum = MIN(secondaryMinimum, MAX(0.0, canvas.width - postsWidth - 8.0));
         if (split.minimumSecondaryColumnWidth != secondaryMinimum) split.minimumSecondaryColumnWidth = secondaryMinimum;
     }
     if (halfWidth && !state.feed) {
@@ -2046,7 +2081,8 @@ static void ApolloDuoPostsReviewClosedThread(ApolloDuoSplitState *state, ApolloD
 
 // Where the split's configured primary column ends: the divider a thread
 // pane sits beside, for the column widths in force whether or not a thread
-// shows (ApolloDuoSplitApplySidebarWidth).
+// shows (ApolloDuoSplitApplySidebarWidth). Posts landscape pins both bounds
+// to the wanted divider, so this follows the remembered stop.
 static CGFloat ApolloDuoPostsSplitDivider(ApolloDuoSplitState *state) {
     UISplitViewController *split = state.split;
     CGFloat width = CGRectGetWidth(state.host.view.bounds);
@@ -4781,6 +4817,35 @@ void ApolloDuoSplitScheduleUpdate(void) {
         sDuoSplitUpdateScheduled = NO;
         ApolloDuoSplitUpdate();
     });
+}
+
+// Re-pin the Posts columns after the setting or the stop changed: at once
+// with no thread beside the feed, with the columns' animation when one is.
+static void ApolloDuoSplitApplyPostsStopToState(ApolloDuoSplitState *state) {
+    if (!state.split || !state.feed || state.changing || state.interactiveClose) return;
+    BOOL threadShown = ApolloDuoPostsUsesSplit(state) && state.secondary.viewControllers.count > 1
+        && state.split.viewIfLoaded.window && !sDuoSplitResizingTabs;
+    if (!threadShown) {
+        ApolloDuoSplitApplySidebarWidth(state, state.halfWidthSidebar);
+        return;
+    }
+    [UIView animateWithDuration:0.25 animations:^{
+        ApolloDuoSplitApplySidebarWidth(state, state.halfWidthSidebar);
+        [state.split.view layoutIfNeeded];
+    }];
+}
+
+void ApolloDuoSplitApplyPostsStop(UINavigationController *anyPostsNavigation) {
+    if (anyPostsNavigation) {
+        ApolloDuoSplitApplyPostsStopToState(ApolloDuoSplitStateForNavigation(anyPostsNavigation, NO));
+        return;
+    }
+    UITabBarController *tabs = (id)ApolloMainTabBarController();
+    if (![tabs isKindOfClass:UITabBarController.class] || !tabs.isViewLoaded) return;
+    for (UIViewController *child in tabs.viewControllers) {
+        if (![child isKindOfClass:UINavigationController.class]) continue;
+        ApolloDuoSplitApplyPostsStopToState(ApolloDuoSplitStateForNavigation((id)child, NO));
+    }
 }
 
 static BOOL ApolloDuoSplitHasDeferredPresentationInWindow(UIWindow *window) {

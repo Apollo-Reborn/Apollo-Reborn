@@ -4761,7 +4761,7 @@ static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
 
 - (void)adjustableSplitSwitchToggled:(UISwitch *)sender {
     [NSUserDefaults.standardUserDefaults setBool:sender.isOn forKey:UDKeyDuoAdjustableSplit];
-    ApolloDuoSplitScheduleUpdate();
+    ApolloDuoSplitApplyPostsStop(nil);
 }
 
 // Modern Chat / Modmail are a plain app-wide choice for every account.

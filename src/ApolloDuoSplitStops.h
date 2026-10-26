@@ -53,6 +53,16 @@ static inline CGFloat ApolloDuoSplitStopDivider(ApolloDuoSplitStop stop,
     }
 }
 
+// The Posts feed column's width in the landscape split. With the setting off
+// it is half the canvas, as before the setting existed, whatever the stop.
+static inline CGFloat ApolloDuoPostsPrimaryWidth(bool adjustable,
+                                                 ApolloDuoSplitStop stop,
+                                                 CGFloat canvasWidth,
+                                                 CGFloat foldX) {
+    if (!adjustable) return canvasWidth * 0.5;
+    return ApolloDuoSplitStopDivider(stop, canvasWidth, foldX);
+}
+
 static inline ApolloDuoSplitStop ApolloDuoSplitStopNearest(CGFloat dividerX,
                                                            CGFloat canvasWidth,
                                                            CGFloat foldX) {

@@ -1,6 +1,9 @@
 #import <UIKit/UIKit.h>
 __BEGIN_DECLS
 void ApolloDuoSplitScheduleUpdate(void);
+// Re-applies the Posts split's feed width after the adjustable split setting
+// or its remembered stop changed; nil applies it to every Posts split.
+void ApolloDuoSplitApplyPostsStop(UINavigationController *anyPostsNavigation);
 BOOL ApolloDuoSplitIsResizing(void);
 BOOL ApolloDuoSplitIsUnfolded(void);
 BOOL ApolloDuoRequiresSubredditEnhancements(void);
