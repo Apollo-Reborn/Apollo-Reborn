@@ -1096,6 +1096,14 @@ CGRect ApolloDuoSplitContentFrame(UIViewController *controller, UIView *coordina
     return [coordinateView convertRect:content fromView:view];
 }
 
+// Media covering the screen from a column's navigation view covers the whole
+// split instead: the tab's own navigation view, which holds every column and
+// is the view it would have covered on the cover display. Nil leaves it alone.
+static UIView *ApolloDuoSplitMediaSurface(ApolloDuoSplitState *state, UINavigationController *nav) {
+    if (!state.split || (nav != state.feed && nav != state.secondary && nav != state.primary)) return nil;
+    return state.outer.viewIfLoaded;
+}
+
 BOOL ApolloDuoSplitIsAccountFeedController(UIViewController *controller) {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(controller.navigationController, NO);
     if (!state.split || ![state.kind isEqualToString:@"account"]
@@ -3867,6 +3875,54 @@ static CGFloat ApolloDuoEmptyStateCenterX(UILabel *label, CGFloat nativeX) {
 %end
 %end
 
+// A YouTube video loads in YouTubeLoadingView (thumbnail, spinner, Cancel),
+// not in the media viewer: Apollo adds it to the window, pins its four edges
+// to the opener's navigation view and slides it up by that view's height.
+// Playback then moves to WebKit's fullscreen player over the whole window. In
+// the split the opener's navigation view is a column, so loading showed in
+// that column and jumped to full screen once the video played. Re-pin those
+// edges to the whole split before the first layout; the slide, Cancel and
+// playback stay Apollo's own.
+static void ApolloDuoSplitCoverYouTubeLoading(UIView *loading) {
+    UIView *column = nil;
+    NSMutableArray<NSLayoutConstraint *> *edges = [NSMutableArray array];
+    for (NSLayoutConstraint *constraint in loading.superview.constraints) {
+        if (constraint.firstItem != loading || ![constraint.secondItem isKindOfClass:UIView.class]) continue;
+        if (column && constraint.secondItem != column) return;
+        column = constraint.secondItem;
+        [edges addObject:constraint];
+    }
+    UINavigationController *nav = (id)column.nextResponder;
+    if (edges.count != 4 || ![nav isKindOfClass:UINavigationController.class]) return;
+    UIView *surface = ApolloDuoSplitMediaSurface(ApolloDuoSplitStateForNavigation(nav, NO), nav);
+    if (!surface || surface == column || surface.window != loading.window) return;
+    [NSLayoutConstraint deactivateConstraints:edges];
+    [NSLayoutConstraint activateConstraints:@[
+        [loading.topAnchor constraintEqualToAnchor:surface.topAnchor],
+        [loading.leadingAnchor constraintEqualToAnchor:surface.leadingAnchor],
+        [loading.trailingAnchor constraintEqualToAnchor:surface.trailingAnchor],
+        [loading.bottomAnchor constraintEqualToAnchor:surface.bottomAnchor],
+    ]];
+    ApolloLog(@"[DuoSplit] YouTube loading covers the split, not its %.0fpt column",
+              CGRectGetWidth(column.bounds));
+}
+
+@interface ApolloDuoYouTubeLoading : UIView @end
+%group ApolloDuoYouTubeLoadingHooks
+%hook ApolloDuoYouTubeLoading
+- (void)didMoveToWindow {
+    %orig;
+    // Apollo activates the column edges right after adding the view. The
+    // constraint pass that precedes the first layout re-pins them.
+    if (((UIView *)self).window) [(UIView *)self setNeedsUpdateConstraints];
+}
+- (void)updateConstraints {
+    ApolloDuoSplitCoverYouTubeLoading((UIView *)self);
+    %orig;
+}
+%end
+%end
+
 %ctor {
     if (!ApolloDeviceIsDuo()) {
         ApolloLog(@"[DuoSplit] not an iPhone Duo; split view hooks NOT installed");
@@ -3890,5 +3946,7 @@ static CGFloat ApolloDuoEmptyStateCenterX(UILabel *label, CGFloat nativeX) {
     Class emptyLabel = NSClassFromString(@"Apollo.EmptyStateLabel");
     if (emptyLabel) %init(ApolloDuoEmptyStateHooks, ApolloDuoEmptyStateLabel = emptyLabel,
                          ApolloDuoEmptyStateTable = NSClassFromString(@"ASTableView"));
+    Class youTubeLoading = NSClassFromString(@"Apollo.YouTubeLoadingView");
+    if (youTubeLoading) %init(ApolloDuoYouTubeLoadingHooks, ApolloDuoYouTubeLoading = youTubeLoading);
     %init;
 }
