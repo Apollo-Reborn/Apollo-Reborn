@@ -27,15 +27,24 @@ int main(void) {
               && Near(ApolloDuoListDragProgress(-4, travel), 0) && Near(ApolloDuoListDragProgress(40, 0), 0),
               @"progress: offset over travel, clamped, zero without travel");
 
-        // Begin: only a fully hidden drawer, with no drag already in hand.
-        Check(ApolloDuoListDragBegins(NO, YES, NO), @"begin: a hidden, idle drawer");
-        Check(!ApolloDuoListDragBegins(YES, NO, NO) && !ApolloDuoListDragBegins(NO, NO, NO),
-              @"begin: not while shown, nor while a slide still moves it (it is not hidden)");
-        Check(!ApolloDuoListDragBegins(NO, YES, YES), @"begin: never replaces a drag in progress");
+        // Begin: any drawer not shown, with no drag already in hand. One still
+        // parking after a hide is taken over from where it is.
+        Check(ApolloDuoListDragBegins(NO, NO), @"begin: a hidden or still parking drawer, idle");
+        Check(!ApolloDuoListDragBegins(YES, NO), @"begin: not while shown (or still sliding in)");
+        Check(!ApolloDuoListDragBegins(NO, YES), @"begin: never replaces a drag in progress");
+        Check(Near(ApolloDuoListDragBase(0, travel, YES), 0) && Near(ApolloDuoListDragBase(-372, travel, NO), 0)
+              && Near(ApolloDuoListDragBase(-0.9, travel, NO), 371.1) && Near(ApolloDuoListDragBase(-100, travel, NO), 272),
+              @"base: a hidden drawer starts at 0, a parking one at the share still shown");
+        Check(Near(ApolloDuoListDragBase(40, travel, NO), travel) && Near(ApolloDuoListDragBase(-900, travel, NO), 0),
+              @"base: an overshooting spring and a far-off one are clamped to the drawer's travel");
+        // The finger moves it from there: position is the base plus the drag.
+        Check(Near(ApolloDuoListDragTranslationX(272 + 50, travel), -50) && Near(ApolloDuoListDragProgress(272 + 50, travel), 322.0 / 372.0)
+              && Near(ApolloDuoListDragTranslationX(272 - 400, travel), -372),
+              @"take over: progress and place follow base + drag, clamped at both ends");
 
         // Finish: the drawer ends shown only for a tracked drag that commits.
-        Check(ApolloDuoListDragEndsVisible(YES, YES), @"finish: a commit shows the drawer");
-        Check(!ApolloDuoListDragEndsVisible(YES, NO), @"finish: a short release slides it back");
+        Check(ApolloDuoListDragEndsVisible(YES, YES), @"finish: a reveal commit shows the drawer");
+        Check(!ApolloDuoListDragEndsVisible(YES, NO), @"finish: a short reveal slides it back");
         Check(!ApolloDuoListDragEndsVisible(NO, YES), @"finish: no drag in hand, no Back (no second Back from one swipe)");
 
         // The Reduce Motion fade: alpha always comes back, even superseded.
