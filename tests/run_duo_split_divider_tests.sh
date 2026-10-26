@@ -43,14 +43,16 @@ for signature in ['BOOL ApolloDuoSplitDividerUpdate(', 'static void ApolloDuoPos
         if layout in frame:
             fail('%s lays out (%s) on a drag frame' % (signature, layout))
 finish = body('void ApolloDuoSplitDividerFinish(')
-snap = finish[finish.index('case ApolloDuoSplitDividerOutcomeSnap'):]
+snap = finish[finish.index('// A snap.'):]
 if not (snap.index('ApolloDuoPostsCloseEventInterrupt') < snap.index('setInteger:') < snap.index('ApolloDuoSplitApplyPostsStop(')):
     fail('a snap clears its drag, then remembers the stop, then applies it')
-for outcome in ['case ApolloDuoSplitDividerOutcomeCloseThread', 'case ApolloDuoSplitDividerOutcomeFullScreen']:
+for outcome in ['if (release.closesThread)', 'if (release.fullScreen)']:
     part = finish[finish.index(outcome):]
     part = part[:part.index('return;')]
     if 'UDKeyDuoSplitStop' in part:
         fail('%s changes the remembered stop' % outcome)
+if finish.count('UDKeyDuoSplitStop') != 1:
+    fail('only the snap remembers a stop')
 if 'ApolloDuoSplitDividerLetGo(' not in body('static void ApolloDuoPostsCancelInteractiveClose(ApolloDuoSplitState *state, BOOL animated, CGFloat velocity) {'):
     fail("the close's interruptions no longer let the divider go")
 apply = body('static void ApolloDuoSplitApplyPostsStopToState(')

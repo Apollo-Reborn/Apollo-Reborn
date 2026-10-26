@@ -228,29 +228,6 @@ int main(void) {
               @"admission: a touch that moved a tap's jitter is a swipe (Back, close, drawer), never the divider");
         Check(ApolloDuoSplitDividerShouldBegin(YES, YES, 476, 475.5, 3), @"admission: a still press on the divider moves it");
 
-        // The release: a snap remembers its stop; close and full screen leave it.
-        ApolloDuoSplitDividerRelease snap = ApolloDuoSplitDividerReleaseOutcome(ApolloDuoSplitReleaseFor(700, 0, 951, 475.5));
-        Check(snap.outcome == ApolloDuoSplitDividerOutcomeSnap && snap.remember == ApolloDuoSplitStopFeedThreeQuarters,
-              @"release: a slow release near the 75% stop snaps there and remembers it");
-        ApolloDuoSplitDividerRelease half = ApolloDuoSplitDividerReleaseOutcome(ApolloDuoSplitReleaseFor(480, 300, 951, 475.5));
-        Check(half.outcome == ApolloDuoSplitDividerOutcomeSnap && half.remember == ApolloDuoSplitStopHalf,
-              @"release: back near the fold snaps to half");
-        ApolloDuoSplitDividerRelease quarter = ApolloDuoSplitDividerReleaseOutcome(ApolloDuoSplitReleaseFor(250, -300, 951, 475.5));
-        Check(quarter.outcome == ApolloDuoSplitDividerOutcomeSnap && quarter.remember == ApolloDuoSplitStopFeedQuarter,
-              @"release: near the 25% stop snaps there");
-        ApolloDuoSplitDividerRelease close = ApolloDuoSplitDividerReleaseOutcome(ApolloDuoSplitReleaseFor(900, 0, 951, 475.5));
-        Check(close.outcome == ApolloDuoSplitDividerOutcomeCloseThread && close.remember == 0,
-              @"release: past the 75% stop toward the edge closes the thread, stop unchanged");
-        ApolloDuoSplitDividerRelease flickClose = ApolloDuoSplitDividerReleaseOutcome(ApolloDuoSplitReleaseFor(720, 600, 951, 475.5));
-        Check(flickClose.outcome == ApolloDuoSplitDividerOutcomeCloseThread && flickClose.remember == 0,
-              @"release: a rightward flick at the 75% stop closes the thread, stop unchanged");
-        ApolloDuoSplitDividerRelease full = ApolloDuoSplitDividerReleaseOutcome(ApolloDuoSplitReleaseFor(60, 0, 951, 475.5));
-        Check(full.outcome == ApolloDuoSplitDividerOutcomeFullScreen && full.remember == 0,
-              @"release: past the 25% stop toward the edge gives the thread the screen, stop unchanged");
-        ApolloDuoSplitDividerRelease flickFull = ApolloDuoSplitDividerReleaseOutcome(ApolloDuoSplitReleaseFor(230, -600, 951, 475.5));
-        Check(flickFull.outcome == ApolloDuoSplitDividerOutcomeFullScreen && flickFull.remember == 0,
-              @"release: a leftward flick at the 25% stop goes full screen, stop unchanged");
-
         // The finger's speed: each move eased into the last, none once it stops.
         Check(Near(ApolloDuoSplitDividerVelocity(0, 400, 1.0, 410, 1.01), 600), @"velocity: a first move's speed, eased in");
         Check(Near(ApolloDuoSplitDividerVelocity(1000, 400, 1.0, 410, 1.01), 1000), @"velocity: a steady move keeps its speed");

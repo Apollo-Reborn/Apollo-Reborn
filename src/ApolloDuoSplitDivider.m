@@ -34,12 +34,6 @@ BOOL ApolloDuoSplitDividerShouldBegin(BOOL adjustable, BOOL postsLandscapeWithTh
         && movedDistance < kApolloDuoSplitDividerJitter;
 }
 
-ApolloDuoSplitDividerRelease ApolloDuoSplitDividerReleaseOutcome(ApolloDuoSplitRelease release) {
-    if (release.closesThread) return (ApolloDuoSplitDividerRelease){ApolloDuoSplitDividerOutcomeCloseThread, 0};
-    if (release.fullScreen) return (ApolloDuoSplitDividerRelease){ApolloDuoSplitDividerOutcomeFullScreen, 0};
-    return (ApolloDuoSplitDividerRelease){ApolloDuoSplitDividerOutcomeSnap, release.stop};
-}
-
 // UIKit's context menu: the touch-and-hold driver that starts it
 // (longPressClickDriverPrimary) and the click presentation's relationships
 // that fail other presses once it starts (clickPresentationExclusion, ...).

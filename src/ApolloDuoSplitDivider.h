@@ -11,20 +11,6 @@ __BEGIN_DECLS
 BOOL ApolloDuoSplitDividerShouldBegin(BOOL adjustable, BOOL postsLandscapeWithThread, CGFloat touchX,
                                       CGFloat dividerX, CGFloat movedDistance);
 
-/// What letting go of the divider does, and the stop it remembers: only a
-/// snap changes the remembered stop; closing the thread or giving it the
-/// whole screen leaves it (0) as it was.
-typedef NS_ENUM(NSInteger, ApolloDuoSplitDividerOutcome) {
-    ApolloDuoSplitDividerOutcomeSnap,
-    ApolloDuoSplitDividerOutcomeCloseThread,
-    ApolloDuoSplitDividerOutcomeFullScreen,
-};
-typedef struct {
-    ApolloDuoSplitDividerOutcome outcome;
-    NSInteger remember;
-} ApolloDuoSplitDividerRelease;
-ApolloDuoSplitDividerRelease ApolloDuoSplitDividerReleaseOutcome(ApolloDuoSplitRelease release);
-
 /// UIKit's context menu (a row's touch and hold: its driver
 /// com.apple.UIKit.longPressClickDriver... and the click presentation's
 /// com.apple.UIKit.clickPresentation... relationships): held off on a touch

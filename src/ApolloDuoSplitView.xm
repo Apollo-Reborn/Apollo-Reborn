@@ -3962,44 +3962,41 @@ void ApolloDuoSplitDividerFinish(UIView *view, CGFloat dividerX, CGFloat velocit
     CGSize canvas = host.view.bounds.size;
     CGFloat divider = CGRectGetMinX(drag.pane);
     ApolloDuoPostsPlaceDivider(drag, dividerX - divider);
-    ApolloDuoSplitDividerRelease release = ApolloDuoSplitDividerReleaseOutcome(
-        ApolloDuoSplitReleaseFor(dividerX, velocityX, canvas.width, ApolloDuoPostsFoldX(state, canvas)));
-    switch (release.outcome) {
-        case ApolloDuoSplitDividerOutcomeCloseThread:
-            ApolloLog(@"[DuoSplit] divider let go at %.0f, %.0f pt/s: close the thread", dividerX, velocityX);
-            // Past the last stop it is the close's drag: the same slide off the pane.
-            [drag.fill removeFromSuperview];
-            drag.fill = nil;
-            ApolloDuoPostsCommitInteractiveClose(state, drag, velocityX);
-            return;
-        case ApolloDuoSplitDividerOutcomeFullScreen: {
-            // Cleared first: the toggle syncs the columns, which the flag holds off.
-            ApolloDuoPostsCloseAdvance(state, drag, ApolloDuoPostsCloseEventInterrupt);
-            // The toggle clears the host's transition picture; the drag's
-            // pictures cover its column change instead.
-            UIView *overlay = drag.overlay;
-            host.postsTransitionSnapshot = nil;
-            BOOL wasSplit = host.postsSplitEnabled;
-            ApolloDuoPostsToggleSplit(state);
-            BOOL full = wasSplit && !host.postsSplitEnabled;
-            if (overlay.window && !host.postsTransitionSnapshot) host.postsTransitionSnapshot = overlay;
-            ApolloLog(@"[DuoSplit] divider let go at %.0f, %.0f pt/s: %@", dividerX, velocityX,
-                      full ? @"full screen" : @"full screen refused, back to the stop");
-            ApolloDuoPostsSettleDivider(state, drag, full ? -divider : 0.0, velocityX);
-            return;
-        }
-        case ApolloDuoSplitDividerOutcomeSnap: {
-            // Cleared first, so the stop applies (it waits for no drag).
-            ApolloDuoPostsCloseAdvance(state, drag, ApolloDuoPostsCloseEventInterrupt);
-            [NSUserDefaults.standardUserDefaults setInteger:release.remember forKey:UDKeyDuoSplitStop];
-            ApolloDuoSplitApplyPostsStop(state.feed);
-            CGFloat target = ApolloDuoPostsSplitDivider(state);
-            ApolloLog(@"[DuoSplit] divider let go at %.0f, %.0f pt/s: stop %ld at %.0f", dividerX, velocityX,
-                      (long)release.remember, target);
-            ApolloDuoPostsSettleDivider(state, drag, target - divider, velocityX);
-            return;
-        }
+    ApolloDuoSplitRelease release = ApolloDuoSplitReleaseFor(dividerX, velocityX, canvas.width,
+                                                             ApolloDuoPostsFoldX(state, canvas));
+    // Closing the thread and full screen leave the remembered stop as it was.
+    if (release.closesThread) {
+        ApolloLog(@"[DuoSplit] divider let go at %.0f, %.0f pt/s: close the thread", dividerX, velocityX);
+        // Past the last stop it is the close's drag: the same slide off the pane.
+        [drag.fill removeFromSuperview];
+        drag.fill = nil;
+        ApolloDuoPostsCommitInteractiveClose(state, drag, velocityX);
+        return;
     }
+    if (release.fullScreen) {
+        // Cleared first: the toggle syncs the columns, which the flag holds off.
+        ApolloDuoPostsCloseAdvance(state, drag, ApolloDuoPostsCloseEventInterrupt);
+        // The toggle clears the host's transition picture; the drag's
+        // pictures cover its column change instead.
+        UIView *overlay = drag.overlay;
+        host.postsTransitionSnapshot = nil;
+        BOOL wasSplit = host.postsSplitEnabled;
+        ApolloDuoPostsToggleSplit(state);
+        BOOL full = wasSplit && !host.postsSplitEnabled;
+        if (overlay.window && !host.postsTransitionSnapshot) host.postsTransitionSnapshot = overlay;
+        ApolloLog(@"[DuoSplit] divider let go at %.0f, %.0f pt/s: %@", dividerX, velocityX,
+                  full ? @"full screen" : @"full screen refused, back to the stop");
+        ApolloDuoPostsSettleDivider(state, drag, full ? -divider : 0.0, velocityX);
+        return;
+    }
+    // A snap. Cleared first, so the stop applies (it waits for no drag).
+    ApolloDuoPostsCloseAdvance(state, drag, ApolloDuoPostsCloseEventInterrupt);
+    [NSUserDefaults.standardUserDefaults setInteger:release.stop forKey:UDKeyDuoSplitStop];
+    ApolloDuoSplitApplyPostsStop(state.feed);
+    CGFloat target = ApolloDuoPostsSplitDivider(state);
+    ApolloLog(@"[DuoSplit] divider let go at %.0f, %.0f pt/s: stop %d at %.0f", dividerX, velocityX,
+              (int)release.stop, target);
+    ApolloDuoPostsSettleDivider(state, drag, target - divider, velocityX);
 }
 
 void ApolloDuoSplitDividerCancel(UIView *view) {
