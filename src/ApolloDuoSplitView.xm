@@ -238,6 +238,11 @@ static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat
     [view.layer addAnimation:slide forKey:@"ApolloDuoSlide"];
 }
 
+// The subreddit drawer's width in a host that wide.
+static CGFloat ApolloDuoListDrawerWidth(CGFloat hostWidth) {
+    return MIN(360, hostWidth - 96);
+}
+
 // The interactive drawer's pure pieces: where the finger puts the subreddit
 // list and when a release shows it. Free of UIKit; tested as shipped
 // (tests/run_duo_interactive_drawer_tests.sh). The rest of the slide runs on
@@ -264,6 +269,16 @@ static BOOL ApolloDuoListDragBegins(BOOL listVisible, BOOL containerHidden, BOOL
 // release is no Back at all.
 static BOOL ApolloDuoListDragEndsVisible(BOOL tracking, BOOL commit) {
     return tracking && commit;
+}
+// What the Reduce Motion fade's completion does. The container's alpha is
+// restored whatever happened to the fade (a later slide, a cancel, a fold may
+// have superseded it); only the final place and hiding belong to the newest.
+typedef struct {
+    BOOL restoreAlpha;
+    BOOL settle;
+} ApolloDuoListFadeEnd;
+static ApolloDuoListFadeEnd ApolloDuoListFadeEndFor(BOOL superseded) {
+    return (ApolloDuoListFadeEnd){.restoreAlpha = YES, .settle = !superseded};
 }
 // End of the interactive drawer's pure pieces.
 
@@ -538,7 +553,8 @@ static BOOL ApolloDuoListDragEndsVisible(BOOL tracking, BOOL commit) {
         : (ApolloThemeSubredditListBackgroundColor() ?: UIColor.systemBackgroundColor);
     // Re-vend only on an explicit style change, never on scroll/layout.
     if (refreshRows) [ApolloDuoSplitFindTable(self.subredditList.view) reloadData];
-    if (self.listUsesGlass && self.listVisible)
+    // A drawer being pulled in is prepared as a shown one: material cleared first.
+    if (self.listUsesGlass && (self.listVisible || self.listDragging))
         ApolloDuoSplitPrepareOverlaySurface(self.subredditList.view);
 }
 - (void)restoreListSurfaceColors {
@@ -670,6 +686,9 @@ static BOOL ApolloDuoListDragEndsVisible(BOOL tracking, BOOL commit) {
     self.listDismiss.userInteractionEnabled = visible;
     self.listContainer.hidden = NO;
     self.listContainer.userInteractionEnabled = YES;
+    // A Reduce Motion fade may have been fading the container out.
+    [self.listContainer.layer removeAnimationForKey:@"opacity"];
+    self.listContainer.alpha = 1;
     NSUInteger generation = ++self.listAnimationGeneration;
     NSTimeInterval duration = animated && !UIAccessibilityIsReduceMotionEnabled() ? 0.25 : 0;
     [UIView animateWithDuration:duration delay:0 options:UIViewAnimationOptionCurveEaseOut
@@ -691,6 +710,7 @@ static BOOL ApolloDuoListDragEndsVisible(BOOL tracking, BOOL commit) {
     // A drag in hand ends here: the slide below starts from where it is.
     BOOL dragging = self.listDragging;
     self.listDragging = NO;
+    if (dragging) sDuoListDragHost = nil;
     if (self.listVisible == visible && !dragging) return;
     [self.view layoutIfNeeded];
     BOOL wasHidden = self.listContainer.hidden;
@@ -709,13 +729,16 @@ static BOOL ApolloDuoListDragEndsVisible(BOOL tracking, BOOL commit) {
     [self.view layoutIfNeeded];
     CGFloat width = self.listGlass.bounds.size.width;
     if (width <= 0.0) return NO;
-    [self prepareListReveal];
+    // Set first: the appearance prep treats a dragged drawer as a shown one.
     self.listDragging = YES;
+    [self prepareListReveal];
     self.listDragTravel = ApolloDuoListDragTravel(width);
     sDuoListDragHost = self;
     // A hide that finished earlier must not hide this drag when its turn comes.
     ++self.listAnimationGeneration;
     [self.listContainer.layer removeAnimationForKey:@"ApolloDuoSlide"];
+    [self.listContainer.layer removeAnimationForKey:@"opacity"];
+    self.listContainer.alpha = 1;
     self.listContainer.transform = CGAffineTransformMakeTranslation(ApolloDuoListDragTranslationX(0.0, self.listDragTravel), 0);
     self.listDismiss.alpha = 0;
     // The finger that pulls the list in is on the feed; a second one is not
@@ -727,7 +750,14 @@ static BOOL ApolloDuoListDragEndsVisible(BOOL tracking, BOOL commit) {
     return YES;
 }
 - (CGFloat)listDragProgress:(CGFloat)translation {
-    return self.listDragging ? ApolloDuoListDragProgress(translation, self.listDragTravel) : 0.0;
+    // The same measure with or without a drag in hand, so one swipe commits
+    // at the same distance whether the list followed the finger or not.
+    // Before the drawer's first layout its glass is 0 wide: measure against
+    // the width layout gives it, not against the 12pt gap alone.
+    CGFloat width = self.listGlass.bounds.size.width;
+    if (width <= 0.0) width = ApolloDuoListDrawerWidth(self.view.bounds.size.width);
+    CGFloat travel = self.listDragging ? self.listDragTravel : ApolloDuoListDragTravel(width);
+    return ApolloDuoListDragProgress(translation, travel);
 }
 - (BOOL)updateListDrag:(CGFloat)translation {
     if (!self.listDragging) return NO;
@@ -754,23 +784,23 @@ static BOOL ApolloDuoListDragEndsVisible(BOOL tracking, BOOL commit) {
         [self settleListVisible:visible from:start velocity:velocity animated:YES];
         return;
     }
-    // The list stays where the finger left it and fades to shown or hidden.
-    // A fading scrim lets taps reach the feed, as the spring's tail does.
+    // No slide: a shown list snaps to its place; a hidden one fades out
+    // where the finger left it. A fading scrim lets taps reach the feed, as
+    // the spring's tail does.
     self.listDismiss.userInteractionEnabled = visible;
     self.listContainer.userInteractionEnabled = YES;
     NSUInteger generation = ++self.listAnimationGeneration;
-    if (visible) {
-        self.listContainer.alpha = 0;
-        self.listContainer.transform = CGAffineTransformIdentity;
-    }
+    if (visible) self.listContainer.transform = CGAffineTransformIdentity;
     __weak typeof(self) weakSelf = self;
     [UIView animateWithDuration:0.15 animations:^{
         weakSelf.listDismiss.alpha = visible ? 1 : 0;
-        weakSelf.listContainer.alpha = visible ? 1 : 0;
+        if (!visible) weakSelf.listContainer.alpha = 0;
     } completion:^(__unused BOOL finished) {
         ApolloDuoSplitHost *host = weakSelf;
-        if (!host || host.listAnimationGeneration != generation) return;
-        host.listContainer.alpha = 1;
+        if (!host) return;
+        ApolloDuoListFadeEnd end = ApolloDuoListFadeEndFor(host.listAnimationGeneration != generation);
+        if (end.restoreAlpha) host.listContainer.alpha = 1;
+        if (!end.settle) return;
         host.listContainer.transform = CGAffineTransformMakeTranslation(visible ? 0 : -host.listGlass.bounds.size.width - 12, 0);
         host.listContainer.hidden = !host.listVisible;
         host.listDismiss.hidden = !host.listVisible;
@@ -783,6 +813,8 @@ static BOOL ApolloDuoListDragEndsVisible(BOOL tracking, BOOL commit) {
     sDuoListDragHost = nil;
     ++self.listAnimationGeneration;
     [self.listContainer.layer removeAnimationForKey:@"ApolloDuoSlide"];
+    [self.listContainer.layer removeAnimationForKey:@"opacity"];
+    self.listContainer.alpha = 1;
     self.listContainer.transform = CGAffineTransformMakeTranslation(-self.listGlass.bounds.size.width - 12, 0);
     self.listContainer.hidden = YES;
     self.listDismiss.alpha = 0;
@@ -954,7 +986,7 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
     [super viewDidLayoutSubviews];
     [self scheduleSplitSafeAreaSync];
     if (self.subredditList) {
-        CGFloat width = MIN(360, self.view.bounds.size.width - 96);
+        CGFloat width = ApolloDuoListDrawerWidth(self.view.bounds.size.width);
         BOOL portrait = self.view.bounds.size.width <= self.view.bounds.size.height;
         CGFloat bottom = CGRectGetMaxY(self.view.bounds) - 12;
         if (portrait) {

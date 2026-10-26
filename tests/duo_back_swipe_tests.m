@@ -1322,6 +1322,13 @@ int main(void) {
         drawerBegins = NO;
         Drag(drawerOwner, 60, 700);
         Check(drawerReveals == revealsNow + 1 && drawerCommits == drawerCommitsNow, @"drawer drive: no driver, the release reveals once");
+        // 140pt is past a third of the 372pt drawer but short of a third of the 640pt pane: the discrete fallback commits like the tracked drag.
+        routePosts.host.listVisible = NO; revealsNow = drawerReveals;
+        Drag(drawerOwner, 140, 0);
+        Check(drawerReveals == revealsNow + 1, @"drawer drive: the discrete fallback commits at the drawer's distance too");
+        routePosts.host.listVisible = NO;
+        Drag(drawerOwner, 100, 0);
+        Check(drawerReveals == revealsNow + 1, @"drawer drive: and a short drag still does nothing there");
         drawerBegins = YES;
         // The pane's navigation went away mid-drag: the drag still goes.
         leftSwipesDisabled = NO; closeBegins = YES; closeTracks = YES;

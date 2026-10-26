@@ -422,9 +422,10 @@ BOOL ApolloDuoNativeBackInFlight(UINavigationController *navigation) {
         return;
     }
     if (drag == ApolloDuoBackDragAbandoned) return;
-    // The drawer's progress is the share of the drawer shown, not of the pane.
+    // The drawer commits by the share of the drawer shown, not of the pane
+    // (deliberate: that is what the finger moves), tracked or discrete alike.
     CGFloat width = CGRectGetWidth(ApolloDuoBackSwipePane(navigation));
-    CGFloat progress = self.route.owner == ApolloDuoBackOwnerDrawer && drag == ApolloDuoBackDragTracking
+    CGFloat progress = self.route.owner == ApolloDuoBackOwnerDrawer
         ? ApolloDuoSplitInteractiveDrawerProgress(navigation, translation)
         : (width > 0.0 ? translation / width : 0.0);
     CGFloat velocity = [pan velocityInView:nil].x;

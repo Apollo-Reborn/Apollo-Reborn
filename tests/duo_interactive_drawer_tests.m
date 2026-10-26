@@ -37,6 +37,12 @@ int main(void) {
         Check(ApolloDuoListDragEndsVisible(YES, YES), @"finish: a commit shows the drawer");
         Check(!ApolloDuoListDragEndsVisible(YES, NO), @"finish: a short release slides it back");
         Check(!ApolloDuoListDragEndsVisible(NO, YES), @"finish: no drag in hand, no Back (no second Back from one swipe)");
+
+        // The Reduce Motion fade: alpha always comes back, even superseded.
+        Check(ApolloDuoListFadeEndFor(NO).restoreAlpha && ApolloDuoListFadeEndFor(NO).settle,
+              @"fade end: the newest fade restores alpha and settles the drawer");
+        Check(ApolloDuoListFadeEndFor(YES).restoreAlpha && !ApolloDuoListFadeEndFor(YES).settle,
+              @"fade end: a superseded fade still restores alpha but leaves the newer slide to settle");
         printf("OK: %lu checks\n", (unsigned long)checks);
     }
     return 0;
