@@ -139,6 +139,22 @@ int main(void) {
         Check(!ApolloDuoPostsSpansColumn(CGRectMake(0, 0, 0, 900), feedColumn)
               && !ApolloDuoPostsSpansColumn(CGRectMake(0, 0, 476, 900), CGRectZero),
               @"spans: nothing for an empty surface or column");
+        // Rows that only come on screen as the feed widens start below their
+        // place, following the retained row above them as it moves up.
+        CGRect before[] = {CGRectMake(0, 0, 476, 120), CGRectMake(0, 120, 476, 160), CGRectMake(0, 280, 476, 140)};
+        CGRect after[] = {CGRectMake(0, 0, 951, 90), CGRectMake(0, 90, 951, 100), CGRectMake(0, 190, 951, 100)};
+        Check(Near(ApolloDuoPostsEnteringRowShift(before, after, 3, CGRectMake(0, 290, 951, 100)), 130),
+              @"entering: the next row starts as far below as the last retained row moved up");
+        Check(Near(ApolloDuoPostsEnteringRowShift(before, after, 3, CGRectMake(0, 390, 951, 80)), 130),
+              @"entering: every row after it follows by the same amount, so they come in together");
+        CGRect shuffled[] = {after[2], after[0], after[1]}, shuffledBefore[] = {before[2], before[0], before[1]};
+        Check(Near(ApolloDuoPostsEnteringRowShift(shuffledBefore, shuffled, 3, CGRectMake(0, 290, 951, 100)), 130),
+              @"entering: the nearest retained row above, whatever the order the rows are found in");
+        CGRect lower[] = {CGRectMake(0, 500, 476, 100)}, lowerAfter[] = {CGRectMake(0, 300, 951, 80)};
+        Check(Near(ApolloDuoPostsEnteringRowShift(lower, lowerAfter, 1, CGRectMake(0, 200, 951, 100)), 200),
+              @"entering: with none above, it moves with the nearest retained row below");
+        Check(Near(ApolloDuoPostsEnteringRowShift(before, after, 0, CGRectMake(0, 290, 951, 100)), 0),
+              @"entering: nothing to follow, no shift");
         printf("OK: %lu checks\n", (unsigned long)checks);
     }
     return 0;

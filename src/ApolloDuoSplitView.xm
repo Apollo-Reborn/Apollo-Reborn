@@ -2398,6 +2398,26 @@ static BOOL ApolloDuoPostsSpansColumn(CGRect surfaceFrame, CGRect column) {
         && fabs(CGRectGetMaxX(surfaceFrame) - CGRectGetMaxX(column)) < 1.0;
 }
 
+// Where a row that only came on screen as the feed widened starts its replay:
+// below its place by as much as the nearest retained row above it moved up,
+// so it comes in behind that row; with none above, with the nearest below.
+// Frames are in the table's content, before and after the re-layout.
+static CGFloat ApolloDuoPostsEnteringRowShift(const CGRect *before, const CGRect *after, NSUInteger count,
+                                             CGRect entering) {
+    NSInteger above = -1, below = -1;
+    for (NSUInteger i = 0; i < count; i++) {
+        CGFloat top = CGRectGetMinY(after[i]);
+        if (top <= CGRectGetMinY(entering)) {
+            if (above < 0 || top > CGRectGetMinY(after[above])) above = (NSInteger)i;
+        } else if (below < 0 || top < CGRectGetMinY(after[below])) {
+            below = (NSInteger)i;
+        }
+    }
+    if (above >= 0) return CGRectGetMaxY(before[above]) - CGRectGetMaxY(after[above]);
+    if (below >= 0) return CGRectGetMinY(before[below]) - CGRectGetMinY(after[below]);
+    return 0.0;
+}
+
 // Widen a captured layer by `expansion` with its leading edge fixed.
 static void ApolloDuoPostsInflateGeometry(CGRect *bounds, CGPoint *position, CGRect *surfaceFrame,
                                           CGFloat anchorX, CGFloat expansion) {
@@ -2500,6 +2520,58 @@ static void ApolloDuoPostsSlideHandoff(ApolloDuoSplitState *state, ApolloDuoPost
     });
 }
 
+// Rows that only came on screen as the feed widened were never captured, so
+// the replay would leave them at their final place from its first frame,
+// with their text drawn a frame late. Draw them now and slide them in behind
+// the retained row above them, on the replay's curve.
+static void ApolloDuoPostsReplayEnteringRows(NSArray<ApolloDuoPostsGeometry *> *geometry, UITableView *table,
+                                             NSTimeInterval duration) {
+    if (!table || duration <= 0) return;
+    NSMapTable<UIView *, ApolloDuoPostsGeometry *> *captured = [NSMapTable weakToStrongObjectsMapTable];
+    for (ApolloDuoPostsGeometry *item in geometry) if (item.view) [captured setObject:item forKey:item.view];
+    NSMutableData *before = [NSMutableData data], *after = [NSMutableData data];
+    NSMutableArray<UITableViewCell *> *entering = [NSMutableArray array];
+    for (UITableViewCell *cell in table.visibleCells) {
+        ApolloDuoPostsGeometry *item = [captured objectForKey:cell];
+        if (!item) {
+            [entering addObject:cell];
+            continue;
+        }
+        if (item.parent != cell.superview) continue;
+        CGPoint anchor = cell.layer.anchorPoint;
+        CGRect was = CGRectMake(item.position.x - item.bounds.size.width * anchor.x,
+                                item.position.y - item.bounds.size.height * anchor.y,
+                                item.bounds.size.width, item.bounds.size.height);
+        CGRect now = cell.frame;
+        [before appendBytes:&was length:sizeof was];
+        [after appendBytes:&now length:sizeof now];
+    }
+    NSUInteger count = before.length / sizeof(CGRect);
+    if (!entering.count || !count) return;
+    SEL nodeSelector = @selector(nodeForRowAtIndexPath:);
+    SEL displaySelector = @selector(recursivelyEnsureDisplaySynchronously:);
+    NSUInteger slid = 0;
+    for (UITableViewCell *cell in entering) {
+        CGFloat shift = ApolloDuoPostsEnteringRowShift((const CGRect *)before.bytes, (const CGRect *)after.bytes,
+                                                       count, cell.frame);
+        if (fabs(shift) < 0.5) continue;
+        NSIndexPath *path = [table indexPathForCell:cell];
+        id node = path && [table respondsToSelector:nodeSelector]
+            ? ((id (*)(id, SEL, id))objc_msgSend)(table, nodeSelector, path) : nil;
+        if ([node respondsToSelector:displaySelector]) ((void (*)(id, SEL, BOOL))objc_msgSend)(node, displaySelector, YES);
+        CALayer *layer = cell.layer;
+        CABasicAnimation *move = [CABasicAnimation animationWithKeyPath:@"position"];
+        move.fromValue = [NSValue valueWithCGPoint:CGPointMake(layer.position.x, layer.position.y + shift)];
+        move.toValue = [NSValue valueWithCGPoint:layer.position];
+        move.duration = duration;
+        move.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+        [layer addAnimation:move forKey:@"ApolloDuoPostsGeometry"];
+        slid++;
+    }
+    ApolloLog(@"[DuoSplit] %lu of %lu rows that came on screen as the feed widened slid in",
+              (unsigned long)slid, (unsigned long)entering.count);
+}
+
 // The feed re-laid out at full width under the drag's cover: finish its
 // widening, then let the cover and the gap go. The replay starts every
 // surface that spanned the feed column inflated to the cover's width (the
@@ -2532,6 +2604,7 @@ static void ApolloDuoPostsHandoffFeed(ApolloDuoSplitState *state, ApolloDuoPosts
             item.surfaceFrame = frame;
         }
         ApolloDuoPostsAnimateGeometry(geometry, feed, surface, remaining);
+        ApolloDuoPostsReplayEnteringRows(geometry, ApolloDuoSplitFindTable(page), remaining);
     }
     UIView *cover = handoff.cover, *extension = handoff.extension, *overlay = handoff.overlay;
     __weak ApolloDuoSplitHost *weakHost = state.host;
@@ -2648,6 +2721,7 @@ static void ApolloDuoPostsCloseDetail(ApolloDuoSplitState *state, ApolloDuoPosts
         ApolloDuoPostsHandoffFeed(state, handoff, feedGeometry, surface);
     } else {
         ApolloDuoPostsAnimateGeometry(feedGeometry, state.feed.view, surface, 0.32);
+        ApolloDuoPostsReplayEnteringRows(feedGeometry, ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded), 0.32);
         if (snapshot) {
             CGFloat travel = CGRectGetMaxX(surface.bounds) - CGRectGetMinX(pane);
             ApolloDuoSlideView(snapshot, 0, travel, 0.32, ^{
