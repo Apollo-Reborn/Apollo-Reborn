@@ -286,6 +286,38 @@ static BOOL ApolloDuoSplitRestoreClosedThread(UINavigationController *nav) {
     threadRestores++;
     return YES;
 }
+// The split's restore that follows the finger (the forward swipe). Begin
+// answers restoreBegins; Update answers restoreTracks. Progress is over a
+// thread pane half the 1280pt feed, as the split's would be.
+static BOOL restoreBegins, restoreTracks = YES;
+static NSUInteger restoreBegun, restoreUpdated, restoreCommits, restoreSpringBacks, restoreCancels,
+    restoreAnimatedCancels, restoreActiveCancels;
+static CGFloat restoreTranslation, restoreVelocity;
+static __weak UINavigationController *restoreNavigation;
+static BOOL ApolloDuoSplitInteractiveRestoreBegin(UINavigationController *nav) {
+    restoreNavigation = nav;
+    if (restoreBegins) restoreBegun++;
+    return restoreBegins;
+}
+static BOOL ApolloDuoSplitInteractiveRestoreUpdate(UINavigationController *nav, CGFloat translation) {
+    if (nav != restoreNavigation) return NO;
+    restoreUpdated++; restoreTranslation = translation;
+    return restoreTracks;
+}
+static CGFloat ApolloDuoSplitInteractiveRestoreProgress(__unused UINavigationController *nav, CGFloat translation) {
+    return translation / 640.0;
+}
+static void ApolloDuoSplitInteractiveRestoreFinish(UINavigationController *nav, BOOL commit, CGFloat velocity) {
+    if (nav != restoreNavigation) return;
+    if (commit) restoreCommits++; else restoreSpringBacks++;
+    restoreVelocity = velocity;
+}
+static void ApolloDuoSplitInteractiveRestoreCancel(UINavigationController *nav, BOOL animated) {
+    if (!nav) restoreActiveCancels++;
+    if (nav != restoreNavigation) return;
+    restoreCancels++;
+    if (animated) restoreAnimatedCancels++;
+}
 // INCLUDE_PRODUCTION_GESTURES
 static NSUInteger checks;
 static void Check(BOOL valid, NSString *message) {
@@ -1602,8 +1634,11 @@ int main(void) {
             // The forward swipe's routing: one owner, acting on release.
             typedef ApolloDuoForwardFacts ForwardFacts;
             ApolloDuoForwardRouting forward = ApolloDuoForwardRoute((ForwardFacts){.split = YES, .closedThread = YES});
-            Check(forward.owner == ApolloDuoForwardOwnerClosedThread,
-                  @"forward route: a remembered thread comes back, discretely for now");
+            Check(forward.owner == ApolloDuoForwardOwnerClosedThread
+                  && ApolloDuoForwardRouteTracks(forward),
+                  @"forward route: a remembered thread comes back, following the finger");
+            Check(!ApolloDuoForwardRouteTracks((ApolloDuoForwardRouting){ApolloDuoForwardOwnerNone}),
+                  @"forward route: nothing to bring back has no driver");
             Check(ApolloDuoForwardRoute((ForwardFacts){0}).owner == ApolloDuoForwardOwnerNone
                   && ApolloDuoForwardRoute((ForwardFacts){.split = YES}).owner == ApolloDuoForwardOwnerNone,
                   @"forward route: nothing remembered, no forward swipe");
@@ -1818,6 +1853,81 @@ int main(void) {
             Check([fwdOwner gestureRecognizerShouldBegin:fwdPan] && !fwdOwner.forward,
                   @"after a forward swipe a rightward pan from the leading strip is Back again");
             [fwdPan reset];
+
+            // The restore follows the finger: the split's driver takes the
+            // drag from Began, and the release finishes it there alone.
+            restoreBegins = YES; restoreTracks = YES; closedThreadFeed = fwdFeed;
+            NSUInteger restoresBefore = threadRestores;
+            ForwardDrag(-640 * 0.35, 0);
+            Check(restoreBegun == 1 && restoreNavigation == fwdFeed && restoreUpdated == 1 && Near(restoreTranslation, -224),
+                  @"restore: the feed's forward swipe begins the split's restore and moves it by the translation");
+            Check(restoreCommits == 1 && restoreSpringBacks == 0 && threadRestores == restoresBefore,
+                  @"restore: past 0.35 of the thread pane it commits through the driver, never the discrete restore too");
+            ForwardDrag(-1280 * 0.2, 0);
+            Check(restoreCommits == 2, @"restore: progress is over the thread pane's width, not the full-width feed's");
+            ForwardDrag(-640 * 0.3, -100);
+            Check(restoreSpringBacks == 1 && restoreCommits == 2, @"restore: a slow drag short of 0.35 springs the thread back out");
+            ForwardDrag(-640 * 0.5, 600);
+            Check(restoreSpringBacks == 2 && Near(restoreVelocity, 600),
+                  @"restore: a rightward flick at lift springs back, with the release velocity");
+            ForwardDrag(-640 * 0.06, -600);
+            Check(restoreCommits == 3 && Near(restoreVelocity, -600), @"restore: a quick leftward flick past 0.05 commits");
+            reduceMotion = YES;
+            ForwardDrag(-640 * 0.5, 0);
+            Check(restoreBegun == 6 && restoreCommits == 4, @"restore: Reduce Motion still tracks the finger");
+            reduceMotion = NO;
+            // Interruptions: the split let the drag go, a sheet, the system.
+            NSUInteger restoreDisables = fwdPan.disables, cancels = restoreCancels;
+            restoreTracks = NO;
+            ForwardDrag(-640 * 0.5, -900);
+            Check(restoreCancels == cancels + 1 && restoreAnimatedCancels == 0 && fwdPan.disables == restoreDisables + 1
+                  && restoreCommits == 4 && restoreSpringBacks == 2 && threadRestores == restoresBefore,
+                  @"restore: a drag the split let go is removed at once, its pan cancelled, and its release is nothing");
+            restoreTracks = YES;
+            void (^ForwardBegin)(void) = ^{
+                UITouch *finger = [UITouch new]; finger.view = fwdCell; finger.point = CGPointMake(1270, 300);
+                [fwdOwner gestureRecognizer:fwdPan shouldReceiveTouch:finger];
+                [fwdPan touchesBegan:[NSSet setWithObject:finger] withEvent:[UIEvent new]];
+                fwdPan.location = CGPointMake(1254, 301); fwdPan.velocity = CGPointMake(-300, 20);
+                [fwdOwner gestureRecognizerShouldBegin:fwdPan];
+                fwdPan.translation = CGPointZero;
+                fwdPan.state = UIGestureRecognizerStateBegan; [fwdOwner panned:fwdPan];
+            };
+            ForwardBegin();
+            fwdFeed.presentedViewController = [UIViewController new];
+            fwdPan.translation = CGPointMake(-300, 2); fwdPan.state = UIGestureRecognizerStateChanged; [fwdOwner panned:fwdPan];
+            Check(restoreCancels == cancels + 2 && restoreAnimatedCancels == 0 && fwdPan.disables == restoreDisables + 2,
+                  @"restore: a sheet presented mid-drag cancels without animation");
+            fwdPan.state = UIGestureRecognizerStateCancelled; [fwdOwner panned:fwdPan];
+            [fwdPan reset];
+            fwdFeed.presentedViewController = nil;
+            Check(restoreCancels == cancels + 2 && !fwdOwner.forward, @"restore: the pan's own cancel after that does nothing more");
+            ForwardBegin();
+            fwdPan.translation = CGPointMake(-300, 2); fwdPan.state = UIGestureRecognizerStateChanged; [fwdOwner panned:fwdPan];
+            fwdFeed.presentedViewController = [UIViewController new];
+            fwdPan.velocity = CGPointMake(-900, 0); fwdPan.state = UIGestureRecognizerStateEnded; [fwdOwner panned:fwdPan];
+            [fwdPan reset];
+            fwdFeed.presentedViewController = nil;
+            Check(restoreCancels == cancels + 3 && restoreCommits == 4,
+                  @"restore: a sheet that arrived before the release cancels instead of committing");
+            ForwardBegin();
+            fwdPan.state = UIGestureRecognizerStateCancelled; [fwdOwner panned:fwdPan];
+            [fwdPan reset];
+            Check(restoreCancels == cancels + 4 && restoreAnimatedCancels == 0 && restoreCommits == 4,
+                  @"restore: a pan the system cancelled (resign active) removes the drag at once");
+            ForwardBegin();
+            fwdOwner.navigation = nil;
+            fwdPan.translation = CGPointMake(-300, 2); fwdPan.state = UIGestureRecognizerStateChanged; [fwdOwner panned:fwdPan];
+            fwdOwner.navigation = fwdFeed;
+            fwdPan.state = UIGestureRecognizerStateCancelled; [fwdOwner panned:fwdPan];
+            [fwdPan reset];
+            Check(restoreActiveCancels == 1, @"restore: a navigation gone mid-drag cancels whichever drag is active");
+            // No snapshot to show: today's discrete restore, on release.
+            restoreBegins = NO;
+            ForwardDrag(-1280 * 0.35, 0);
+            Check(threadRestores == restoresBefore + 1 && !closedThreadFeed && restoreCommits == 4,
+                  @"restore: without a driver the forward swipe restores on release as before");
+            Check(restoreBegun == 11, @"restore: every tracked forward swipe began the restore once");
             closedThreadFeed = nil;
         }
         printf("OK: %lu checks\n", (unsigned long)checks);

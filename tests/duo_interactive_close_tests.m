@@ -155,6 +155,41 @@ int main(void) {
               @"entering: with none above, it moves with the nearest retained row below");
         Check(Near(ApolloDuoPostsEnteringRowShift(before, after, 0, CGRectMake(0, 290, 951, 100)), 0),
               @"entering: nothing to follow, no shift");
+        // The forward swipe's restore, the close mirrored: one offset, the
+        // page's distance right of the thread pane's place. The close starts
+        // at 0 and commits off the pane; the restore starts off the pane
+        // (the screen's edge) and commits at 0.
+        Check(Near(ApolloDuoPostsDragOffset(NO, 120, 475), 120) && Near(ApolloDuoPostsDragOffset(NO, -20, 475), 0),
+              @"offset: the close's offset is the rightward drag, as before");
+        Check(Near(ApolloDuoPostsDragOffset(YES, 0, 475), 475),
+              @"restore offset: at Began the thread waits fully off screen, right of its pane");
+        Check(Near(ApolloDuoPostsDragOffset(YES, -120, 475), 355),
+              @"restore offset: it comes in with the leftward finger");
+        Check(Near(ApolloDuoPostsDragOffset(YES, -900, 475), 0) && Near(ApolloDuoPostsDragOffset(YES, 60, 475), 475),
+              @"restore offset: it stops at its pane, and never leaves past the screen's edge");
+        Check(Near(ApolloDuoPostsDragTarget(NO, YES, 475), 475) && Near(ApolloDuoPostsDragTarget(NO, NO, 475), 0),
+              @"target: the close commits off the pane and springs back onto it");
+        Check(Near(ApolloDuoPostsDragTarget(YES, YES, 475), 0) && Near(ApolloDuoPostsDragTarget(YES, NO, 475), 475),
+              @"target: the restore commits onto its pane and springs back off the screen");
+        Check(Near(ApolloDuoPostsRestoreProgress(-166.25, 475), -0.35) && Near(ApolloDuoPostsRestoreProgress(30, 475), 30.0 / 475.0)
+              && Near(ApolloDuoPostsRestoreProgress(-40, 0), 0),
+              @"restore progress: the drag over the thread pane's width, signed like the translation");
+        Check(Near(ApolloDuoPostsCloseShadowOpacity(ApolloDuoPostsCloseProgress(ApolloDuoPostsDragOffset(YES, 0, 475), 475)), 0)
+              && Near(ApolloDuoPostsCloseShadowOpacity(ApolloDuoPostsCloseProgress(ApolloDuoPostsDragOffset(YES, -475, 475), 475)), 0.3),
+              @"restore shadow: Apollo's Back shadow grows in as the thread arrives");
+        // The spring's cap sits where an overshoot shows: over the feed, the
+        // restore's commit; off the screen, the restore's spring back, uncapped.
+        Check(Near(ApolloDuoPostsSpringVelocity(50, 0, -2000), kApolloDuoPostsSpringOmega),
+              @"restore spring: a fast flick onto the pane never overshoots over the feed");
+        Check(Near(ApolloDuoPostsSpringVelocity(300, 475, 3000), 3000.0 / 175.0),
+              @"restore spring: springing back off the screen keeps the finger's speed");
+        // The snapshot taken as the thread closed serves only the same canvas.
+        Check(ApolloDuoClosedThreadSnapshotFits(YES, CGSizeMake(951, 700), CGSizeMake(951.4, 700)),
+              @"snapshot: kept for the same canvas");
+        Check(!ApolloDuoClosedThreadSnapshotFits(NO, CGSizeMake(951, 700), CGSizeMake(951, 700))
+              && !ApolloDuoClosedThreadSnapshotFits(YES, CGSizeMake(951, 700), CGSizeMake(980, 700))
+              && !ApolloDuoClosedThreadSnapshotFits(YES, CGSizeMake(951, 700), CGSizeMake(951, 690)),
+              @"snapshot: none, or another canvas (a hinge change), leaves the restore discrete");
         printf("OK: %lu checks\n", (unsigned long)checks);
     }
     return 0;

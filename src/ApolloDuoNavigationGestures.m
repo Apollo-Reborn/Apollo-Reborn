@@ -232,8 +232,9 @@ static BOOL ApolloDuoNativeForwardInFlight(UINavigationController *navigation) {
     return state == UIGestureRecognizerStateBegan || state == UIGestureRecognizerStateChanged;
 }
 
-// The forward swipe's sibling of ApolloDuoBackRoute. Its one owner acts once
-// on release.
+// The forward swipe's sibling of ApolloDuoBackRoute. Its one owner follows the
+// finger (ApolloDuoSplitInteractiveRestore*), or acts once on release when the
+// split has no picture of the thread to show.
 typedef NS_ENUM(NSInteger, ApolloDuoForwardOwner) {
     ApolloDuoForwardOwnerNone,          // nothing to bring back here; the pan stands down
     ApolloDuoForwardOwnerClosedThread,  // ApolloDuoSplitRestoreClosedThread
@@ -252,6 +253,11 @@ static ApolloDuoForwardRouting ApolloDuoForwardRoute(ApolloDuoForwardFacts facts
     if (!facts.split || !facts.closedThread || facts.paneHeld || facts.nativeForward)
         return (ApolloDuoForwardRouting){ApolloDuoForwardOwnerNone};
     return (ApolloDuoForwardRouting){ApolloDuoForwardOwnerClosedThread};
+}
+
+// The forward route with a driver: the closed thread brought back with the finger.
+static BOOL ApolloDuoForwardRouteTracks(ApolloDuoForwardRouting route) {
+    return route.owner == ApolloDuoForwardOwnerClosedThread;
 }
 
 static ApolloDuoForwardRouting ApolloDuoForwardRouteForNavigation(UINavigationController *navigation) {
@@ -709,24 +715,65 @@ BOOL ApolloDuoNativeBackInFlight(UINavigationController *navigation) {
     if (!sameBack) return;
     [self performBack:route];
 }
-// The forward swipe acts once, on release past the mirrored threshold, if it
-// still brings back what it began for. The scrolling under it stops as for Back.
+// The forward swipe brings the closed thread back with the finger, and the
+// release past the mirrored threshold finishes it, if it still brings back
+// what it began for. Without a driver it acts once on release. The scrolling
+// under it stops as for Back.
 - (void)forwardPanned:(ApolloDuoPaneBackPan *)pan {
     UINavigationController *navigation = self.navigation;
+    // Measured in the window, as Back's: the drag moves a view under the finger.
+    CGFloat translation = [pan translationInView:nil].x;
     if (pan.state == UIGestureRecognizerStateBegan) {
         self.forwardRoute = ApolloDuoForwardRouteForNavigation(navigation);
         [self stopScrollingUnderPan];
         pan.touchView = nil;
+        // No picture of the thread to bring in, or another transition still
+        // moving the panes: the restore acts on release, as before.
+        self.drag = ApolloDuoForwardRouteTracks(self.forwardRoute) && ApolloDuoSplitInteractiveRestoreBegin(navigation)
+            ? ApolloDuoBackDragTracking : ApolloDuoBackDragNone;
         return;
     }
-    if (pan.state == UIGestureRecognizerStateChanged) return;
+    if (pan.state == UIGestureRecognizerStateChanged) {
+        if (self.drag != ApolloDuoBackDragTracking) return;
+        // A sheet presented mid-drag, a resize, or a split that let the drag go.
+        if (ApolloDuoForwardSwipeCanNavigate(navigation) && ApolloDuoSplitInteractiveRestoreUpdate(navigation, translation)) return;
+        [self abandonDrag:pan];
+        return;
+    }
+    ApolloDuoBackDrag drag = self.drag;
+    self.drag = ApolloDuoBackDragNone;
     self.forward = NO;
-    if (pan.state != UIGestureRecognizerStateEnded) return;
+    if (pan.state != UIGestureRecognizerStateEnded) {
+        // Cancelled (the app resigned active, the system took the touch) or failed.
+        if (drag == ApolloDuoBackDragTracking) ApolloDuoSplitInteractiveRestoreCancel(navigation, NO);
+        return;
+    }
+    if (drag == ApolloDuoBackDragAbandoned) return;
+    // A tracked restore commits by the thread pane it fills; the discrete one
+    // keeps today's measure, the feed pane.
     CGFloat width = CGRectGetWidth(ApolloDuoBackSwipePane(navigation));
-    CGFloat progress = width > 0.0 ? [pan translationInView:nil].x / width : 0.0;
-    if (!ApolloDuoForwardShouldCommit(progress, [pan velocityInView:nil].x)) return;
+    CGFloat progress = drag == ApolloDuoBackDragTracking ? ApolloDuoSplitInteractiveRestoreProgress(navigation, translation)
+        : (width > 0.0 ? translation / width : 0.0);
+    CGFloat velocity = [pan velocityInView:nil].x;
+    BOOL commits = ApolloDuoForwardShouldCommit(progress, velocity);
+    if (!commits && drag != ApolloDuoBackDragTracking) return;
     ApolloDuoForwardRouting route = ApolloDuoForwardRouteForNavigation(navigation);
-    if (route.owner != self.forwardRoute.owner || ![self forwardIsFree:route]) return;
+    BOOL sameForward = route.owner == self.forwardRoute.owner && [self forwardIsFree:route];
+    if (drag == ApolloDuoBackDragTracking) {
+        switch (ApolloDuoBackReleaseFor(commits, sameForward, !ApolloDuoPaneGestureAllowed(navigation))) {
+            case ApolloDuoBackReleaseCommit:
+                ApolloLog(@"[DuoSwipe] feed pane: bring back the thread that followed the finger");
+                ApolloDuoSplitInteractiveRestoreFinish(navigation, YES, velocity);
+                return;
+            case ApolloDuoBackReleaseSpringBack:
+                ApolloDuoSplitInteractiveRestoreFinish(navigation, NO, velocity);
+                return;
+            case ApolloDuoBackReleaseCancel:
+                ApolloDuoSplitInteractiveRestoreCancel(navigation, NO);
+                return;
+        }
+    }
+    if (!sameForward) return;
     switch (route.owner) {
         case ApolloDuoForwardOwnerNone:
             return;
@@ -741,7 +788,8 @@ BOOL ApolloDuoNativeBackInFlight(UINavigationController *navigation) {
 // A navigation that is gone cancels whichever drag is active (nil below).
 - (void)abandonDrag:(UIPanGestureRecognizer *)pan {
     self.drag = ApolloDuoBackDragAbandoned;
-    ApolloDuoBackDragCancel(self.route, self.navigation, NO);
+    if (self.forward) ApolloDuoSplitInteractiveRestoreCancel(self.navigation, NO);
+    else ApolloDuoBackDragCancel(self.route, self.navigation, NO);
     pan.enabled = NO;
     pan.enabled = YES;
 }
