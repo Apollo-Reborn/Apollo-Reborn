@@ -429,6 +429,26 @@ int main(void) {
         Check(!ApolloDuoBackSwipeAcceptsPoint(nav, CGPointMake(700, 300)), @"right pane row actions remain available away from the edge");
         nav.pane = CGRectMake(0, 80, 640, 720);
         Check(ApolloDuoBackSwipeAcceptsPoint(nav, CGPointMake(20, 300)), @"left pane can navigate while right pane exists");
+        // The thread pane's Back strip and the feed pane's forward strip sit
+        // on the pane's own edges at each divider stop (canvas 951).
+        {
+            CGFloat stops[3] = { 237.75, 475.5, 713.25 };
+            for (int i = 0; i < 3; i++) {
+                CGFloat divider = stops[i];
+                nav.pane = CGRectMake(divider, 80, 951 - divider, 720);
+                Check(ApolloDuoBackSwipeAcceptsPoint(nav, CGPointMake(divider + 6, 300))
+                      && !ApolloDuoBackSwipeAcceptsPoint(nav, CGPointMake(divider - 6, 300))
+                      && !ApolloDuoBackSwipeAcceptsPoint(nav, CGPointMake(divider + 60, 300)),
+                      @"stops: the thread pane's Back strip starts at the current divider");
+                nav.pane = CGRectMake(0, 80, divider, 720);
+                Check(ApolloDuoBackSwipeAcceptsPoint(nav, CGPointMake(6, 300))
+                      && !ApolloDuoBackSwipeAcceptsPoint(nav, CGPointMake(divider + 6, 300)),
+                      @"stops: the feed pane's Back strip ends at the current divider");
+                Check(ApolloDuoForwardSwipeInEdgeStrip(nav.pane, CGPointMake(divider - 6, 300))
+                      && !ApolloDuoForwardSwipeInEdgeStrip(nav.pane, CGPointMake(divider - 60, 300)),
+                      @"stops: the forward strip hugs the current divider");
+            }
+        }
         nav.pane = CGRectZero;
         Check(!ApolloDuoBackSwipeAcceptsPoint(nav, CGPointZero), @"detached or collapsed pane cannot recognize");
         nav.pane = CGRectNull;

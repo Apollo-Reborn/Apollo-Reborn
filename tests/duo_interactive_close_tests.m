@@ -193,6 +193,22 @@ int main(void) {
               @"snapshot: none, or another canvas, leaves the restore discrete");
         Check(!ApolloDuoClosedThreadSnapshotFits(YES, canvas, canvas, 475.5, 420),
               @"snapshot: a divider that moved since the close (a posture change) leaves the restore discrete");
+        // The same checks at the movable divider's three stops (canvas 951):
+        // the feed column, the surfaces that span it and the snapshot's
+        // divider all follow the current divider, not the midpoint.
+        {
+            CGFloat stops[3] = { 237.75, 475.5, 713.25 };
+            for (int i = 0; i < 3; i++) {
+                CGFloat divider = stops[i];
+                CGRect column = CGRectMake(0, 0, divider, 900);
+                Check(ApolloDuoPostsSpansColumn(CGRectMake(0, 0, divider, 120), column)
+                      && (divider == 475.5 || !ApolloDuoPostsSpansColumn(CGRectMake(0, 0, 475.5, 120), column)),
+                      @"stops: a surface spans only the column at the current divider");
+                Check(ApolloDuoClosedThreadSnapshotFits(YES, canvas, canvas, divider, divider)
+                      && !ApolloDuoClosedThreadSnapshotFits(YES, canvas, canvas, divider, stops[(i + 1) % 3]),
+                      @"stops: a snapshot taken at one stop never serves another");
+            }
+        }
         printf("OK: %lu checks\n", (unsigned long)checks);
     }
     return 0;
