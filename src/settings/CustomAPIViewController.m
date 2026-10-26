@@ -2994,6 +2994,22 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
         }];
     panelStyle.visible = ^BOOL { return ApolloDuoUsesAdaptiveBars(); };
 
+    // Press-and-hold divider resize for the unfolded landscape Posts split.
+    // Off keeps the fixed 50/50 split; the drag itself lives in
+    // ApolloDuoSplitView.xm.
+    ApolloSettingsRow *adjustableSplit =
+        [ApolloSettingsRow customRowWithID:@"sub.adjustableSplit"
+                                      cell:^UITableViewCell *(__unused UITableView *tableView, __unused ApolloSettingsRow *row) {
+            return [weakSelf switchCellWithIdentifier:@"Cell_Sub_AdjustableSplit"
+                                                label:@"Adjustable Split"
+                                               detail:@"Press and hold the divider between feed and thread to resize it."
+                                                   on:[NSUserDefaults.standardUserDefaults boolForKey:UDKeyDuoAdjustableSplit]
+                                               action:@selector(adjustableSplitSwitchToggled:)]
+                ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+        }
+                                  onSelect:nil];
+    adjustableSplit.visible = ^BOOL { return ApolloDuoUsesAdaptiveBars(); };
+
     // Pushes the dedicated Subreddit Sections screen: the FOLLOWING section
     // for followed users, drag-to-reorder for the special sections, and a
     // live preview of the list layout (see ApolloSubredditSectionsViewController).
@@ -3032,7 +3048,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                   }];
     return [ApolloSettingsSection sectionWithTitle:@"Subreddit List"
                                             footer:nil
-                                              rows:@[ feedShortcuts, subredditSections, panelStyle,
+                                              rows:@[ feedShortcuts, subredditSections, panelStyle, adjustableSplit,
                                                       perAccountFavorites, sortFavoritesAlphabetically, confirmFavoriteToggle ]];
 }
 
@@ -4741,6 +4757,11 @@ static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
 
 - (void)reduceRateLimitingSwitchToggled:(UISwitch *)sender {
     ApolloReduceRateLimitingSetEnabled(sender.isOn);
+}
+
+- (void)adjustableSplitSwitchToggled:(UISwitch *)sender {
+    [NSUserDefaults.standardUserDefaults setBool:sender.isOn forKey:UDKeyDuoAdjustableSplit];
+    ApolloDuoSplitScheduleUpdate();
 }
 
 // Modern Chat / Modmail are a plain app-wide choice for every account.

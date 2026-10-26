@@ -28,6 +28,7 @@
 #import "ApolloState.h"
 #import "ApolloDuoRail.h"
 #import "ApolloDuoCompatibility.h"
+#import "ApolloDuoSplitStops.h"
 #import "ApolloTranslation.h"
 #import "ApolloRedgifsMissingDuration.h"
 #import "ApolloRedgifsErrorCards.h"
@@ -3749,6 +3750,8 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyTabBarSwipeNavigation: @NO,
                                     UDKeyDuoLandscapeFeedLayout: @0,
                                     UDKeyDuoSubredditPanelGlassEnabled: @NO,
+                                    UDKeyDuoAdjustableSplit: @NO,
+                                    UDKeyDuoSplitStop: @(ApolloDuoSplitStopHalf),
                                     UDKeyIPadPaneLayout: @NO,
                                     UDKeyLiquidGlassEnabled: @YES,
                                     UDKeyIconRowMagnifier: @YES,
