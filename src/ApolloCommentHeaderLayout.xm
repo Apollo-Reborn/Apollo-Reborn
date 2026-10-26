@@ -3,6 +3,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import "ApolloClasses.h"
+#import "ApolloCommentHeaderShift.h"
 
 // The author is an ApolloButtonNode (ASButtonNode), not a UILabel. Let
 // Texture remeasure it at the space left after the score, badges and age;
@@ -235,7 +236,14 @@ static BOOL ApolloPostInfoIsInCommentsHeader(ASDisplayNode *node) {
 
         title.truncationMode = NSLineBreakByTruncatingTail;
     }
-    return spec;
+    // A collapsed comment's header line sits where the expanded comment's
+    // does, so collapsing or expanding it moves only the body
+    // (ApolloCommentHeaderShift.h).
+    return ApolloCommentHeaderAlignCollapsedRow(spec, header,
+                                                ApolloObjectIvar(self, "totalCollapsedChildrenIndicator"),
+                                                ApolloObjectIvar(self, "collapseDisclosureIndicator"),
+                                                ApolloObjectIvar(self, "moreOptionsNode"),
+                                                MAX(0.0, constrainedSize.max.width - horizontalInsets));
 }
 
 %end

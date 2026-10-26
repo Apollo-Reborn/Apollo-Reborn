@@ -129,6 +129,10 @@ static BOOL LCFIsLive(id vc) {
     return raw == 8;                          // .liveUpdate
 }
 
+BOOL ApolloCommentsControllerIsLiveUpdate(UIViewController *controller) {
+    return controller && LCFIsLive(controller);
+}
+
 // An isolated single-comment thread (Inbox permalink / continued thread). ApolloInboxCommentScroll
 // owns the scroll position there, so this module stays dormant to avoid two contentOffset writers
 // fighting on the same VC (matters if the user's default sort happens to be Live Update).

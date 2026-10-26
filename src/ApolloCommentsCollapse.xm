@@ -8,6 +8,7 @@
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
 #import "ApolloClasses.h"
+#import "ApolloCommentsAccordion.h"
 
 @interface RDKComment : NSObject
 @property(nonatomic) BOOL stickied;
@@ -78,26 +79,65 @@ static UITableView *GetCommentsTableView(UIViewController *viewController) {
 }
 
 // Apollo's tap handler updates CollapsedCommentsTracker directly, then Texture
-// commits the deleted child rows asynchronously through UITableView. That path
-// requests UITableViewRowAnimationAutomatic (100): on newer UIKit the outgoing
-// children can travel down while the surviving rows close the gap upwards.
-// Choose Top at the UIKit commit boundary, where Texture can no longer replace
-// the animation. A setCollapsed: hook or a flag around the tap misses this path.
-static BOOL CommentsTableNeedsUpwardDeletion(UITableView *tableView,
-                                            UITableViewRowAnimation animation) {
-    // Preserve explicitly non-animated updates, including the media pane's
-    // transparent rows, and any direction the caller deliberately supplied.
-    if (animation != UITableViewRowAnimationAutomatic) return NO;
-
+// commits the batch asynchronously through UITableView: the comment's own row
+// is replaced and its replies (with the separator rows between comments) are
+// deleted or inserted, all with UITableViewRowAnimationAutomatic (100). UIKit
+// resolves the replaced row to a cross-fade, so both versions of the comment
+// sit half transparent over the replies sliding past, and on newer UIKit the
+// outgoing children can travel down while the surviving rows close the gap
+// upwards. The batch is therefore handled at the UIKit commit boundary, where
+// Texture can no longer replace the animations (ApolloCommentsAccordion.h). A
+// setCollapsed: hook or a flag around the tap misses this path.
+static ApolloListRowScope CommentsTableRowScope(UITableView *tableView) {
     Class commentsClass = ApolloClassCommentsViewController;
-    if (!commentsClass) return NO;
+    if (!commentsClass) return ApolloListRowScopeNone;
     for (UIResponder *responder = tableView.nextResponder; responder; responder = responder.nextResponder) {
         if (![responder isKindOfClass:commentsClass]) continue;
         UIViewController *controller = (UIViewController *)responder;
-        return !ApolloSwipeCommentsIsPaneCommentsController(controller) &&
-               GetCommentsTableView(controller) == tableView;
+        // Never load the controller's table node from here: an unloaded node
+        // cannot be the table committing this batch.
+        id tableNode = ApolloObjectIvar(controller, "tableNode");
+        BOOL ownsTable = NO;
+        if ([tableNode respondsToSelector:@selector(isNodeLoaded)] &&
+            ((BOOL (*)(id, SEL))objc_msgSend)(tableNode, @selector(isNodeLoaded))) {
+            ownsTable = ApolloNodeView(tableNode) == tableView;
+        }
+        return ApolloCommentsTableRowScope(true,
+                                           ApolloSwipeCommentsIsPaneCommentsController(controller),
+                                           ownsTable,
+                                           ApolloCommentsControllerIsLiveUpdate(controller));
     }
-    return NO;
+    return ApolloListRowScopeNone;
+}
+
+static UITableViewRowAnimation AccordionRowAnimation(UITableView *tableView,
+                                                     ApolloListRowOperation operation,
+                                                     UITableViewRowAnimation animation,
+                                                     NSArray<NSIndexPath *> *indexPaths) {
+    // Explicitly chosen animations (including .none) are never changed, so
+    // only an automatic one pays for the responder walk.
+    ApolloListRowScope scope = (animation == UITableViewRowAnimationAutomatic && [NSThread isMainThread])
+        ? CommentsTableRowScope(tableView) : ApolloListRowScopeNone;
+    return ApolloAccordionAnimationForRows(tableView, operation, indexPaths, animation, scope);
+}
+
+// What a row shows, to match the rows on screen across a batch: a comment's
+// fullName (its collapsed header and the expanded comment are the same
+// comment), or for any other row (post header, separators, load more) its
+// kind, which the accordion tells apart by position.
+static NSString *CommentsRowIdentity(UITableViewCell *cell) {
+    if (![cell respondsToSelector:@selector(node)]) return nil;
+    id node = ((id (*)(id, SEL))objc_msgSend)(cell, @selector(node));
+    if (!node) return nil;
+    Class commentCellClass = ApolloClassCommentCellNode;
+    if (commentCellClass && [node isKindOfClass:commentCellClass]) {
+        id comment = ApolloObjectIvar(node, "comment");
+        if ([comment respondsToSelector:@selector(fullName)]) {
+            id fullName = ((id (*)(id, SEL))objc_msgSend)(comment, @selector(fullName));
+            if ([fullName isKindOfClass:[NSString class]] && [(NSString *)fullName length] > 0) return fullName;
+        }
+    }
+    return [@"~" stringByAppendingString:NSStringFromClass([node class])];
 }
 
 static CGFloat GetNavigationBarBottom(UIViewController *viewController) {
@@ -499,14 +539,71 @@ static void ShowCommentsCollapseCover(NSString *reason) {
 
 %hook UITableView
 
+// Every Texture batch reaches UIKit as [super beginUpdates], its row
+// operations and [super endUpdates]; ApolloCommentsAccordion.m records it and
+// takes over a comment collapsing or expanding. Logos' bare %orig would
+// forward the originally captured animation, so the row hooks pass the chosen
+// one explicitly.
+- (void)beginUpdates {
+    %orig;
+    if (ApolloClassASTableView && [self isKindOfClass:ApolloClassASTableView]) ApolloAccordionTableWillBeginUpdates(self);
+}
+
+- (void)endUpdates {
+    ApolloAccordionTableEndUpdates(self, ^NSString *(UITableViewCell *cell) {
+        return CommentsRowIdentity(cell);
+    }, ^{
+        %orig;
+    });
+}
+
 - (void)deleteRowsAtIndexPaths:(NSArray<NSIndexPath *> *)indexPaths
               withRowAnimation:(UITableViewRowAnimation)animation {
-    if (CommentsTableNeedsUpwardDeletion(self, animation)) {
-        ApolloLog(@"[CommentsCollapse] Delete %lu rows upwards", (unsigned long)indexPaths.count);
-        animation = UITableViewRowAnimationTop;
-    }
-    // Logos' bare %orig would forward the originally captured animation.
-    %orig(indexPaths, animation);
+    %orig(indexPaths, AccordionRowAnimation(self, ApolloListRowOperationDelete, animation, indexPaths));
+}
+
+- (void)insertRowsAtIndexPaths:(NSArray<NSIndexPath *> *)indexPaths
+              withRowAnimation:(UITableViewRowAnimation)animation {
+    %orig(indexPaths, AccordionRowAnimation(self, ApolloListRowOperationInsert, animation, indexPaths));
+}
+
+- (void)reloadRowsAtIndexPaths:(NSArray<NSIndexPath *> *)indexPaths
+              withRowAnimation:(UITableViewRowAnimation)animation {
+    %orig(indexPaths, AccordionRowAnimation(self, ApolloListRowOperationReload, animation, indexPaths));
+}
+
+- (void)moveRowAtIndexPath:(NSIndexPath *)indexPath toIndexPath:(NSIndexPath *)newIndexPath {
+    ApolloAccordionTableDidChangeSectionsOrMoveRows(self);
+    %orig;
+}
+
+- (void)insertSections:(NSIndexSet *)sections withRowAnimation:(UITableViewRowAnimation)animation {
+    ApolloAccordionTableDidChangeSectionsOrMoveRows(self);
+    %orig;
+}
+
+- (void)deleteSections:(NSIndexSet *)sections withRowAnimation:(UITableViewRowAnimation)animation {
+    ApolloAccordionTableDidChangeSectionsOrMoveRows(self);
+    %orig;
+}
+
+- (void)reloadSections:(NSIndexSet *)sections withRowAnimation:(UITableViewRowAnimation)animation {
+    ApolloAccordionTableDidChangeSectionsOrMoveRows(self);
+    %orig;
+}
+
+- (void)moveSection:(NSInteger)section toSection:(NSInteger)newSection {
+    ApolloAccordionTableDidChangeSectionsOrMoveRows(self);
+    %orig;
+}
+
+%end
+
+%hook ASTableView
+
+- (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
+    %orig;
+    ApolloAccordionTableWillDisplayCell(tableView, cell, indexPath);
 }
 
 %end

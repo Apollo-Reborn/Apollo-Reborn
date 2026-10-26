@@ -740,6 +740,9 @@ extern "C" {
 // this: the pane's cells are deliberately transparent, so stock
 // cover/animation treatments designed for the opaque screen misrender there.
 BOOL ApolloSwipeCommentsIsPaneCommentsController(UIViewController *controller);
+// Whether this CommentsViewController shows the Live Update sort (implemented
+// in ApolloLiveCommentsFollow.xm, which owns the scroll position there).
+BOOL ApolloCommentsControllerIsLiveUpdate(UIViewController *controller);
 #ifdef __cplusplus
 }
 #endif
