@@ -87,6 +87,9 @@ static UIImage *ApolloWelcomePreview(UITraitCollection *traits) {
 @property(nonatomic, strong) UIImageView *preview;
 @property(nonatomic, strong) UILabel *titleLabel;
 @property(nonatomic, strong) UIButton *tryButton;
+// The pane layout runs only with Liquid Glass. A glass build with glass turned
+// off is offered both together; one reopen applies both launch-time choices.
+@property(nonatomic) BOOL needsGlass;
 @end
 
 @implementation ApolloIPadLayoutWelcomeController
@@ -104,6 +107,7 @@ static UIImage *ApolloWelcomePreview(UITraitCollection *traits) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.accessibilityIdentifier = @"ApolloIPadLayoutWelcome";
+    self.needsGlass = !IsLiquidGlass();
     self.preferredContentSize = CGSizeMake(480, 720);
     self.view.backgroundColor = ApolloThemePageBackgroundColor() ?: UIColor.systemBackgroundColor;
     UIScrollView *scroll = [UIScrollView new];
@@ -121,8 +125,8 @@ static UIImage *ApolloWelcomePreview(UITraitCollection *traits) {
     UILabel *beta = [self label:@"This layout is in beta. You can switch back anytime in Apollo Reborn → Interface." style:UIFontTextStyleSubheadline];
     UILabel *restart = [self label:@"Requires reopening Apollo." style:UIFontTextStyleFootnote];
     self.tryButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    [self.tryButton setTitle:@"Try Now" forState:UIControlStateNormal];
-    self.tryButton.accessibilityIdentifier = @"ApolloIPadLayoutTryNow";
+    [self.tryButton setTitle:self.needsGlass ? @"Turn On Both" : @"Try Now" forState:UIControlStateNormal];
+    self.tryButton.accessibilityIdentifier = self.needsGlass ? @"ApolloIPadLayoutTurnOnBoth" : @"ApolloIPadLayoutTryNow";
     self.tryButton.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
     self.tryButton.titleLabel.adjustsFontForContentSizeCategory = YES;
     self.tryButton.layer.cornerRadius = 16;
@@ -133,7 +137,12 @@ static UIImage *ApolloWelcomePreview(UITraitCollection *traits) {
     later.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
     later.titleLabel.adjustsFontForContentSizeCategory = YES;
     [later addTarget:self action:@selector(tryLater) forControlEvents:UIControlEventTouchUpInside];
-    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[self.preview, self.titleLabel, description, beta, self.tryButton, later, restart]];
+    NSMutableArray<UIView *> *views = [@[self.preview, self.titleLabel, description, beta, self.tryButton, later, restart] mutableCopy];
+    if (self.needsGlass) {
+        [views insertObject:[self label:@"iPad Layout requires Liquid Glass, which changes how Apollo looks everywhere." style:UIFontTextStyleSubheadline]
+                    atIndex:[views indexOfObject:beta] + 1];
+    }
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:views];
     stack.axis = UILayoutConstraintAxisVertical;
     stack.spacing = 18;
     stack.translatesAutoresizingMaskIntoConstraints = NO;
@@ -180,6 +189,7 @@ static UIImage *ApolloWelcomePreview(UITraitCollection *traits) {
     // Save the desired state only; the existing scene installer reads it on
     // relaunch. This is the same contract as the Interface switch.
     [NSUserDefaults.standardUserDefaults setBool:YES forKey:UDKeyIPadPaneLayout];
+    if (self.needsGlass) [NSUserDefaults.standardUserDefaults setBool:YES forKey:UDKeyLiquidGlassEnabled];
     UIViewController *presenter = self.presentingViewController;
     BOOL active = ApolloPaneLayoutActive();
     [self dismissViewControllerAnimated:YES completion:^{
@@ -194,6 +204,11 @@ static UIImage *ApolloWelcomePreview(UITraitCollection *traits) {
 }
 @end
 
+// Glass-off users of a glass build can turn glass on from the card itself.
+static BOOL ApolloIPadLayoutWelcomeOffered(void) {
+    return ApolloPaneLayoutDeviceSupported() && (IsLiquidGlass() || ApolloLiquidGlassCanToggle());
+}
+
 @interface ApolloIPadLayoutWelcomeCoordinator : NSObject
 @property(nonatomic, strong) NSTimer *timer;
 @property(nonatomic, weak) ApolloIPadLayoutWelcomeController *card;
@@ -201,7 +216,7 @@ static UIImage *ApolloWelcomePreview(UITraitCollection *traits) {
 
 @implementation ApolloIPadLayoutWelcomeCoordinator
 - (BOOL)eligible {
-    return UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad && ApolloPaneLayoutSupported() &&
+    return UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad && ApolloIPadLayoutWelcomeOffered() &&
         ![NSUserDefaults.standardUserDefaults boolForKey:UDKeyIPadLayoutWelcomeSeen] &&
         ![NSUserDefaults.standardUserDefaults boolForKey:UDKeyIPadPaneLayout];
 }
@@ -253,7 +268,7 @@ static UIImage *ApolloWelcomePreview(UITraitCollection *traits) {
 
 static ApolloIPadLayoutWelcomeCoordinator *sWelcomeCoordinator;
 void ApolloIPadLayoutWelcomeStart(void) {
-    if (UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPad || !ApolloPaneLayoutSupported()) return;
+    if (UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPad || !ApolloIPadLayoutWelcomeOffered()) return;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         // Existing beta testers have already made this choice. Remember it
