@@ -2376,6 +2376,17 @@ static NSTimeInterval ApolloDuoPostsCloseRemaining(NSTimeInterval elapsed) {
     return remaining >= kApolloDuoPostsCloseMinimumReplay ? remaining : 0.0;
 }
 
+// A surface that spanned the feed column at capture: the page and its
+// containers, and the table, the bar, its material and scroll edge effect,
+// full-bleed rows. The replay starts these at the full width, so nothing
+// behind them (the page's black, content above the bar's blur) shows while
+// they would otherwise still be growing.
+static BOOL ApolloDuoPostsSpansColumn(CGRect surfaceFrame, CGRect column) {
+    return !CGRectIsEmpty(surfaceFrame) && !CGRectIsEmpty(column)
+        && fabs(CGRectGetMinX(surfaceFrame) - CGRectGetMinX(column)) < 1.0
+        && fabs(CGRectGetMaxX(surfaceFrame) - CGRectGetMaxX(column)) < 1.0;
+}
+
 // Widen a captured layer by `expansion` with its leading edge fixed.
 static void ApolloDuoPostsInflateGeometry(CGRect *bounds, CGPoint *position, CGRect *surfaceFrame,
                                           CGFloat anchorX, CGFloat expansion) {
@@ -2479,10 +2490,12 @@ static void ApolloDuoPostsSlideHandoff(ApolloDuoSplitState *state, ApolloDuoPost
 }
 
 // The feed re-laid out at full width under the drag's cover: finish its
-// widening, then let the cover and the gap go. The replay starts the feed's
-// containers inflated to the cover's width (the cover and the widened gap
-// span the surface), so no strip opens beyond the half-width rows while they
-// grow in the slide's remaining time; the root never lags the thread.
+// widening, then let the cover and the gap go. The replay starts every
+// surface that spanned the feed column inflated to the cover's width (the
+// cover and the widened gap span the surface), so no strip opens beyond the
+// half-width rows while they grow in the slide's remaining time, and the
+// bar's material and scroll edge effect cover the whole bar from the start;
+// the root never lags the thread.
 static void ApolloDuoPostsHandoffFeed(ApolloDuoSplitState *state, ApolloDuoPostsCloseHandoff *handoff,
                                       NSArray<ApolloDuoPostsGeometry *> *geometry, UIView *surface) {
     UIView *feed = state.feed.view, *page = state.feed.topViewController.viewIfLoaded;
@@ -2491,12 +2504,15 @@ static void ApolloDuoPostsHandoffFeed(ApolloDuoSplitState *state, ApolloDuoPosts
     for (ApolloDuoPostsGeometry *item in geometry) if (item.view == feed) root = item;
     BOOL replay = remaining > 0 && root && page;
     if (replay) {
-        CGFloat expansion = CGRectGetMaxX(surface.bounds) - CGRectGetMaxX(root.surfaceFrame);
+        CGRect column = root.surfaceFrame;
+        CGFloat expansion = CGRectGetMaxX(surface.bounds) - CGRectGetMaxX(column);
         for (ApolloDuoPostsGeometry *item in geometry) {
             UIView *view = item.view;
-            // The containers from the feed's navigation view down to its page.
-            if (expansion <= 0 || !view || (view != page && ![page isDescendantOfView:view])
-                || (view != feed && ![view isDescendantOfView:feed])) continue;
+            // The containers from the feed's navigation view down to its
+            // page, and everything else that spanned the column.
+            BOOL container = view == page || [page isDescendantOfView:view];
+            if (expansion <= 0 || !view || (view != feed && ![view isDescendantOfView:feed])
+                || !(container || ApolloDuoPostsSpansColumn(item.surfaceFrame, column))) continue;
             CGRect bounds = item.bounds, frame = item.surfaceFrame;
             CGPoint position = item.position;
             ApolloDuoPostsInflateGeometry(&bounds, &position, &frame, view.layer.anchorPoint.x, expansion);

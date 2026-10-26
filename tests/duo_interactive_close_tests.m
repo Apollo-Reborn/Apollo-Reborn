@@ -113,6 +113,20 @@ int main(void) {
         ApolloDuoPostsInflateGeometry(&bounds, &position, &frame, 0, 100);
         Check(Near(position.x, 0) && Near(CGRectGetWidth(bounds), 576) && Near(CGRectGetMinX(frame), 10),
               @"inflate: a leading anchor does not move");
+
+        // Which captured surfaces start at full width: those that spanned the
+        // feed column (table, bar, its material, full-bleed rows), not inset ones.
+        CGRect feedColumn = CGRectMake(0, 0, 476, 900);
+        Check(ApolloDuoPostsSpansColumn(CGRectMake(0, 0, 476, 120), feedColumn)
+              && ApolloDuoPostsSpansColumn(CGRectMake(0.4, 300, 475.8, 90), feedColumn),
+              @"spans: the bar band and a full-bleed row span the column (sub-point rounding allowed)");
+        Check(!ApolloDuoPostsSpansColumn(CGRectMake(16, 60, 444, 36), feedColumn)
+              && !ApolloDuoPostsSpansColumn(CGRectMake(0, 300, 300, 90), feedColumn)
+              && !ApolloDuoPostsSpansColumn(CGRectMake(120, 300, 356, 90), feedColumn),
+              @"spans: an inset search field, a leading thumbnail strip and trailing content keep their own replay");
+        Check(!ApolloDuoPostsSpansColumn(CGRectMake(0, 0, 0, 900), feedColumn)
+              && !ApolloDuoPostsSpansColumn(CGRectMake(0, 0, 476, 900), CGRectZero),
+              @"spans: nothing for an empty surface or column");
         printf("OK: %lu checks\n", (unsigned long)checks);
     }
     return 0;
