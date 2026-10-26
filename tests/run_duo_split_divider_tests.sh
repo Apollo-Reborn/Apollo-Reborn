@@ -16,7 +16,8 @@ fixture = (root / 'tests/duo_split_divider_tests.m').read_text()
 (build / 'tests.m').write_text(fixture.replace('// INCLUDE_PRODUCTION_SPLIT_DIVIDER', source))
 PY
 # The pane gestures never wait on the divider: nothing makes them require
-# its failure, and its own recognizer asks nothing of them.
+# its failure, and its own recognizer asks nothing of them. Only UIKit's
+# context menus on a band touch are held off (ApolloDuoSplitDividerOutranks).
 if grep -n 'requireGestureRecognizerToFail\|shouldRequireFailureOfGestureRecognizer\|shouldBeRequiredToFailByGestureRecognizer' \
         "$divider_root/src/ApolloDuoSplitDivider.m"; then
     echo "FAIL: the divider's press must not take part in failure requirements" >&2

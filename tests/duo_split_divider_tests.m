@@ -39,6 +39,7 @@ enum { UIGestureRecognizerStatePossible = 0,
 @end
 @interface UITouch : NSObject
 @property(nonatomic) CGPoint point;
+@property(nonatomic, strong) UIView *view;
 - (CGPoint)locationInView:(UIView *)view;
 @end
 @implementation UITouch
@@ -57,6 +58,7 @@ enum { UIGestureRecognizerStatePossible = 0,
 - (instancetype)initWithTarget:(id)target action:(SEL)action;
 - (CGPoint)locationInView:(UIView *)view;
 - (void)requireGestureRecognizerToFail:(UIGestureRecognizer *)other;
+- (void)reset;
 @end
 @implementation UIGestureRecognizer
 - (instancetype)initWithTarget:(id)target action:(SEL)action {
@@ -74,6 +76,7 @@ enum { UIGestureRecognizerStatePossible = 0,
 }
 - (CGPoint)locationInView:(__unused UIView *)view { return self.location; }
 - (void)requireGestureRecognizerToFail:(__unused UIGestureRecognizer *)other { self.failureRequirements++; }
+- (void)reset { self.state = UIGestureRecognizerStatePossible; }
 @end
 @interface UILongPressGestureRecognizer : UIGestureRecognizer
 @property(nonatomic) NSTimeInterval minimumPressDuration;
@@ -266,6 +269,55 @@ int main(void) {
         Check([press.name isEqualToString:@"ApolloReborn.Duo.SplitDivider"] && press.delegate == (id)DividerOf(host),
               @"install: named with the Duo prefix, decided by the divider");
         Check(press.failureRequirements == 0, @"install: the pane gestures never wait on the divider");
+
+        // UIKit's context menus wait for the press inside the band; nothing else does.
+        // The names on a feed row's view, as UIKit 27.1 installs them.
+        Check(ApolloDuoSplitDividerOutranks(@"com.apple.UIKit.longPressClickDriverPrimary")
+              && ApolloDuoSplitDividerOutranks(@"com.apple.UIKit.clickPresentationExclusion")
+              && ApolloDuoSplitDividerOutranks(@"com.apple.UIKit.clickPresentationFailure"),
+              @"context menu: UIKit's touch-and-hold driver and click presentation are held off");
+        Check(!ApolloDuoSplitDividerOutranks(@"com.apple.UIKit.keyPressClickDriverPrimary")
+              && !ApolloDuoSplitDividerOutranks(@"com.apple.UIKit.UISplitViewController.ColumnResizeDirectPanGestureRecognizer"),
+              @"context menu: a keyboard press and the split's own gestures are not");
+        Check(!ApolloDuoSplitDividerOutranks(@"ApolloReborn.Duo.PaneBack") && !ApolloDuoSplitDividerOutranks(@"ApolloReborn.Duo.DragClaim")
+              && !ApolloDuoSplitDividerOutranks(nil) && !ApolloDuoSplitDividerOutranks(@"com.apple.UIKit.ContextMenuDismissalTap"),
+              @"context menu: pane gestures, scrolling (unnamed) and other UIKit gestures never wait");
+        // A feed row under the band: its context menu, the pane Back on its
+        // navigation, and a menu something else already turned off.
+        UIView *navigationView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 951, 900)];
+        UIView *row = [[UIView alloc] initWithFrame:CGRectMake(0, 200, 475, 120)];
+        [host addSubview:navigationView];
+        [navigationView addSubview:row];
+        UIGestureRecognizer *menu = [[UIGestureRecognizer alloc] initWithTarget:nil action:NULL];
+        menu.name = @"com.apple.UIKit.longPressClickDriverPrimary";
+        UIGestureRecognizer *exclusion = [[UIGestureRecognizer alloc] initWithTarget:nil action:NULL];
+        exclusion.name = @"com.apple.UIKit.clickPresentationExclusion";
+        UIGestureRecognizer *offMenu = [[UIGestureRecognizer alloc] initWithTarget:nil action:NULL];
+        offMenu.name = @"com.apple.UIKit.longPressClickDriverPrimary";
+        offMenu.enabled = NO;
+        UIGestureRecognizer *paneBack = [[UIGestureRecognizer alloc] initWithTarget:nil action:NULL];
+        paneBack.name = @"ApolloReborn.Duo.PaneBack";
+        UIGestureRecognizer *scroll = [[UIGestureRecognizer alloc] initWithTarget:nil action:NULL];
+        [row addGestureRecognizer:menu];
+        [row addGestureRecognizer:exclusion];
+        [row addGestureRecognizer:offMenu];
+        [row addGestureRecognizer:scroll];
+        [navigationView addGestureRecognizer:paneBack];
+        UITouch *rowTouch = [UITouch new];
+        rowTouch.view = row;
+        rowTouch.point = CGPointMake(440, 300);
+        Check(![DividerOf(host) gestureRecognizer:press shouldReceiveTouch:(id)rowTouch] && menu.enabled && exclusion.enabled,
+              @"context menu: a touch outside the band leaves the row's menu alone");
+        rowTouch.point = CGPointMake(470, 300);
+        Check([DividerOf(host) gestureRecognizer:press shouldReceiveTouch:(id)rowTouch], @"context menu: a band touch on a row is the divider's");
+        Check(!menu.enabled && !exclusion.enabled, @"context menu: the row's touch and hold is held off while the band touch is down");
+        Check(paneBack.enabled && scroll.enabled && paneBack.disables == 0 && scroll.disables == 0,
+              @"context menu: the pane Back and scrolling are never touched");
+        [press reset];
+        Check(menu.enabled && exclusion.enabled && !offMenu.enabled,
+              @"context menu: the touch's end gives back only the menus the divider turned off");
+        [row removeFromSuperview];
+        [navigationView removeFromSuperview];
 
         // Touch-down: the same admission, at the live divider.
         ApolloDuoSplitDivider *divider = DividerOf(host);

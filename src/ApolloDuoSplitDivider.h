@@ -25,6 +25,12 @@ typedef struct {
 } ApolloDuoSplitDividerRelease;
 ApolloDuoSplitDividerRelease ApolloDuoSplitDividerReleaseOutcome(ApolloDuoSplitRelease release);
 
+/// UIKit's context menu (a row's touch and hold: its driver
+/// com.apple.UIKit.longPressClickDriver... and the click presentation's
+/// com.apple.UIKit.clickPresentation... relationships): held off on a touch
+/// in the divider's band until it ends. No other gesture is.
+BOOL ApolloDuoSplitDividerOutranks(NSString *gestureName);
+
 /// Adds the divider's press and hold (ApolloReborn.Duo.SplitDivider) to the
 /// Posts split host's view, once.
 void ApolloDuoSplitDividerInstall(UIView *host);

@@ -1,6 +1,7 @@
 #import "ApolloDuoSplitDivider.h"
 #import "ApolloDuoSplitView.h"
 #import <UIKit/UIKit.h>
+#import <UIKit/UIGestureRecognizerSubclass.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
 
@@ -9,6 +10,9 @@
 // quarter second within 12pt of the divider begins it, so a swipe from there
 // (the pane Back, the thread close, the drawer, row actions) never does: this
 // recognizer fails on a 10pt move, and asks nothing of the pane gestures.
+// Inside the band a row's touch and hold (UIKit's context menu) would begin
+// first and fail it, so the menus on the touch's way are held off until the
+// touch ends: a still press there moves the divider.
 // Here: the admission, the grabber and the finger. The split moves the
 // columns (ApolloDuoSplitDivider* in ApolloDuoSplitView.xm): while the finger
 // is down only pictures of the columns move, and the columns are laid out
@@ -36,6 +40,14 @@ ApolloDuoSplitDividerRelease ApolloDuoSplitDividerReleaseOutcome(ApolloDuoSplitR
     return (ApolloDuoSplitDividerRelease){ApolloDuoSplitDividerOutcomeSnap, release.stop};
 }
 
+// UIKit's context menu: the touch-and-hold driver that starts it
+// (longPressClickDriverPrimary) and the click presentation's relationships
+// that fail other presses once it starts (clickPresentationExclusion, ...).
+BOOL ApolloDuoSplitDividerOutranks(NSString *gestureName) {
+    NSString *name = gestureName.lowercaseString;
+    return [name hasPrefix:@"com.apple.uikit.clickpresentation"] || [name hasPrefix:@"com.apple.uikit.longpressclickdriver"];
+}
+
 // The long press reports no speed. Each move's speed is eased into the last
 // one, so a single uneven frame doesn't decide a flick.
 static CGFloat ApolloDuoSplitDividerVelocity(CGFloat velocity, CGFloat fromX, CFTimeInterval fromTime,
@@ -49,8 +61,33 @@ static CGFloat ApolloDuoSplitDividerReleaseVelocity(CGFloat velocity, CFTimeInte
     return now - lastMove > kApolloDuoSplitDividerStillAfter ? 0.0 : velocity;
 }
 
+// The press, holding off the context menus on its band touch's way until the
+// touch ends (reset), and giving back only the ones it turned off.
+@interface ApolloDuoSplitDividerPress : UILongPressGestureRecognizer
+@property(nonatomic, strong) NSHashTable<UIGestureRecognizer *> *heldMenus;
+- (void)holdMenusFrom:(UIView *)view;
+@end
+
+@implementation ApolloDuoSplitDividerPress
+- (void)holdMenusFrom:(UIView *)view {
+    for (UIView *candidate = view; candidate && candidate != self.view.superview; candidate = candidate.superview) {
+        for (UIGestureRecognizer *gesture in candidate.gestureRecognizers) {
+            if (!gesture.enabled || !ApolloDuoSplitDividerOutranks(gesture.name)) continue;
+            if (!self.heldMenus) self.heldMenus = [NSHashTable weakObjectsHashTable];
+            [self.heldMenus addObject:gesture];
+            gesture.enabled = NO;
+        }
+    }
+}
+- (void)reset {
+    [super reset];
+    for (UIGestureRecognizer *gesture in self.heldMenus.allObjects) gesture.enabled = YES;
+    [self.heldMenus removeAllObjects];
+}
+@end
+
 @interface ApolloDuoSplitDivider : NSObject <UIGestureRecognizerDelegate>
-@property(nonatomic, strong) UILongPressGestureRecognizer *press;
+@property(nonatomic, strong) ApolloDuoSplitDividerPress *press;
 @property(nonatomic, strong) UIView *grabber;
 // From the split's Begin until the release, a cancel or the split letting go.
 @property(nonatomic) BOOL dragging;
@@ -74,6 +111,7 @@ static char kApolloDuoSplitDividerKey;
     CGFloat divider = ApolloDuoSplitDividerPosition(host, &adjustable);
     if (!ApolloDuoSplitDividerShouldBegin(adjustable, divider >= 0.0, point.x, divider, 0.0)) return NO;
     self.touchStart = point;
+    [self.press holdMenusFrom:touch.view];
     return YES;
 }
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gesture {
@@ -173,7 +211,7 @@ static char kApolloDuoSplitDividerKey;
 void ApolloDuoSplitDividerInstall(UIView *host) {
     if (!host || objc_getAssociatedObject(host, &kApolloDuoSplitDividerKey)) return;
     ApolloDuoSplitDivider *divider = [ApolloDuoSplitDivider new];
-    UILongPressGestureRecognizer *press = [[UILongPressGestureRecognizer alloc] initWithTarget:divider action:@selector(pressed:)];
+    ApolloDuoSplitDividerPress *press = [[ApolloDuoSplitDividerPress alloc] initWithTarget:divider action:@selector(pressed:)];
     press.minimumPressDuration = kApolloDuoSplitDividerPressDuration;
     press.allowableMovement = kApolloDuoSplitDividerJitter;
     press.name = @"ApolloReborn.Duo.SplitDivider";
