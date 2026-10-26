@@ -1893,7 +1893,7 @@ static BOOL ApolloDuoReplayDrawsRowContents(UIView *view, UIView *feed) {
 // `fadeRecenteredBarItems`: bar items that recenter crossfade in place
 // instead of moving with their column (the feed's column moves).
 // `rowContentsFinal`: the rows' own contents take their final layout at once
-// inside their rows, which keep moving and resizing (the Posts column moves).
+// inside their rows, which keep moving and resizing (the Posts thread close).
 static void ApolloDuoAnimateRetainedGeometry(NSArray<ApolloDuoPostsGeometry *> *geometry,
                                              UIView *feed, UIView *surface, NSTimeInterval duration,
                                              BOOL convertReparentedDescendants, BOOL fadeRecenteredBarItems,
@@ -1971,10 +1971,11 @@ static void ApolloDuoPostsAnimateGeometry(NSArray<ApolloDuoPostsGeometry *> *geo
     ApolloDuoAnimateRetainedGeometry(geometry, feed, surface, duration, NO, YES, NO);
 }
 
-// A thread opening or closing beside the feed: the rows glide to their new
-// size and place while their text is drawn in its final layout throughout,
-// never squashed, stretched, or moved across text that reflowed. Recentered
-// bar items crossfade, as in every feed column move.
+// A thread closing beside the feed: the rows glide to their new size and
+// place while their text is drawn in its final layout throughout, never
+// squashed, stretched, or moved across text that reflowed. Only the close:
+// its rows get shorter, so that layout always fits inside the growing row.
+// Recentered bar items crossfade, as in every feed column move.
 static void ApolloDuoPostsAnimateColumnGeometry(NSArray<ApolloDuoPostsGeometry *> *geometry,
                                                UIView *feed, UIView *surface, NSTimeInterval duration) {
     ApolloDuoAnimateRetainedGeometry(geometry, feed, surface, duration, NO, YES, YES);
@@ -2878,7 +2879,9 @@ static void ApolloDuoPostsSetDetail(ApolloDuoSplitState *state, UIViewController
     [UIView performWithoutAnimation:updateColumns];
     [CATransaction begin];
     [CATransaction setCompletionBlock:^{ ApolloDuoSplitScheduleUpdate(); }];
-    ApolloDuoPostsAnimateColumnGeometry(feedGeometry, state.feed.view, surface, 0.32);
+    // The rows get taller as the feed narrows: final-layout text would hang
+    // below a row still growing, over the next one. Replay it as before.
+    ApolloDuoPostsAnimateGeometry(feedGeometry, state.feed.view, surface, 0.32);
     // Use the live navigation surface so async comment/media updates
     // remain visible throughout the first push.
     CGRect incomingPane = ApolloDuoPostsDetailPane(state);
