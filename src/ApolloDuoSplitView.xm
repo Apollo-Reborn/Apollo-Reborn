@@ -282,8 +282,12 @@ static BOOL ApolloDuoListDragEndsVisible(BOOL tracking, BOOL hiding, BOOL commit
 // reveal uses (the finger moves that much), committing by the reveal's rule
 // mirrored (ApolloDuoBackShouldCommit): a third of the travel, or a leftward
 // flick past 5% of it, and never when released rightward faster than 500.
-static CGFloat ApolloDuoListHideProgress(CGFloat translation, CGFloat travel) {
-    return ApolloDuoListDragProgress(-translation, travel);
+// A list still springing in when the finger takes it shows less than the
+// travel: progress is the share of what was shown that has been closed.
+static CGFloat ApolloDuoListHideProgress(CGFloat translation, CGFloat travel, CGFloat base) {
+    CGFloat shown = MIN(MAX(base, 0.0), MAX(travel, 0.0));
+    if (shown <= 0.0) return 1.0;
+    return MIN(MAX(-translation, 0.0), shown) / shown;
 }
 static BOOL ApolloDuoListHideCommits(CGFloat progress, CGFloat leftwardVelocity) {
     return leftwardVelocity > -500.0 && (progress >= 0.35 || (leftwardVelocity >= 500.0 && progress >= 0.05));
@@ -719,8 +723,11 @@ static ApolloDuoListFadeEnd ApolloDuoListFadeEndFor(BOOL superseded) {
 }
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gesture {
     if (gesture != self.listHideScrimPan && gesture != self.listHideEdgePan) return YES;
-    CGPoint velocity = [(UIPanGestureRecognizer *)gesture velocityInView:nil];
-    return ApolloDuoListHideBegins(self.listVisible, self.listDragging, velocity.x, velocity.y);
+    // The motion since touch-down, or the velocity: a slow drag still begins.
+    UIPanGestureRecognizer *pan = (UIPanGestureRecognizer *)gesture;
+    CGPoint motion = [pan translationInView:nil], velocity = [pan velocityInView:nil];
+    return ApolloDuoListHideBegins(self.listVisible, self.listDragging, motion.x, motion.y)
+        || ApolloDuoListHideBegins(self.listVisible, self.listDragging, velocity.x, velocity.y);
 }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture
         shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
@@ -763,7 +770,7 @@ static ApolloDuoListFadeEnd ApolloDuoListFadeEndFor(BOOL superseded) {
         case UIGestureRecognizerStateEnded: {
             if (!ours) return;
             CGFloat velocity = [pan velocityInView:nil].x;
-            BOOL commit = ApolloDuoListHideCommits(ApolloDuoListHideProgress(translation, self.listDragTravel), -velocity);
+            BOOL commit = ApolloDuoListHideCommits(ApolloDuoListHideProgress(translation, self.listDragTravel, self.listDragBase), -velocity);
             ApolloLog(@"[DuoSwipe] subreddit list: %@ after the finger closed it; velocity=%.0f",
                       commit ? @"hidden" : @"sprang back", velocity);
             [self finishListDrag:commit velocity:velocity];
@@ -861,6 +868,8 @@ static ApolloDuoListFadeEnd ApolloDuoListFadeEndFor(BOOL superseded) {
     [self.listContainer.layer removeAnimationForKey:@"opacity"];
     self.listContainer.alpha = 1;
     self.listContainer.transform = CGAffineTransformMakeTranslation(ApolloDuoListDragTranslationX(self.listDragBase, travel), 0);
+    // The scrim's fade from the last settle must not run against the finger.
+    [self.listDismiss.layer removeAnimationForKey:@"opacity"];
     self.listDismiss.alpha = ApolloDuoListDragProgress(self.listDragBase, travel);
     // The finger that pulls the list in is on the feed; a second one is not
     // for a drawer that is not open yet.
@@ -877,7 +886,7 @@ static ApolloDuoListFadeEnd ApolloDuoListFadeEndFor(BOOL superseded) {
 - (BOOL)beginListHide {
     CGFloat width = self.listGlass.bounds.size.width;
     if (!self.subredditList || !self.view.window || width <= 0.0 || self.listContainer.hidden
-        || !ApolloDuoListHideBegins(self.listVisible, self.listDragging, -1.0, 0.0)) return NO;
+        || !self.listVisible || self.listDragging) return NO;
     CGFloat travel = ApolloDuoListDragTravel(width);
     CGFloat presentationTx = (self.listContainer.layer.presentationLayer ?: self.listContainer.layer).transform.m41;
     self.listDragging = YES;
@@ -890,6 +899,8 @@ static ApolloDuoListFadeEnd ApolloDuoListFadeEndFor(BOOL superseded) {
     [self.listContainer.layer removeAnimationForKey:@"opacity"];
     self.listContainer.alpha = 1;
     self.listContainer.transform = CGAffineTransformMakeTranslation(ApolloDuoListDragTranslationX(self.listDragBase, travel), 0);
+    // The scrim's fade from the last settle must not run against the finger.
+    [self.listDismiss.layer removeAnimationForKey:@"opacity"];
     self.listDismiss.alpha = ApolloDuoListDragProgress(self.listDragBase, travel);
     ApolloLog(@"[DuoSwipe] subreddit list: the finger began closing it; shown=%.0f of %.0f", self.listDragBase, travel);
     return YES;
@@ -969,6 +980,7 @@ static ApolloDuoListFadeEnd ApolloDuoListFadeEndFor(BOOL superseded) {
         // A hide the finger was closing goes back to fully shown, scrim and all.
         self.listContainer.transform = CGAffineTransformIdentity;
         self.listContainer.hidden = NO;
+        [self.listDismiss.layer removeAnimationForKey:@"opacity"];
         self.listDismiss.alpha = 1;
         self.listDismiss.hidden = NO;
         self.listDismiss.userInteractionEnabled = YES;
@@ -978,6 +990,7 @@ static ApolloDuoListFadeEnd ApolloDuoListFadeEndFor(BOOL superseded) {
     }
     self.listContainer.transform = CGAffineTransformMakeTranslation(-self.listGlass.bounds.size.width - 12, 0);
     self.listContainer.hidden = YES;
+    [self.listDismiss.layer removeAnimationForKey:@"opacity"];
     self.listDismiss.alpha = 0;
     self.listDismiss.hidden = YES;
     self.listDismiss.userInteractionEnabled = YES;

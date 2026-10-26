@@ -51,9 +51,12 @@ int main(void) {
               @"finish: no drag in hand, no Back and no hide (no second Back from one swipe)");
 
         // The interactive hide: a leftward drag, measured against the same travel.
-        Check(Near(ApolloDuoListHideProgress(-186, travel), 0.5) && Near(ApolloDuoListHideProgress(50, travel), 0)
-              && Near(ApolloDuoListHideProgress(-900, travel), 1) && Near(ApolloDuoListHideProgress(-40, 0), 0),
+        Check(Near(ApolloDuoListHideProgress(-186, travel, travel), 0.5) && Near(ApolloDuoListHideProgress(50, travel, travel), 0)
+              && Near(ApolloDuoListHideProgress(-900, travel, travel), 1) && Near(ApolloDuoListHideProgress(-40, 0, 0), 1),
               @"hide progress: the leftward travel over the drawer's, clamped");
+        Check(Near(ApolloDuoListHideProgress(-50, travel, 100), 0.5) && Near(ApolloDuoListHideProgress(-100, travel, 100), 1)
+              && Near(ApolloDuoListHideProgress(-30, travel, 0), 1),
+              @"hide progress: a list still springing in counts the share of what it shows that is closed");
         Check(ApolloDuoListHideCommits(0.35, 0) && !ApolloDuoListHideCommits(0.34, 0) && !ApolloDuoListHideCommits(0.2, 400),
               @"hide commit: a third of the travel, or a flick, as the reveal does");
         Check(ApolloDuoListHideCommits(0.05, 500) && !ApolloDuoListHideCommits(0.04, 900) && !ApolloDuoListHideCommits(0.5, -500)
@@ -61,6 +64,7 @@ int main(void) {
               @"hide commit: a leftward flick needs a little travel; a rightward one faster than 500 never commits");
         Check(ApolloDuoListHideBegins(YES, NO, -12, 3) && ApolloDuoListHideBegins(YES, NO, -12, -12),
               @"hide begin: a leftward drag on a shown list");
+        Check(ApolloDuoListHideBegins(YES, NO, -2, 1), @"hide begin: a slow drag, decided on motion, still begins");
         Check(!ApolloDuoListHideBegins(NO, NO, -12, 0) && !ApolloDuoListHideBegins(YES, YES, -12, 0)
               && !ApolloDuoListHideBegins(YES, NO, 12, 0) && !ApolloDuoListHideBegins(YES, NO, -3, 14)
               && !ApolloDuoListHideBegins(YES, NO, 0, 0),
