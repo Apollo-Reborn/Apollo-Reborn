@@ -1878,9 +1878,26 @@ static BOOL ApolloDuoGeometryRecentersBarItem(ApolloDuoPostsGeometry *item, UIVi
         && fabs(CGRectGetWidth(now) - CGRectGetWidth(item.surfaceFrame)) < 8.0;
 }
 
+// A view inside a feed row that draws its own contents (text, a flair, an
+// image). Its bitmap is drawn for the final layout, so animating its bounds
+// squashes or stretches the text, and moving it past text that reflowed
+// draws it over that text.
+static BOOL ApolloDuoReplayDrawsRowContents(UIView *view, UIView *feed) {
+    if (!view.layer.contents) return NO;
+    for (UIView *ancestor = view.superview; ancestor && ancestor != feed; ancestor = ancestor.superview) {
+        if ([ancestor isKindOfClass:UITableViewCell.class]) return YES;
+    }
+    return NO;
+}
+
+// `fadeRecenteredBarItems`: bar items that recenter crossfade in place
+// instead of moving with their column (the feed's column moves).
+// `rowContentsFinal`: the rows' own contents take their final layout at once
+// inside their rows, which keep moving and resizing (the Posts column moves).
 static void ApolloDuoAnimateRetainedGeometry(NSArray<ApolloDuoPostsGeometry *> *geometry,
                                              UIView *feed, UIView *surface, NSTimeInterval duration,
-                                             BOOL convertReparentedDescendants, BOOL fadeRecenteredBarItems) {
+                                             BOOL convertReparentedDescendants, BOOL fadeRecenteredBarItems,
+                                             BOOL rowContentsFinal) {
     NSUInteger count = 0;
     NSMutableArray<UIView *> *faded = [NSMutableArray array];
     for (ApolloDuoPostsGeometry *item in geometry) {
@@ -1890,6 +1907,7 @@ static void ApolloDuoAnimateRetainedGeometry(NSArray<ApolloDuoPostsGeometry *> *
         BOOL insideFaded = NO;
         for (UIView *ancestor in faded) if ([view isDescendantOfView:ancestor]) insideFaded = YES;
         if (insideFaded) continue;
+        if (rowContentsFinal && ApolloDuoReplayDrawsRowContents(view, feed)) continue;
         if (fadeRecenteredBarItems && view != feed && ApolloDuoGeometryRecentersBarItem(item, view, feed, surface)) {
             // Crossfade: the old rendering leaves from where it was while the
             // item fades in at its destination, so the bar is never empty.
@@ -1950,7 +1968,16 @@ static void ApolloDuoAnimateRetainedGeometry(NSArray<ApolloDuoPostsGeometry *> *
 
 static void ApolloDuoPostsAnimateGeometry(NSArray<ApolloDuoPostsGeometry *> *geometry,
                                          UIView *feed, UIView *surface, NSTimeInterval duration) {
-    ApolloDuoAnimateRetainedGeometry(geometry, feed, surface, duration, NO, YES);
+    ApolloDuoAnimateRetainedGeometry(geometry, feed, surface, duration, NO, YES, NO);
+}
+
+// A thread opening or closing beside the feed: the rows glide to their new
+// size and place while their text is drawn in its final layout throughout,
+// never squashed, stretched, or moved across text that reflowed. Recentered
+// bar items crossfade, as in every feed column move.
+static void ApolloDuoPostsAnimateColumnGeometry(NSArray<ApolloDuoPostsGeometry *> *geometry,
+                                               UIView *feed, UIView *surface, NSTimeInterval duration) {
+    ApolloDuoAnimateRetainedGeometry(geometry, feed, surface, duration, NO, YES, YES);
 }
 
 @interface ApolloDuoLayoutTransition : NSObject
@@ -2603,7 +2630,7 @@ static void ApolloDuoPostsHandoffFeed(ApolloDuoSplitState *state, ApolloDuoPosts
             item.position = position;
             item.surfaceFrame = frame;
         }
-        ApolloDuoPostsAnimateGeometry(geometry, feed, surface, remaining);
+        ApolloDuoPostsAnimateColumnGeometry(geometry, feed, surface, remaining);
         ApolloDuoPostsReplayEnteringRows(geometry, ApolloDuoSplitFindTable(page), remaining);
     }
     UIView *cover = handoff.cover, *extension = handoff.extension, *overlay = handoff.overlay;
@@ -2720,7 +2747,7 @@ static void ApolloDuoPostsCloseDetail(ApolloDuoSplitState *state, ApolloDuoPosts
         if (![snapshot.layer animationForKey:@"ApolloDuoSlide"]) ApolloDuoPostsSlideHandoff(state, handoff);
         ApolloDuoPostsHandoffFeed(state, handoff, feedGeometry, surface);
     } else {
-        ApolloDuoPostsAnimateGeometry(feedGeometry, state.feed.view, surface, 0.32);
+        ApolloDuoPostsAnimateColumnGeometry(feedGeometry, state.feed.view, surface, 0.32);
         ApolloDuoPostsReplayEnteringRows(feedGeometry, ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded), 0.32);
         if (snapshot) {
             CGFloat travel = CGRectGetMaxX(surface.bounds) - CGRectGetMinX(pane);
@@ -2802,7 +2829,7 @@ static void ApolloDuoPostsSetDetail(ApolloDuoSplitState *state, UIViewController
     [UIView performWithoutAnimation:updateColumns];
     [CATransaction begin];
     [CATransaction setCompletionBlock:^{ ApolloDuoSplitScheduleUpdate(); }];
-    ApolloDuoPostsAnimateGeometry(feedGeometry, state.feed.view, surface, 0.32);
+    ApolloDuoPostsAnimateColumnGeometry(feedGeometry, state.feed.view, surface, 0.32);
     // Use the live navigation surface so async comment/media updates
     // remain visible throughout the first push.
     CGRect incomingPane = ApolloDuoPostsDetailPane(state);
@@ -4496,7 +4523,7 @@ static BOOL ApolloDuoSplitRoutePush(UINavigationController *nav, UIViewControlle
                                                     wrapper.layer.position.y);
                         [geometry addObject:item];
                     }
-                    ApolloDuoAnimateRetainedGeometry(geometry, state.primary.view, surface, 0.32, YES, NO);
+                    ApolloDuoAnimateRetainedGeometry(geometry, state.primary.view, surface, 0.32, YES, NO, NO);
                 }
                 if (travel > 0) ApolloDuoSlideView(state.secondary.view, travel, 0, 0.32, nil);
             }
