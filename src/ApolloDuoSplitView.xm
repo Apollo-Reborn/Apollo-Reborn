@@ -3011,7 +3011,7 @@ static void ApolloDuoPostsSpringDrag(ApolloDuoPostsCloseHandoff *drag, CGFloat o
         : ApolloDuoPostsCloseShadowOpacity(ApolloDuoPostsCloseProgress(offset, CGRectGetWidth(drag.pane)));
     // A divider dragged left: its trailing fill, toward the feed's width.
     UIView *fill = drag.fill;
-    CGFloat fromFill = fill.transform.a;
+    CGFloat fromFill = fill ? fill.transform.a : 1.0;
     CGFloat toFill = ApolloDuoPostsCloseExtensionScale(-offset, CGRectGetMinX(drag.pane));
     page.transform = CGAffineTransformMakeTranslation(offset, 0);
     extension.transform = CGAffineTransformMakeScale(toScale, 1);
@@ -3853,6 +3853,9 @@ CGFloat ApolloDuoSplitDividerPosition(UIView *view, BOOL *adjustable) {
     ApolloDuoSplitState *state = ApolloDuoPostsStateForHostView(view);
     BOOL on = state && ApolloDuoPostsAdjustableSplit();
     if (adjustable) *adjustable = on;
+    // Off, the divider is UIKit's as before; only a separator tap turned off
+    // while on still needs giving back.
+    if (!on && !state.separatorTapDisabled) return -1.0;
     if (!state || !ApolloDuoPostsDividerMovable(state)) return -1.0;
     ApolloDuoPostsSyncSeparatorTap(state, on);
     // A close or a restore still finishing holds the panes.
@@ -3864,10 +3867,10 @@ CGFloat ApolloDuoSplitDividerPosition(UIView *view, BOOL *adjustable) {
 BOOL ApolloDuoSplitDividerBegin(UIView *view) {
     ApolloDuoSplitState *state = ApolloDuoPostsStateForHostView(view);
     if (!state) return NO;
-    // A close still springing back is let go, as a new close would.
-    ApolloDuoPostsCancelInteractiveClose(state, NO, 0.0);
     UIView *surface = state.host.view;
-    if (!ApolloDuoPostsAdjustableSplit() || !ApolloDuoPostsDividerMovable(state) || state.host.postsTransitionSnapshot.window
+    // Another drag, or a close or restore still finishing, holds the panes.
+    if (!ApolloDuoPostsAdjustableSplit() || !ApolloDuoPostsDividerMovable(state) || state.interactiveClose
+        || state.host.postsTransitionSnapshot.window
         || [state.secondary.view.layer animationForKey:@"ApolloDuoSlide"]) return NO;
     ApolloDuoPostsCloseHandoff *drag = ApolloDuoPostsNewPaneDrag(state);
     if (!drag) return NO;
@@ -5020,9 +5023,12 @@ static void ApolloDuoSplitUpdate(void) {
         // A thread close following the finger owns its columns until it ends;
         // the interruptions that do need an update cancel it before this runs.
         // One whose views have left the window, or whose pane navigation
-        // is gone while it still tracks, is over: let it go.
+        // is gone while it still tracks, is over: let it go. The divider's
+        // drag has no pane navigation; it is over once its press is.
         ApolloDuoPostsCloseHandoff *drag = state.interactiveClose;
-        if (drag.overlay.window && (drag.navigation || drag.phase != ApolloDuoPostsClosePhaseTracking)) continue;
+        BOOL held = drag.dividing ? ApolloDuoSplitDividerHolding(state.host.viewIfLoaded)
+            : drag.navigation || drag.phase != ApolloDuoPostsClosePhaseTracking;
+        if (drag.overlay.window && held) continue;
         ApolloDuoPostsCancelInteractiveClose(state, NO, 0.0);
         BOOL postsOpen = [state.kind isEqualToString:@"subreddits"] && ApolloDuoSplitIsUnfolded();
         if (!open && !postsOpen) ApolloDuoSplitClose(state, NO);

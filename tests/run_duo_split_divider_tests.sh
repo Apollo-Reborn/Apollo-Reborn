@@ -57,6 +57,13 @@ if not (0 <= apply.find('interactiveClose.dividing') < apply.index('state.intera
     fail('the setting turned off keeps a divider drag up')
 if 'ApolloDuoSplitDividerInstall(self.view)' not in body('- (void)viewDidLoad {\n    [super viewDidLoad];\n    self.split.delegate = self;'):
     fail('the Posts host no longer installs the divider')
+# Routine split updates (a layout, an open's or close's completion, a push)
+# keep a divider drag whose press still holds; the sweep only lets go of one
+# whose press has ended or whose views left the window.
+update = body('static void ApolloDuoSplitUpdate(void) {')
+sweep = update[:update.index('ApolloDuoPostsCancelInteractiveClose(state, NO, 0.0);')]
+if 'drag.dividing ? ApolloDuoSplitDividerHolding(' not in sweep or 'drag.overlay.window && held) continue;' not in sweep:
+    fail("the split update's stale-drag sweep drops a divider drag its press still holds")
 print('OK: split divider wiring')
 PY
 xcrun --sdk macosx clang -fobjc-arc -fblocks -Wall -Wextra -Werror \

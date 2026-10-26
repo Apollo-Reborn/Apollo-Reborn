@@ -31,4 +31,7 @@ void ApolloDuoSplitDividerInstall(UIView *host);
 /// The split let the drag go (a fold, a tab switch, a sheet, the thread
 /// closing): the grabber goes and the press ends without a release.
 void ApolloDuoSplitDividerLetGo(UIView *host);
+/// The divider's press on `host` still holds its drag: begun and not yet
+/// released, cancelled or let go.
+BOOL ApolloDuoSplitDividerHolding(UIView *host);
 __END_DECLS

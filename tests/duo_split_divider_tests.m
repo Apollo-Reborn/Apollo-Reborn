@@ -286,7 +286,11 @@ int main(void) {
         Check(![divider gestureRecognizerShouldBegin:press], @"begin: a press that drifted 11pt is no divider drag");
 
         // Begin: the split covers the columns and the grabber shows on the divider.
+        Check(!ApolloDuoSplitDividerHolding(host), @"holding: no press, no drag held");
         Check(PressAt(host, 480) && begins == 1 && divider.dragging, @"begin: the split's drag begins");
+        Check(ApolloDuoSplitDividerHolding(host), @"holding: a begun press holds its drag through routine split updates");
+        Check(!ApolloDuoSplitDividerHolding([[UIView alloc] initWithFrame:CGRectZero]) && !ApolloDuoSplitDividerHolding(nil),
+              @"holding: a host without the divider holds nothing");
         UIView *grabber = Grabber(host);
         Check(host.subviews.count == 1 && Near(grabber.center.x, 475.5) && !grabber.userInteractionEnabled,
               @"begin: the grabber shows centered on the divider and takes no touches");
@@ -308,6 +312,7 @@ int main(void) {
               @"release: the split gets where the divider was let go and the flick's speed");
         Check(!draggingAtFinish && !grabberAtFinish, @"release: the drag is cleared and the grabber gone before the split snaps or closes");
         Check(cancels == 0 && !divider.dragging && host.subviews.count == 0, @"release: nothing left behind");
+        Check(!ApolloDuoSplitDividerHolding(host), @"holding: a released press holds nothing, so a stale drag is swept");
 
         // A still lift: no flick.
         Reset();
@@ -333,6 +338,7 @@ int main(void) {
         Release(host, UIGestureRecognizerStateCancelled, 100.1);
         Check(cancels == 1 && finishes == 0 && !divider.dragging && host.subviews.count == 0,
               @"cancelled: the split removes its drag, the grabber goes, nothing is remembered");
+        Check(!ApolloDuoSplitDividerHolding(host), @"holding: a cancelled press holds nothing");
 
         // The split lets the drag go mid-move (the thread closed, the setting turned off).
         Reset();
@@ -353,6 +359,7 @@ int main(void) {
         ApolloDuoSplitDividerLetGo(host);
         Check(!divider.dragging && host.subviews.count == 0 && press.disables == 1 && press.enabled,
               @"interrupted: the grabber goes at once and the press is reset, still enabled for the next one");
+        Check(!ApolloDuoSplitDividerHolding(host), @"holding: a press let go holds nothing");
         Release(host, UIGestureRecognizerStateCancelled, 100.2);
         Check(cancels == 0 && finishes == 0, @"interrupted: the split already removed its drag; nothing more happens");
         ApolloDuoSplitDividerLetGo(host);

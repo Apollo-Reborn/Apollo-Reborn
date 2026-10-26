@@ -183,6 +183,11 @@ void ApolloDuoSplitDividerInstall(UIView *host) {
     [host addGestureRecognizer:press];
 }
 
+BOOL ApolloDuoSplitDividerHolding(UIView *host) {
+    ApolloDuoSplitDivider *divider = host ? objc_getAssociatedObject(host, &kApolloDuoSplitDividerKey) : nil;
+    return divider.dragging && divider.press.view == host;
+}
+
 void ApolloDuoSplitDividerLetGo(UIView *host) {
     ApolloDuoSplitDivider *divider = host ? objc_getAssociatedObject(host, &kApolloDuoSplitDividerKey) : nil;
     [divider letGo];
