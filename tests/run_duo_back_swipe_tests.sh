@@ -63,6 +63,12 @@ if [ "$found" -lt 2 ]; then
     echo "FAIL: screenEdgePanned: and navigationBarPanned: no longer both scale their release" >&2
     exit 1
 fi
+# The info-row loupe makes ancestor pans wait for it the same way; the Duo
+# pane gestures stay exempt there, so a sideways drag goes to the Back.
+if [ "$(grep -c 'ApolloDuoIsPaneGesture(' "$swipe_root/src/ApolloStatsRowTouch.xm" || true)" -lt 1 ]; then
+    echo "FAIL: ApolloStatsRowTouch.xm no longer exempts the Duo pane gestures from its loupe failure requirement" >&2
+    exit 1
+fi
 xcrun --sdk macosx clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
     -fsanitize=address,undefined -framework Foundation -framework CoreGraphics \
     "$swipe_build/duo_back_swipe_tests.m" -o "$swipe_build/duo_back_swipe_tests"

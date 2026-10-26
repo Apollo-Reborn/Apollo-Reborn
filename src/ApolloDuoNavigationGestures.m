@@ -293,6 +293,7 @@ static BOOL ApolloDuoTouchIsDrag(CGPoint motion) {
 // fails. It never delays a tap: an undecided touch goes straight to the row.
 @interface ApolloDuoDragClaim : UIGestureRecognizer
 @property(nonatomic, weak) UITouch *touch;
+@property(nonatomic, weak) UIView *touchView;
 @property(nonatomic) CGPoint touchStart;
 @end
 
@@ -310,6 +311,7 @@ static BOOL ApolloDuoTouchIsDrag(CGPoint motion) {
     if (self.touch) return;
     UITouch *touch = touches.anyObject;
     self.touch = touch;
+    self.touchView = touch.view;
     self.touchStart = [touch locationInView:self.view];
 }
 - (CGPoint)motionSoFar {
@@ -341,6 +343,7 @@ static BOOL ApolloDuoTouchIsDrag(CGPoint motion) {
 - (void)reset {
     [super reset];
     self.touch = nil;
+    self.touchView = nil;
 }
 @end
 
@@ -504,7 +507,10 @@ BOOL ApolloDuoNativeBackInFlight(UINavigationController *navigation) {
     // Nothing to do: recognizing is the point (cancelsTouchesInView clears the row highlight).
 }
 - (void)dragClaimed:(ApolloDuoDragClaim *)claim {
-    // Nothing to do: recognizing is the point (cancelsTouchesInView takes the row's touch).
+    if (claim.state != UIGestureRecognizerStateBegan) return;
+    CGPoint motion = [claim motionSoFar];
+    BOOL sideways = fabs(motion.y) <= fabs(motion.x);
+    [self cancelRowRecognizersUnder:claim sideways:sideways];
 }
 - (void)panned:(ApolloDuoPaneBackPan *)pan {
     UINavigationController *navigation = self.navigation;
@@ -574,6 +580,24 @@ BOOL ApolloDuoNativeBackInFlight(UINavigationController *navigation) {
     ApolloDuoBackDragCancel(self.route, self.navigation, NO);
     pan.enabled = NO;
     pan.enabled = YES;
+}
+// A row's tap (Apollo's age alert) and a press still deciding (the info-row
+// loupe) can run alongside anything by their own delegates, so excluding them
+// is not enough: cancel those still undecided on the claimed touch's row. A
+// vertical claim leaves presses to their own travel veto (a wobbly hold), and
+// a press already showing (a hold now scrubbing, a context menu) keeps the
+// touch: that is press-and-hold.
+- (void)cancelRowRecognizersUnder:(ApolloDuoDragClaim *)claim sideways:(BOOL)sideways {
+    UIView *container = self.navigation.view;
+    for (UIView *view = claim.touchView; view && view != container; view = view.superview) {
+        for (UIGestureRecognizer *recognizer in view.gestureRecognizers) {
+            BOOL tap = [recognizer isKindOfClass:UITapGestureRecognizer.class];
+            BOOL press = sideways && [recognizer isKindOfClass:UILongPressGestureRecognizer.class];
+            if ((!tap && !press) || recognizer.state != UIGestureRecognizerStatePossible || !recognizer.enabled) continue;
+            recognizer.enabled = NO;
+            recognizer.enabled = YES;
+        }
+    }
 }
 // The pan runs alongside the scrollers under the finger so vertical scrolling
 // never waits for it. Once it begins it is Back: cancel their pans.
@@ -672,6 +696,11 @@ BOOL ApolloDuoIsPaneBackPan(UIGestureRecognizer *gesture) {
     return [gesture.name isEqualToString:kApolloDuoPaneBackName]
         && [gesture.delegate isKindOfClass:ApolloDuoBackSwipe.class]
         && gesture == ((ApolloDuoBackSwipe *)gesture.delegate).pan;
+}
+
+BOOL ApolloDuoIsPaneGesture(UIGestureRecognizer *gesture) {
+    ApolloDuoBackSwipe *owner = [gesture.delegate isKindOfClass:ApolloDuoBackSwipe.class] ? gesture.delegate : nil;
+    return gesture && (gesture == owner.pan || gesture == owner.highlightGuard || gesture == owner.dragClaim);
 }
 
 BOOL ApolloDuoHasBackSwipe(UINavigationController *navigation) {

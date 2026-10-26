@@ -547,7 +547,37 @@ int main(void) {
         Check([owner gestureRecognizer:claim shouldReceiveTouch:cellTouch], @"drag claim: a plain text view is just the row");
         cellTouch.view = claimContent; claimTable.editing = YES;
         Check(![owner gestureRecognizer:claim shouldReceiveTouch:cellTouch], @"drag claim: leaves a list being edited (reordering) alone");
-        claimTable.editing = NO; nav.duoState = nil;
+        claimTable.editing = NO;
+        // A claimed touch can't fire a row's tap or a press still deciding,
+        // whatever their own delegates allow: they are cancelled when the
+        // claim begins. A press already showing (a hold now scrubbing) keeps it.
+        UITapGestureRecognizer *ageTap = [UITapGestureRecognizer new];
+        UILongPressGestureRecognizer *loupe = [UILongPressGestureRecognizer new];
+        UILongPressGestureRecognizer *heldMenu = [UILongPressGestureRecognizer new];
+        heldMenu.state = UIGestureRecognizerStateBegan;
+        [claimCell addGestureRecognizer:ageTap]; [claimCell addGestureRecognizer:loupe]; [claimCell addGestureRecognizer:heldMenu];
+        [claim reset]; rowTouch.view = claimContent; rowTouch.point = CGPointMake(100, 300);
+        [claim touchesBegan:rowTouches withEvent:[UIEvent new]];
+        rowTouch.point = CGPointMake(114, 302);
+        [claim touchesMoved:rowTouches withEvent:[UIEvent new]];
+        [owner dragClaimed:claim];
+        Check(ageTap.disables == 1 && loupe.disables == 1 && ageTap.enabled && loupe.enabled,
+              @"drag claim: a sideways claim cancels the row's tap and its undecided loupe (and re-enables them)");
+        Check(heldMenu.disables == 0, @"drag claim: a press already showing keeps the touch (press-and-hold)");
+        [claim reset]; rowTouch.point = CGPointMake(100, 300);
+        [claim touchesBegan:rowTouches withEvent:[UIEvent new]];
+        rowTouch.point = CGPointMake(102, 314);
+        [claim touchesMoved:rowTouches withEvent:[UIEvent new]];
+        [owner dragClaimed:claim];
+        Check(ageTap.disables == 2 && loupe.disables == 1,
+              @"drag claim: a vertical claim cancels the tap but leaves a wobbly hold to the loupe's own veto");
+        [claim reset]; rowTouch.view = nil; nav.duoState = nil;
+        // The info-row loupe makes ancestor pans wait for it; the Duo pane
+        // gestures are exempt (ApolloStatsRowTouch.xm), so a sideways drag
+        // goes to the Back and the claim cancels the loupe.
+        Check(ApolloDuoIsPaneGesture(owner.pan) && ApolloDuoIsPaneGesture(owner.highlightGuard)
+              && ApolloDuoIsPaneGesture(claim) && !ApolloDuoIsPaneGesture(row) && !ApolloDuoIsPaneGesture(nil),
+              @"pane gestures: the Back, its guard and the claim, nothing else");
         // Folded, the native pan owns every pop; the swipe acts for a thread
         // right above the Posts backstop.
         ApolloDuoSplitState *threadSplit = [ApolloDuoSplitState new];
