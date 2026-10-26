@@ -190,6 +190,17 @@ static inline double ApolloDuoJumpButtonPaneTrailingLimit(double paneMinX, doubl
     return limit;
 }
 
+// Where a split pane's usable part begins in book posture: a fold whose
+// division region covers the pane's leading edge (the divider resting at or
+// inside the fold) moves it past the fold, so no position lands on the hinge.
+// A fold elsewhere, or none, leaves the pane alone.
+static inline double ApolloDuoJumpButtonPaneAfterFold(double paneMinX, double paneWidth,
+                                                      int fold, double foldMinX, double foldMaxX) {
+    if (!fold || foldMaxX <= paneMinX || foldMinX > paneMinX + 1.0) return paneMinX;
+    double end = paneMinX + paneWidth;
+    return foldMaxX < end ? foldMaxX : paneMinX;
+}
+
 // Apollo places the jump button against geometry that a split pane does not
 // match: the full-screen comments table for left and center, which extends
 // beneath the posts column, and a narrower width for right. In a split pane,

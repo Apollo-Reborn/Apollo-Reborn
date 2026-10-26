@@ -303,6 +303,15 @@ void ApolloDuoCoverAdjustJumpButton(UIViewController *comments) {
     // instead, in the button's (content) coordinates, and keep Apollo's Y.
     CGRect pane = ApolloDuoSplitContentFrame(comments, container);
     BOOL split = !CGRectIsNull(pane) && CGRectGetWidth(pane) > 0.0;
+    if (split) {
+        // Book posture: the divider can rest at or inside the fold, so the
+        // pane's leading edge is the hinge. Keep every position past it.
+        CGRect fold = ApolloDuoActiveVerticalDivision(container);
+        CGFloat leading = ApolloDuoJumpButtonPaneAfterFold(CGRectGetMinX(pane), CGRectGetWidth(pane), !CGRectIsNull(fold),
+                                                           CGRectGetMinX(fold), CGRectGetMaxX(fold));
+        pane.size.width -= leading - CGRectGetMinX(pane);
+        pane.origin.x = leading;
+    }
     CGFloat paneX = ApolloDuoJumpButtonPaneX(kind, split, CGRectGetMinX(pane), CGRectGetWidth(pane),
                                              !CGRectIsNull(railFrame), CGRectGetMinX(railFrame),
                                              CGRectGetWidth(frame), CGRectGetMinX(frame));

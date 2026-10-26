@@ -179,6 +179,29 @@ int main(void) {
         }
     }
 
+    /* Book posture: when the divider rests on the fold (Half at the fold's
+       leading edge, 455.7 on the Duo) or inside it (475.5, mid fold), the
+       thread pane's usable part starts past the fold, so a left or center
+       button never sits on the hinge. */
+    Check(ApolloDuoJumpButtonPaneAfterFold(455.7, 495.3, 1, 455.7, 495.3) == 495.3,
+          "a fold starting at the pane's leading edge moves the pane past it");
+    Check(ApolloDuoJumpButtonPaneAfterFold(475.5, 475.5, 1, 455.7, 495.3) == 495.3,
+          "a divider resting inside the fold moves the pane past it");
+    Check(ApolloDuoJumpButtonPaneAfterFold(237.75, 713.25, 1, 455.7, 495.3) == 237.75,
+          "a fold well inside a wide pane leaves its leading edge alone");
+    Check(ApolloDuoJumpButtonPaneAfterFold(713.25, 237.75, 1, 455.7, 495.3) == 713.25,
+          "a fold behind the posts column leaves the pane alone");
+    Check(ApolloDuoJumpButtonPaneAfterFold(475.5, 475.5, 0, 0.0, 0.0) == 475.5,
+          "flat open, no fold, the pane is unchanged");
+    {
+        double leading = ApolloDuoJumpButtonPaneAfterFold(455.7, 495.3, 1, 455.7, 495.3);
+        double width = 455.7 + 495.3 - leading;
+        double x = ApolloDuoJumpButtonPaneX(ApolloDuoJumpButtonLeft, 1, leading, width, 1, 882.0, 70.0, 20.0);
+        Check(x >= 495.3, "a left jump button at the fold sits in the pane past the hinge");
+        x = ApolloDuoJumpButtonPaneX(ApolloDuoJumpButtonCenter, 1, leading, width, 1, 882.0, 70.0, 20.0);
+        Check(x >= 495.3 && x + 70.0 <= 882.0 - 15.0, "a centered jump button at the fold stays clear of the hinge and the rail");
+    }
+
     printf("OK: %u checks\n", checks);
     return 0;
 }
