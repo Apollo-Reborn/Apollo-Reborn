@@ -989,6 +989,14 @@ static __thread void *sDuoSplitGesture;
 static __thread void *sDuoSplitGestureView;
 static __thread CGFloat sDuoSplitGestureOffset;
 
+// Apollo's pan handler (sub_10015e204, behind screenEdgePanned: and
+// navigationBarPanned:) completes a held release at half its view's width.
+// A split pane's view extends under the sidebar or the feed column, so scale
+// only that release's translation: half is then measured on the visible pane.
+static __thread void *sDuoSplitReleaseGesture;
+static __thread void *sDuoSplitReleaseView;
+static __thread CGFloat sDuoSplitReleaseScale = 1.0;
+
 static NSString *ApolloDuoSplitKind(UIViewController *root) {
     NSString *name = NSStringFromClass(root.class);
     if ([name isEqualToString:@"Apollo.RedditListViewController"]) return @"subreddits";
@@ -1156,6 +1164,64 @@ CGRect ApolloDuoSplitContentFrame(UIViewController *controller, UIView *coordina
 static UIView *ApolloDuoSplitMediaSurface(ApolloDuoSplitState *state, UINavigationController *nav) {
     if (!state.split || (nav != state.feed && nav != state.secondary && nav != state.primary)) return nil;
     return state.outer.viewIfLoaded;
+}
+
+// How much wider a pane's navigation view is than the visible pane, or 1
+// when it is not, or either width is missing.
+static CGFloat ApolloDuoSplitNativePanReleaseScale(CGFloat viewWidth, CGFloat paneWidth) {
+    if (!(viewWidth > 0.0) || !(paneWidth > 0.0) || paneWidth >= viewWidth) return 1.0;
+    return viewWidth / paneWidth;
+}
+
+// The scale for the translation Apollo reads on releasing one of its own
+// navigation pans (edge Back, edge Forward, navigation bar) in a visible pane,
+// else 1. Dragging stays unscaled, so the page keeps tracking the finger.
+// The pane is the one the Duo pane Back measures: it excludes the sidebar or
+// feed column and keeps the trailing rail.
+static CGFloat ApolloDuoSplitNativePanReleaseScaleForNavigation(UINavigationController *nav, UIPanGestureRecognizer *gesture) {
+    if (!gesture || (gesture.state != UIGestureRecognizerStateEnded && gesture.state != UIGestureRecognizerStateCancelled)) return 1.0;
+    static const char *const names[] = {"leftScreenEdgePanGestureRecognizer", "rightScreenEdgePanGestureRecognizer",
+                                        "navigationBarPanGestureRecognizer"};
+    BOOL apolloPan = NO;
+    for (size_t index = 0; index < sizeof(names) / sizeof(names[0]); index++) {
+        Ivar ivar = class_getInstanceVariable(nav.class, names[index]);
+        if (ivar && object_getIvar(nav, ivar) == gesture) apolloPan = YES;
+    }
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    if (!apolloPan || !state.split || state.changing || ApolloDuoSplitIsResizing()
+        || (nav != state.secondary && nav != state.feed)) return 1.0;
+    CGRect pane = ApolloDuoSplitContentFrame(nav, nav.view);
+    return ApolloDuoSplitNativePanReleaseScale(CGRectGetWidth(nav.view.bounds), CGRectIsNull(pane) ? 0.0 : CGRectGetWidth(pane));
+}
+
+// Runs Apollo's pan handler with its release translation scaled for `nav`.
+// Apollo then takes its own finish or cancel branch, with its own bookkeeping.
+// The previous window is restored afterwards, so a nested release is safe.
+static void ApolloDuoSplitNativePanReleaseRun(UINavigationController *nav, UIPanGestureRecognizer *gesture, void (^handler)(void)) {
+    CGFloat scale = ApolloDuoSplitNativePanReleaseScaleForNavigation(nav, gesture);
+    if (scale == 1.0) {
+        handler();
+        return;
+    }
+    void *previousGesture = sDuoSplitReleaseGesture;
+    void *previousView = sDuoSplitReleaseView;
+    CGFloat previousScale = sDuoSplitReleaseScale;
+    sDuoSplitReleaseGesture = (__bridge void *)gesture;
+    sDuoSplitReleaseView = (__bridge void *)nav.view;
+    sDuoSplitReleaseScale = scale;
+    handler();
+    sDuoSplitReleaseGesture = previousGesture;
+    sDuoSplitReleaseView = previousView;
+    sDuoSplitReleaseScale = previousScale;
+}
+
+// The translation `gesture` reports in `view`: scaled only for the pan and
+// view of the release that is running.
+static CGPoint ApolloDuoSplitReleaseTranslation(UIPanGestureRecognizer *gesture, UIView *view, CGPoint translation) {
+    if ((__bridge void *)gesture == sDuoSplitReleaseGesture && (__bridge void *)view == sDuoSplitReleaseView) {
+        translation.x *= sDuoSplitReleaseScale;
+    }
+    return translation;
 }
 
 BOOL ApolloDuoSplitIsAccountFeedController(UIViewController *controller) {
@@ -3672,6 +3738,13 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     if (back && result) ApolloDuoNoteNativeBackBegan(nav);
     return result;
 }
+- (void)screenEdgePanned:(UIPanGestureRecognizer *)gesture {
+    ApolloDuoSplitNativePanReleaseRun(self, gesture, ^{ %orig(gesture); });
+}
+// Apollo's navigation-bar pan drives the same handler, Back or Forward.
+- (void)navigationBarPanned:(UIPanGestureRecognizer *)gesture {
+    ApolloDuoSplitNativePanReleaseRun(self, gesture, ^{ %orig(gesture); });
+}
 - (void)pushViewController:(UIViewController *)controller animated:(BOOL)animated {
     // Record the completed navigation request using its synchronous PostsType
     // slug. Split replacement may lay out before window attachment and omit
@@ -3855,6 +3928,9 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
         point.x += sDuoSplitGestureOffset;
     }
     return point;
+}
+- (CGPoint)translationInView:(UIView *)view {
+    return ApolloDuoSplitReleaseTranslation(self, view, %orig(view));
 }
 %end
 

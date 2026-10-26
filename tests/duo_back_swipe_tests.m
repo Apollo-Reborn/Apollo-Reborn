@@ -59,9 +59,12 @@
 - (CGPoint)velocityInView:(UIView *)view;
 - (CGPoint)translationInView:(UIView *)view;
 @end
+// The split's translationInView: hook body, from production.
+static CGPoint ApolloDuoSplitReleaseTranslation(UIPanGestureRecognizer *gesture, UIView *view, CGPoint translation);
 @implementation UIPanGestureRecognizer
 - (CGPoint)velocityInView:(__unused UIView *)view { return self.velocity; }
-- (CGPoint)translationInView:(__unused UIView *)view { return self.translation; }
+// Reports its translation through the split's hook body, as the hooked UIKit pan does.
+- (CGPoint)translationInView:(UIView *)view { return ApolloDuoSplitReleaseTranslation(self, view, self.translation); }
 @end
 typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 @interface UIScrollView : UIView
@@ -103,8 +106,10 @@ typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 @implementation TestPage @end
 @interface UINavigationController : UIViewController {
 @public
-    // Apollo's own Back pan, read through the runtime like the Swift ivar.
+    // Apollo's own pans, read through the runtime like the Swift ivars.
     UIPanGestureRecognizer *leftScreenEdgePanGestureRecognizer;
+    UIPanGestureRecognizer *rightScreenEdgePanGestureRecognizer;
+    UIPanGestureRecognizer *navigationBarPanGestureRecognizer;
 }
 @property(nonatomic, copy) NSArray<UIViewController *> *viewControllers;
 @property(nonatomic, strong) ApolloDuoSplitState *duoState;
@@ -154,6 +159,11 @@ static NSUInteger drawerReveals, profileReturns;
 static BOOL ApolloDeviceIsDuo(void) { return duo; }
 static BOOL ApolloDuoSplitIsResizing(void) { return resizing; }
 static ApolloDuoSplitState *ApolloDuoSplitStateForNavigation(UINavigationController *nav, __unused BOOL create) { return nav.duoState; }
+static CGRect ApolloDuoSplitContentFrame(UINavigationController *nav, __unused UIView *view) { return nav.pane; }
+typedef NSInteger UIGestureRecognizerState;
+enum { UIGestureRecognizerStatePossible = 0,
+       UIGestureRecognizerStateBegan = 1, UIGestureRecognizerStateChanged = 2, UIGestureRecognizerStateEnded = 3,
+       UIGestureRecognizerStateCancelled = 4, UIGestureRecognizerStateRecognized = 3, UIGestureRecognizerStateFailed = 5 };
 // INCLUDE_PRODUCTION_SPLIT_POLICIES
 static BOOL ApolloDuoSplitRevealPostsList(UINavigationController *nav) {
     nav.duoState.host.listVisible = YES;
@@ -166,12 +176,7 @@ static BOOL ApolloDuoSplitReturnFromVisitedProfile(UINavigationController *nav) 
     profileReturns++;
     return YES;
 }
-static CGRect ApolloDuoSplitContentFrame(UINavigationController *nav, __unused UIView *view) { return nav.pane; }
 static BOOL UIAccessibilityIsReduceMotionEnabled(void) { return reduceMotion; }
-typedef NSInteger UIGestureRecognizerState;
-enum { UIGestureRecognizerStatePossible = 0,
-       UIGestureRecognizerStateBegan = 1, UIGestureRecognizerStateChanged = 2, UIGestureRecognizerStateEnded = 3,
-       UIGestureRecognizerStateCancelled = 4, UIGestureRecognizerStateRecognized = 3, UIGestureRecognizerStateFailed = 5 };
 #define ApolloLog(...) ((void)0)
 // INCLUDE_PRODUCTION_GESTURES
 static NSUInteger checks;
@@ -208,6 +213,34 @@ static void Drag(ApolloDuoBackSwipe *owner, CGFloat dx, CGFloat vx) {
 }
 // A quick flick, what the discrete swipe used to recognize.
 static void Fling(ApolloDuoBackSwipe *owner) { Drag(owner, 160, 900); }
+// Apollo's release rule, transcribed from -[ApolloNavigationController
+// screenEdgePanned:] (Apollo 1.15.11, Swift body sub_10015e204, also behind
+// navigationBarPanned:). Back finishes on vx >= 100 (0x10015e848) or
+// tx >= 0.5 * view width (0x10015e8e4); Forward on vx <= -100 (0x10015e798)
+// or tx <= -0.5 * view width (0x10015e834). Otherwise it cancels.
+static BOOL ApolloNativeReleaseFinishes(BOOL back, CGFloat vx, CGFloat tx, CGFloat viewWidth) {
+    if (back) return vx >= 100.0 || tx >= 0.5 * viewWidth;
+    return vx <= -100.0 || tx <= -0.5 * viewWidth;
+}
+// What Apollo decides on releasing `pan` in `nav`: its own rule, fed the
+// translation the split's translationInView: hook reports for that release.
+static BOOL NativeReleaseFinishes(UINavigationController *nav, UIPanGestureRecognizer *pan, BOOL back, CGFloat vx, CGFloat tx) {
+    pan.state = UIGestureRecognizerStateEnded;
+    pan.velocity = CGPointMake(vx, 0); pan.translation = CGPointMake(tx, 0);
+    CGFloat scale = ApolloDuoSplitNativePanReleaseScaleForNavigation(nav, pan);
+    return ApolloNativeReleaseFinishes(back, vx, tx * scale, CGRectGetWidth(nav.view.bounds));
+}
+// A split pane's navigation, 951 pt wide like the unfolded landscape Duo,
+// with Apollo's three navigation pans.
+static UINavigationController *NativePanNavigation(ApolloDuoSplitState *state, CGRect pane) {
+    UINavigationController *nav = Navigation();
+    nav.view.bounds = CGRectMake(0, 0, 951, 669);
+    nav.pane = pane; nav.duoState = state;
+    nav->leftScreenEdgePanGestureRecognizer = [UIPanGestureRecognizer new];
+    nav->rightScreenEdgePanGestureRecognizer = [UIPanGestureRecognizer new];
+    nav->navigationBarPanGestureRecognizer = [UIPanGestureRecognizer new];
+    return nav;
+}
 int main(void) {
     @autoreleasepool {
         UINavigationController *nav = Navigation();
@@ -923,6 +956,166 @@ int main(void) {
               @"two pane Backs stay exclusive: only one begins");
         Check([routeOwner gestureRecognizer:routeOwner.pan shouldBeRequiredToFailByGestureRecognizer:row],
               @"row actions still wait for the pane Back");
+
+        // Apollo's own Back and Forward commit a held release at half their
+        // view's width. A split pane's view extends under the sidebar or the
+        // feed column, so that release is judged against the visible pane.
+        Check(ApolloDuoSplitNativePanReleaseScale(951, 951) == 1.0, @"release scale: a pane as wide as its view leaves the release alone");
+        Check(ApolloDuoSplitNativePanReleaseScale(951, 1200) == 1.0, @"release scale: a pane wider than its view leaves the release alone");
+        Check(ApolloDuoSplitNativePanReleaseScale(951, 0) == 1.0 && ApolloDuoSplitNativePanReleaseScale(951, -40) == 1.0
+              && ApolloDuoSplitNativePanReleaseScale(951, NAN) == 1.0, @"release scale: a missing or empty pane leaves the release alone");
+        Check(ApolloDuoSplitNativePanReleaseScale(0, 400) == 1.0 && ApolloDuoSplitNativePanReleaseScale(-951, 400) == 1.0
+              && ApolloDuoSplitNativePanReleaseScale(NAN, 400) == 1.0, @"release scale: a view with no width leaves the release alone");
+        Check(fabs(ApolloDuoSplitNativePanReleaseScale(951, 634) - 951.0 / 634.0) < 1e-9, @"release scale: Settings detail is view over pane");
+        Check(fabs(ApolloDuoSplitNativePanReleaseScale(951, 476) - 951.0 / 476.0) < 1e-9, @"release scale: Posts thread pane is view over pane");
+
+        // Settings: the detail view spans the 317 pt sidebar; its pane is 634 pt.
+        ApolloDuoSplitState *settingsSplit = [ApolloDuoSplitState new];
+        settingsSplit.split = [NSObject new]; settingsSplit.host = [TestDuoHost new]; settingsSplit.kind = @"settings";
+        const CGFloat settingsPane = 634;
+        UINavigationController *settingsDetail = NativePanNavigation(settingsSplit, CGRectMake(317, 0, settingsPane, 669));
+        settingsSplit.secondary = settingsDetail;
+        UIPanGestureRecognizer *settingsBack = settingsDetail->leftScreenEdgePanGestureRecognizer;
+        UIPanGestureRecognizer *settingsForward = settingsDetail->rightScreenEdgePanGestureRecognizer;
+        UIPanGestureRecognizer *settingsBarPan = settingsDetail->navigationBarPanGestureRecognizer;
+        Check(!ApolloNativeReleaseFinishes(YES, 0, 0.70 * settingsPane, 951),
+              @"Apollo's own rule springs a held release at 70% of the Settings pane back (the simulator repro)");
+        Check(NativeReleaseFinishes(settingsDetail, settingsBack, YES, 0, 0.70 * settingsPane),
+              @"Settings: a held Back released at 70% of the pane completes");
+        Check(NativeReleaseFinishes(settingsDetail, settingsBack, YES, 0, 0.55 * settingsPane),
+              @"Settings: a held Back released at 55% of the pane completes");
+        Check(!NativeReleaseFinishes(settingsDetail, settingsBack, YES, 0, 0.45 * settingsPane),
+              @"Settings: a held Back released at 45% of the pane springs back");
+        Check(NativeReleaseFinishes(settingsDetail, settingsForward, NO, 0, -0.55 * settingsPane)
+              && !NativeReleaseFinishes(settingsDetail, settingsForward, NO, 0, -0.45 * settingsPane),
+              @"Settings: Forward is judged against the pane too, mirrored");
+        Check(NativeReleaseFinishes(settingsDetail, settingsBack, YES, 300, 20)
+              && NativeReleaseFinishes(settingsDetail, settingsForward, NO, -300, -20),
+              @"Settings: a flick of 100 pt/s or more still completes at any translation");
+        Check(NativeReleaseFinishes(settingsDetail, settingsBarPan, YES, 0, 0.55 * settingsPane)
+              && !NativeReleaseFinishes(settingsDetail, settingsBarPan, YES, 0, 0.45 * settingsPane)
+              && NativeReleaseFinishes(settingsDetail, settingsBarPan, NO, 0, -0.55 * settingsPane),
+              @"Settings: Apollo's navigation-bar pan, which runs the same handler, is judged against the pane");
+
+        // Posts thread pane: the secondary view spans the 475 pt feed column.
+        ApolloDuoSplitState *postsSplit = [ApolloDuoSplitState new];
+        postsSplit.split = [NSObject new]; postsSplit.host = [TestDuoHost new]; postsSplit.host.postsShowingDetail = YES;
+        const CGFloat threadPane = 476;
+        UINavigationController *threadPaneNav = NativePanNavigation(postsSplit, CGRectMake(475, 0, threadPane, 669));
+        UINavigationController *postsFeed = NativePanNavigation(postsSplit, CGRectMake(0, 0, 951, 669));
+        postsSplit.secondary = threadPaneNav; postsSplit.feed = postsFeed;
+        Check(!ApolloNativeReleaseFinishes(YES, 0, 0.95 * threadPane, 951),
+              @"Apollo's own rule cannot complete a held release anywhere in the thread pane");
+        Check(NativeReleaseFinishes(threadPaneNav, threadPaneNav->leftScreenEdgePanGestureRecognizer, YES, 0, 300),
+              @"Posts thread pane: a held Back released at 300 pt completes");
+        Check(!NativeReleaseFinishes(threadPaneNav, threadPaneNav->leftScreenEdgePanGestureRecognizer, YES, 0, 0.45 * threadPane),
+              @"Posts thread pane: a held Back short of half the pane springs back");
+        Check(ApolloDuoSplitNativePanReleaseScaleForNavigation(threadPaneNav, nil) == 1.0,
+              @"no gesture is never mistaken for an unset Apollo pan");
+        postsSplit.host.postsShowingDetail = NO;
+        postsFeed->leftScreenEdgePanGestureRecognizer.state = UIGestureRecognizerStateEnded;
+        Check(ApolloDuoSplitNativePanReleaseScaleForNavigation(postsFeed, postsFeed->leftScreenEdgePanGestureRecognizer) == 1.0,
+              @"Posts feed pane as wide as its view: unchanged");
+        postsFeed.pane = CGRectMake(40, 0, 911, 669);
+        Check(fabs(ApolloDuoSplitNativePanReleaseScaleForNavigation(postsFeed, postsFeed->leftScreenEdgePanGestureRecognizer) - 951.0 / 911.0) < 1e-9,
+              @"Posts feed pane narrower than its view: judged against the pane");
+
+        // Folded, or with no split, every release is Apollo's own.
+        UINavigationController *foldedNav = NativePanNavigation(nil, CGRectNull);
+        foldedNav.view.bounds = CGRectMake(0, 0, 466, 678);
+        BOOL foldedStock = YES;
+        for (CGFloat tx = -466; tx <= 466; tx += 1) {
+            for (int v = -2; v <= 2; v++) {
+                CGFloat vx = v * 75.0;
+                foldedStock = foldedStock
+                    && NativeReleaseFinishes(foldedNav, foldedNav->leftScreenEdgePanGestureRecognizer, YES, vx, tx) == ApolloNativeReleaseFinishes(YES, vx, tx, 466)
+                    && NativeReleaseFinishes(foldedNav, foldedNav->rightScreenEdgePanGestureRecognizer, NO, vx, tx) == ApolloNativeReleaseFinishes(NO, vx, tx, 466);
+            }
+        }
+        Check(foldedStock, @"folded: Back and Forward releases are exactly Apollo's own");
+
+        // Only a release of Apollo's own pans on a visible pane is scaled.
+        const CGFloat settingsScale = 951.0 / settingsPane;
+        settingsBack.state = UIGestureRecognizerStateEnded;
+        Check(fabs(ApolloDuoSplitNativePanReleaseScaleForNavigation(settingsDetail, settingsBack) - settingsScale) < 1e-9,
+              @"gating: an ended Back in the detail pane is scaled");
+        settingsBack.state = UIGestureRecognizerStateCancelled;
+        Check(fabs(ApolloDuoSplitNativePanReleaseScaleForNavigation(settingsDetail, settingsBack) - settingsScale) < 1e-9,
+              @"gating: a cancelled Back is a release too (Apollo cancels it without reading the translation)");
+        settingsBack.state = UIGestureRecognizerStateBegan;
+        Check(ApolloDuoSplitNativePanReleaseScaleForNavigation(settingsDetail, settingsBack) == 1.0,
+              @"gating: the pan's beginning is unscaled");
+        settingsBack.state = UIGestureRecognizerStateChanged;
+        Check(ApolloDuoSplitNativePanReleaseScaleForNavigation(settingsDetail, settingsBack) == 1.0,
+              @"gating: dragging is unscaled, so the page tracks the finger 1:1");
+        settingsBack.state = UIGestureRecognizerStateEnded;
+        UIPanGestureRecognizer *unrelatedPan = [UIPanGestureRecognizer new]; unrelatedPan.state = UIGestureRecognizerStateEnded;
+        Check(ApolloDuoSplitNativePanReleaseScaleForNavigation(settingsDetail, unrelatedPan) == 1.0,
+              @"gating: a pan that is not one of Apollo's navigation pans is unscaled");
+        UINavigationController *settingsSidebar = NativePanNavigation(settingsSplit, CGRectMake(0, 0, 317, 669));
+        settingsSplit.primary = settingsSidebar;
+        settingsSidebar->leftScreenEdgePanGestureRecognizer.state = UIGestureRecognizerStateEnded;
+        Check(ApolloDuoSplitNativePanReleaseScaleForNavigation(settingsSidebar, settingsSidebar->leftScreenEdgePanGestureRecognizer) == 1.0,
+              @"gating: the sidebar is not a visible content pane and is unscaled");
+        resizing = YES;
+        Check(ApolloDuoSplitNativePanReleaseScaleForNavigation(settingsDetail, settingsBack) == 1.0,
+              @"gating: a fold or rotation in progress is unscaled");
+        resizing = NO; settingsSplit.changing = YES;
+        Check(ApolloDuoSplitNativePanReleaseScaleForNavigation(settingsDetail, settingsBack) == 1.0,
+              @"gating: a split being rebuilt is unscaled");
+        settingsSplit.changing = NO; NSObject *settingsSplitView = settingsSplit.split; settingsSplit.split = nil;
+        Check(ApolloDuoSplitNativePanReleaseScaleForNavigation(settingsDetail, settingsBack) == 1.0,
+              @"gating: no split is unscaled");
+        settingsSplit.split = settingsSplitView;
+        Check(fabs(ApolloDuoSplitNativePanReleaseScaleForNavigation(settingsDetail, settingsBack) - settingsScale) < 1e-9,
+              @"gating: the restored split scales again");
+
+        // The release window: Apollo's handler reads the scaled translation of
+        // its own pan in its own view, and nothing else, and only while it runs.
+        settingsBack.state = UIGestureRecognizerStateEnded; settingsBack.translation = CGPointMake(200, 7);
+        settingsForward.translation = CGPointMake(-200, 3);
+        UIView *otherView = [UIView new];
+        __block CGPoint scaledInside = CGPointZero, otherPanInside = CGPointZero, otherViewInside = CGPointZero;
+        ApolloDuoSplitNativePanReleaseRun(settingsDetail, settingsBack, ^{
+            scaledInside = [settingsBack translationInView:settingsDetail.view];
+            otherPanInside = [settingsForward translationInView:settingsDetail.view];
+            otherViewInside = [settingsBack translationInView:otherView];
+        });
+        Check(fabs(scaledInside.x - 200 * settingsScale) < 1e-9 && scaledInside.y == 7,
+              @"release window: the handler reads its pan's translation in its view scaled, x only");
+        Check(otherPanInside.x == -200 && otherViewInside.x == 200,
+              @"release window: another pan, or the same pan in another view, reads unscaled");
+        Check(sDuoSplitReleaseGesture == NULL && sDuoSplitReleaseView == NULL && sDuoSplitReleaseScale == 1.0
+              && [settingsBack translationInView:settingsDetail.view].x == 200,
+              @"release window: closed once the handler returns, so the pan reads unscaled again");
+        settingsBack.state = UIGestureRecognizerStateChanged;
+        __block BOOL openWhileDragging = YES;
+        __block CGFloat dragInside = 0;
+        ApolloDuoSplitNativePanReleaseRun(settingsDetail, settingsBack, ^{
+            openWhileDragging = sDuoSplitReleaseGesture != NULL || sDuoSplitReleaseView != NULL;
+            dragInside = [settingsBack translationInView:settingsDetail.view].x;
+        });
+        Check(!openWhileDragging && dragInside == 200, @"release window: never opened for a scale of 1 (dragging)");
+        // A nested release restores the outer one's window instead of closing it.
+        settingsBack.state = UIGestureRecognizerStateEnded;
+        UIPanGestureRecognizer *threadPaneBack = threadPaneNav->leftScreenEdgePanGestureRecognizer;
+        threadPaneBack.state = UIGestureRecognizerStateEnded; threadPaneBack.translation = CGPointMake(100, 0);
+        postsSplit.host.postsShowingDetail = YES;
+        __block CGFloat outerBefore = 0, innerInside = 0, outerDuringInner = 0, outerAfter = 0;
+        ApolloDuoSplitNativePanReleaseRun(settingsDetail, settingsBack, ^{
+            outerBefore = [settingsBack translationInView:settingsDetail.view].x;
+            ApolloDuoSplitNativePanReleaseRun(threadPaneNav, threadPaneBack, ^{
+                innerInside = [threadPaneBack translationInView:threadPaneNav.view].x;
+                outerDuringInner = [settingsBack translationInView:settingsDetail.view].x;
+            });
+            outerAfter = [settingsBack translationInView:settingsDetail.view].x;
+        });
+        Check(fabs(innerInside - 100 * 951.0 / threadPane) < 1e-9 && outerDuringInner == 200,
+              @"nested release: the inner pan is scaled by its own pane while it runs");
+        Check(fabs(outerBefore - 200 * settingsScale) < 1e-9 && fabs(outerAfter - 200 * settingsScale) < 1e-9,
+              @"nested release: the outer pan is scaled again once the inner one returns");
+        Check(sDuoSplitReleaseGesture == NULL && sDuoSplitReleaseView == NULL && sDuoSplitReleaseScale == 1.0,
+              @"nested release: both windows closed afterwards");
         printf("OK: %lu checks\n", (unsigned long)checks);
     }
     return 0;

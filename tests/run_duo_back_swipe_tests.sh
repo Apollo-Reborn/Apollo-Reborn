@@ -19,9 +19,17 @@ for signature in ['UINavigationController *ApolloDuoSplitDetailNavigation(',
                   'BOOL ApolloDuoSplitPopRevealsContent(',
                   'BOOL ApolloDuoSplitIsActive(',
                   'BOOL ApolloDuoSplitBackClosesThread(',
-                  'static BOOL ApolloDuoPostsPopReachedBackstop(']:
+                  'static BOOL ApolloDuoPostsPopReachedBackstop(',
+                  'static CGFloat ApolloDuoSplitNativePanReleaseScale(',
+                  'static CGFloat ApolloDuoSplitNativePanReleaseScaleForNavigation(',
+                  'static void ApolloDuoSplitNativePanReleaseRun(',
+                  'static CGPoint ApolloDuoSplitReleaseTranslation(']:
     start = split.index(signature)
     policies.append(split[start:split.index('\n}', start) + 2])
+# The release window's thread-locals, ahead of the helpers that use them.
+start = split.index('static __thread void *sDuoSplitReleaseGesture;')
+end = split.index('\n', split.index('static __thread CGFloat sDuoSplitReleaseScale')) + 1
+policies.insert(0, split[start:end])
 fixture = fixture.replace('// INCLUDE_PRODUCTION_SPLIT_POLICIES', '\n'.join(policies))
 fixture = fixture.replace('// INCLUDE_PRODUCTION_GESTURES', source)
 (build / 'duo_back_swipe_tests.m').write_text(fixture)
@@ -38,6 +46,23 @@ for exemption in 'ApolloFeedGalleryCarousel.xm:1'; do
         exit 1
     fi
 done
+# Apollo's navigation pans judge their release against the visible pane only
+# through the split's translationInView: hook, which reads the scale that the
+# screenEdgePanned: and navigationBarPanned: hooks set around the original.
+split_source="$swipe_root/src/ApolloDuoSplitView.xm"
+for hook in 'return ApolloDuoSplitReleaseTranslation(self, view, %orig(view));' \
+            '- (void)screenEdgePanned:(UIPanGestureRecognizer \*)gesture' \
+            '- (void)navigationBarPanned:(UIPanGestureRecognizer \*)gesture'; do
+    if ! grep -q -- "$hook" "$split_source"; then
+        echo "FAIL: ApolloDuoSplitView.xm lost the native pan release hook ($hook)" >&2
+        exit 1
+    fi
+done
+found=$(grep -c 'ApolloDuoSplitNativePanReleaseRun(self, gesture, ^{ %orig(gesture); });' "$split_source" || true)
+if [ "$found" -lt 2 ]; then
+    echo "FAIL: screenEdgePanned: and navigationBarPanned: no longer both scale their release" >&2
+    exit 1
+fi
 xcrun --sdk macosx clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
     -fsanitize=address,undefined -framework Foundation -framework CoreGraphics \
     "$swipe_build/duo_back_swipe_tests.m" -o "$swipe_build/duo_back_swipe_tests"
