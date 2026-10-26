@@ -1,5 +1,6 @@
 #import "ApolloDuoSplitDivider.h"
 #import "ApolloDuoSplitView.h"
+#import "ApolloCommon.h"
 #import <UIKit/UIKit.h>
 #import <UIKit/UIGestureRecognizerSubclass.h>
 #import <QuartzCore/QuartzCore.h>
@@ -64,14 +65,23 @@ static CGFloat ApolloDuoSplitDividerReleaseVelocity(CGFloat velocity, CFTimeInte
 
 @implementation ApolloDuoSplitDividerPress
 - (void)holdMenusFrom:(UIView *)view {
+    BOOL menu = NO, held = NO;
     for (UIView *candidate = view; candidate && candidate != self.view.superview; candidate = candidate.superview) {
+        for (id interaction in candidate.interactions) {
+            if ([interaction isKindOfClass:UIContextMenuInteraction.class]) menu = YES;
+        }
         for (UIGestureRecognizer *gesture in candidate.gestureRecognizers) {
             if (!gesture.enabled || !ApolloDuoSplitDividerOutranks(gesture.name)) continue;
             if (!self.heldMenus) self.heldMenus = [NSHashTable weakObjectsHashTable];
             [self.heldMenus addObject:gesture];
             gesture.enabled = NO;
+            held = YES;
         }
     }
+    // The menu's recognizers go by UIKit's private names: if a later iOS
+    // renames them, the row's menu takes the band's press again. Say so.
+    if (menu && !held)
+        ApolloLog(@"[DuoSplit] divider band: a context menu under the touch has no recognizer the divider knows to hold off");
 }
 - (void)reset {
     [super reset];

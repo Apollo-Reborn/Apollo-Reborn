@@ -29,6 +29,7 @@ enum { UIGestureRecognizerStatePossible = 0,
 @property(nonatomic, weak) UIView *superview;
 @property(nonatomic, strong) NSMutableArray<UIView *> *subviews;
 @property(nonatomic, strong) NSMutableArray<UIGestureRecognizer *> *gestureRecognizers;
+@property(nonatomic, copy) NSArray *interactions;
 @property(nonatomic, strong) UIColor *backgroundColor;
 @property(nonatomic, strong) CALayer *layer;
 @property(nonatomic, getter=isUserInteractionEnabled) BOOL userInteractionEnabled;
@@ -118,6 +119,12 @@ enum { UIGestureRecognizerStatePossible = 0,
     gesture.view = self;
 }
 @end
+
+@interface UIContextMenuInteraction : NSObject @end
+@implementation UIContextMenuInteraction @end
+// What the divider logs.
+static NSUInteger logs;
+#define ApolloLog(...) (logs++)
 
 // The clock the drag reads its speed from.
 static CFTimeInterval testNow;
@@ -293,6 +300,18 @@ int main(void) {
         [press reset];
         Check(menu.enabled && exclusion.enabled && !offMenu.enabled,
               @"context menu: the touch's end gives back only the menus the divider turned off");
+        // A row whose context menu UIKit drives with recognizers the divider
+        // doesn't know by name (a rename): logged, so it shows up.
+        row.interactions = @[ [UIContextMenuInteraction new] ];
+        NSUInteger logged = logs;
+        [DividerOf(host) gestureRecognizer:press shouldReceiveTouch:(id)rowTouch];
+        Check(logs == logged, @"context menu: a menu the divider holds off is not logged");
+        [press reset];
+        menu.name = @"com.apple.UIKit.renamedClickDriver";
+        exclusion.name = @"com.apple.UIKit.renamedRelationship";
+        [DividerOf(host) gestureRecognizer:press shouldReceiveTouch:(id)rowTouch];
+        Check(logs == logged + 1 && menu.enabled, @"context menu: one it can't find is logged once for the touch");
+        [press reset];
         [row removeFromSuperview];
         [navigationView removeFromSuperview];
 
