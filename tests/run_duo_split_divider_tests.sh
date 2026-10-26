@@ -65,6 +65,15 @@ update = body('static void ApolloDuoSplitUpdate(void) {')
 sweep = update[:update.index('ApolloDuoPostsCancelInteractiveClose(state, NO, 0.0);')]
 if 'drag.dividing ? ApolloDuoSplitDividerHolding(' not in sweep or 'drag.overlay.window && held) continue;' not in sweep:
     fail("the split update's stale-drag sweep drops a divider drag its press still holds")
+# A stored stop UIKit can't tile beside the rail gives way to Half, and the
+# split's minimum thread width is the one the fit is measured against.
+if 'ApolloDuoPostsFittedPrimaryWidth(' not in body('static CGFloat ApolloDuoPostsWantedDivider('):
+    fail('the Posts divider no longer falls back to Half for a stop that would break the split')
+if 'kApolloDuoPostsMinimumThread' not in body('static void ApolloDuoSplitApplySidebarWidth('):
+    fail("the split's minimum thread width no longer matches the fit")
+# The divider is only where UIKit actually put the thread pane.
+if 'ApolloDuoPostsSplitDivider(state)) > 2.0' not in body('CGFloat ApolloDuoSplitDividerPosition('):
+    fail('the divider press can be offered where no thread pane begins')
 print('OK: split divider wiring')
 PY
 xcrun --sdk macosx clang -fobjc-arc -fblocks -Wall -Wextra -Werror \

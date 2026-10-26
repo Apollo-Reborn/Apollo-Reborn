@@ -110,6 +110,27 @@ int main(void) {
     Check(Near(ApolloDuoPostsPrimaryWidth(true, (ApolloDuoSplitStop)7, canvas, 0), 475.5),
           "An unknown stored stop sizes the feed as Half");
 
+    /* UIKit tiles the thread beside the feed only while the thread, less its
+       trailing safe area (the rail, 84 pt on the Duo), keeps the split's 240 pt
+       minimum secondary width; measured on the Duo simulator: a 627 pt feed
+       tiles, 627.67 lays the thread out under the feed. */
+    Check(ApolloDuoSplitStopFits(627, canvas, 84, 240) && !ApolloDuoSplitStopFits(627.67, canvas, 84, 240),
+          "Fit: the thread less the rail keeps the split's minimum, as UIKit tiles it");
+    Check(!ApolloDuoSplitStopFits(713.25, canvas, 84, 240),
+          "Fit: the 75% stop leaves a 154 pt thread beside the rail, which UIKit won't tile");
+    Check(ApolloDuoSplitStopFits(237.75, canvas, 84, 240) && ApolloDuoSplitStopFits(475.5, canvas, 84, 240),
+          "Fit: the 25% and 50% stops tile");
+    Check(Near(ApolloDuoPostsFittedPrimaryWidth(true, ApolloDuoSplitStopFeedThreeQuarters, canvas, fold, 84, 240), fold),
+          "Fitted: an unworkable stored stop falls back to Half (the fold)");
+    Check(Near(ApolloDuoPostsFittedPrimaryWidth(true, ApolloDuoSplitStopFeedThreeQuarters, canvas, 0, 84, 240), 475.5),
+          "Fitted: Half without a fold is mid-canvas");
+    Check(Near(ApolloDuoPostsFittedPrimaryWidth(true, ApolloDuoSplitStopFeedQuarter, canvas, fold, 84, 240), 237.75),
+          "Fitted: a workable stop is kept");
+    Check(Near(ApolloDuoPostsFittedPrimaryWidth(true, ApolloDuoSplitStopFeedThreeQuarters, 1400, 0, 84, 240), 1050),
+          "Fitted: the 75% stop is kept where the canvas leaves the thread room");
+    Check(Near(ApolloDuoPostsFittedPrimaryWidth(false, ApolloDuoSplitStopFeedThreeQuarters, canvas, fold, 84, 240), 475.5),
+          "Fitted: toggle off is half the canvas, as before the setting");
+
     Check(ApolloDuoSplitStopSanitized(0) == ApolloDuoSplitStopHalf, "Sanitized 0 is Half");
     Check(ApolloDuoSplitStopSanitized(7) == ApolloDuoSplitStopHalf, "Sanitized 7 is Half");
     Check(ApolloDuoSplitStopSanitized(1) == ApolloDuoSplitStopFeedQuarter, "Sanitized 1 is kept");

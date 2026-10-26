@@ -63,6 +63,28 @@ static inline CGFloat ApolloDuoPostsPrimaryWidth(bool adjustable,
     return ApolloDuoSplitStopDivider(stop, canvasWidth, foldX);
 }
 
+// UIKit tiles the thread beside the feed only while the thread, less its
+// trailing safe area (the Duo's rail), keeps the split's minimum secondary
+// width. Narrower, it lays the thread out under the feed instead (measured on
+// the Duo: a 627 pt feed tiles beside the 84 pt rail inset, 627.67 does not).
+static inline bool ApolloDuoSplitStopFits(CGFloat dividerX, CGFloat canvasWidth,
+                                          CGFloat trailingInset, CGFloat minimumThread) {
+    return canvasWidth - dividerX - trailingInset >= minimumThread;
+}
+
+// The feed width the split can honor: the remembered stop, or Half when that
+// stop would leave the thread too narrow to tile.
+static inline CGFloat ApolloDuoPostsFittedPrimaryWidth(bool adjustable,
+                                                       ApolloDuoSplitStop stop,
+                                                       CGFloat canvasWidth,
+                                                       CGFloat foldX,
+                                                       CGFloat trailingInset,
+                                                       CGFloat minimumThread) {
+    CGFloat width = ApolloDuoPostsPrimaryWidth(adjustable, stop, canvasWidth, foldX);
+    if (!adjustable || ApolloDuoSplitStopFits(width, canvasWidth, trailingInset, minimumThread)) return width;
+    return ApolloDuoSplitStopDivider(ApolloDuoSplitStopHalf, canvasWidth, foldX);
+}
+
 static inline ApolloDuoSplitStop ApolloDuoSplitStopNearest(CGFloat dividerX,
                                                            CGFloat canvasWidth,
                                                            CGFloat foldX) {

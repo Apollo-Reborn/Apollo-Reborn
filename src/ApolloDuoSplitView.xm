@@ -1376,16 +1376,23 @@ static CGFloat ApolloDuoPostsFoldX(ApolloDuoSplitState *state, CGSize canvas) {
     return inside ? CGRectGetMinX(fold) : 0.0;
 }
 
+// The thread's least width beside the rail: UIKit's minimum secondary column
+// width for the split, which it holds against the thread less the rail.
+static const CGFloat kApolloDuoPostsMinimumThread = 240.0;
+
 // The divider x the Posts landscape split should use now on `canvas`: the
 // remembered stop with the setting on, else half the canvas. Half with the
 // setting on ends the feed at the fold; mid-resize the region may still
 // describe the old canvas, so Half takes mid-canvas until the next update.
+// A stop that would leave the thread too narrow for UIKit to tile it beside
+// the rail gives way to Half rather than break the split.
 static CGFloat ApolloDuoPostsWantedDivider(ApolloDuoSplitState *state, CGSize canvas) {
     BOOL adjustable = ApolloDuoPostsAdjustableSplit();
     CGFloat foldX = adjustable ? ApolloDuoPostsFoldX(state, canvas) : 0.0;
     ApolloDuoSplitStop stop = ApolloDuoSplitStopSanitized(
         [NSUserDefaults.standardUserDefaults integerForKey:UDKeyDuoSplitStop]);
-    return ApolloDuoPostsPrimaryWidth(adjustable, stop, canvas.width, foldX);
+    CGFloat trailing = MAX(state.secondary.viewIfLoaded.safeAreaInsets.right, state.feed.viewIfLoaded.safeAreaInsets.right);
+    return ApolloDuoPostsFittedPrimaryWidth(adjustable, stop, canvas.width, foldX, trailing, kApolloDuoPostsMinimumThread);
 }
 
 // Apollo's native navigation delegate tests a 70pt edge band in its view.
@@ -1935,11 +1942,8 @@ static void ApolloDuoSplitApplySidebarWidth(ApolloDuoSplitState *state, BOOL hal
     if (@available(iOS 26.0, *)) {
         // UIKit's default secondary minimum (532pt on this inner display)
         // otherwise caps the primary at 419pt even with a 50% preference.
-        CGFloat secondaryMinimum = state.feed || halfWidth ? 240.0 : UISplitViewControllerAutomaticDimension;
-        // A thread beside a three-quarter feed is 238pt wide: keep the
-        // minimum under it, with room for pixel rounding, so it never caps
-        // the pinned feed.
-        if (adjustable) secondaryMinimum = MIN(secondaryMinimum, MAX(0.0, canvas.width - postsWidth - 8.0));
+        // Posts: the wanted divider always leaves the thread this much beside the rail.
+        CGFloat secondaryMinimum = state.feed || halfWidth ? kApolloDuoPostsMinimumThread : UISplitViewControllerAutomaticDimension;
         if (split.minimumSecondaryColumnWidth != secondaryMinimum) split.minimumSecondaryColumnWidth = secondaryMinimum;
     }
     if (halfWidth && !state.feed) {
@@ -3861,7 +3865,11 @@ CGFloat ApolloDuoSplitDividerPosition(UIView *view, BOOL *adjustable) {
     // A close or a restore still finishing holds the panes.
     if (state.interactiveClose || state.host.postsTransitionSnapshot.window) return -1.0;
     CGRect pane = ApolloDuoPostsDetailPane(state);
-    return CGRectIsNull(pane) || CGRectIsEmpty(pane) ? -1.0 : CGRectGetMinX(pane);
+    if (CGRectIsNull(pane) || CGRectIsEmpty(pane)) return -1.0;
+    // A thread UIKit laid out under the feed (its pane starting at the screen's
+    // edge, not at the feed's) has no divider to hold.
+    CGFloat divider = CGRectGetMinX(pane);
+    return fabs(divider - ApolloDuoPostsSplitDivider(state)) > 2.0 ? -1.0 : divider;
 }
 
 BOOL ApolloDuoSplitDividerBegin(UIView *view) {
