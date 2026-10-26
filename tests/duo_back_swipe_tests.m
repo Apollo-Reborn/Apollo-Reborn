@@ -92,9 +92,25 @@ typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 @property(nonatomic, getter=isEditing) BOOL editing;
 @end
 @implementation UITableViewCell @end
-@interface UISlider : UIView @end
+@interface UILongPressGestureRecognizer : UIGestureRecognizer @end
+@implementation UILongPressGestureRecognizer @end
+@interface UIControl : UIView @end
+@implementation UIControl @end
+@interface UIButton : UIControl @end
+@implementation UIButton @end
+@interface UISegmentedControl : UIControl @end
+@implementation UISegmentedControl @end
+@interface UIStepper : UIControl @end
+@implementation UIStepper @end
+@interface UITextField : UIControl @end
+@implementation UITextField @end
+@interface UITextView : UIScrollView
+@property(nonatomic, getter=isSelectable) BOOL selectable;
+@end
+@implementation UITextView @end
+@interface UISlider : UIControl @end
 @implementation UISlider @end
-@interface UISwitch : UIView @end
+@interface UISwitch : UIControl @end
 @implementation UISwitch @end
 @interface UITouch : NSObject
 @property(nonatomic) CGPoint point;
@@ -432,7 +448,10 @@ int main(void) {
         // sideways drag (no velocity to speak of) still drops the highlight.
         guard.velocity = CGPointZero;
         guard.location = CGPointMake(19, 302);
-        Check([owner gestureRecognizerShouldBegin:guard], @"highlight guard begins for a slow clearly sideways drag");
+        // (A drag slower than the guard's 0.12 s hold never reaches this;
+        // the drag claim owns it.)
+        Check([owner gestureRecognizerShouldBegin:guard],
+              @"highlight guard begins for a clearly sideways motion even without a clear velocity");
         guard.location = CGPointMake(-9, 302);
         Check([owner gestureRecognizerShouldBegin:guard], @"highlight guard begins for a slow leftward drag too");
         guard.location = CGPointMake(10, 314); guard.velocity = CGPointMake(300, 40);
@@ -510,6 +529,22 @@ int main(void) {
         Check(![owner gestureRecognizer:claim shouldReceiveTouch:cellTouch], @"drag claim: leaves touches outside rows alone");
         UISlider *rowSlider = [UISlider new]; rowSlider.superview = claimCell; cellTouch.view = rowSlider;
         Check(![owner gestureRecognizer:claim shouldReceiveTouch:cellTouch], @"drag claim: leaves a slider in a row to its drag");
+        // Every control the user drags on purpose keeps its drag: only a
+        // row's plain buttons (vote, save, more) are claimed with the row.
+        NSArray<UIView *> *dragged = @[[UISegmentedControl new], [UIStepper new], [UITextField new], [UISwitch new]];
+        for (UIView *control in dragged) {
+            UIView *inner = [UIView new]; inner.superview = control; control.superview = claimCell; cellTouch.view = inner;
+            Check(![owner gestureRecognizer:claim shouldReceiveTouch:cellTouch],
+                  [NSString stringWithFormat:@"drag claim: leaves a %@ in a row to its own tracking", control.class]);
+        }
+        UIButton *rowButton = [UIButton new]; rowButton.superview = claimCell; cellTouch.view = rowButton;
+        Check([owner gestureRecognizer:claim shouldReceiveTouch:cellTouch],
+              @"drag claim: a row's plain button is claimed with the row (no vote after a drag)");
+        UITextView *selectableText = [UITextView new]; selectableText.selectable = YES; selectableText.superview = claimCell;
+        cellTouch.view = selectableText;
+        Check(![owner gestureRecognizer:claim shouldReceiveTouch:cellTouch], @"drag claim: leaves a selectable text view to its selection");
+        selectableText.selectable = NO;
+        Check([owner gestureRecognizer:claim shouldReceiveTouch:cellTouch], @"drag claim: a plain text view is just the row");
         cellTouch.view = claimContent; claimTable.editing = YES;
         Check(![owner gestureRecognizer:claim shouldReceiveTouch:cellTouch], @"drag claim: leaves a list being edited (reordering) alone");
         claimTable.editing = NO; nav.duoState = nil;

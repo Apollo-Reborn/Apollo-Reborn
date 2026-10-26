@@ -422,14 +422,17 @@ BOOL ApolloDuoNativeBackInFlight(UINavigationController *navigation) {
         || !ApolloDuoBackSwipeTouchOwnsHorizontalDrag(touch.view, navigation.view, ApolloDuoBackSwipeRevealsAtRoot(navigation));
 }
 // The drag claim takes a row's touches anywhere in an unfolded split's pane,
-// except a slider or switch that tracks the drag and a list being edited
-// (its reorder handles drag).
+// except on a control the user drags on purpose (a segmented control's
+// thumb, a slider, a switch, a stepper, a text field: every control but a
+// plain button), a selectable text view, and a list being edited (its
+// reorder handles drag).
 - (BOOL)claimsTouch:(UITouch *)touch {
     UINavigationController *navigation = self.navigation;
     if (!ApolloDuoSplitIsActive(navigation)) return NO;
     BOOL row = NO;
     for (UIView *view = touch.view; view && view != navigation.view; view = view.superview) {
-        if ([view isKindOfClass:UISlider.class] || [view isKindOfClass:UISwitch.class]) return NO;
+        if ([view isKindOfClass:UIControl.class] && ![view isKindOfClass:UIButton.class]) return NO;
+        if ([view isKindOfClass:UITextView.class] && ((UITextView *)view).selectable) return NO;
         if ([view isKindOfClass:UITableViewCell.class]) {
             if (((UITableViewCell *)view).editing) return NO;
             row = YES;
