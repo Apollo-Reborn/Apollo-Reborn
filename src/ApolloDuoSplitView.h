@@ -83,6 +83,17 @@ BOOL ApolloDuoSplitShowSidebar(UINavigationController *navigation);
 /// navigation out of the window and back in within one turn; its title keeps
 /// its presentation and capsule through it.
 BOOL ApolloDuoSplitIsMovingColumns(void);
+/// A subreddit opened from Search hides the search column; a Back swipe at
+/// that subreddit's root brings it back.
+BOOL ApolloDuoSplitCanRevealSearchColumnWithSwipe(UINavigationController *navigation);
+BOOL ApolloDuoSplitRevealSearchColumn(UINavigationController *navigation);
+/// A left swipe on the open Posts list, or on the search column shown beside
+/// a subreddit, closes it. A tap on that subreddit closes the search column.
+BOOL ApolloDuoSplitCanHideSidebarWithSwipe(UINavigationController *navigation);
+BOOL ApolloDuoSplitCanHideSearchColumnWithTap(UINavigationController *navigation);
+/// The Posts tab's subreddit list drawer.
+BOOL ApolloDuoSplitIsPostsListNavigation(UINavigationController *navigation);
+BOOL ApolloDuoSplitHideSidebar(UINavigationController *navigation);
 __END_DECLS
 
 void ApolloDuoSplitPrepareOverlaySurface(UIView *surface);

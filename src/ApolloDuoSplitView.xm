@@ -1739,6 +1739,76 @@ BOOL ApolloDuoSplitShowSidebar(UINavigationController *nav) {
     return YES;
 }
 
+// A subreddit opened from Search fills the width, and the search column acts
+// like the Posts list: a Back swipe at the subreddit's root brings it back,
+// with Search's query, results and scroll intact; a tap on the subreddit, a
+// left swipe on the column, or the next result hides it again. UIKit owns the
+// column through hide/showColumn, as the Account sidebar toggle does. The
+// preferred mode stays OneBesideSecondary, so anything UIKit re-applies (or a
+// book-posture change) only shows the column, never strands it hidden.
+static void ApolloDuoSearchSetColumnVisible(ApolloDuoSplitState *state, BOOL visible, BOOL animated) {
+    UISplitViewController *split = state.split;
+    void (^apply)(void) = ^{
+        if (visible) [split showColumn:UISplitViewControllerColumnPrimary];
+        else [split hideColumn:UISplitViewControllerColumnPrimary];
+    };
+    if (animated && state.host.viewIfLoaded.window && !UIAccessibilityIsReduceMotionEnabled()) {
+        apply();
+        return;
+    }
+    [UIView performWithoutAnimation:^{
+        apply();
+        [state.host.view layoutIfNeeded];
+    }];
+}
+
+BOOL ApolloDuoSplitCanRevealSearchColumnWithSwipe(UINavigationController *nav) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    return state.split && !state.changing && [state.kind isEqualToString:@"search"]
+        && state.secondary == nav && nav.viewControllers.count == 1
+        && state.split.displayMode == UISplitViewControllerDisplayModeSecondaryOnly;
+}
+
+BOOL ApolloDuoSplitRevealSearchColumn(UINavigationController *nav) {
+    if (!ApolloDuoSplitCanRevealSearchColumnWithSwipe(nav)) return NO;
+    ApolloDuoSearchSetColumnVisible(ApolloDuoSplitStateForNavigation(nav, NO), YES, YES);
+    return YES;
+}
+
+static BOOL ApolloDuoSearchColumnBesideSubreddit(ApolloDuoSplitState *state) {
+    return state.split && !state.changing && [state.kind isEqualToString:@"search"]
+        && state.split.displayMode != UISplitViewControllerDisplayModeSecondaryOnly
+        && ApolloClassPostsViewController
+        && [state.secondary.viewControllers.firstObject isKindOfClass:ApolloClassPostsViewController];
+}
+
+BOOL ApolloDuoSplitCanHideSidebarWithSwipe(UINavigationController *nav) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    if (!state.split || state.changing || nav != state.primary) return NO;
+    return state.feed ? state.host.listVisible : ApolloDuoSearchColumnBesideSubreddit(state);
+}
+
+BOOL ApolloDuoSplitIsPostsListNavigation(UINavigationController *nav) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    return state.split && state.feed && nav == state.primary;
+}
+
+BOOL ApolloDuoSplitCanHideSearchColumnWithTap(UINavigationController *nav) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    return nav == state.secondary && ApolloDuoSearchColumnBesideSubreddit(state);
+}
+
+BOOL ApolloDuoSplitHideSidebar(UINavigationController *nav) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    if (state.feed && ApolloDuoSplitCanHideSidebarWithSwipe(nav)) {
+        [state.host setListVisible:NO animated:!UIAccessibilityIsReduceMotionEnabled()];
+        return YES;
+    }
+    if (!ApolloDuoSplitCanHideSidebarWithSwipe(nav) && !ApolloDuoSplitCanHideSearchColumnWithTap(nav)) return NO;
+    ApolloDuoSearchSetColumnVisible(state, NO, YES);
+    return YES;
+}
+
 // Never infer Duo merely from a landscape iPhone. Its native trailing tab bar
 // or established Duo mode must be present, and two useful columns must fit.
 static BOOL ApolloDuoSplitShouldOpen(UITabBarController *tabs) {
@@ -2222,8 +2292,7 @@ static __weak UIView *sDuoReplayCrossfadeCeiling;
 // inside their rows, which keep moving and resizing (the Posts thread close).
 static void ApolloDuoAnimateRetainedGeometry(NSArray<ApolloDuoPostsGeometry *> *geometry,
                                              UIView *feed, UIView *surface, NSTimeInterval duration,
-                                             BOOL convertReparentedDescendants, BOOL fadeRecenteredBarItems,
-                                             BOOL rowContentsFinal) {
+                                             BOOL fadeRecenteredBarItems, BOOL rowContentsFinal) {
     NSUInteger count = 0;
     NSMutableArray<UIView *> *faded = [NSMutableArray array];
     for (ApolloDuoPostsGeometry *item in geometry) {
@@ -2261,9 +2330,8 @@ static void ApolloDuoAnimateRetainedGeometry(NSArray<ApolloDuoPostsGeometry *> *
         if (view == feed || item.parent != view.superview) {
             // A container can keep its direct wrapper while its ancestors
             // move between column coordinate spaces, so convert the root
-            // unconditionally. Search also reparents its retained page and
-            // search-bar surfaces into a newly created navigation controller.
-            if (!view.superview || (view != feed && !convertReparentedDescendants)) continue;
+            // unconditionally. A reparented descendant stays where it is.
+            if (!view.superview || view != feed) continue;
             CGRect frame = [view.superview.layer convertRect:item.surfaceFrame fromLayer:surface.layer];
             position = CGPointMake(CGRectGetMinX(frame) + CGRectGetWidth(frame) * layer.anchorPoint.x,
                                    CGRectGetMinY(frame) + CGRectGetHeight(frame) * layer.anchorPoint.y);
@@ -2296,7 +2364,7 @@ static void ApolloDuoAnimateRetainedGeometry(NSArray<ApolloDuoPostsGeometry *> *
 
 static void ApolloDuoPostsAnimateGeometry(NSArray<ApolloDuoPostsGeometry *> *geometry,
                                          UIView *feed, UIView *surface, NSTimeInterval duration) {
-    ApolloDuoAnimateRetainedGeometry(geometry, feed, surface, duration, NO, YES, NO);
+    ApolloDuoAnimateRetainedGeometry(geometry, feed, surface, duration, YES, NO);
 }
 
 // A thread closing beside the feed: the rows glide to their new size and
@@ -2306,7 +2374,7 @@ static void ApolloDuoPostsAnimateGeometry(NSArray<ApolloDuoPostsGeometry *> *geo
 // Recentered bar items crossfade, as in every feed column move.
 static void ApolloDuoPostsAnimateColumnGeometry(NSArray<ApolloDuoPostsGeometry *> *geometry,
                                                UIView *feed, UIView *surface, NSTimeInterval duration) {
-    ApolloDuoAnimateRetainedGeometry(geometry, feed, surface, duration, NO, YES, YES);
+    ApolloDuoAnimateRetainedGeometry(geometry, feed, surface, duration, YES, YES);
 }
 
 @interface ApolloDuoLayoutTransition : NSObject
@@ -5040,23 +5108,21 @@ static BOOL ApolloDuoSplitRoutePush(UINavigationController *nav, UIViewControlle
     // replaces what a closed thread was closed from.
     if (state.feed && ApolloClassPostsViewController && [page isKindOfClass:ApolloClassPostsViewController])
         ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventFeedOpened, 0.0);
-    NSArray<ApolloDuoPostsGeometry *> *searchGeometry = nil;
-    CGRect searchViewport = CGRectZero;
-    if ([state.kind isEqualToString:@"search"] && nav == state.outer && !state.split
-        && ApolloDuoSplitShouldOpen((id)nav.tabBarController)) {
-        if (state.outer.view.window && !UIAccessibilityIsReduceMotionEnabled()
-            && [NSStringFromClass(page.class) isEqualToString:@"Apollo.PostsViewController"]) {
-            // Capture the live Search hierarchy before its controller moves
-            // into the new primary navigation container. Retained search-bar
-            // and row views will resize with the incoming page, not snap to
-            // the narrow column before that page reaches it.
-            UIView *oldSurface = state.outer.view;
-            [oldSurface layoutIfNeeded];
-            searchGeometry = ApolloDuoPostsCaptureGeometry(oldSurface, oldSurface);
-            searchViewport = oldSurface.bounds;
-        }
-        ApolloDuoSplitOpen(state);
+    BOOL searchSubreddit = [state.kind isEqualToString:@"search"] && ApolloClassPostsViewController
+        && [page isKindOfClass:ApolloClassPostsViewController];
+    // A subreddit from Search fills the width; the column hides behind it.
+    // Whatever was showing (full-width Search, or the column beside the
+    // previous subreddit) leaves to the left as the subreddit arrives, like a
+    // native forward push. Capture it before the columns change.
+    BOOL searchOpens = [state.kind isEqualToString:@"search"] && nav == state.outer && !state.split
+        && ApolloDuoSplitShouldOpen((id)nav.tabBarController);
+    UIView *searchOutgoing = nil;
+    if (searchSubreddit && !state.changing && !UIAccessibilityIsReduceMotionEnabled()
+        && (searchOpens || (state.split && nav == state.primary))) {
+        UIView *visible = state.split ? state.host.viewIfLoaded : state.outer.viewIfLoaded;
+        if (visible.window) searchOutgoing = [visible snapshotViewAfterScreenUpdates:NO];
     }
+    if (searchOpens) ApolloDuoSplitOpen(state);
     if (state.split && !state.changing && [state.kind isEqualToString:@"account"]
         && nav == state.secondary && !state.selectingAccountShortcut) {
         // Content links are pushes, not menu replacements. Commit the stack
@@ -5083,8 +5149,6 @@ static BOOL ApolloDuoSplitRoutePush(UINavigationController *nav, UIViewControlle
     if ([state.kind isEqualToString:@"account"]) {
         ApolloDuoAccountSetPages(state, @[state.root, page]);
     } else {
-        BOOL searchSubreddit = [state.kind isEqualToString:@"search"]
-            && [NSStringFromClass(page.class) isEqualToString:@"Apollo.PostsViewController"];
         // A new Search detail may still be loading when UIKit performs the
         // root replacement. Animate its entire live navigation pane, including
         // chrome, rather than a blank page whose content appears afterward.
@@ -5092,55 +5156,34 @@ static BOOL ApolloDuoSplitRoutePush(UINavigationController *nav, UIViewControlle
         [state.secondary setViewControllers:@[page] animated:NO];
         if (searchSubreddit) {
             ApolloDuoSearchUpdateBackItem(state);
-            // The host was just installed as the outer navigation root.
-            // Layout the outer container first so UIKit attaches and sizes
-            // its child before checking visibility or reading the pane.
+            // The host may just have been installed as the outer navigation
+            // root. Layout the outer container first so UIKit attaches and
+            // sizes its child, then hide the column before reading the pane.
             UIView *surface = state.host.view;
             [UIView performWithoutAnimation:^{
                 [state.outer.view layoutIfNeeded];
                 [surface layoutIfNeeded];
+                ApolloDuoSearchSetColumnVisible(state, NO, NO);
                 [state.secondary.view layoutIfNeeded];
             }];
             CGRect pane = ApolloDuoPostsDetailPane(state);
             BOOL animate = state.outer.view.window && !UIAccessibilityIsReduceMotionEnabled()
                 && !CGRectIsNull(pane) && !CGRectIsEmpty(pane);
-            if (animate) {
-                CGFloat travel = CGRectGetMaxX(surface.bounds) - CGRectGetMinX(pane);
-                if (searchGeometry.count) {
-                    // The primary navigation controller is new, but Search's
-                    // content is retained. Give its clipping viewport the old
-                    // full-width endpoint so its live children remain visible
-                    // throughout their coordinated resize into the sidebar.
-                    ApolloDuoPostsGeometry *viewport = [ApolloDuoPostsGeometry new];
-                    viewport.view = state.primary.view;
-                    viewport.bounds = searchViewport;
-                    viewport.surfaceFrame = [surface convertRect:searchViewport fromView:state.outer.view];
-                    NSMutableArray *geometry = [searchGeometry mutableCopy];
-                    [geometry insertObject:viewport atIndex:0];
-                    NSHashTable *retained = [NSHashTable weakObjectsHashTable];
-                    for (ApolloDuoPostsGeometry *item in geometry) if (item.view) [retained addObject:item.view];
-                    CGFloat expansion = CGRectGetWidth(searchViewport) - CGRectGetWidth(state.primary.view.bounds);
-                    // UIKit may create new clipping wrappers around the
-                    // retained page. Their leading edges stay fixed, and their
-                    // widths follow the new navigation viewport as well.
-                    for (UIView *wrapper = state.root.view.superview;
-                         wrapper && wrapper != state.primary.view;
-                         wrapper = wrapper.superview) {
-                        if ([retained containsObject:wrapper]) continue;
-                        ApolloDuoPostsGeometry *item = [ApolloDuoPostsGeometry new];
-                        item.view = wrapper;
-                        item.parent = wrapper.superview;
-                        CGRect bounds = wrapper.bounds;
-                        bounds.size.width += expansion;
-                        item.bounds = bounds;
-                        item.position = CGPointMake(wrapper.layer.position.x + expansion * wrapper.layer.anchorPoint.x,
-                                                    wrapper.layer.position.y);
-                        [geometry addObject:item];
-                    }
-                    ApolloDuoAnimateRetainedGeometry(geometry, state.primary.view, surface, 0.32, YES, NO, NO);
-                }
-                if (travel > 0) ApolloDuoSlideView(state.secondary.view, travel, 0, 0.32, nil);
+            CGFloat travel = animate ? CGRectGetMaxX(surface.bounds) - CGRectGetMinX(pane) : 0;
+            if (searchOutgoing && travel > 0) {
+                // Both travel the same distance on the same curve, so the
+                // outgoing page abuts the arriving subreddit without a gap.
+                // A UIView completion removes it even when interrupted.
+                searchOutgoing.frame = surface.bounds;
+                searchOutgoing.userInteractionEnabled = NO;
+                [surface addSubview:searchOutgoing];
+                [UIView animateWithDuration:0.32 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
+                    searchOutgoing.transform = CGAffineTransformMakeTranslation(-travel, 0);
+                } completion:^(__unused BOOL finished) {
+                    [searchOutgoing removeFromSuperview];
+                }];
             }
+            if (travel > 0) ApolloDuoSlideView(state.secondary.view, travel, 0, 0.32, nil);
         }
     }
     ApolloDuoSearchUpdateBackItem(state);

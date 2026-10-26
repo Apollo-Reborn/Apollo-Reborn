@@ -84,6 +84,10 @@ typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 @implementation UIScrollView @end
 @interface UITapGestureRecognizer : UIGestureRecognizer @end
 @implementation UITapGestureRecognizer @end
+@interface UISwipeGestureRecognizer : UIGestureRecognizer
+@property(nonatomic) NSUInteger direction, numberOfTouchesRequired;
+@end
+@implementation UISwipeGestureRecognizer @end
 @interface UITableView : UIScrollView
 @property(nonatomic, getter=isEditing) BOOL editing;
 @end
@@ -112,9 +116,12 @@ typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 @implementation UISlider @end
 @interface UISwitch : UIControl @end
 @implementation UISwitch @end
+@interface UINavigationBar : UIView @end
+@implementation UINavigationBar @end
 @interface UITouch : NSObject
 @property(nonatomic) CGPoint point;
 @property(nonatomic, strong) UIView *view;
+@property(nonatomic) NSTimeInterval timestamp;
 - (CGPoint)locationInView:(UIView *)view;
 @end
 @implementation UITouch
@@ -145,6 +152,7 @@ typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 }
 @property(nonatomic, copy) NSArray<UIViewController *> *viewControllers;
 @property(nonatomic, strong) ApolloDuoSplitState *duoState;
+@property(nonatomic, strong) UINavigationBar *navigationBar;
 @property(nonatomic) CGRect pane;
 @property(nonatomic) NSUInteger pops;
 @property(nonatomic) BOOL lastAnimated;
@@ -163,8 +171,15 @@ typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 @property(nonatomic) BOOL postsShowingDetail, listVisible;
 @end
 @implementation TestDuoHost @end
+typedef NS_ENUM(NSInteger, UISplitViewControllerDisplayMode) {
+    UISplitViewControllerDisplayModeSecondaryOnly = 1, UISplitViewControllerDisplayModeOneBesideSecondary = 2
+};
+@interface TestSplit : NSObject
+@property(nonatomic) UISplitViewControllerDisplayMode displayMode;
+@end
+@implementation TestSplit @end
 @interface ApolloDuoSplitState : NSObject
-@property(nonatomic, strong) NSObject *split;
+@property(nonatomic, strong) TestSplit *split;
 @property(nonatomic, weak) UINavigationController *feed, *secondary, *primary;
 @property(nonatomic, copy) NSString *kind, *tabKind;
 @property(nonatomic, copy) NSArray *profilePrefix;
@@ -174,7 +189,7 @@ typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 @end
 @implementation ApolloDuoSplitState @end
 static BOOL duo = YES, disabled, leftSwipesDisabled, rightSwipesDisabled, resizing, reduceMotion;
-static NSUInteger drawerReveals, profileReturns;
+static NSUInteger drawerReveals, profileReturns, searchReveals, sidebarHides;
 @interface TestDefaults : NSObject
 + (instancetype)standardUserDefaults;
 - (BOOL)boolForKey:(NSString *)key;
@@ -194,9 +209,12 @@ static BOOL ApolloDuoSplitIsResizing(void) { return resizing; }
 static ApolloDuoSplitState *ApolloDuoSplitStateForNavigation(UINavigationController *nav, __unused BOOL create) { return nav.duoState; }
 static CGRect ApolloDuoSplitContentFrame(UINavigationController *nav, __unused UIView *view) { return nav.pane; }
 typedef NSInteger UIGestureRecognizerState;
+enum { UISwipeGestureRecognizerDirectionLeft = 2 };
 enum { UIGestureRecognizerStatePossible = 0,
        UIGestureRecognizerStateBegan = 1, UIGestureRecognizerStateChanged = 2, UIGestureRecognizerStateEnded = 3,
        UIGestureRecognizerStateCancelled = 4, UIGestureRecognizerStateRecognized = 3, UIGestureRecognizerStateFailed = 5 };
+// The ApolloClasses.h constant, set once the test registers the class.
+static Class ApolloClassPostsViewController;
 // INCLUDE_PRODUCTION_SPLIT_POLICIES
 static BOOL ApolloDuoSplitRevealPostsList(UINavigationController *nav) {
     nav.duoState.host.listVisible = YES;
@@ -207,6 +225,21 @@ static BOOL ApolloDuoSplitReturnFromVisitedProfile(UINavigationController *nav) 
     if (!ApolloDuoSplitCanReturnFromVisitedProfile(nav)) return NO;
     nav.duoState.profilePrefix = nil;
     profileReturns++;
+    return YES;
+}
+static BOOL ApolloDuoSplitRevealSearchColumn(UINavigationController *nav) {
+    if (!ApolloDuoSplitCanRevealSearchColumnWithSwipe(nav)) return NO;
+    nav.duoState.split.displayMode = UISplitViewControllerDisplayModeOneBesideSecondary;
+    searchReveals++;
+    return YES;
+}
+static BOOL ApolloDuoSplitHideSidebar(UINavigationController *nav) {
+    ApolloDuoSplitState *state = nav.duoState;
+    if (state.feed && ApolloDuoSplitCanHideSidebarWithSwipe(nav)) state.host.listVisible = NO;
+    else if (ApolloDuoSplitCanHideSidebarWithSwipe(nav) || ApolloDuoSplitCanHideSearchColumnWithTap(nav))
+        state.split.displayMode = UISplitViewControllerDisplayModeSecondaryOnly;
+    else return NO;
+    sidebarHides++;
     return YES;
 }
 static BOOL UIAccessibilityIsReduceMotionEnabled(void) { return reduceMotion; }
@@ -417,12 +450,13 @@ int main(void) {
         Check(!ApolloDuoBackSwipeCanNavigate(nav), @"dismissing navigation cannot begin Back");
         nav.isBeingDismissed = NO; UINavigationController *detail = Navigation();
         ApolloDuoSplitState *split = [ApolloDuoSplitState new];
-        split.split = [NSObject new]; split.host = [TestDuoHost new]; split.secondary = detail;
+        split.split = [TestSplit new]; split.host = [TestDuoHost new]; split.secondary = detail;
         nav.duoState = split;
         Check(!ApolloDuoBackSwipeCanNavigate(nav), @"outer containment cannot compete with the real pane");
         nav.duoState = nil;
         ApolloDuoInstallBackSwipe(nav); ApolloDuoInstallBackSwipe(nav);
-        Check(ApolloDuoHasBackSwipe(nav) && nav.view.gestureRecognizers.count == 3, @"recognizer installation is idempotent (swipe, highlight guard, drag claim)");
+        Check(ApolloDuoHasBackSwipe(nav) && nav.view.gestureRecognizers.count == 7,
+              @"recognizer installation is idempotent (Back pan, guard, drag claim; sidebar hide swipe, guard, tap, list flick)");
         ApolloDuoBackSwipe *owner = objc_getAssociatedObject(nav, &kApolloDuoBackSwipe);
         Check([owner.pan isMemberOfClass:ApolloDuoPaneBackPan.class] && owner.pan.maximumNumberOfTouches == 1
               && [owner.pan.name isEqualToString:@"ApolloReborn.Duo.PaneBack"] && owner.pan.delegate == owner
@@ -565,7 +599,7 @@ int main(void) {
         // Its touches: a row's, in an unfolded split, not a slider or switch
         // that tracks the drag, not a list being edited.
         ApolloDuoSplitState *claimSplit = [ApolloDuoSplitState new];
-        claimSplit.split = [NSObject new]; claimSplit.host = [TestDuoHost new]; claimSplit.feed = nav;
+        claimSplit.split = [TestSplit new]; claimSplit.host = [TestDuoHost new]; claimSplit.feed = nav;
         UITableView *claimTable = [UITableView new]; claimTable.superview = nav.view;
         UITableViewCell *claimCell = [UITableViewCell new]; claimCell.superview = claimTable;
         UIView *claimContent = [UIView new]; claimContent.superview = claimCell;
@@ -629,7 +663,7 @@ int main(void) {
         // Folded, the native pan owns every pop; the swipe acts for a thread
         // right above the Posts backstop.
         ApolloDuoSplitState *threadSplit = [ApolloDuoSplitState new];
-        threadSplit.split = [NSObject new]; threadSplit.host = [TestDuoHost new]; threadSplit.host.postsShowingDetail = YES;
+        threadSplit.split = [TestSplit new]; threadSplit.host = [TestDuoHost new]; threadSplit.host.postsShowingDetail = YES;
         UINavigationController *threadFeed = Navigation();
         threadSplit.feed = threadFeed; threadSplit.secondary = nav; nav.duoState = threadSplit; threadFeed.duoState = threadSplit;
         Fling(owner); Fling(owner);
@@ -716,7 +750,7 @@ int main(void) {
         UINavigationController *root = Navigation(); root.viewControllers = @[[UIViewController new]];
         UINavigationController *rootThread = Navigation(); rootThread.viewControllers = @[[UIViewController new]];
         ApolloDuoSplitState *rootSplit = [ApolloDuoSplitState new];
-        rootSplit.split = [NSObject new]; rootSplit.host = [TestDuoHost new];
+        rootSplit.split = [TestSplit new]; rootSplit.host = [TestDuoHost new];
         rootSplit.feed = root; rootSplit.secondary = rootThread; root.duoState = rootSplit; rootThread.duoState = rootSplit;
         ApolloDuoInstallBackSwipe(root); owner = objc_getAssociatedObject(root, &kApolloDuoBackSwipe);
         UIView *feedHeader = [UIView new]; feedHeader.superview = root.view;
@@ -797,7 +831,7 @@ int main(void) {
         UIViewController *backstop = [UIViewController new];
         ownThread.viewControllers = @[backstop, [TestPage new]];
         ApolloDuoSplitState *ownPosts = [ApolloDuoSplitState new];
-        ownPosts.split = [NSObject new]; ownPosts.host = [TestDuoHost new]; ownPosts.host.postsShowingDetail = YES;
+        ownPosts.split = [TestSplit new]; ownPosts.host = [TestDuoHost new]; ownPosts.host.postsShowingDetail = YES;
         ownPosts.feed = ownFeed; ownPosts.secondary = ownThread; ownFeed.duoState = ownPosts; ownThread.duoState = ownPosts;
         Check(!ApolloDuoSplitPopRevealsContent(ownThread) && !ApolloDuoNativeBackPanOwns(ownThread),
               @"thread right above the backstop: not a native pop");
@@ -843,7 +877,7 @@ int main(void) {
         ownPosts.changing = NO; ownPosts.host.postsShowingDetail = NO;
         Check(!ApolloDuoPostsPopReachedBackstop(ownPosts, ownThread, backstop), @"an already closed column is not closed again");
         ApolloDuoSplitState *noFeed = [ApolloDuoSplitState new];
-        noFeed.split = [NSObject new]; noFeed.host = [TestDuoHost new]; noFeed.host.postsShowingDetail = YES;
+        noFeed.split = [TestSplit new]; noFeed.host = [TestDuoHost new]; noFeed.host.postsShowingDetail = YES;
         noFeed.secondary = ownThread;
         Check(!ApolloDuoPostsPopReachedBackstop(noFeed, ownThread, backstop), @"other splits have no thread backstop");
         ownPosts.split = nil; ownPosts.host.postsShowingDetail = YES;
@@ -852,7 +886,7 @@ int main(void) {
         // Two Backs from one swipe: Apollo's pan pops the profile over a
         // thread and changes the stack as it begins. A pane swipe that
         // recognizes mid-drag must not then close the thread as well.
-        ownPosts.split = [NSObject new]; ownPosts.host.postsShowingDetail = YES; ownPosts.host.listVisible = NO;
+        ownPosts.split = [TestSplit new]; ownPosts.host.postsShowingDetail = YES; ownPosts.host.listVisible = NO;
         UIViewController *flightThread = [TestPage new];
         ownThread.viewControllers = @[backstop, flightThread, [TestPage new]];
         ownFeed.viewControllers = @[[UIViewController new]];
@@ -893,7 +927,7 @@ int main(void) {
         // detail's placeholder and Account's Overview stay the split's own.
         UINavigationController *detailPane = Navigation();
         ApolloDuoSplitState *settings = [ApolloDuoSplitState new];
-        settings.split = [NSObject new]; settings.host = [TestDuoHost new]; settings.kind = @"settings";
+        settings.split = [TestSplit new]; settings.host = [TestDuoHost new]; settings.kind = @"settings";
         settings.secondary = detailPane; detailPane.duoState = settings;
         detailPane.viewControllers = @[[TestPage new], [TestPage new]];
         Check(ApolloDuoSplitPopRevealsContent(detailPane) && ApolloDuoNativeBackPanOwns(detailPane),
@@ -908,7 +942,7 @@ int main(void) {
         Check(Begins(owner), @"the pane swipe keeps the pop onto the placeholder");
         UINavigationController *accountPane = Navigation();
         ApolloDuoSplitState *accountDetail = [ApolloDuoSplitState new];
-        accountDetail.split = [NSObject new]; accountDetail.host = [TestDuoHost new]; accountDetail.kind = @"account";
+        accountDetail.split = [TestSplit new]; accountDetail.host = [TestDuoHost new]; accountDetail.kind = @"account";
         accountDetail.root = [TestPage new]; accountDetail.secondary = accountPane; accountPane.duoState = accountDetail;
         accountPane.viewControllers = @[accountDetail.root, [TestPage new]];
         Check(!ApolloDuoSplitPopRevealsContent(accountPane) && !ApolloDuoNativeBackPanOwns(accountPane),
@@ -918,7 +952,7 @@ int main(void) {
         UINavigationController *ownProfile = Navigation();
         ownProfile.viewControllers = @[[UIViewController new]];
         ApolloDuoSplitState *ownAccount = [ApolloDuoSplitState new];
-        ownAccount.split = [NSObject new]; ownAccount.host = [TestDuoHost new];
+        ownAccount.split = [TestSplit new]; ownAccount.host = [TestDuoHost new];
         ownAccount.kind = @"account"; ownAccount.tabKind = @"subreddits";
         ownAccount.profilePrefix = @[[UIViewController new]];
         ownAccount.secondary = ownProfile; ownAccount.root = ownProfile.viewControllers.firstObject;
@@ -932,7 +966,7 @@ int main(void) {
         UINavigationController *profile = Navigation();
         profile.viewControllers = @[[UIViewController new]];
         ApolloDuoSplitState *account = [ApolloDuoSplitState new];
-        account.split = [NSObject new]; account.host = [TestDuoHost new];
+        account.split = [TestSplit new]; account.host = [TestDuoHost new];
         account.kind = @"account"; account.tabKind = @"subreddits";
         account.profilePrefix = @[[UIViewController new]];
         account.secondary = profile; account.root = profile.viewControllers.firstObject;
@@ -963,7 +997,7 @@ int main(void) {
         UINavigationController *feed2 = Navigation(); UINavigationController *thread = Navigation();
         feed2.viewControllers = @[[UIViewController new]];
         ApolloDuoSplitState *posts = [ApolloDuoSplitState new];
-        posts.split = [NSObject new]; posts.host = [TestDuoHost new]; posts.host.postsShowingDetail = YES;
+        posts.split = [TestSplit new]; posts.host = [TestDuoHost new]; posts.host.postsShowingDetail = YES;
         posts.feed = feed2; posts.secondary = thread; feed2.duoState = posts; thread.duoState = posts;
         ApolloDuoInstallBackSwipe(feed2); owner = objc_getAssociatedObject(feed2, &kApolloDuoBackSwipe);
         NSUInteger revealsBefore = drawerReveals;
@@ -1017,6 +1051,15 @@ int main(void) {
         route = ApolloDuoBackRoute((Facts){.split = YES});
         Check(route.owner == ApolloDuoBackOwnerSplitPop,
               @"route: a pop onto the Overview or a placeholder stays the split's discrete pop");
+        route = ApolloDuoBackRoute((Facts){.split = YES, .searchColumn = YES, .root = YES});
+        Check(route.owner == ApolloDuoBackOwnerSearchColumn,
+              @"route: a Search subreddit's root reveals the search column, discretely, before the drawer");
+        route = ApolloDuoBackRoute((Facts){.split = YES, .visitedProfile = YES, .searchColumn = YES, .root = YES});
+        Check(route.owner == ApolloDuoBackOwnerVisitedProfile, @"route: a visited profile goes before the search column");
+        route = ApolloDuoBackRoute((Facts){.split = YES, .nativeOwns = YES, .searchColumn = YES});
+        Check(route.owner == ApolloDuoBackOwnerNative, @"route: a native pop goes before the search column");
+        route = ApolloDuoBackRoute((Facts){.searchColumn = YES, .root = YES});
+        Check(route.owner == ApolloDuoBackOwnerNative, @"route: folded, the search column is no route");
 
         // The facts come from the real split policy.
         leftSwipesDisabled = NO;
@@ -1025,7 +1068,7 @@ int main(void) {
         UIViewController *routeBackstop = [UIViewController new];
         routeThread.viewControllers = @[routeBackstop, [TestPage new]];
         ApolloDuoSplitState *routePosts = [ApolloDuoSplitState new];
-        routePosts.split = [NSObject new]; routePosts.host = [TestDuoHost new]; routePosts.host.postsShowingDetail = YES;
+        routePosts.split = [TestSplit new]; routePosts.host = [TestDuoHost new]; routePosts.host.postsShowingDetail = YES;
         routePosts.feed = routeFeed; routePosts.secondary = routeThread;
         routeFeed.duoState = routePosts; routeThread.duoState = routePosts;
         route = ApolloDuoBackRouteForNavigation(routeThread);
@@ -1048,10 +1091,10 @@ int main(void) {
         Check(ApolloDuoBackRouteForNavigation(routeThread).owner == ApolloDuoBackOwnerNative
               && ApolloDuoBackRouteForNavigation(routeFeed).owner == ApolloDuoBackOwnerNative,
               @"folded: every route is native");
-        routePosts.split = [NSObject new];
+        routePosts.split = [TestSplit new];
         UINavigationController *routeDetail = Navigation();
         ApolloDuoSplitState *routeSettings = [ApolloDuoSplitState new];
-        routeSettings.split = [NSObject new]; routeSettings.host = [TestDuoHost new]; routeSettings.kind = @"settings";
+        routeSettings.split = [TestSplit new]; routeSettings.host = [TestDuoHost new]; routeSettings.kind = @"settings";
         routeSettings.secondary = routeDetail; routeDetail.duoState = routeSettings;
         routeDetail.viewControllers = @[[TestPage new], [TestPage new]];
         Check(ApolloDuoBackRouteForNavigation(routeDetail).owner == ApolloDuoBackOwnerNative,
@@ -1249,7 +1292,7 @@ int main(void) {
 
         // Settings: the detail view spans the 317 pt sidebar; its pane is 634 pt.
         ApolloDuoSplitState *settingsSplit = [ApolloDuoSplitState new];
-        settingsSplit.split = [NSObject new]; settingsSplit.host = [TestDuoHost new]; settingsSplit.kind = @"settings";
+        settingsSplit.split = [TestSplit new]; settingsSplit.host = [TestDuoHost new]; settingsSplit.kind = @"settings";
         const CGFloat settingsPane = 634;
         UINavigationController *settingsDetail = NativePanNavigation(settingsSplit, CGRectMake(317, 0, settingsPane, 669));
         settingsSplit.secondary = settingsDetail;
@@ -1277,7 +1320,7 @@ int main(void) {
 
         // Posts thread pane: the secondary view spans the 475 pt feed column.
         ApolloDuoSplitState *postsSplit = [ApolloDuoSplitState new];
-        postsSplit.split = [NSObject new]; postsSplit.host = [TestDuoHost new]; postsSplit.host.postsShowingDetail = YES;
+        postsSplit.split = [TestSplit new]; postsSplit.host = [TestDuoHost new]; postsSplit.host.postsShowingDetail = YES;
         const CGFloat threadPane = 476;
         UINavigationController *threadPaneNav = NativePanNavigation(postsSplit, CGRectMake(475, 0, threadPane, 669));
         UINavigationController *postsFeed = NativePanNavigation(postsSplit, CGRectMake(0, 0, 951, 669));
@@ -1341,7 +1384,7 @@ int main(void) {
         resizing = NO; settingsSplit.changing = YES;
         Check(ApolloDuoSplitNativePanReleaseScaleForNavigation(settingsDetail, settingsBack) == 1.0,
               @"gating: a split being rebuilt is unscaled");
-        settingsSplit.changing = NO; NSObject *settingsSplitView = settingsSplit.split; settingsSplit.split = nil;
+        settingsSplit.changing = NO; TestSplit *settingsSplitView = settingsSplit.split; settingsSplit.split = nil;
         Check(ApolloDuoSplitNativePanReleaseScaleForNavigation(settingsDetail, settingsBack) == 1.0,
               @"gating: no split is unscaled");
         settingsSplit.split = settingsSplitView;
@@ -1578,6 +1621,340 @@ int main(void) {
         Check(closeActiveCancels == activeCancels + 3, @"gone: a release without its navigation cancels instead of committing");
         goneOwner.navigation = gone; routePosts.secondary = routeThread;
         closeBegins = NO;
+        // Search: a subreddit opened from the results hides the search column.
+        // At that subreddit's root, Back brings the column back.
+        leftSwipesDisabled = NO; disabled = NO; resizing = NO; reduceMotion = NO;
+        Class postsClass = objc_allocateClassPair(UIViewController.class, "Apollo.PostsViewController", 0);
+        objc_registerClassPair(postsClass);
+        ApolloClassPostsViewController = postsClass;
+        UINavigationController *column = Navigation(); column.viewControllers = @[[UIViewController new]];
+        column.view.bounds = CGRectMake(0, 0, 420, 900);
+        column.view.safeAreaLayoutGuide.layoutFrame = CGRectMake(0, 80, 420, 720);
+        UIViewController *subredditRoot = [postsClass new];
+        UINavigationController *subreddit = Navigation(); subreddit.viewControllers = @[subredditRoot];
+        subreddit.navigationBar = [UINavigationBar new]; subreddit.navigationBar.superview = subreddit.view;
+        ApolloDuoSplitState *search = [ApolloDuoSplitState new];
+        search.split = [TestSplit new]; search.host = [TestDuoHost new]; search.kind = @"search";
+        search.primary = column; search.secondary = subreddit; search.root = column.viewControllers.firstObject;
+        column.duoState = search; subreddit.duoState = search;
+        search.split.displayMode = UISplitViewControllerDisplayModeSecondaryOnly;
+        Check(ApolloDuoSplitCanRevealSearchColumnWithSwipe(subreddit) && ApolloDuoBackSwipeCanNavigate(subreddit),
+              @"hidden search column at the subreddit root: the Back swipe can reveal it");
+        Check(!ApolloDuoSplitCanRevealSearchColumnWithSwipe(column) && !ApolloDuoBackSwipeCanNavigate(column),
+              @"only the subreddit pane reveals the column");
+        Check(ApolloDuoBackSwipeAcceptsPoint(subreddit, CGPointMake(4, 300)) && !ApolloDuoBackSwipeAcceptsPoint(subreddit, CGPointMake(600, 300)),
+              @"reveal starts at the edge strip with left swipes on");
+        leftSwipesDisabled = YES;
+        Check(ApolloDuoBackSwipeAcceptsPoint(subreddit, CGPointMake(600, 300)), @"Disable Left Swipes: reveal starts anywhere");
+        ApolloDuoInstallBackSwipe(subreddit); owner = objc_getAssociatedObject(subreddit, &kApolloDuoBackSwipe);
+        UIScrollView *subredditHighlights = [UIScrollView new]; subredditHighlights.superview = subreddit.view;
+        subredditHighlights.scrollEnabled = YES;
+        subredditHighlights.bounds = CGRectMake(0, 0, 600, 200); subredditHighlights.contentSize = CGSizeMake(1800, 200);
+        UIView *highlightCard = [UIView new]; highlightCard.superview = subredditHighlights;
+        UITouch *revealTouch = [UITouch new]; revealTouch.view = highlightCard; revealTouch.point = CGPointMake(600, 300);
+        Check(![owner gestureRecognizer:owner.pan shouldReceiveTouch:revealTouch],
+              @"search column reveal: a carousel at its leading end keeps the swipe");
+        revealTouch.point = CGPointMake(10, 300);
+        Check([owner gestureRecognizer:owner.pan shouldReceiveTouch:revealTouch],
+              @"search column reveal: the edge strip still brings the column back over a carousel");
+        leftSwipesDisabled = NO; search.changing = YES;
+        Check(!ApolloDuoSplitCanRevealSearchColumnWithSwipe(subreddit) && !ApolloDuoBackSwipeCanNavigate(subreddit),
+              @"column changes block the reveal");
+        search.changing = NO; resizing = YES;
+        Check(!ApolloDuoBackSwipeCanNavigate(subreddit), @"fold/rotation blocks the reveal");
+        resizing = NO; disabled = YES;
+        Check(!ApolloDuoBackSwipeCanNavigate(subreddit), @"Disable Navigation Gestures blocks the reveal");
+        disabled = NO;
+        search.kind = @"settings";
+        Check(!ApolloDuoSplitCanRevealSearchColumnWithSwipe(subreddit), @"other tabs' hidden sidebars are not revealed");
+        search.kind = @"search";
+        // A page above the subreddit is a pop onto a real page: Apollo's own Back.
+        subreddit.viewControllers = @[subredditRoot, [UIViewController new]];
+        Check(!ApolloDuoSplitCanRevealSearchColumnWithSwipe(subreddit) && ApolloDuoBackSwipeCanNavigate(subreddit),
+              @"a page above the subreddit goes Back first");
+        Check(ApolloDuoBackRouteForNavigation(subreddit).owner == ApolloDuoBackOwnerNative && !Begins(owner),
+              @"that Back is Apollo's own pan; the pane pan stands down");
+        NSUInteger postsRevealsBefore = drawerReveals, drawerBegunBefore = drawerBegun, closeBegunBefore = closeBegun;
+        Fling(owner);
+        Check(subreddit.pops == 0 && searchReveals == 0, @"a pane pan over that page reveals nothing and pops nothing");
+        subreddit.viewControllers = @[subredditRoot];
+        ApolloDuoBackRouting searchRoute = ApolloDuoBackRouteForNavigation(subreddit);
+        Check(searchRoute.owner == ApolloDuoBackOwnerSearchColumn
+              && ApolloDuoBackFactsForNavigation(subreddit).searchColumn && Begins(owner),
+              @"the subreddit root routes to the search column reveal, discretely");
+        Drag(owner, 40, 100);
+        Check(searchReveals == 0 && search.split.displayMode == UISplitViewControllerDisplayModeSecondaryOnly,
+              @"a slow drag short of the threshold leaves the column hidden");
+        Fling(owner);
+        Check(searchReveals == 1 && subreddit.pops == 0 && drawerReveals == postsRevealsBefore
+              && search.split.displayMode == UISplitViewControllerDisplayModeOneBesideSecondary,
+              @"at the subreddit root the swipe reveals the search column instead of doing nothing");
+        Check(drawerBegun == drawerBegunBefore && closeBegun == closeBegunBefore,
+              @"the column reveal never takes the drawer's or the thread close's driver");
+        Check(!ApolloDuoSplitCanRevealSearchColumnWithSwipe(subreddit) && !ApolloDuoBackSwipeCanNavigate(subreddit),
+              @"with the column shown there is nothing more to reveal");
+        Check(!ApolloDuoSplitCanRevealSearchColumnWithSwipe(feed) && !ApolloDuoSplitCanRevealSearchColumnWithSwipe(feed2),
+              @"Posts feeds never reveal a search column");
+
+        // The column shown beside the subreddit hides with a left swipe on
+        // the column or a tap on the subreddit.
+        Check(ApolloDuoSplitCanHideSidebarWithSwipe(column) && !ApolloDuoSplitCanHideSidebarWithSwipe(subreddit),
+              @"the left swipe hides from the column only");
+        Check(ApolloDuoSplitCanHideSearchColumnWithTap(subreddit) && !ApolloDuoSplitCanHideSearchColumnWithTap(column),
+              @"the tap hides from the subreddit pane only");
+        subreddit.viewControllers = @[[UIViewController new]];
+        Check(!ApolloDuoSplitCanHideSidebarWithSwipe(column) && !ApolloDuoSplitCanHideSearchColumnWithTap(subreddit),
+              @"a post opened from Search keeps the column as it is");
+        subreddit.viewControllers = @[subredditRoot];
+        search.changing = YES;
+        Check(!ApolloDuoSplitCanHideSidebarWithSwipe(column) && !ApolloDuoSplitCanHideSearchColumnWithTap(subreddit),
+              @"column changes block hiding");
+        search.changing = NO;
+        ApolloDuoInstallBackSwipe(column);
+        ApolloDuoSidebarHideSwipe *hide = objc_getAssociatedObject(column, &kApolloDuoSidebarHideSwipe);
+        Check(hide.swipe.direction == UISwipeGestureRecognizerDirectionLeft && hide.swipe.numberOfTouchesRequired == 1,
+              @"hiding uses a one-finger left swipe");
+        UITouch *columnTouch = [UITouch new]; UIView *resultRow = [UIView new]; resultRow.superview = column.view;
+        columnTouch.view = resultRow; columnTouch.point = CGPointMake(410, 300);
+        Check([hide gestureRecognizer:hide.swipe shouldReceiveTouch:columnTouch] && hide.startedInEdgeStrip,
+              @"the column's trailing strip accepts the hide swipe");
+        UIPanGestureRecognizer *rowPan = [UIPanGestureRecognizer new];
+        Check([hide gestureRecognizer:hide.swipe shouldBeRequiredToFailByGestureRecognizer:rowPan]
+              && ![hide gestureRecognizer:hide.swipe shouldRequireFailureOfGestureRecognizer:rowPan],
+              @"at the trailing strip the hide swipe has priority over row actions");
+        columnTouch.point = CGPointMake(200, 300);
+        Check([hide gestureRecognizer:hide.swipe shouldReceiveTouch:columnTouch] && !hide.startedInEdgeStrip,
+              @"the hide swipe also starts inside the column");
+        Check([hide gestureRecognizer:hide.swipe shouldRequireFailureOfGestureRecognizer:rowPan]
+              && ![hide gestureRecognizer:hide.swipe shouldBeRequiredToFailByGestureRecognizer:rowPan],
+              @"inside the column a row's own leftward swipe action wins");
+        Check(![hide gestureRecognizer:hide.swipe shouldRequireFailureOfGestureRecognizer:scroll.panGestureRecognizer]
+              && ![hide gestureRecognizer:hide.swipe shouldRequireFailureOfGestureRecognizer:hide.highlightGuard]
+              && [hide gestureRecognizer:hide.swipe shouldRecognizeSimultaneouslyWithGestureRecognizer:scroll.panGestureRecognizer]
+              && ![hide gestureRecognizer:hide.swipe shouldRecognizeSimultaneouslyWithGestureRecognizer:rowPan],
+              @"vertical scrolling and the highlight guard never hold the hide swipe back");
+        ApolloDuoBackSwipe *columnOwner = objc_getAssociatedObject(column, &kApolloDuoBackSwipe);
+        Check(![hide gestureRecognizer:hide.swipe shouldRequireFailureOfGestureRecognizer:columnOwner.pan]
+              && ![hide gestureRecognizer:hide.swipe shouldRequireFailureOfGestureRecognizer:columnOwner.highlightGuard],
+              @"the hide swipe never waits for the pane Back or its guard (they are Duo gestures, not row actions)");
+        UIScrollView *carousel = [UIScrollView new]; carousel.superview = resultRow; carousel.scrollEnabled = YES;
+        carousel.bounds = CGRectMake(0, 0, 400, 300); carousel.contentSize = CGSizeMake(1200, 300);
+        UIView *slide = [UIView new]; slide.superview = carousel; columnTouch.view = slide;
+        Check(![hide gestureRecognizer:hide.swipe shouldReceiveTouch:columnTouch], @"a carousel that can page forward keeps its swipe");
+        carousel.contentOffset = CGPointMake(800, 0);
+        Check([hide gestureRecognizer:hide.swipe shouldReceiveTouch:columnTouch], @"a carousel on its last page does not block hiding");
+        columnTouch.view = resultRow; columnTouch.point = CGPointMake(200, 20);
+        Check(![hide gestureRecognizer:hide.swipe shouldReceiveTouch:columnTouch], @"the search bar area is not swallowed");
+        columnTouch.point = CGPointMake(500, 300);
+        Check(![hide gestureRecognizer:hide.swipe shouldReceiveTouch:columnTouch], @"touches outside the column are ignored");
+        columnTouch.point = CGPointMake(390, 300);
+        Check([hide gestureRecognizer:hide.swipe shouldReceiveTouch:columnTouch] && !hide.startedInEdgeStrip,
+              @"the search column's priority strip stays 28pt wide");
+        columnTouch.point = CGPointMake(200, 300);
+        Check([hide gestureRecognizer:hide.highlightGuard shouldReceiveTouch:columnTouch], @"the hide guard receives what the swipe accepts");
+        hide.highlightGuard.velocity = CGPointMake(-300, 40);
+        Check([hide gestureRecognizerShouldBegin:hide.highlightGuard], @"the hide guard begins for a clearly leftward move");
+        hide.highlightGuard.velocity = CGPointMake(300, 40);
+        Check([hide gestureRecognizerShouldBegin:hide.highlightGuard], @"the hide guard also begins for a rightward move, like the Back guard");
+        Check([hide.highlightGuard isKindOfClass:ApolloDuoHighlightGuard.class] && hide.highlightGuard.delaysTouchesBegan,
+              @"the hide guard withholds touch-down the same way as the Back guard");
+        hide.highlightGuard.velocity = CGPointMake(-300, 250);
+        Check(![hide gestureRecognizerShouldBegin:hide.highlightGuard], @"the hide guard ignores a diagonal move");
+        // It decides like the pane Back's guard: a slow sideways drag counts
+        // by its motion since touch-down, a mostly vertical one never does.
+        hide.highlightGuard.velocity = CGPointZero; hide.highlightGuard.location = CGPointMake(-14, 2);
+        Check([hide gestureRecognizerShouldBegin:hide.highlightGuard], @"the hide guard begins for a slow leftward drag by its motion");
+        hide.highlightGuard.location = CGPointMake(-5, 14); hide.highlightGuard.velocity = CGPointMake(-300, 10);
+        Check(![hide gestureRecognizerShouldBegin:hide.highlightGuard], @"the hide guard never begins for a mostly vertical motion");
+        hide.highlightGuard.location = CGPointZero;
+        Check([hide gestureRecognizer:hide.highlightGuard shouldRecognizeSimultaneouslyWithGestureRecognizer:rowPan],
+              @"the hide guard recognizes alongside row actions");
+        disabled = YES;
+        Check(![hide gestureRecognizerShouldBegin:hide.swipe] && ![hide gestureRecognizer:hide.swipe shouldReceiveTouch:columnTouch],
+              @"Disable Navigation Gestures blocks the hide swipe");
+        disabled = NO; resizing = YES;
+        Check(![hide gestureRecognizerShouldBegin:hide.swipe], @"fold/rotation blocks the hide swipe");
+        resizing = NO; column.transitionCoordinator = [NSObject new];
+        Check(![hide gestureRecognizerShouldBegin:hide.swipe], @"an in-flight transition blocks the hide swipe");
+        column.transitionCoordinator = nil;
+        Check([hide gestureRecognizerShouldBegin:hide.swipe], @"the hide swipe can begin on the shown column");
+        hide.swipe.state = UIGestureRecognizerStateRecognized;
+        [hide swiped:hide.swipe]; [hide swiped:hide.swipe];
+        Check(sidebarHides == 1 && search.split.displayMode == UISplitViewControllerDisplayModeSecondaryOnly,
+              @"a left swipe hides the search column once");
+        Check(![hide gestureRecognizerShouldBegin:hide.swipe] && ApolloDuoSplitCanRevealSearchColumnWithSwipe(subreddit),
+              @"once hidden, only the reveal swipe applies");
+
+        search.split.displayMode = UISplitViewControllerDisplayModeOneBesideSecondary;
+        ApolloDuoSidebarHideSwipe *paneHide = objc_getAssociatedObject(subreddit, &kApolloDuoSidebarHideSwipe);
+        UITouch *paneTouch = [UITouch new]; UIView *post = [UIView new]; post.superview = subreddit.view;
+        paneTouch.view = post; paneTouch.point = CGPointMake(700, 300);
+        Check([paneHide gestureRecognizer:paneHide.tap shouldReceiveTouch:paneTouch]
+              && ![paneHide gestureRecognizer:paneHide.swipe shouldReceiveTouch:paneTouch],
+              @"the subreddit pane takes the hide tap, never the hide swipe");
+        UIView *barItem = [UIView new]; barItem.superview = subreddit.navigationBar; paneTouch.view = barItem;
+        Check(![paneHide gestureRecognizer:paneHide.tap shouldReceiveTouch:paneTouch], @"the bar and Back to Search keep their taps");
+        UIControl *button = [UIControl new]; button.superview = post; paneTouch.view = button;
+        Check(![paneHide gestureRecognizer:paneHide.tap shouldReceiveTouch:paneTouch], @"controls keep their taps");
+        UITapGestureRecognizer *subredditTap = [UITapGestureRecognizer new];
+        Check([paneHide gestureRecognizer:paneHide.tap shouldBeRequiredToFailByGestureRecognizer:subredditTap]
+              && ![paneHide gestureRecognizer:paneHide.tap shouldBeRequiredToFailByGestureRecognizer:rowPan],
+              @"while the column shows, the subreddit's own taps wait for the hide tap");
+        disabled = YES;
+        Check(![paneHide gestureRecognizerShouldBegin:paneHide.tap], @"Disable Navigation Gestures blocks the hide tap");
+        disabled = NO;
+        paneHide.tap.state = UIGestureRecognizerStateRecognized;
+        [paneHide tapped:paneHide.tap];
+        Check(sidebarHides == 2 && search.split.displayMode == UISplitViewControllerDisplayModeSecondaryOnly
+              && ![paneHide gestureRecognizerShouldBegin:paneHide.tap],
+              @"a tap on the subreddit hides the column, then stands down");
+
+        // Posts: the open subreddit list hides with a quick leftward flick.
+        UINavigationController *list = Navigation(); list.viewControllers = @[[UIViewController new]];
+        list.view.bounds = CGRectMake(0, 0, 360, 900);
+        list.view.safeAreaLayoutGuide.layoutFrame = CGRectMake(0, 80, 360, 720);
+        UINavigationController *drawerFeed = Navigation(); drawerFeed.viewControllers = @[[UIViewController new]];
+        UINavigationController *postsThread = Navigation(); postsThread.viewControllers = @[[UIViewController new]];
+        ApolloDuoSplitState *drawer = [ApolloDuoSplitState new];
+        drawer.split = [TestSplit new]; drawer.host = [TestDuoHost new]; drawer.kind = @"subreddits";
+        drawer.primary = list; drawer.feed = drawerFeed; drawer.secondary = postsThread;
+        list.duoState = drawer; drawerFeed.duoState = drawer; postsThread.duoState = drawer;
+        Check(!ApolloDuoSplitCanHideSidebarWithSwipe(list), @"a closed Posts list has nothing to hide");
+        drawer.host.listVisible = YES;
+        Check(ApolloDuoSplitCanHideSidebarWithSwipe(list) && !ApolloDuoSplitCanHideSidebarWithSwipe(drawerFeed)
+              && !ApolloDuoSplitCanHideSearchColumnWithTap(drawerFeed) && !ApolloDuoSplitCanHideSearchColumnWithTap(postsThread),
+              @"the open Posts list hides with a left swipe on the list only (its dimmed backdrop keeps the tap)");
+        Check(ApolloDuoSplitIsPostsListNavigation(list) && !ApolloDuoSplitIsPostsListNavigation(drawerFeed)
+              && !ApolloDuoSplitIsPostsListNavigation(column),
+              @"only the Posts tab's drawer is the Posts list");
+        drawer.changing = YES;
+        Check(!ApolloDuoSplitCanHideSidebarWithSwipe(list), @"column changes block hiding the list");
+        drawer.changing = NO;
+        ApolloDuoInstallBackSwipe(list);
+        ApolloDuoSidebarHideSwipe *listHide = objc_getAssociatedObject(list, &kApolloDuoSidebarHideSwipe);
+        UITouch *listTouch = [UITouch new]; UIView *listRow = [UIView new]; listRow.superview = list.view;
+        listTouch.view = listRow; listTouch.point = CGPointMake(150, 300);
+        Check([listHide gestureRecognizer:listHide.flick shouldReceiveTouch:listTouch]
+              && [listHide gestureRecognizer:listHide.highlightGuard shouldReceiveTouch:listTouch]
+              && ![listHide gestureRecognizer:listHide.swipe shouldReceiveTouch:listTouch],
+              @"the list takes the flick (and its guard) anywhere, never the distance swipe");
+        listTouch.point = CGPointMake(350, 300);
+        Check([listHide gestureRecognizer:listHide.flick shouldReceiveTouch:listTouch], @"the list's trailing edge flicks too");
+        listTouch.point = CGPointMake(150, 20);
+        Check(![listHide gestureRecognizer:listHide.flick shouldReceiveTouch:listTouch], @"the list's header is not swallowed");
+        listTouch.point = CGPointMake(150, 300);
+        Check(![listHide gestureRecognizer:listHide.tap shouldReceiveTouch:listTouch], @"the list has no hide tap");
+        search.split.displayMode = UISplitViewControllerDisplayModeOneBesideSecondary;
+        columnTouch.view = resultRow; columnTouch.point = CGPointMake(200, 300);
+        Check(![hide gestureRecognizer:hide.flick shouldReceiveTouch:columnTouch] && [hide gestureRecognizer:hide.swipe shouldReceiveTouch:columnTouch],
+              @"the shown search column keeps its swipe, not the flick");
+        search.split.displayMode = UISplitViewControllerDisplayModeSecondaryOnly;
+        Check([listHide gestureRecognizer:listHide.flick shouldBeRequiredToFailByGestureRecognizer:rowPan],
+              @"a row's drag (unsubscribe) waits for the flick to fail");
+        Check(![listHide gestureRecognizer:listHide.flick shouldBeRequiredToFailByGestureRecognizer:scroll.panGestureRecognizer]
+              && [listHide gestureRecognizer:listHide.flick shouldRecognizeSimultaneouslyWithGestureRecognizer:scroll.panGestureRecognizer],
+              @"vertical scrolling neither waits for the flick nor blocks it");
+        Check(![listHide gestureRecognizer:listHide.flick shouldBeRequiredToFailByGestureRecognizer:listHide.highlightGuard]
+              && [listHide gestureRecognizer:listHide.flick shouldRecognizeSimultaneouslyWithGestureRecognizer:listHide.highlightGuard],
+              @"the highlight guard neither waits for the flick nor blocks it");
+        ApolloDuoFlickGesture *flick = listHide.flick;
+        UITouch *finger = [UITouch new]; NSSet *fingers = [NSSet setWithObject:finger];
+        void (^Touch)(CGFloat, CGFloat, NSTimeInterval) = ^(CGFloat x, CGFloat y, NSTimeInterval time) {
+            finger.point = CGPointMake(x, y); finger.timestamp = time;
+        };
+        Touch(200, 300, 10.0); [flick touchesBegan:fingers withEvent:[UIEvent new]];
+        Touch(150, 305, 10.08); [flick touchesMoved:fingers withEvent:[UIEvent new]];
+        Check(flick.state == UIGestureRecognizerStateRecognized, @"a quick leftward flick recognizes within the window");
+        [flick reset];
+        Touch(200, 300, 20.0); [flick touchesBegan:fingers withEvent:[UIEvent new]];
+        Touch(190, 300, 20.05); [flick touchesMoved:fingers withEvent:[UIEvent new]];
+        Touch(175, 301, 20.12); [flick touchesMoved:fingers withEvent:[UIEvent new]];
+        Check(flick.state == UIGestureRecognizerStatePossible, @"a slow drag stays undecided inside the window");
+        Touch(165, 301, 20.16); [flick touchesMoved:fingers withEvent:[UIEvent new]];
+        Check(flick.state == UIGestureRecognizerStateFailed, @"a slow drag fails once the window passes, freeing the row action");
+        [flick reset];
+        Touch(200, 300, 30.0); [flick touchesBegan:fingers withEvent:[UIEvent new]];
+        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:kApolloDuoFlickWindow * 1.6]];
+        Check(flick.state == UIGestureRecognizerStateFailed, @"a held finger fails the flick after the window without moving");
+        [flick reset];
+        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:kApolloDuoFlickWindow * 1.6]];
+        Check(flick.state == UIGestureRecognizerStatePossible, @"a stale window timer cannot fail the next touch");
+        Touch(200, 300, 40.0); [flick touchesBegan:fingers withEvent:[UIEvent new]];
+        Touch(198, 315, 40.03); [flick touchesMoved:fingers withEvent:[UIEvent new]];
+        Check(flick.state == UIGestureRecognizerStateFailed, @"vertical scrolling fails the flick at once");
+        [flick reset];
+        Touch(200, 300, 50.0); [flick touchesBegan:fingers withEvent:[UIEvent new]];
+        Touch(215, 300, 50.03); [flick touchesMoved:fingers withEvent:[UIEvent new]];
+        Check(flick.state == UIGestureRecognizerStateFailed, @"a rightward move fails the flick at once");
+        [flick reset];
+        Touch(200, 300, 60.0); [flick touchesBegan:fingers withEvent:[UIEvent new]];
+        Touch(190, 300, 60.05); [flick touchesEnded:fingers withEvent:[UIEvent new]];
+        Check(flick.state == UIGestureRecognizerStateFailed, @"a short nudge that lifts is not a flick");
+        [flick reset];
+        Touch(200, 300, 70.0); [flick touchesBegan:fingers withEvent:[UIEvent new]];
+        [flick touchesBegan:[NSSet setWithObject:[UITouch new]] withEvent:[UIEvent new]];
+        Check(flick.state == UIGestureRecognizerStateFailed, @"a second finger is not a flick");
+        [flick reset];
+
+        // The pane Back's drag claim on the open list: a leftward drag there
+        // is the row's (unsubscribe) or the flick's, so the claim leaves it;
+        // rightward and vertical drags are claimed as in any pane.
+        ApolloDuoBackSwipe *listOwner = objc_getAssociatedObject(list, &kApolloDuoBackSwipe);
+        ApolloDuoDragClaim *listClaim = listOwner.dragClaim;
+        UITableView *listTable = [UITableView new]; listTable.superview = list.view;
+        UITableViewCell *listCell = [UITableViewCell new]; listCell.superview = listTable;
+        UIView *listCellContent = [UIView new]; listCellContent.superview = listCell;
+        UITouch *listDrag = [UITouch new]; listDrag.view = listCellContent; listDrag.point = CGPointMake(200, 300);
+        NSSet *listDrags = [NSSet setWithObject:listDrag];
+        Check([listOwner gestureRecognizer:listClaim shouldReceiveTouch:listDrag], @"list claim: the open list's rows are still watched");
+        [listClaim touchesBegan:listDrags withEvent:[UIEvent new]];
+        listDrag.point = CGPointMake(184, 303); [listClaim touchesMoved:listDrags withEvent:[UIEvent new]];
+        Check(![listOwner gestureRecognizerShouldBegin:listClaim],
+              @"list claim: a leftward drag is left to the row's unsubscribe drag and the flick");
+        listDrag.point = CGPointMake(216, 303);
+        Check([listOwner gestureRecognizerShouldBegin:listClaim], @"list claim: a rightward drag is claimed (no selection after it)");
+        listDrag.point = CGPointMake(196, 316);
+        Check([listOwner gestureRecognizerShouldBegin:listClaim], @"list claim: a vertical drag is claimed");
+        [listClaim reset];
+        ApolloDuoBackSwipe *subredditOwner = objc_getAssociatedObject(subreddit, &kApolloDuoBackSwipe);
+        UITouch *paneDrag = [UITouch new]; paneDrag.point = CGPointMake(700, 300);
+        [subredditOwner.dragClaim touchesBegan:[NSSet setWithObject:paneDrag] withEvent:[UIEvent new]];
+        paneDrag.point = CGPointMake(684, 303);
+        Check([subredditOwner gestureRecognizerShouldBegin:subredditOwner.dragClaim],
+              @"claim: a leftward drag in a content pane is still claimed");
+        [subredditOwner.dragClaim reset];
+        Check(ApolloDuoDragClaimLeavesToPostsList(YES, CGPointMake(-14, 2)) && ApolloDuoDragClaimLeavesToPostsList(YES, CGPointMake(-11, -11))
+              && !ApolloDuoDragClaimLeavesToPostsList(YES, CGPointMake(14, 2)) && !ApolloDuoDragClaimLeavesToPostsList(YES, CGPointMake(-5, 14))
+              && !ApolloDuoDragClaimLeavesToPostsList(NO, CGPointMake(-14, 2)),
+              @"list claim: only a mostly leftward drag on the Posts list is left alone");
+        Check([listOwner gestureRecognizer:listClaim shouldRecognizeSimultaneouslyWithGestureRecognizer:flick]
+              && [listOwner gestureRecognizer:listClaim shouldRecognizeSimultaneouslyWithGestureRecognizer:rowPan]
+              && ![listHide gestureRecognizer:flick shouldBeRequiredToFailByGestureRecognizer:listClaim]
+              && ![listOwner gestureRecognizer:listClaim shouldBeRequiredToFailByGestureRecognizer:flick],
+              @"list claim: runs alongside the flick and the row's drag, and neither waits on it");
+        Check(![listHide gestureRecognizer:flick shouldBeRequiredToFailByGestureRecognizer:listOwner.pan]
+              && ![listHide gestureRecognizer:flick shouldBeRequiredToFailByGestureRecognizer:listOwner.highlightGuard],
+              @"the pane Back and its guard are no row drag: they never wait for the flick");
+        // Two helpers tell Duo gestures apart: every Duo-named one (the hide
+        // gestures' row test), and the pane Back's own three (the loupe's exemption).
+        Check(ApolloDuoIsDuoNamedGesture(flick) && ApolloDuoIsDuoNamedGesture(listHide.swipe)
+              && ApolloDuoIsDuoNamedGesture(listHide.tap) && ApolloDuoIsDuoNamedGesture(listClaim)
+              && ApolloDuoIsDuoNamedGesture(listOwner.pan) && !ApolloDuoIsDuoNamedGesture(rowPan),
+              @"Duo-named: every Duo gesture, no row gesture");
+        Check(ApolloDuoIsPaneGesture(listOwner.pan) && ApolloDuoIsPaneGesture(listClaim)
+              && !ApolloDuoIsPaneGesture(flick) && !ApolloDuoIsPaneGesture(listHide.highlightGuard),
+              @"pane gestures stay the pane Back's own three");
+
+        disabled = YES;
+        Check(![listHide gestureRecognizerShouldBegin:listHide.flick] && ![listHide gestureRecognizer:listHide.flick shouldReceiveTouch:listTouch],
+              @"Disable Navigation Gestures blocks the flick");
+        disabled = NO; drawer.changing = YES;
+        Check(![listHide gestureRecognizerShouldBegin:listHide.flick], @"column changes block the flick");
+        drawer.changing = NO;
+        flick.state = UIGestureRecognizerStateRecognized;
+        [listHide swiped:flick]; [listHide swiped:flick];
+        Check(sidebarHides == 3 && !drawer.host.listVisible, @"a flick closes the open list once");
+        Check(![listHide gestureRecognizer:listHide.flick shouldReceiveTouch:listTouch], @"a closed list takes no flick");
 
         // A thread a Back closed beside the Posts feed is remembered until a
         // new thread, a feed change, the end of the split, a memory warning
@@ -1671,7 +2048,7 @@ int main(void) {
             fwdThread.viewControllers = @[backstop];
             fwdList.viewControllers = @[[UIViewController new]];
             ApolloDuoSplitState *fwdPosts = [ApolloDuoSplitState new];
-            fwdPosts.split = [NSObject new]; fwdPosts.host = [TestDuoHost new]; fwdPosts.kind = @"subreddits";
+            fwdPosts.split = [TestSplit new]; fwdPosts.host = [TestDuoHost new]; fwdPosts.kind = @"subreddits";
             fwdPosts.feed = fwdFeed; fwdPosts.secondary = fwdThread; fwdPosts.primary = fwdList;
             fwdFeed.duoState = fwdPosts; fwdThread.duoState = fwdPosts; fwdList.duoState = fwdPosts;
             Check(ApolloDuoForwardRouteForNavigation(fwdFeed).owner == ApolloDuoForwardOwnerNone,
@@ -1699,7 +2076,7 @@ int main(void) {
             fwdPosts.split = nil;
             Check(ApolloDuoForwardRouteForNavigation(fwdFeed).owner == ApolloDuoForwardOwnerNone,
                   @"forward: folded, none");
-            fwdPosts.split = [NSObject new];
+            fwdPosts.split = [TestSplit new];
             Check(!ApolloDuoForwardSwipeCanNavigate(fwdThread) && !ApolloDuoForwardSwipeCanNavigate(fwdList),
                   @"forward: only the feed pane brings its thread back");
 
