@@ -1,0 +1,34 @@
+#import <Foundation/Foundation.h>
+#import <CoreGraphics/CoreGraphics.h>
+#import "ApolloDuoSplitStops.h"
+
+@class UIView;
+
+__BEGIN_DECLS
+/// A still press on the Posts divider: the adjustable split is on, a thread
+/// is open beside the feed in the unfolded landscape split, the touch is
+/// within 12pt of the divider and has moved less than a tap's 10pt jitter.
+BOOL ApolloDuoSplitDividerShouldBegin(BOOL adjustable, BOOL postsLandscapeWithThread, CGFloat touchX,
+                                      CGFloat dividerX, CGFloat movedDistance);
+
+/// What letting go of the divider does, and the stop it remembers: only a
+/// snap changes the remembered stop; closing the thread or giving it the
+/// whole screen leaves it (0) as it was.
+typedef NS_ENUM(NSInteger, ApolloDuoSplitDividerOutcome) {
+    ApolloDuoSplitDividerOutcomeSnap,
+    ApolloDuoSplitDividerOutcomeCloseThread,
+    ApolloDuoSplitDividerOutcomeFullScreen,
+};
+typedef struct {
+    ApolloDuoSplitDividerOutcome outcome;
+    NSInteger remember;
+} ApolloDuoSplitDividerRelease;
+ApolloDuoSplitDividerRelease ApolloDuoSplitDividerReleaseOutcome(ApolloDuoSplitRelease release);
+
+/// Adds the divider's press and hold (ApolloReborn.Duo.SplitDivider) to the
+/// Posts split host's view, once.
+void ApolloDuoSplitDividerInstall(UIView *host);
+/// The split let the drag go (a fold, a tab switch, a sheet, the thread
+/// closing): the grabber goes and the press ends without a release.
+void ApolloDuoSplitDividerLetGo(UIView *host);
+__END_DECLS
