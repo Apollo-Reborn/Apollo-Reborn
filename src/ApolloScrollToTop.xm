@@ -699,6 +699,94 @@ static ApolloScrollReturn *ApolloScrollReturnState(UIViewController *owner) {
 // classes. Handle the navigation stack once, including profiles, trophies,
 // multireddits, comment lists, and tweak-owned lists. This is independent of
 // status-bar taps, whose second tap deliberately restores the saved position.
+// UIKit disables the floating bar during a pop while the incoming page accepts
+// touches. Keep a surface over it, but give Posts its own repeat target: a tap
+// finishes the current pop and re-selects Posts on the newly revealed page.
+// Merely swallowing repeats makes rapid back navigation wait for every spring.
+@interface ApolloPostsTabTransitionShield : UIView
+@property (nonatomic, weak) UITabBarController *tabs;
+@property (nonatomic, weak) UINavigationController *navigationController;
+@property (nonatomic, weak) UIViewController *selectedTab;
+@property (nonatomic, assign) BOOL repeating;
+- (void)repeatPostsTap;
+@end
+
+@implementation ApolloPostsTabTransitionShield
+- (void)repeatPostsTap {
+    UITabBarController *tabs = self.tabs;
+    UINavigationController *nav = self.navigationController;
+    UIViewController *selectedTab = self.selectedTab;
+    if (self.repeating || !tabs || !nav || !selectedTab || tabs.selectedIndex != 0 ||
+        tabs.selectedViewController != selectedTab || tabs.presentedViewController || nav.presentedViewController) return;
+    self.repeating = YES;
+    void (^reselect)(void) = ^{
+        if (tabs.selectedIndex != 0 || tabs.selectedViewController != selectedTab ||
+            tabs.presentedViewController || nav.presentedViewController || !tabs.viewIfLoaded.window) return;
+        id<UITabBarControllerDelegate> delegate = tabs.delegate;
+        if ([delegate respondsToSelector:@selector(tabBarController:shouldSelectViewController:)]) {
+            [delegate tabBarController:tabs shouldSelectViewController:selectedTab];
+        }
+    };
+    if (ApolloFinishNavigationPopForPostsTap(nav) || !nav.transitionCoordinator) {
+        dispatch_async(dispatch_get_main_queue(), reselect);
+    } else {
+        // A touch can arrive before UIKit has started the animator. Keep that
+        // request through completion rather than allowing it to hit the page.
+        [nav.transitionCoordinator animateAlongsideTransition:nil
+            completion:^(__unused id<UIViewControllerTransitionCoordinatorContext> context) {
+                dispatch_async(dispatch_get_main_queue(), reselect);
+            }];
+    }
+}
+@end
+
+static void ApolloPostsTabPopViewController(UITabBarController *tabs, UINavigationController *nav) {
+    BOOL animated = !UIAccessibilityIsReduceMotionEnabled();
+    ApolloPostsTabTransitionShield *shield = nil;
+    UIView *host = tabs.viewIfLoaded;
+    UITabBar *bar = tabs.tabBar;
+    if (IsLiquidGlass() && animated && host.window && bar.window == host.window &&
+        !bar.hidden && bar.alpha > 0.01) {
+        CGRect frame = CGRectIntersection(host.bounds, [bar convertRect:bar.bounds toView:host]);
+        if (!CGRectIsNull(frame) && !CGRectIsEmpty(frame)) {
+            shield = [[ApolloPostsTabTransitionShield alloc] initWithFrame:frame];
+            shield.accessibilityIdentifier = @"ApolloPostsTabTransitionShield";
+            shield.accessibilityElementsHidden = YES;
+            shield.tabs = tabs;
+            shield.navigationController = nav;
+            // Duo keeps the detail navigation stack inside an outer tab.
+            // Re-select that same tab through the delegate, which owns routing.
+            shield.selectedTab = tabs.selectedViewController;
+            [host addSubview:shield];
+            UITabBarItem *posts = bar.items.firstObject;
+            SEL buttonSelector = @selector(_tabBarButton);
+            id nativeButton = [posts respondsToSelector:buttonSelector]
+                ? ((id (*)(id, SEL))objc_msgSend)(posts, buttonSelector) : nil;
+            if (![nativeButton isKindOfClass:UIView.class]) nativeButton = ApolloObjectIvar(posts, "_view");
+            if ([nativeButton isKindOfClass:UIView.class] && [(UIView *)nativeButton window] == bar.window) {
+                UIButton *repeat = [UIButton buttonWithType:UIButtonTypeCustom];
+                repeat.frame = CGRectIntersection(shield.bounds,
+                    [(UIView *)nativeButton convertRect:[(UIView *)nativeButton bounds] toView:shield]);
+                [repeat addTarget:shield action:@selector(repeatPostsTap) forControlEvents:UIControlEventTouchDown];
+                [shield addSubview:repeat];
+            }
+        }
+    }
+    UIViewController *popped = [nav popViewControllerAnimated:animated];
+    if (!shield) return;
+    BOOL observing = popped && [nav.transitionCoordinator animateAlongsideTransition:nil
+        completion:^(__unused id<UIViewControllerTransitionCoordinatorContext> context) {
+            [shield removeFromSuperview];
+            ApolloLog(@"[PostsTab] Released transition tap shield");
+        }];
+    if (!observing) {
+        // A rejected or synchronous pop has no transition to protect.
+        [shield removeFromSuperview];
+    } else {
+        ApolloLog(@"[PostsTab] Shielded tab bar during back transition");
+    }
+}
+
 static UIScrollView *ApolloPostsTabContentScrollView(UIView *view, CGRect viewport) {
     if (view.hidden || view.alpha < 0.01 || !view.window) return nil;
     CGRect visible = CGRectIntersection([view convertRect:view.bounds toView:nil], viewport);
@@ -767,7 +855,7 @@ static UIScrollView *ApolloPostsTabContentScrollView(UIView *view, CGRect viewpo
         [state scrollToTopSavingPosition];
         ApolloLog(@"[PostsTab] Jumping %@ to top with return position", NSStringFromClass(owner.class));
     } else if (nav.viewControllers.count > 1) {
-        [nav popViewControllerAnimated:!UIAccessibilityIsReduceMotionEnabled()];
+        ApolloPostsTabPopViewController(tabBarController, nav);
         ApolloLog(@"[PostsTab] Returned one page from %@", NSStringFromClass(owner.class));
     } else if (ApolloDuoSplitReturnFromVisitedProfile(outer)) {
         ApolloLog(@"[PostsTab] Returned from visited profile at top");

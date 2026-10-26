@@ -244,6 +244,9 @@ void ApolloNavigationTitleGlassSetContentAlpha(UIView *contentView, CGFloat alph
 void ApolloNavigationTitleGlassRefreshNavigationBar(UINavigationBar *bar);
 // YES through interactive push/pop setup and UIKit's completion cleanup (Liquid Glass only).
 BOOL ApolloNavTransitionInFlight(void);
+// Finish a running, noninteractive Apollo pop so another Posts tap can act now.
+// Never takes control of a finger-driven transition or a push.
+BOOL ApolloFinishNavigationPopForPostsTap(UINavigationController *navigationController);
 
 // Apollo's main ApolloTabBarController, found via the scene/app delegate's
 // tabBarController ivar or by walking window root VCs. Returns nil while the
