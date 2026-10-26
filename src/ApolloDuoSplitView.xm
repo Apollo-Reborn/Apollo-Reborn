@@ -2360,6 +2360,17 @@ static CGRect ApolloDuoPostsCloseSmearColumn(CGFloat trailingEdge, CGRect pane) 
                       kApolloDuoPostsSmearWidth, CGRectGetHeight(pane));
 }
 
+// Only the bar band above the feed's content is smeared, so the glass bar
+// carries on over the gap. Below it a row can reach the column (the open
+// post's highlight, its more button, a separator) and would be stretched
+// into a band or a line across the gap; the rows' own color fills it.
+static CGRect ApolloDuoPostsCloseSmearBand(CGRect column, CGFloat contentTop) {
+    CGFloat height = MIN(CGRectGetHeight(column), contentTop - CGRectGetMinY(column));
+    if (height <= 0.0) return CGRectNull;
+    column.size.height = height;
+    return column;
+}
+
 // CASpringAnimation's initialVelocity is per unit of the from-to distance,
 // positive toward `to`. Springing back toward the pane it is capped at the
 // critical rate, so the thread never overshoots over the feed. Off the pane
@@ -2819,24 +2830,63 @@ static UIView *ApolloDuoPostsShadowedPage(UIView *snapshot, CGRect pane, UITrait
     return page;
 }
 
-// The gap the thread uncovers continues the feed: its trailing edge, one
-// point stretched, so card backgrounds and separators carry on and text
-// never distorts; or, when that edge cannot be captured, the page color.
+// The color behind the feed's rows at its trailing edge: the deepest opaque
+// layer under a point just inside that edge, on the row nearest the middle
+// that is not the open post's (selected or highlighted). Layers, not views,
+// so layer-backed Texture backgrounds count. nil when nothing there is opaque.
+static UIColor *ApolloDuoPostsRowColor(UITableView *table, CGFloat x) {
+    CGFloat middle = CGRectGetMidY(table.bounds);
+    UITableViewCell *sample = nil;
+    for (UITableViewCell *cell in table.visibleCells) {
+        if (cell.selected || cell.highlighted || cell.hidden || CGRectGetHeight(cell.frame) < 4.0) continue;
+        if (!sample || fabs(CGRectGetMidY(cell.frame) - middle) < fabs(CGRectGetMidY(sample.frame) - middle)) sample = cell;
+    }
+    if (!sample) return nil;
+    CALayer *layer = sample.layer;
+    CGPoint point = [table.layer convertPoint:CGPointMake(x, CGRectGetMidY(sample.frame)) toLayer:layer];
+    CGColorRef color = NULL;
+    while (layer) {
+        if (layer.backgroundColor && CGColorGetAlpha(layer.backgroundColor) > 0.99) color = layer.backgroundColor;
+        CALayer *next = nil;
+        for (CALayer *sublayer in layer.sublayers.reverseObjectEnumerator) {
+            if (sublayer.hidden || sublayer.opacity < 0.99) continue;
+            CGPoint inner = [layer convertPoint:point toLayer:sublayer];
+            if (!CGRectContainsPoint(sublayer.bounds, inner)) continue;
+            next = sublayer;
+            point = inner;
+            break;
+        }
+        layer = next;
+    }
+    return color ? [UIColor colorWithCGColor:color] : nil;
+}
+
+// The gap the thread uncovers continues the feed: its rows' own color, and
+// across the bar band above them the feed's trailing edge, one point
+// stretched, so the glass bar carries on and text never distorts. Rows are
+// never stretched: whatever reaches that column (the open post's highlight,
+// a more button) would become a band or a line across the gap. Where the
+// band cannot be captured, the flat color fills it too.
 // Laid out once at the full travel; the drag scales it from its leading edge.
 static UIView *ApolloDuoPostsCloseExtension(ApolloDuoSplitState *state, UIView *surface, CGRect pane, CGFloat travel) {
-    UIView *extension = nil;
-    UIView *feed = state.feed.view;
+    UIView *extension = [UIView new];
+    UIView *feed = state.feed.view, *page = state.feed.topViewController.viewIfLoaded;
+    UITableView *table = ApolloDuoSplitFindTable(page);
     CGFloat edge = MIN(CGRectGetMinX(pane), CGRectGetMaxX([surface convertRect:feed.bounds fromView:feed]));
-    CGRect column = ApolloDuoPostsCloseSmearColumn(edge, pane);
-    if (CGRectGetMinX(column) >= CGRectGetMinX(surface.bounds)) {
-        extension = [surface resizableSnapshotViewFromRect:column afterScreenUpdates:NO
-                                             withCapInsets:UIEdgeInsetsMake(0, 1, 0, 1)];
-    }
-    if (!extension) {
-        extension = [UIView new];
-        UITableView *table = ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded);
-        extension.backgroundColor = ApolloThemePageBackgroundColor() ?: table.backgroundColor
-            ?: UIColor.systemGroupedBackgroundColor;
+    UIColor *rows = table ? ApolloDuoPostsRowColor(table, [table convertPoint:CGPointMake(edge - 2.0, 0) fromView:surface].x) : nil;
+    UIColor *tableColor = CGColorGetAlpha(table.backgroundColor.CGColor) > 0.99 ? table.backgroundColor : nil;
+    extension.backgroundColor = rows ?: tableColor ?: ApolloThemePageBackgroundColor()
+        ?: UIColor.systemGroupedBackgroundColor;
+    if (page) {
+        CGFloat contentTop = [surface convertPoint:CGPointMake(0, page.safeAreaInsets.top) fromView:page].y;
+        CGRect band = ApolloDuoPostsCloseSmearBand(ApolloDuoPostsCloseSmearColumn(edge, pane), contentTop);
+        UIView *smear = !CGRectIsNull(band) && CGRectGetMinX(band) >= CGRectGetMinX(surface.bounds)
+            ? [surface resizableSnapshotViewFromRect:band afterScreenUpdates:NO withCapInsets:UIEdgeInsetsMake(0, 1, 0, 1)] : nil;
+        if (smear) {
+            smear.frame = CGRectMake(0, 0, travel, CGRectGetHeight(band));
+            smear.userInteractionEnabled = NO;
+            [extension addSubview:smear];
+        }
     }
     extension.userInteractionEnabled = NO;
     extension.layer.anchorPoint = CGPointMake(0.0, 0.5);
@@ -2884,7 +2934,7 @@ BOOL ApolloDuoSplitInteractiveCloseBegin(UINavigationController *nav) {
     [surface insertSubview:drag.overlay belowSubview:host.listDismiss];
     host.postsTransitionSnapshot = drag.overlay;
     ApolloDuoPostsCloseAdvance(state, drag, ApolloDuoPostsCloseEventBegin);
-    ApolloLog(@"[DuoSplit] interactive thread close began; smear=%d", ![drag.extension isMemberOfClass:UIView.class]);
+    ApolloLog(@"[DuoSplit] interactive thread close began; smear=%d", drag.extension.subviews.count > 0);
     return YES;
 }
 

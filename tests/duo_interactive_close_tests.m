@@ -82,6 +82,18 @@ int main(void) {
               @"smear: just inside the feed's trailing content margin, 8pt clear of its edge");
         Check(Near(CGRectGetMaxX(ApolloDuoPostsCloseSmearColumn(400, pane)), 392),
               @"smear: measured from the feed's own trailing edge");
+        // Only the bar band is smeared; rows (the open post's highlight, a
+        // more button reaching the column, separators) never reach the gap.
+        CGRect band = ApolloDuoPostsCloseSmearBand(column, 140);
+        Check(SameRect(band, CGRectMake(CGRectGetMinX(column), 0, 3, 140)),
+              @"smear band: the column from the pane's top down to the feed's content top");
+        Check(SameRect(ApolloDuoPostsCloseSmearBand(column, 2000), column),
+              @"smear band: never taller than the pane");
+        Check(CGRectIsNull(ApolloDuoPostsCloseSmearBand(column, 0)) && CGRectIsNull(ApolloDuoPostsCloseSmearBand(column, -10)),
+              @"smear band: none when the feed has no bar above its content");
+        Check(SameRect(ApolloDuoPostsCloseSmearBand(ApolloDuoPostsCloseSmearColumn(476, CGRectMake(476, 20, 475, 880)), 140),
+                       CGRectMake(476 - 11, 20, 3, 120)),
+              @"smear band: measured from the pane's own top");
 
         // The spring takes the finger's velocity per point still to travel,
         // positive toward its end, and never so fast that it overshoots.
