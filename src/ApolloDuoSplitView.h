@@ -58,6 +58,10 @@ CGFloat ApolloDuoSplitInteractiveDrawerProgress(UINavigationController *nav, CGF
 void ApolloDuoSplitInteractiveDrawerFinish(UINavigationController *nav, BOOL commit, CGFloat velocity);
 void ApolloDuoSplitInteractiveDrawerCancel(UINavigationController *nav, BOOL animated);
 BOOL ApolloDuoSplitShowSidebar(UINavigationController *navigation);
+/// The Posts split is moving a navigation between its columns. That takes the
+/// navigation out of the window and back in within one turn; its title keeps
+/// its presentation and capsule through it.
+BOOL ApolloDuoSplitIsMovingColumns(void);
 __END_DECLS
 
 void ApolloDuoSplitPrepareOverlaySurface(UIView *surface);

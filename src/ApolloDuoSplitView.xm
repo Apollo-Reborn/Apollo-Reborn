@@ -1150,6 +1150,12 @@ BOOL ApolloDuoSplitIsResizing(void) {
     return sDuoSplitResizingTabs != nil;
 }
 
+// Nested: a column sync runs inside a thread open's or close's column update.
+static NSUInteger sDuoSplitMovingColumns;
+BOOL ApolloDuoSplitIsMovingColumns(void) {
+    return sDuoSplitMovingColumns > 0;
+}
+
 BOOL ApolloDuoSplitIsUnfolded(void) {
     if (!ApolloDeviceIsDuo()) return NO;
     UITabBarController *tabs = (id)ApolloMainTabBarController();
@@ -1683,6 +1689,8 @@ static NSUInteger ApolloDuoFeedStackKeptCount(UINavigationController *feed) {
 
 static void ApolloDuoPostsSyncColumnsWithAnimation(ApolloDuoSplitState *state, BOOL animateDisplayMode) {
     if (!state.feed || !state.split || state.changing || state.interactiveClose) return;
+    // Moving a navigation between columns takes it out of the window and back.
+    sDuoSplitMovingColumns++;
     if (sDuoSplitResizingTabs || !ApolloDuoPostsHasLandscapeColumns(state)) {
         ApolloDuoPostsStopGeometry(state.feed.viewIfLoaded);
         ApolloDuoPostsStopGeometry(state.secondary.viewIfLoaded);
@@ -1730,7 +1738,10 @@ static void ApolloDuoPostsSyncColumnsWithAnimation(ApolloDuoSplitState *state, B
     BOOL columnsMatch = [split viewControllerForColumn:UISplitViewControllerColumnPrimary] == (detail ? state.feed : nil)
         && [split viewControllerForColumn:UISplitViewControllerColumnSecondary] == (detail ? state.secondary : state.feed);
     BOOL unchanged = state.host.postsShowingDetail == detail && state.host.postsColumnsPaired == paired && columnsMatch;
-    if (unchanged) return;
+    if (unchanged) {
+        sDuoSplitMovingColumns--;
+        return;
+    }
     state.changing = YES;
     state.host.postsShowingDetail = detail;
     state.host.postsColumnsPaired = paired;
@@ -1800,6 +1811,7 @@ static void ApolloDuoPostsSyncColumnsWithAnimation(ApolloDuoSplitState *state, B
     }
     [state.host.view setNeedsLayout];
     state.changing = NO;
+    sDuoSplitMovingColumns--;
 }
 
 static void ApolloDuoPostsSyncColumns(ApolloDuoSplitState *state) {
@@ -2563,11 +2575,14 @@ static void ApolloDuoPostsCloseDetail(ApolloDuoSplitState *state, ApolloDuoPosts
     ApolloDuoFeedAnchor *feedAnchor = ApolloDuoCaptureFeedAnchor(
         ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded));
     void (^updateColumns)(void) = ^{
+        // UIKit installs the moved column's views as it lays them out.
+        sDuoSplitMovingColumns++;
         state.changing = YES;
         [state.secondary setViewControllers:@[backstop] animated:NO];
         state.changing = NO;
         ApolloDuoPostsSyncColumns(state);
         [surface layoutIfNeeded];
+        sDuoSplitMovingColumns--;
         ApolloNativeFeedSearchFinishColumnMove(state.feed.topViewController);
         // Texture schedules its row geometry separately from UIKit's column
         // layout. Commit the existing measurement before taking endpoints so
@@ -2654,11 +2669,14 @@ static void ApolloDuoPostsSetDetail(ApolloDuoSplitState *state, UIViewController
     ApolloDuoFeedAnchor *feedAnchor = ApolloDuoCaptureFeedAnchor(
         ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded));
     void (^updateColumns)(void) = ^{
+        // UIKit installs the moved column's views as it lays them out.
+        sDuoSplitMovingColumns++;
         state.changing = YES;
         [state.secondary setViewControllers:@[backstop, page] animated:NO];
         state.changing = NO;
         ApolloDuoPostsSyncColumns(state);
         [surface layoutIfNeeded];
+        sDuoSplitMovingColumns--;
         ApolloNativeFeedSearchFinishColumnMove(state.feed.topViewController);
         // Texture schedules its row geometry separately from UIKit's column
         // layout. Commit the existing measurement before taking endpoints so
