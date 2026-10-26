@@ -2658,6 +2658,52 @@ static void ApolloDuoPostsFadeHandoff(ApolloDuoSplitState *state, ApolloDuoPosts
     }];
 }
 
+// Opening or closing a thread beside the feed resizes the feed's table,
+// re-measures its rows and moves its offset in one go. UIKit showed its
+// scroll indicator for that, sized from rows Texture was still measuring:
+// tall at first, then tiny as the real heights arrived. Hide the feed's and
+// the incoming thread's indicators through the move and the time UIKit keeps
+// a flashed one up; a drag that starts sooner gets them back at once.
+static const NSTimeInterval kApolloDuoPostsIndicatorHold = 1.0;
+@interface ApolloDuoIndicatorHold : NSObject
+@property(nonatomic, weak) UIScrollView *scroll;
+@property(nonatomic) BOOL shows;
+@property(nonatomic) NSUInteger generation;
+@end
+static char kApolloDuoIndicatorHoldKey;
+@implementation ApolloDuoIndicatorHold
+- (void)scrolled:(UIPanGestureRecognizer *)pan {
+    if (pan.state == UIGestureRecognizerStateBegan) [self end];
+}
+- (void)end {
+    UIScrollView *scroll = self.scroll;
+    [scroll.panGestureRecognizer removeTarget:self action:@selector(scrolled:)];
+    if (objc_getAssociatedObject(scroll, &kApolloDuoIndicatorHoldKey) != self) return;
+    scroll.showsVerticalScrollIndicator = self.shows;
+    objc_setAssociatedObject(scroll, &kApolloDuoIndicatorHoldKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+@end
+
+static void ApolloDuoPostsHoldIndicator(UIScrollView *scroll) {
+    if (!scroll) return;
+    ApolloDuoIndicatorHold *hold = objc_getAssociatedObject(scroll, &kApolloDuoIndicatorHoldKey);
+    if (!hold) {
+        hold = [ApolloDuoIndicatorHold new];
+        hold.scroll = scroll;
+        hold.shows = scroll.showsVerticalScrollIndicator;
+        objc_setAssociatedObject(scroll, &kApolloDuoIndicatorHoldKey, hold, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [scroll.panGestureRecognizer addTarget:hold action:@selector(scrolled:)];
+        scroll.showsVerticalScrollIndicator = NO;
+    }
+    NSUInteger generation = ++hold.generation;
+    __weak ApolloDuoIndicatorHold *weakHold = hold;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kApolloDuoPostsIndicatorHold * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        ApolloDuoIndicatorHold *live = weakHold;
+        if (live.generation == generation) [live end];
+    });
+}
+
 // Close the thread column. `handoff` is nil for the discrete paths (button,
 // pop hook, didShow safety net), which take their own snapshot and slide it
 // out from the pane's left edge. With a handoff (a committed drag) the close
@@ -2701,6 +2747,7 @@ static void ApolloDuoPostsCloseDetail(ApolloDuoSplitState *state, ApolloDuoPosts
     ApolloDuoPostsStopGeometry(state.secondary.viewIfLoaded);
     ApolloDuoFeedAnchor *feedAnchor = ApolloDuoCaptureFeedAnchor(
         ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded));
+    ApolloDuoPostsHoldIndicator(ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded));
     void (^updateColumns)(void) = ^{
         // UIKit installs the moved column's views as it lays them out.
         sDuoSplitMovingColumns++;
@@ -2796,6 +2843,7 @@ static void ApolloDuoPostsSetDetail(ApolloDuoSplitState *state, UIViewController
     ApolloDuoPostsStopGeometry(state.secondary.viewIfLoaded);
     ApolloDuoFeedAnchor *feedAnchor = ApolloDuoCaptureFeedAnchor(
         ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded));
+    ApolloDuoPostsHoldIndicator(ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded));
     void (^updateColumns)(void) = ^{
         // UIKit installs the moved column's views as it lays them out.
         sDuoSplitMovingColumns++;
@@ -2820,6 +2868,7 @@ static void ApolloDuoPostsSetDetail(ApolloDuoSplitState *state, UIViewController
             ApolloDuoRestoreFeedAnchor(table, feedAnchor);
             [table layoutIfNeeded];
         }
+        ApolloDuoPostsHoldIndicator(ApolloDuoSplitFindTable(page.viewIfLoaded));
     };
     if (!animate) {
         [UIView performWithoutAnimation:updateColumns];
