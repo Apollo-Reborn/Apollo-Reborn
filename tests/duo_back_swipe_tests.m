@@ -1552,16 +1552,24 @@ int main(void) {
         // or a long stay in the background, like Apollo's own forward page.
         {
             typedef ApolloDuoClosedThreadFacts ThreadFacts;
-            ThreadFacts current = {.split = YES, .feedPageOnTop = YES};
+            ThreadFacts current = {.split = YES, .feedPageOnTop = YES, .feedUnchanged = YES};
             Check(!ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventCheck, current),
                   @"memory: kept while its feed page is on top and no thread is open");
-            Check(ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventCheck, (ThreadFacts){.feedPageOnTop = YES}) != nil,
+            Check(ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventCheck,
+                                                    (ThreadFacts){.feedPageOnTop = YES, .feedUnchanged = YES}) != nil,
                   @"memory: folding or turning to portrait forgets it");
             Check(ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventCheck,
-                                                    (ThreadFacts){.split = YES, .threadOpen = YES, .feedPageOnTop = YES}) != nil,
+                                                    (ThreadFacts){.split = YES, .threadOpen = YES, .feedPageOnTop = YES,
+                                                                  .feedUnchanged = YES}) != nil,
                   @"memory: a thread shown beside the feed forgets it");
-            Check(ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventCheck, (ThreadFacts){.split = YES}) != nil,
+            Check(ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventCheck,
+                                                    (ThreadFacts){.split = YES, .feedUnchanged = YES}) != nil,
                   @"memory: a new feed page (subreddit switch, feed link, Search) or a gone one forgets it");
+            Check(ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventCheck,
+                                                    (ThreadFacts){.split = YES, .feedPageOnTop = YES}) != nil,
+                  @"memory: the same feed page showing another feed (reused in place) forgets it");
+            Check(ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventFeedOpened, current) != nil,
+                  @"memory: a feed opening (list row, feed link, Search, a reroot) forgets it whatever the facts say");
             Check(ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventThreadOpened, current) != nil,
                   @"memory: another thread opening beside the feed forgets it");
             Check(ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventMemoryWarning, current) != nil,
@@ -1582,7 +1590,8 @@ int main(void) {
             Check(ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventForeground, back) != nil,
                   @"memory: a short trip still forgets it when the feed changed meanwhile");
             Check(ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventCheck,
-                                                    (ThreadFacts){.split = YES, .feedPageOnTop = YES, .pagesOnStack = YES}) != nil,
+                                                    (ThreadFacts){.split = YES, .feedPageOnTop = YES, .feedUnchanged = YES,
+                                                                  .pagesOnStack = YES}) != nil,
                   @"memory: pages that are on a stack again are never pushed twice");
             UIViewController *backstop = [UIViewController new], *thread = [TestPage new], *profile = [TestPage new];
             Check([ApolloDuoClosedThreadPages(@[backstop, thread, profile]) isEqualToArray:@[thread, profile]],

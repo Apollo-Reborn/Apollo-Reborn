@@ -34,6 +34,24 @@ policies.insert(0, split[start:end])
 # free of UIKit. Test that block as it ships.
 start = split.index("// The closed thread's memory: its pure pieces")
 policies.insert(0, split[start:split.index('// A thread a Back closed beside the feed, held', start)])
+# The split's glue forgets a closed thread on every path that opens a feed in
+# the Posts columns, even mid column change: the subreddit list's row, a feed
+# link, the reroot (list, Search, Settings), a feed pushed during a column
+# change and the Back from a feed link. A teardown forgets before it bails.
+def body(signature):
+    start = split.index(signature)
+    return split[start:split.index('\n}', start) + 2]
+for signature in ['static BOOL ApolloDuoPostsRouteFeedLink(', 'static UIViewController *ApolloDuoPostsPopFeedLink(',
+                  'static BOOL ApolloDuoSplitRoutePush(', '- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:']:
+    expected = 2 if 'RoutePush' in signature else 1
+    if body(signature).count('ApolloDuoClosedThreadEventFeedOpened') < expected:
+        sys.exit('FAIL: %s no longer forgets a closed thread when a feed opens' % signature)
+close = body('static void ApolloDuoSplitClose(ApolloDuoSplitState *state, BOOL preserveDetail) {')
+if close.find('ApolloDuoPostsForgetClosedThread(') < 0 or close.find('ApolloDuoPostsForgetClosedThread(') > close.index('if (!state.split || state.changing) return;'):
+    sys.exit('FAIL: ApolloDuoSplitClose bails before it forgets a closed thread')
+sync = body('static void ApolloDuoPostsSyncColumnsWithAnimation(')
+if sync.find('ApolloDuoPostsForgetClosedThread(') < 0 or sync.find('ApolloDuoPostsForgetClosedThread(') > sync.index('state.interactiveClose) return;'):
+    sys.exit('FAIL: the column sync bails on a gone split before it forgets a closed thread')
 fixture = fixture.replace('// INCLUDE_PRODUCTION_SPLIT_POLICIES', '\n'.join(policies))
 fixture = fixture.replace('// INCLUDE_PRODUCTION_GESTURES', source)
 (build / 'duo_back_swipe_tests.m').write_text(fixture)

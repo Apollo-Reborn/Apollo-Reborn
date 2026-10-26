@@ -1874,6 +1874,7 @@ static NSUInteger ApolloDuoFeedStackKeptCount(UINavigationController *feed) {
 typedef NS_ENUM(NSInteger, ApolloDuoClosedThreadEvent) {
     ApolloDuoClosedThreadEventCheck,          // nothing happened; the facts alone decide
     ApolloDuoClosedThreadEventThreadOpened,   // another thread is opening beside the feed
+    ApolloDuoClosedThreadEventFeedOpened,     // a feed is opening: a list row, a feed link, Search, a reroot
     ApolloDuoClosedThreadEventMemoryWarning,  // the feed's didReceiveMemoryWarning, Apollo's forward wipe
     ApolloDuoClosedThreadEventForeground,     // the app is back after `away` seconds in the background
 };
@@ -1881,6 +1882,7 @@ typedef struct {
     BOOL split;           // the feed pairs a thread beside it (unfolded, landscape, split on)
     BOOL threadOpen;      // a thread shows beside the feed
     BOOL feedPageOnTop;   // the feed page it was closed from is still the feed's top page
+    BOOL feedUnchanged;   // and it still shows the same feed (Apollo reuses it in place)
     BOOL pagesOnStack;    // one of its pages is on a navigation stack again
     NSTimeInterval away;  // Foreground only: the time in the background
 } ApolloDuoClosedThreadFacts;
@@ -1893,12 +1895,14 @@ static const NSTimeInterval kApolloDuoClosedThreadBackgroundLimit = 60.0;
 // Why the remembered thread is forgotten now, or nil to keep it.
 static NSString *ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEvent event, ApolloDuoClosedThreadFacts facts) {
     if (event == ApolloDuoClosedThreadEventThreadOpened) return @"another thread opened";
+    if (event == ApolloDuoClosedThreadEventFeedOpened) return @"a feed opened";
     if (event == ApolloDuoClosedThreadEventMemoryWarning) return @"memory warning";
     if (event == ApolloDuoClosedThreadEventForeground && facts.away > kApolloDuoClosedThreadBackgroundLimit)
         return @"a long stay in the background";
     if (!facts.split) return @"the split ended";
     if (facts.threadOpen) return @"a thread is beside the feed";
     if (!facts.feedPageOnTop) return @"the feed changed";
+    if (!facts.feedUnchanged) return @"the feed page shows another feed";
     if (facts.pagesOnStack) return @"its pages are on a stack again";
     return nil;
 }
@@ -1914,8 +1918,21 @@ static NSArray *ApolloDuoClosedThreadPages(NSArray *paneStack) {
 @interface ApolloDuoPostsClosedThread : NSObject
 @property(nonatomic, copy) NSArray<UIViewController *> *pages;
 @property(nonatomic, weak) UIViewController *feedPage;
+@property(nonatomic, copy) NSString *feedIdentity;
 @end
 @implementation ApolloDuoPostsClosedThread @end
+
+// What a feed page shows. Apollo switches a PostsViewController's feed in
+// place (the title jump bar, the subreddit list reusing the visible feed), so
+// the page alone does not say. It writes the PostsType case and the title
+// synchronously on every such switch (see ApolloSubredditHeaders.xm).
+extern NSInteger ApolloPostsTypeTagFromViewController(UIViewController *viewController);
+static NSString *ApolloDuoPostsFeedIdentity(UIViewController *page) {
+    if (!page) return nil;
+    return [NSString stringWithFormat:@"%@|%ld|%@|%@", NSStringFromClass(page.class),
+            (long)ApolloPostsTypeTagFromViewController(page), page.navigationItem.title ?: page.title ?: @"",
+            ApolloNamedSubredditForPostsController(page) ?: @""];
+}
 
 // The state holding a closed thread, for the app-wide events (the background).
 static __weak ApolloDuoSplitState *sDuoPostsClosedThreadState;
@@ -1942,6 +1959,7 @@ static void ApolloDuoPostsReviewClosedThread(ApolloDuoSplitState *state, ApolloD
         .split = state.split && state.feed && ApolloDuoPostsUsesSplit(state),
         .threadOpen = state.secondary.viewControllers.count > 1,
         .feedPageOnTop = closed.feedPage && closed.feedPage == state.feed.topViewController,
+        .feedUnchanged = [ApolloDuoPostsFeedIdentity(closed.feedPage) isEqualToString:closed.feedIdentity],
         .pagesOnStack = onStack,
         .away = away,
     };
@@ -1957,12 +1975,14 @@ static void ApolloDuoPostsRememberClosedThread(ApolloDuoSplitState *state, NSArr
     ApolloDuoPostsClosedThread *closed = [ApolloDuoPostsClosedThread new];
     closed.pages = pages;
     closed.feedPage = feedPage;
+    closed.feedIdentity = ApolloDuoPostsFeedIdentity(feedPage);
     state.closedThread = closed;
     sDuoPostsClosedThreadState = state;
     ApolloLog(@"[DuoSplit] remembered the closed thread (%lu page(s)) for a forward swipe", (unsigned long)pages.count);
 }
 
 static void ApolloDuoPostsSyncColumnsWithAnimation(ApolloDuoSplitState *state, BOOL animateDisplayMode) {
+    if (!state.split || !state.feed) ApolloDuoPostsForgetClosedThread(state, @"the split ended");
     if (!state.feed || !state.split || state.changing || state.interactiveClose) return;
     // A rotation to portrait, the split turned off or a thread put beside the
     // feed by any path ends what a forward swipe could bring back.
@@ -4254,9 +4274,11 @@ static void ApolloDuoResumeVideosAfterMove(NSArray<UIViewController *> *controll
 
 static void ApolloDuoSplitClose(ApolloDuoSplitState *state, BOOL preserveDetail) {
     [sDuoSplitDeferredPresentations removeObject:state];
+    // Even a close that bails (mid column change, or no split left) lets the
+    // closed thread's pages go.
+    ApolloDuoPostsForgetClosedThread(state, @"the split closed");
     if (!state.split || state.changing) return;
     ApolloDuoPostsCancelInteractiveClose(state, NO, 0.0);
-    ApolloDuoPostsForgetClosedThread(state, @"the split closed");
     state.changing = YES;
     NSMutableArray<UIViewController *> *moving = [NSMutableArray array];
     for (UINavigationController *nav in @[state.primary ?: (id)NSNull.null, state.feed ?: (id)NSNull.null,
@@ -4541,6 +4563,7 @@ static BOOL ApolloDuoPostsRouteFeedLink(ApolloDuoSplitState *state, UINavigation
         ApolloLog(@"[DuoSplit] feed link to the subreddit already on the left; ignored");
         return YES;
     }
+    ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventFeedOpened, 0.0);
     NSArray *detail = state.secondary.viewControllers.count > 1
         ? [state.secondary.viewControllers subarrayWithRange:NSMakeRange(1, state.secondary.viewControllers.count - 1)] : @[];
     BOOL animate = animated && !UIAccessibilityIsReduceMotionEnabled();
@@ -4655,6 +4678,7 @@ static UIViewController *ApolloDuoPostsPopFeedLink(ApolloDuoSplitState *state, B
     UIViewController *top = pages.lastObject, *previous = pages[pages.count - 2];
     ApolloDuoFeedLinkReturn *ret = objc_getAssociatedObject(previous, &kDuoFeedLinkReturnDetail);
     if (![objc_getAssociatedObject(top, &kDuoFeedLinkPage) boolValue] || !ret.detail.count) return nil;
+    ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventFeedOpened, 0.0);
 
     UIView *surface = state.host.view;
     BOOL animate = animated && surface.window && !UIAccessibilityIsReduceMotionEnabled();
@@ -4767,6 +4791,7 @@ static BOOL ApolloDuoSplitRoutePush(UINavigationController *nav, UIViewControlle
             // has already dismissed by then, so its visibility is not an
             // animation gate; preserve the originating navigation request.
             BOOL animate = animated && !UIAccessibilityIsReduceMotionEnabled();
+            ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventFeedOpened, 0.0);
             [state.secondary setViewControllers:@[state.secondary.viewControllers.firstObject] animated:NO];
             ApolloDuoPostsSyncColumns(state);
             [state.host.view layoutIfNeeded];
@@ -4792,6 +4817,10 @@ static BOOL ApolloDuoSplitRoutePush(UINavigationController *nav, UIViewControlle
         ApolloDuoPostsSyncColumns(state);
         return YES;
     }
+    // A feed pushed mid column change bypasses the routes above; it still
+    // replaces what a closed thread was closed from.
+    if (state.feed && ApolloClassPostsViewController && [page isKindOfClass:ApolloClassPostsViewController])
+        ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventFeedOpened, 0.0);
     NSArray<ApolloDuoPostsGeometry *> *searchGeometry = nil;
     CGRect searchViewport = CGRectZero;
     if ([state.kind isEqualToString:@"search"] && nav == state.outer && !state.split
@@ -4985,6 +5014,9 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     %orig(tableView, indexPath);
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(((UIViewController *)self).navigationController, NO);
+    // A picked row is a feed switch, which can reuse the visible feed page.
+    if (state.feed && !((UIViewController *)self).isEditing)
+        ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventFeedOpened, 0.0);
     if (!state.feed || state.changing || ((UIViewController *)self).isEditing) return;
     __weak ApolloDuoSplitHost *host = state.host;
     __weak UITableView *table = tableView;
