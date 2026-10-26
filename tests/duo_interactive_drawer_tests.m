@@ -42,10 +42,32 @@ int main(void) {
               && Near(ApolloDuoListDragTranslationX(272 - 400, travel), -372),
               @"take over: progress and place follow base + drag, clamped at both ends");
 
-        // Finish: the drawer ends shown only for a tracked drag that commits.
-        Check(ApolloDuoListDragEndsVisible(YES, YES), @"finish: a reveal commit shows the drawer");
-        Check(!ApolloDuoListDragEndsVisible(YES, NO), @"finish: a short reveal slides it back");
-        Check(!ApolloDuoListDragEndsVisible(NO, YES), @"finish: no drag in hand, no Back (no second Back from one swipe)");
+        // Finish: a reveal ends shown only by committing; a hide ends hidden only by committing.
+        Check(ApolloDuoListDragEndsVisible(YES, NO, YES), @"finish: a reveal commit shows the drawer");
+        Check(!ApolloDuoListDragEndsVisible(YES, NO, NO), @"finish: a short reveal slides it back");
+        Check(!ApolloDuoListDragEndsVisible(YES, YES, YES), @"finish: a hide commit hides the drawer");
+        Check(ApolloDuoListDragEndsVisible(YES, YES, NO), @"finish: a short hide springs back shown");
+        Check(!ApolloDuoListDragEndsVisible(NO, NO, YES) && !ApolloDuoListDragEndsVisible(NO, YES, NO),
+              @"finish: no drag in hand, no Back and no hide (no second Back from one swipe)");
+
+        // The interactive hide: a leftward drag, measured against the same travel.
+        Check(Near(ApolloDuoListHideProgress(-186, travel), 0.5) && Near(ApolloDuoListHideProgress(50, travel), 0)
+              && Near(ApolloDuoListHideProgress(-900, travel), 1) && Near(ApolloDuoListHideProgress(-40, 0), 0),
+              @"hide progress: the leftward travel over the drawer's, clamped");
+        Check(ApolloDuoListHideCommits(0.35, 0) && !ApolloDuoListHideCommits(0.34, 0) && !ApolloDuoListHideCommits(0.2, 400),
+              @"hide commit: a third of the travel, or a flick, as the reveal does");
+        Check(ApolloDuoListHideCommits(0.05, 500) && !ApolloDuoListHideCommits(0.04, 900) && !ApolloDuoListHideCommits(0.5, -500)
+              && ApolloDuoListHideCommits(0.5, -499),
+              @"hide commit: a leftward flick needs a little travel; a rightward one faster than 500 never commits");
+        Check(ApolloDuoListHideBegins(YES, NO, -12, 3) && ApolloDuoListHideBegins(YES, NO, -12, -12),
+              @"hide begin: a leftward drag on a shown list");
+        Check(!ApolloDuoListHideBegins(NO, NO, -12, 0) && !ApolloDuoListHideBegins(YES, YES, -12, 0)
+              && !ApolloDuoListHideBegins(YES, NO, 12, 0) && !ApolloDuoListHideBegins(YES, NO, -3, 14)
+              && !ApolloDuoListHideBegins(YES, NO, 0, 0),
+              @"hide begin: not when hidden, mid-drag, rightward or mostly vertical (scrolling)");
+        Check(ApolloDuoListHideStripContains(332, 360) && ApolloDuoListHideStripContains(360, 360)
+              && !ApolloDuoListHideStripContains(331, 360) && !ApolloDuoListHideStripContains(0, 360),
+              @"hide strip: the 28pt at the list's trailing edge");
 
         // The Reduce Motion fade: alpha always comes back, even superseded.
         Check(ApolloDuoListFadeEndFor(NO).restoreAlpha && ApolloDuoListFadeEndFor(NO).settle,

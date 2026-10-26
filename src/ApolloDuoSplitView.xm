@@ -272,10 +272,29 @@ static BOOL ApolloDuoListDragBegins(BOOL listVisible, BOOL tracking) {
 static CGFloat ApolloDuoListDragBase(CGFloat presentationTx, CGFloat travel, BOOL containerHidden) {
     return containerHidden ? 0.0 : MIN(MAX(travel + presentationTx, 0.0), MAX(travel, 0.0));
 }
-// Only a drag in hand can end shown, and only by committing; with none, a
-// release is no Back at all.
-static BOOL ApolloDuoListDragEndsVisible(BOOL tracking, BOOL commit) {
-    return tracking && commit;
+// A reveal ends shown only by committing; a hide ends hidden only by
+// committing and springs back shown otherwise. With no drag in hand, a
+// release is neither a Back nor a hide.
+static BOOL ApolloDuoListDragEndsVisible(BOOL tracking, BOOL hiding, BOOL commit) {
+    return tracking && (hiding ? !commit : commit);
+}
+// The interactive hide: a leftward drag, measured against the same travel the
+// reveal uses (the finger moves that much), committing by the reveal's rule
+// mirrored (ApolloDuoBackShouldCommit): a third of the travel, or a leftward
+// flick past 5% of it, and never when released rightward faster than 500.
+static CGFloat ApolloDuoListHideProgress(CGFloat translation, CGFloat travel) {
+    return ApolloDuoListDragProgress(-translation, travel);
+}
+static BOOL ApolloDuoListHideCommits(CGFloat progress, CGFloat leftwardVelocity) {
+    return leftwardVelocity > -500.0 && (progress >= 0.35 || (leftwardVelocity >= 500.0 && progress >= 0.05));
+}
+// Only a shown, idle list, and a drag that heads left and not mostly up or down.
+static BOOL ApolloDuoListHideBegins(BOOL listVisible, BOOL tracking, CGFloat dx, CGFloat dy) {
+    return listVisible && !tracking && dx < 0.0 && fabs(dy) <= fabs(dx);
+}
+// The 28pt at the list's trailing edge, where a drag closes it before a row's does.
+static BOOL ApolloDuoListHideStripContains(CGFloat x, CGFloat width) {
+    return x >= width - 28.0;
 }
 // What the Reduce Motion fade's completion does. The container's alpha is
 // restored whatever happened to the fade (a later slide, a cancel, a fold may
@@ -289,7 +308,7 @@ static ApolloDuoListFadeEnd ApolloDuoListFadeEndFor(BOOL superseded) {
 }
 // End of the interactive drawer's pure pieces.
 
-@interface ApolloDuoSplitHost : UIViewController <UISplitViewControllerDelegate, ApolloDuoLayoutControl>
+@interface ApolloDuoSplitHost : UIViewController <UISplitViewControllerDelegate, UIGestureRecognizerDelegate, ApolloDuoLayoutControl>
 @property(nonatomic, strong) UISplitViewController *split;
 @property(nonatomic, strong) UINavigationController *subredditList;
 @property(nonatomic, weak) UINavigationController *postsNavigation;
@@ -312,6 +331,11 @@ static ApolloDuoListFadeEnd ApolloDuoListFadeEndFor(BOOL superseded) {
 // The subreddit list follows the finger (ApolloDuoSplitInteractiveDrawer*):
 // shown only to the transform, with listVisible still NO until it commits.
 @property(nonatomic) BOOL listDragging;
+// The drag closes the shown list (the scrim's or the trailing strip's pan) instead of pulling it in.
+@property(nonatomic) BOOL listDragHiding;
+@property(nonatomic, strong) UIPanGestureRecognizer *listHideScrimPan;
+@property(nonatomic, strong) UIPanGestureRecognizer *listHideEdgePan;
+- (BOOL)beginListHide;
 @property(nonatomic) CGFloat listDragTravel;
 // How much of the drawer was shown when the drag took it over.
 @property(nonatomic) CGFloat listDragBase;
@@ -319,6 +343,7 @@ static ApolloDuoListFadeEnd ApolloDuoListFadeEndFor(BOOL superseded) {
 - (BOOL)updateListDrag:(CGFloat)translation;
 - (CGFloat)listDragProgress:(CGFloat)translation;
 - (void)finishListDrag:(BOOL)commit velocity:(CGFloat)velocity;
+- (void)listHidePanned:(UIPanGestureRecognizer *)pan;
 - (void)cancelListDragNow;
 @property(nonatomic, strong) UIButton *splitButton;
 @property(nonatomic, strong) UIButton *feedLayoutButton;
@@ -385,6 +410,13 @@ static ApolloDuoListFadeEnd ApolloDuoListFadeEndFor(BOOL superseded) {
         self.listContainer = [UIView new];
         self.listContainer.hidden = YES;
         [self.view addSubview:self.listContainer];
+        // A leftward drag on the dimmed feed beside the open list, or in a
+        // strip at the list's trailing edge, closes it with the finger. A tap
+        // on the scrim still hides at once; a drag cancels that tap.
+        self.listHideScrimPan = [self newListHidePan];
+        [self.listDismiss addGestureRecognizer:self.listHideScrimPan];
+        self.listHideEdgePan = [self newListHidePan];
+        [self.listContainer addGestureRecognizer:self.listHideEdgePan];
         self.listGlass.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         [self.listContainer addSubview:self.listGlass];
         // The drawer's leading corners sit 12pt inside the display's rounded
@@ -672,6 +704,77 @@ static ApolloDuoListFadeEnd ApolloDuoListFadeEndFor(BOOL superseded) {
     }
     ApolloLog(@"[DuoSplit] revealing %lu restored feed controls", (unsigned long)buttons.count);
 }
+- (UIPanGestureRecognizer *)newListHidePan {
+    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(listHidePanned:)];
+    pan.maximumNumberOfTouches = 1;
+    pan.delegate = self;
+    pan.name = @"ApolloReborn.Duo.ListHide";
+    return pan;
+}
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldReceiveTouch:(UITouch *)touch {
+    if (gesture != self.listHideScrimPan && gesture != self.listHideEdgePan) return YES;
+    if (!self.listVisible || self.listDragging) return NO;
+    if (gesture == self.listHideScrimPan) return YES;
+    return ApolloDuoListHideStripContains([touch locationInView:self.listContainer].x, CGRectGetWidth(self.listContainer.bounds));
+}
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gesture {
+    if (gesture != self.listHideScrimPan && gesture != self.listHideEdgePan) return YES;
+    CGPoint velocity = [(UIPanGestureRecognizer *)gesture velocityInView:nil];
+    return ApolloDuoListHideBegins(self.listVisible, self.listDragging, velocity.x, velocity.y);
+}
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture
+        shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
+    // Vertical scrolling never waits for the hide; once it begins it stops that scrolling.
+    return (gesture == self.listHideScrimPan || gesture == self.listHideEdgePan)
+        && [other.view isKindOfClass:UIScrollView.class] && other == ((UIScrollView *)other.view).panGestureRecognizer;
+}
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture
+        shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)other {
+    // Inside the trailing strip the close takes priority over a row's own
+    // leftward drag (unsubscribe): that waits for this to fail.
+    BOOL scrollPan = [other.view isKindOfClass:UIScrollView.class] && other == ((UIScrollView *)other.view).panGestureRecognizer;
+    return gesture == self.listHideEdgePan && [other isKindOfClass:UIPanGestureRecognizer.class] && !scrollPan
+        && ![other.name hasPrefix:@"ApolloReborn.Duo."];
+}
+- (void)listHidePanned:(UIPanGestureRecognizer *)pan {
+    // Measured in the window: a tracked drag moves views under the finger.
+    CGFloat translation = [pan translationInView:nil].x;
+    BOOL ours = self.listDragging && self.listDragHiding;
+    switch (pan.state) {
+        case UIGestureRecognizerStateBegan: {
+            if (![self beginListHide]) {
+                pan.enabled = NO;
+                pan.enabled = YES;
+                return;
+            }
+            // Once it begins it is the hide: stop the list's scrolling.
+            UIPanGestureRecognizer *scrollPan = ApolloDuoSplitFindTable(self.subredditList.view).panGestureRecognizer;
+            scrollPan.enabled = NO;
+            scrollPan.enabled = YES;
+            return;
+        }
+        case UIGestureRecognizerStateChanged:
+            // A fold, a sheet, a resize or a takeover let the drag go: this pan is over.
+            if (!ours || ![self updateListDrag:translation]) {
+                pan.enabled = NO;
+                pan.enabled = YES;
+            }
+            return;
+        case UIGestureRecognizerStateEnded: {
+            if (!ours) return;
+            CGFloat velocity = [pan velocityInView:nil].x;
+            BOOL commit = ApolloDuoListHideCommits(ApolloDuoListHideProgress(translation, self.listDragTravel), -velocity);
+            ApolloLog(@"[DuoSwipe] subreddit list: %@ after the finger closed it; velocity=%.0f",
+                      commit ? @"hidden" : @"sprang back", velocity);
+            [self finishListDrag:commit velocity:velocity];
+            return;
+        }
+        default:
+            // Cancelled by the system: back to shown on the spring.
+            if (ours) [self finishListDrag:NO velocity:0];
+            return;
+    }
+}
 - (void)toggleList { [self setListVisible:!self.listVisible animated:YES]; }
 - (void)dismissList {
     ApolloLog(@"[DuoSwipe] scrim tap: hide the list");
@@ -722,6 +825,7 @@ static ApolloDuoListFadeEnd ApolloDuoListFadeEndFor(BOOL superseded) {
     // A drag in hand ends here: the slide below starts from where it is.
     BOOL dragging = self.listDragging;
     self.listDragging = NO;
+    self.listDragHiding = NO;
     if (dragging) sDuoListDragHost = nil;
     if (self.listVisible == visible && !dragging) return;
     [self.view layoutIfNeeded];
@@ -767,6 +871,29 @@ static ApolloDuoListFadeEnd ApolloDuoListFadeEndFor(BOOL superseded) {
     ApolloLog(@"[DuoSplit] interactive drawer began; shown=%.0f of %.0f", self.listDragBase, travel);
     return YES;
 }
+// Closes the shown list with the finger: transforms and alpha only, from
+// where its slide has got to. listVisible stays YES (so no Back starts under
+// it) until a commit.
+- (BOOL)beginListHide {
+    CGFloat width = self.listGlass.bounds.size.width;
+    if (!self.subredditList || !self.view.window || width <= 0.0 || self.listContainer.hidden
+        || !ApolloDuoListHideBegins(self.listVisible, self.listDragging, -1.0, 0.0)) return NO;
+    CGFloat travel = ApolloDuoListDragTravel(width);
+    CGFloat presentationTx = (self.listContainer.layer.presentationLayer ?: self.listContainer.layer).transform.m41;
+    self.listDragging = YES;
+    self.listDragHiding = YES;
+    self.listDragTravel = travel;
+    self.listDragBase = ApolloDuoListDragBase(presentationTx, travel, NO);
+    sDuoListDragHost = self;
+    ++self.listAnimationGeneration;
+    [self.listContainer.layer removeAnimationForKey:@"ApolloDuoSlide"];
+    [self.listContainer.layer removeAnimationForKey:@"opacity"];
+    self.listContainer.alpha = 1;
+    self.listContainer.transform = CGAffineTransformMakeTranslation(ApolloDuoListDragTranslationX(self.listDragBase, travel), 0);
+    self.listDismiss.alpha = ApolloDuoListDragProgress(self.listDragBase, travel);
+    ApolloLog(@"[DuoSwipe] subreddit list: the finger began closing it; shown=%.0f of %.0f", self.listDragBase, travel);
+    return YES;
+}
 - (CGFloat)listDragProgress:(CGFloat)translation {
     // The same measure with or without a drag in hand, so one swipe commits
     // at the same distance whether the list followed the finger or not.
@@ -793,9 +920,11 @@ static ApolloDuoListFadeEnd ApolloDuoListFadeEndFor(BOOL superseded) {
 // Reduce Motion tracked the finger, then fades instead of sliding.
 - (void)finishListDrag:(BOOL)commit velocity:(CGFloat)velocity {
     if (!self.listDragging) return;
-    BOOL visible = ApolloDuoListDragEndsVisible(self.listDragging, commit);
+    BOOL visible = ApolloDuoListDragEndsVisible(self.listDragging, self.listDragHiding, commit);
     CGFloat start = self.listContainer.transform.tx;
+    if (!visible) [self endListEditing];
     self.listDragging = NO;
+    self.listDragHiding = NO;
     sDuoListDragHost = nil;
     self.listVisible = visible;
     [self.view setNeedsLayout];
@@ -828,12 +957,25 @@ static ApolloDuoListFadeEnd ApolloDuoListFadeEndFor(BOOL superseded) {
 // An interruption: the drawer is parked, hidden and consistent at once.
 - (void)cancelListDragNow {
     if (!self.listDragging) return;
+    BOOL hiding = self.listDragHiding;
     self.listDragging = NO;
+    self.listDragHiding = NO;
     sDuoListDragHost = nil;
     ++self.listAnimationGeneration;
     [self.listContainer.layer removeAnimationForKey:@"ApolloDuoSlide"];
     [self.listContainer.layer removeAnimationForKey:@"opacity"];
     self.listContainer.alpha = 1;
+    if (hiding) {
+        // A hide the finger was closing goes back to fully shown, scrim and all.
+        self.listContainer.transform = CGAffineTransformIdentity;
+        self.listContainer.hidden = NO;
+        self.listDismiss.alpha = 1;
+        self.listDismiss.hidden = NO;
+        self.listDismiss.userInteractionEnabled = YES;
+        self.listContainer.userInteractionEnabled = YES;
+        ApolloLog(@"[DuoSplit] interactive list hide removed; the list stays shown");
+        return;
+    }
     self.listContainer.transform = CGAffineTransformMakeTranslation(-self.listGlass.bounds.size.width - 12, 0);
     self.listContainer.hidden = YES;
     self.listDismiss.alpha = 0;
@@ -3201,7 +3343,7 @@ BOOL ApolloDuoSplitInteractiveDrawerBegin(UINavigationController *nav) {
 
 BOOL ApolloDuoSplitInteractiveDrawerUpdate(UINavigationController *nav, CGFloat translation) {
     ApolloDuoSplitHost *host = ApolloDuoDrawerHost(nav);
-    if (!host.listDragging) return NO;
+    if (!host.listDragging || host.listDragHiding) return NO;
     if (sDuoSplitResizingTabs) {
         [host cancelListDragNow];
         return NO;
@@ -3215,7 +3357,7 @@ CGFloat ApolloDuoSplitInteractiveDrawerProgress(UINavigationController *nav, CGF
 
 void ApolloDuoSplitInteractiveDrawerFinish(UINavigationController *nav, BOOL commit, CGFloat velocity) {
     ApolloDuoSplitHost *host = ApolloDuoDrawerHost(nav);
-    if (!host.listDragging) return;
+    if (!host.listDragging || host.listDragHiding) return;
     [host finishListDrag:commit velocity:velocity];
 }
 
@@ -3226,7 +3368,7 @@ void ApolloDuoSplitInteractiveDrawerCancel(UINavigationController *nav, BOOL ani
     }
     // A split being rebuilt (state.changing) still lets its drag go.
     ApolloDuoSplitHost *host = ApolloDuoSplitStateForNavigation(nav, NO).host;
-    if (!host.listDragging) return;
+    if (!host.listDragging || host.listDragHiding) return;
     if (animated) [host finishListDrag:NO velocity:0];
     else [host cancelListDragNow];
 }
