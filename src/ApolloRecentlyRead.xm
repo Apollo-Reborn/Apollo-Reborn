@@ -1010,6 +1010,7 @@ static void ApolloRecentlyReadRegisterMenuRow(void) {
     spec.identifier = @"RecentlyReadRemove";
     spec.placement = ApolloActionMenuPlacementAppend;
     spec.legacyDismissesSheet = YES;
+    spec.legacyDestructive = YES;
     spec.matches = ^BOOL(id actionController, __unused NSString *menuTitle) {
         id link = sRecentlyReadArmedLink;
         sRecentlyReadArmedLink = nil;

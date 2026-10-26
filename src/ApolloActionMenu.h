@@ -108,6 +108,11 @@ typedef NS_ENUM(NSInteger, ApolloActionMenuPlacement) {
 // self-dismiss while its "invoking" flag is set.
 @property (nonatomic, assign) BOOL legacyDismissesSheet;
 
+// Legacy path: render the row's title and icon in system red. Default NO uses
+// ApolloThemeAccentColor(); the donor supplies typography/geometry, not color.
+// Custom glass builders continue to set their own action attributes.
+@property (nonatomic, assign) BOOL legacyDestructive;
+
 // Escape hatch for the glass path, for specs whose row can't be expressed
 // declaratively (PublicSticky clones a NATIVE UIMenuElement's title/image/
 // attributes/handler rather than building a new one, and inserts at an index it
