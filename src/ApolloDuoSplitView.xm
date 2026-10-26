@@ -1363,7 +1363,7 @@ BOOL ApolloDuoSplitIsUnfoldedPortrait(void) {
 // The adjustable split applies to the unfolded Posts split only; anywhere
 // else, or with the setting off, the feed keeps half the canvas.
 static BOOL ApolloDuoPostsAdjustableSplit(void) {
-    return [NSUserDefaults.standardUserDefaults boolForKey:UDKeyDuoAdjustableSplit] && ApolloDuoSplitIsUnfolded();
+    return sDuoAdjustableSplit && ApolloDuoSplitIsUnfolded();
 }
 
 // Where the fold's division begins on `canvas`, or 0 without one inside it.
