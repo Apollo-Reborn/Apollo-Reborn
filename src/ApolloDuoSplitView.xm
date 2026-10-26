@@ -3129,6 +3129,9 @@ static void ApolloDuoPostsCloseDetail(ApolloDuoSplitState *state, ApolloDuoPosts
         ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded));
     ApolloDuoPostsHoldIndicator(ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded));
     void (^updateColumns)(void) = ^{
+        // The thread's page leaves its column, and a forward swipe may put it
+        // back: note its revealed palette while it is still live.
+        ApolloNativeFeedSearchWillMoveBetweenColumns(closedPages.lastObject);
         // UIKit installs the moved column's views as it lays them out.
         sDuoSplitMovingColumns++;
         state.changing = YES;
@@ -3254,6 +3257,9 @@ static void ApolloDuoPostsOpenDetail(ApolloDuoSplitState *state, NSArray<UIViewC
         [surface layoutIfNeeded];
         sDuoSplitMovingColumns--;
         ApolloNativeFeedSearchFinishColumnMove(state.feed.topViewController);
+        // A thread brought back has its palette repaired as the feed has
+        // (a page opened fresh was never noted, and is left alone).
+        ApolloNativeFeedSearchFinishColumnMove(pages.lastObject);
         // Texture schedules its row geometry separately from UIKit's column
         // layout. Commit the existing measurement before taking endpoints so
         // cell/media widths participate in the same resize as their live nav.

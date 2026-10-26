@@ -1571,8 +1571,10 @@ void ApolloNativeFeedSearchRestoreCancelledNavigation(UIViewController *vc) {
 // viewDidAppear:, so the appearance reveal, a turn later, drew the feed bar-less
 // for a frame and then shoved it down a bar's height. Note the revealed top
 // here; ApolloNativeFeedSearchFinishColumnMove repairs it before it is drawn.
+// A comments page the split takes off its column and later puts back (a
+// closed thread brought back) moves the same way, and gets the same repair.
 void ApolloNativeFeedSearchWillMoveBetweenColumns(UIViewController *vc) {
-    if (!ApolloNativeFeedSearchEnabled() || !vc || !NSBIsNativeSearchFeedVC(vc)) return;
+    if (!ApolloNativeFeedSearchEnabled() || !vc || !NSBIsNativeSearchVC(vc)) return;
     UIScrollView *table = NSBTableForVC(vc);
     BOOL atRest = table && fabs(table.contentOffset.y + table.adjustedContentInset.top) <= 2.0;
     BOOL revealed = CGRectGetHeight(vc.navigationItem.searchController.searchBar.bounds) > 1.0;
@@ -1589,7 +1591,7 @@ void ApolloNativeFeedSearchWillMoveBetweenColumns(UIViewController *vc) {
 // The appearance may have begun (viewWillAppear: drops `visible`), so this
 // checks the moved list directly rather than through the settled-geometry gate.
 void ApolloNativeFeedSearchFinishColumnMove(UIViewController *vc) {
-    if (!ApolloNativeFeedSearchEnabled() || !vc || !NSBIsNativeSearchFeedVC(vc)) return;
+    if (!ApolloNativeFeedSearchEnabled() || !vc || !NSBIsNativeSearchVC(vc)) return;
     ApolloNativeSearchRestingState *state = NSBRestingStateForVC(vc);
     if (!state.columnMoveRevealed) return;
     state.columnMoveRevealed = NO;
