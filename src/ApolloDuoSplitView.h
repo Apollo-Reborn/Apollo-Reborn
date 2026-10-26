@@ -57,6 +57,14 @@ BOOL ApolloDuoSplitInteractiveDrawerUpdate(UINavigationController *nav, CGFloat 
 CGFloat ApolloDuoSplitInteractiveDrawerProgress(UINavigationController *nav, CGFloat translation);
 void ApolloDuoSplitInteractiveDrawerFinish(UINavigationController *nav, BOOL commit, CGFloat velocity);
 void ApolloDuoSplitInteractiveDrawerCancel(UINavigationController *nav, BOOL animated);
+/// The thread the last close (the button, a Back, the drag) took from beside
+/// the Posts feed `nav`, while it can still come back: the feed page it was
+/// closed from is on top, no thread is open, the split still pairs columns and
+/// nothing has forgotten it (another thread, a feed change, a memory warning,
+/// a long stay in the background). Restore reopens it beside the feed, with
+/// any pages pushed over it, through the normal open.
+BOOL ApolloDuoSplitCanRestoreClosedThread(UINavigationController *nav);
+BOOL ApolloDuoSplitRestoreClosedThread(UINavigationController *nav);
 BOOL ApolloDuoSplitShowSidebar(UINavigationController *navigation);
 /// The Posts split is moving a navigation between its columns. That takes the
 /// navigation out of the window and back in within one turn; its title keeps

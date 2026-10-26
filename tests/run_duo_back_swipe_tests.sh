@@ -30,6 +30,10 @@ for signature in ['UINavigationController *ApolloDuoSplitDetailNavigation(',
 start = split.index('static __thread void *sDuoSplitReleaseGesture;')
 end = split.index('\n', split.index('static __thread CGFloat sDuoSplitReleaseScale')) + 1
 policies.insert(0, split[start:end])
+# The split's memory of a closed thread keeps its forget rules in one block,
+# free of UIKit. Test that block as it ships.
+start = split.index("// The closed thread's memory: its pure pieces")
+policies.insert(0, split[start:split.index('// A thread a Back closed beside the feed, held', start)])
 fixture = fixture.replace('// INCLUDE_PRODUCTION_SPLIT_POLICIES', '\n'.join(policies))
 fixture = fixture.replace('// INCLUDE_PRODUCTION_GESTURES', source)
 (build / 'duo_back_swipe_tests.m').write_text(fixture)

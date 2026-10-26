@@ -3,8 +3,9 @@
 __BEGIN_DECLS
 void ApolloDuoInstallBackSwipe(UINavigationController *navigation);
 BOOL ApolloDuoHasBackSwipe(UINavigationController *navigation);
-/// The Duo pane Back pan (ApolloReborn.Duo.PaneBack). Feed galleries, which
-/// make ancestor pans wait for their own drag, leave this one out.
+/// The Duo pane Back pan (ApolloReborn.Duo.PaneBack), leftward also the
+/// forward swipe. Feed galleries, which make ancestor pans wait for their
+/// own drag, leave this one out.
 BOOL ApolloDuoIsPaneBackPan(UIGestureRecognizer *gesture);
 /// Any Duo pane gesture: the pane Back, its highlight guard, or the drag
 /// claim. Row content that makes ancestor gestures wait for its own press
