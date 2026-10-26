@@ -1925,6 +1925,7 @@ static NSArray *ApolloDuoClosedThreadPages(NSArray *paneStack) {
 @property(nonatomic, strong) UIView *snapshot;
 @property(nonatomic) CGRect pane;
 @property(nonatomic) CGSize canvas;
+@property(nonatomic) CGFloat divider;
 @end
 @implementation ApolloDuoPostsClosedThread @end
 
@@ -1973,6 +1974,16 @@ static void ApolloDuoPostsReviewClosedThread(ApolloDuoSplitState *state, ApolloD
     if (reason) ApolloDuoPostsForgetClosedThread(state, reason);
 }
 
+// Where the split's configured primary column ends: the divider a thread
+// pane sits beside, for the column widths in force whether or not a thread
+// shows (ApolloDuoSplitApplySidebarWidth).
+static CGFloat ApolloDuoPostsSplitDivider(ApolloDuoSplitState *state) {
+    UISplitViewController *split = state.split;
+    CGFloat width = CGRectGetWidth(state.host.view.bounds);
+    return MIN(split.maximumPrimaryColumnWidth,
+               MAX(split.minimumPrimaryColumnWidth, width * split.preferredPrimaryColumnWidthFraction));
+}
+
 static void ApolloDuoPostsRememberClosedThread(ApolloDuoSplitState *state, NSArray<UIViewController *> *pages,
                                                UIView *snapshot, CGRect pane) {
     UIViewController *feedPage = state.feed.topViewController;
@@ -1986,6 +1997,7 @@ static void ApolloDuoPostsRememberClosedThread(ApolloDuoSplitState *state, NSArr
     closed.snapshot = snapshot;
     closed.pane = pane;
     closed.canvas = state.host.view.bounds.size;
+    closed.divider = ApolloDuoPostsSplitDivider(state);
     state.closedThread = closed;
     sDuoPostsClosedThreadState = state;
     ApolloLog(@"[DuoSplit] remembered the closed thread (%lu page(s)) for a forward swipe; snapshot=%d",
@@ -2199,6 +2211,11 @@ static BOOL ApolloDuoReplayDrawsRowContents(UIView *view, UIView *feed) {
     return NO;
 }
 
+// Set while a restore's hand-off replays the feed: its crossfade pictures of
+// the old bar items go under the dragged page's overlay, not over the thread
+// arriving under that page.
+static __weak UIView *sDuoReplayCrossfadeCeiling;
+
 // `fadeRecenteredBarItems`: bar items that recenter crossfade in place
 // instead of moving with their column (the feed's column moves).
 // `rowContentsFinal`: the rows' own contents take their final layout at once
@@ -2224,7 +2241,9 @@ static void ApolloDuoAnimateRetainedGeometry(NSArray<ApolloDuoPostsGeometry *> *
             if (old) {
                 old.frame = item.surfaceFrame;
                 old.userInteractionEnabled = NO;
-                [surface addSubview:old];
+                UIView *ceiling = sDuoReplayCrossfadeCeiling;
+                if (ceiling.superview == surface) [surface insertSubview:old belowSubview:ceiling];
+                else [surface addSubview:old];
                 [UIView animateWithDuration:duration * 0.6 delay:0 options:UIViewAnimationOptionCurveEaseOut
                                  animations:^{ old.alpha = 0; }
                                  completion:^(__unused BOOL finished) { [old removeFromSuperview]; }];
@@ -2773,10 +2792,12 @@ static CGFloat ApolloDuoPostsRestoreProgress(CGFloat translation, CGFloat width)
     return width > 0.0 ? translation / width : 0.0;
 }
 
-// The snapshot a close left serves only the canvas it was taken on: a hinge
-// or size change since moved the pane, and the restore is then discrete.
-static BOOL ApolloDuoClosedThreadSnapshotFits(BOOL snapshot, CGSize canvas, CGSize now) {
-    return snapshot && fabs(canvas.width - now.width) < 1.0 && fabs(canvas.height - now.height) < 1.0;
+// The snapshot a close left serves only the canvas and the divider it was
+// taken with: a size, hinge or posture change since moved the pane, and the
+// restore is then discrete.
+static BOOL ApolloDuoClosedThreadSnapshotFits(BOOL snapshot, CGSize canvas, CGSize now, CGFloat divider, CGFloat nowDivider) {
+    return snapshot && fabs(canvas.width - now.width) < 1.0 && fabs(canvas.height - now.height) < 1.0
+        && fabs(divider - nowDivider) < 1.0;
 }
 
 // Widen a captured layer by `expansion` with its leading edge fixed.
@@ -2857,10 +2878,14 @@ static void ApolloDuoPostsSpringDrag(ApolloDuoPostsCloseHandoff *drag, CGFloat o
     UIView *page = drag.snapshot, *extension = drag.extension;
     CGFloat from = page.transform.tx;
     CGFloat spring = ApolloDuoPostsSpringVelocity(from, offset, velocity);
-    CGFloat fromScale = extension.transform.a;
+    // A restore has no gap to widen.
+    CGFloat fromScale = extension ? extension.transform.a : 1.0;
     CGFloat toScale = ApolloDuoPostsCloseExtensionScale(offset, drag.travel);
     float fromOpacity = page.layer.shadowOpacity;
-    float toOpacity = ApolloDuoPostsCloseShadowOpacity(ApolloDuoPostsCloseProgress(offset, CGRectGetWidth(drag.pane)));
+    // A restore lands with its shadow gone: the live thread under it has
+    // none, so the page's removal leaves nothing to pop.
+    float toOpacity = drag.restoring && offset <= 0.0 ? 0.0f
+        : ApolloDuoPostsCloseShadowOpacity(ApolloDuoPostsCloseProgress(offset, CGRectGetWidth(drag.pane)));
     page.transform = CGAffineTransformMakeTranslation(offset, 0);
     extension.transform = CGAffineTransformMakeScale(toScale, 1);
     page.layer.shadowOpacity = toOpacity;
@@ -3258,7 +3283,9 @@ static void ApolloDuoPostsOpenDetail(ApolloDuoSplitState *state, NSArray<UIViewC
     // The rows get taller as the feed narrows: final-layout text would hang
     // below a row still growing, over the next one. Replay it as before.
     NSTimeInterval duration = handoff ? ApolloDuoPostsCloseRemaining(CACurrentMediaTime() - handoff.slideStarted) : 0.32;
+    sDuoReplayCrossfadeCeiling = handoff.overlay;
     if (duration > 0) ApolloDuoPostsAnimateGeometry(feedGeometry, state.feed.view, surface, duration);
+    sDuoReplayCrossfadeCeiling = nil;
     if (handoff) {
         // The live thread arrives on the dragged page's own spring, started
         // at the same moment, so the page covers it exactly until it lands.
@@ -3596,11 +3623,13 @@ BOOL ApolloDuoSplitInteractiveRestoreBegin(UINavigationController *nav) {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
     ApolloDuoSplitHost *host = state.host;
     UIView *surface = host.view;
-    // A drag still springing back is let go; this one starts afresh.
+    // Nothing else should be dragging here (the route refuses beside any other
+    // drag, and the overlay takes second fingers); let a stray one go at once.
     ApolloDuoPostsCancelInteractiveClose(state, NO, 0.0);
     ApolloDuoPostsClosedThread *closed = state.closedThread;
     BOOL restorable = ApolloDuoSplitCanRestoreClosedThread(nav) && surface.window && !sDuoSplitResizingTabs
-        && ApolloDuoClosedThreadSnapshotFits(closed.snapshot != nil, closed.canvas, surface.bounds.size)
+        && ApolloDuoClosedThreadSnapshotFits(closed.snapshot != nil, closed.canvas, surface.bounds.size,
+                                             closed.divider, ApolloDuoPostsSplitDivider(state))
         && !CGRectIsNull(closed.pane) && !CGRectIsEmpty(closed.pane)
         && !nav.transitionCoordinator && !state.secondary.transitionCoordinator
         && !host.postsTransitionSnapshot.window && ![state.secondary.view.layer animationForKey:@"ApolloDuoSlide"];
@@ -3653,6 +3682,11 @@ void ApolloDuoSplitInteractiveRestoreFinish(UINavigationController *nav, BOOL co
         // stalls in the restore's re-layout and Texture re-measure.
         ApolloDuoPostsSlideHandoff(state, drag);
         [CATransaction flush];
+    } else {
+        // No slide: the page takes the thread's place before it fades, so the
+        // fade crosses two identical pictures, not an offset one.
+        drag.snapshot.transform = CGAffineTransformIdentity;
+        drag.snapshot.layer.shadowOpacity = 0.0f;
     }
     drag.overlay.userInteractionEnabled = NO;
     ApolloLog(@"[DuoSplit] interactive thread restore committed; velocity=%.0f", velocity);
@@ -3660,7 +3694,13 @@ void ApolloDuoSplitInteractiveRestoreFinish(UINavigationController *nav, BOOL co
 }
 
 void ApolloDuoSplitInteractiveRestoreCancel(UINavigationController *nav, BOOL animated) {
-    ApolloDuoSplitInteractiveCloseCancel(nav, animated);
+    if (!nav) {
+        ApolloDuoPostsCancelActiveInteractiveClose();
+        return;
+    }
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    ApolloDuoPostsCloseHandoff *drag = state.interactiveClose;
+    if (drag.restoring && drag.navigation == nav) ApolloDuoPostsCancelInteractiveClose(state, animated, 0.0);
 }
 
 // The subreddit list pulled in with the finger from the Posts feed root, by

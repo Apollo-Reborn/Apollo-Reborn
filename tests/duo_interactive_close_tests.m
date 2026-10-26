@@ -184,12 +184,15 @@ int main(void) {
         Check(Near(ApolloDuoPostsSpringVelocity(300, 475, 3000), 3000.0 / 175.0),
               @"restore spring: springing back off the screen keeps the finger's speed");
         // The snapshot taken as the thread closed serves only the same canvas.
-        Check(ApolloDuoClosedThreadSnapshotFits(YES, CGSizeMake(951, 700), CGSizeMake(951.4, 700)),
-              @"snapshot: kept for the same canvas");
-        Check(!ApolloDuoClosedThreadSnapshotFits(NO, CGSizeMake(951, 700), CGSizeMake(951, 700))
-              && !ApolloDuoClosedThreadSnapshotFits(YES, CGSizeMake(951, 700), CGSizeMake(980, 700))
-              && !ApolloDuoClosedThreadSnapshotFits(YES, CGSizeMake(951, 700), CGSizeMake(951, 690)),
-              @"snapshot: none, or another canvas (a hinge change), leaves the restore discrete");
+        CGSize canvas = CGSizeMake(951, 700);
+        Check(ApolloDuoClosedThreadSnapshotFits(YES, canvas, CGSizeMake(951.4, 700), 475.5, 475.9),
+              @"snapshot: kept for the same canvas and divider");
+        Check(!ApolloDuoClosedThreadSnapshotFits(NO, canvas, canvas, 475.5, 475.5)
+              && !ApolloDuoClosedThreadSnapshotFits(YES, canvas, CGSizeMake(980, 700), 475.5, 475.5)
+              && !ApolloDuoClosedThreadSnapshotFits(YES, canvas, CGSizeMake(951, 690), 475.5, 475.5),
+              @"snapshot: none, or another canvas, leaves the restore discrete");
+        Check(!ApolloDuoClosedThreadSnapshotFits(YES, canvas, canvas, 475.5, 420),
+              @"snapshot: a divider that moved since the close (a posture change) leaves the restore discrete");
         printf("OK: %lu checks\n", (unsigned long)checks);
     }
     return 0;
