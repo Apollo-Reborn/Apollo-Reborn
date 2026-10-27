@@ -385,6 +385,22 @@ static void ApolloDuoSplitThreadDividerCancel(UINavigationController *nav) {
     // nil: the split cancels whichever drag is active.
     if (nav == dividerNavigation || !nav) dividerCancelled++;
 }
+// The feed covered by the post (a divider drag let go past the left limit):
+// that thread, full width, until it is dragged back. Begin answers
+// uncoverBegins, and the cover ends as the drag begins, as the split's does.
+static BOOL dividerCovered, uncoverBegins = YES;
+static NSUInteger uncoverBegun;
+static BOOL ApolloDuoSplitThreadCovered(UINavigationController *nav) {
+    return dividerCovered && ApolloDuoSplitThreadDividerDrags(nav);
+}
+static BOOL ApolloDuoSplitThreadUncoverBegin(UINavigationController *nav) {
+    if (!ApolloDuoSplitThreadCovered(nav)) return NO;
+    dividerNavigation = nav;
+    if (!uncoverBegins) return NO;
+    uncoverBegun++;
+    dividerCovered = NO;
+    return YES;
+}
 // INCLUDE_PRODUCTION_GESTURES
 static NSUInteger checks;
 static void Check(BOOL valid, NSString *message) {
@@ -2590,6 +2606,91 @@ int main(void) {
                   @"strip: setting off, the forward swipe is not offered at all");
             dividerAdjustable = YES;
             dThread.pane = CGRectNull;
+
+            // The feed covered by the post: a rightward drag on the covered
+            // thread at its root brings the feed back under the finger (the
+            // uncover drag), never Apollo's Back pop; leftward there is
+            // nothing further left. Setting off, the cover cannot exist and
+            // the routes are today's.
+            {
+                Check(ApolloDuoBackRoute((BFacts){.split = YES, .threadAboveBackstop = YES, .dividerDrag = YES, .covered = YES}).owner
+                      == ApolloDuoBackOwnerUncover, @"cover route: covered, at the root, setting on, a rightward drag uncovers");
+                Check(ApolloDuoBackRoute((BFacts){.split = YES, .threadAboveBackstop = YES, .dividerDrag = YES}).owner
+                      == ApolloDuoBackOwnerDivider, @"cover route: not covered, the same drag moves the divider");
+                Check(ApolloDuoBackRoute((BFacts){.split = YES, .threadAboveBackstop = YES, .covered = YES}).owner
+                      == ApolloDuoBackOwnerThreadClose, @"cover route: setting off, the thread close exactly as today");
+                Check(ApolloDuoBackRoute((BFacts){.split = YES, .nativeOwns = YES, .dividerDrag = YES, .covered = YES}).owner
+                      == ApolloDuoBackOwnerNative, @"cover route: a page pushed over the covered thread is Apollo's Back");
+                Check(ApolloDuoBackRoute((BFacts){.dividerDrag = YES, .threadAboveBackstop = YES, .covered = YES}).owner
+                      == ApolloDuoBackOwnerNative, @"cover route: folded, native");
+                Check(ApolloDuoBackRouteTracks((ApolloDuoBackRouting){ApolloDuoBackOwnerUncover}),
+                      @"cover route: the uncover follows the finger");
+                Check(ApolloDuoForwardRoute((FFacts){.split = YES, .dividerDrag = YES, .covered = YES}).owner
+                      == ApolloDuoForwardOwnerNone, @"cover forward: leftward while covered does nothing");
+                Check(ApolloDuoForwardRoute((FFacts){.split = YES, .dividerDrag = YES}).owner == ApolloDuoForwardOwnerDivider,
+                      @"cover forward: not covered, leftward still moves the divider");
+
+                // The facts come from the split.
+                dividerCovered = YES; forwardPageOnStack = NO;
+                Check(ApolloDuoBackRouteForNavigation(dThread).owner == ApolloDuoBackOwnerUncover
+                      && ApolloDuoForwardRouteForNavigation(dThread).owner == ApolloDuoForwardOwnerNone,
+                      @"cover: the covered thread at its root routes rightward to the uncover and leftward to nothing");
+                Check(!ApolloDuoForwardSwipeCanNavigate(dThread), @"cover: the forward swipe is not offered while covered");
+                dThread.viewControllers = @[dBackstop, [TestPage new], [TestPage new]];
+                Check(ApolloDuoBackRouteForNavigation(dThread).owner == ApolloDuoBackOwnerNative,
+                      @"cover: a page pushed on the covered thread is Apollo's Back");
+                dThread.viewControllers = @[dBackstop, [TestPage new]];
+                dividerAdjustable = NO;
+                Check(ApolloDuoBackRouteForNavigation(dThread).owner == ApolloDuoBackOwnerThreadClose
+                      && ApolloDuoForwardRouteForNavigation(dThread).owner == ApolloDuoForwardOwnerNone,
+                      @"cover: setting off, the thread pane is the close and has no forward, as before");
+                dividerAdjustable = YES;
+
+                // Driving: the uncover begins, then the drag is the divider's
+                // (the cover ended under the finger) and its release lands,
+                // closes or covers again through the split's own decision.
+                NSUInteger uncovers = uncoverBegun, began = dividerBegun, landed = dividerFinished,
+                           removed = dividerCancelled, popped = dThread.pops, closed = closeBegun;
+                Drag(dOwner, 420, 120);
+                Check(uncoverBegun == uncovers + 1 && dividerBegun == began && !dividerCovered,
+                      @"cover drive: a rightward drag on the covered thread begins the uncover, and the cover is gone");
+                Check(dividerUpdated >= 1 && Near(dividerTranslation, 420) && dividerFinished == landed + 1
+                      && Near(dividerFinishTranslation, 420) && Near(dividerVelocity, 120),
+                      @"cover drive: the drag moves the picture by the translation and the release hands the split where it was let go");
+                Check(dThread.pops == popped && closeBegun == closed && dividerCancelled == removed,
+                      @"cover drive: no pop, no close driver, nothing cancelled");
+                dividerCovered = YES;
+                Drag(dOwner, 30, 0);
+                Check(uncoverBegun == uncovers + 2 && dividerFinished == landed + 2 && Near(dividerFinishTranslation, 30),
+                      @"cover drive: a short drag is still the split's release (it covers again), never a pop");
+                dividerCovered = YES;
+                Drag(dOwner, 900, 1200);
+                Check(uncoverBegun == uncovers + 3 && dividerFinished == landed + 3 && dThread.pops == popped,
+                      @"cover drive: a far drag is the split's release too (it closes), never a pop");
+                dividerCovered = YES; uncoverBegins = NO;
+                Drag(dOwner, 600, 900);
+                Check(uncoverBegun == uncovers + 3 && dThread.pops == popped + 1 && closeBegun == closed,
+                      @"cover drive: an uncover the split could not begin leaves today's discrete close on release");
+                dThread.viewControllers = @[dBackstop, [TestPage new]];
+                Drag(dOwner, 40, 0);
+                Check(dThread.pops == popped + 1 && dividerFinished == landed + 3,
+                      @"cover drive: and a short one, short of the Back's threshold, does nothing");
+                uncoverBegins = YES; dividerCovered = YES;
+                NSUInteger offs = dPan.disables;
+                dividerTracks = NO;
+                Drag(dOwner, 200, 0);
+                Check(dividerCancelled == removed + 1 && dividerFinished == landed + 3 && dPan.disables == offs + 1,
+                      @"cover drive: a drag the split let go is removed at once and its pan cancelled");
+                dividerTracks = YES; dividerCovered = YES; rightSwipesDisabled = YES;
+                began = dividerBegun; uncovers = uncoverBegun; landed = dividerFinished;
+                LeftDrag(-300, -200);
+                Check(dividerBegun == began && uncoverBegun == uncovers && dividerFinished == landed && dividerCovered,
+                      @"cover drive: a leftward drag while covered begins nothing, anywhere in the pane");
+                dividerCovered = NO;
+                LeftDrag(-300, -200);
+                Check(dividerBegun == began + 1, @"cover drive: uncovered, the same leftward drag moves the divider");
+                rightSwipesDisabled = NO;
+            }
 
             // The rail: a leftward pan on it moves the post, only as the thread
             // pane's own drag would, and only when clearly sideways.

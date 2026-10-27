@@ -110,6 +110,15 @@ BOOL ApolloDuoSplitThreadDividerBegin(UINavigationController *nav);
 BOOL ApolloDuoSplitThreadDividerUpdate(UINavigationController *nav, CGFloat translation);
 void ApolloDuoSplitThreadDividerFinish(UINavigationController *nav, CGFloat translation, CGFloat velocity);
 void ApolloDuoSplitThreadDividerCancel(UINavigationController *nav);
+/// The post pulled past the left limit covers the feed: that thread full
+/// width over it, for this thread only (never remembered). Covered says
+/// whether `nav` is that thread pane at its root. UncoverBegin starts the
+/// same divider drag from the full-width picture and ends the cover under
+/// it at once; the drag's Update, Finish and Cancel are the divider's, and
+/// its release lands the feed where the post is let go, closes the thread
+/// past the right limit, or covers the feed again short of the left one.
+BOOL ApolloDuoSplitThreadCovered(UINavigationController *nav);
+BOOL ApolloDuoSplitThreadUncoverBegin(UINavigationController *nav);
 BOOL ApolloDuoSplitShowSidebar(UINavigationController *navigation);
 /// The Posts split is moving a navigation between its columns. That takes the
 /// navigation out of the window and back in within one turn; its title keeps

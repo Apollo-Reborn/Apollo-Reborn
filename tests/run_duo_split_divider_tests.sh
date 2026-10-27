@@ -103,6 +103,53 @@ if 'kApolloDuoPostsMinimumThread' not in body('static void ApolloDuoSplitApplySi
 # The divider is only where UIKit actually put the thread pane.
 if 'ApolloDuoPostsSplitDivider(state)) > 2.0' not in body('CGFloat ApolloDuoSplitDividerPosition('):
     fail('the divider press can be offered where no thread pane begins')
+# The feed's cover (the post let go past the left limit) is transient: it
+# never writes the split button's sticky setting, nor the position; the
+# button pressed while covered ends it and persists nothing; the uncover
+# drag ends the cover under its picture before the drag is registered, and
+# the close of a covered thread replays no geometry of the hidden feed.
+cover = finish[finish.index('if (release.coversFeed)'):]
+cover = cover[:cover.index('return;')]
+if 'ApolloDuoPostsCoverFeed(' not in cover or 'ApolloDuoPostsToggleSplit(' in cover:
+    fail('the release past the left limit no longer covers the feed transiently (it ran the sticky toggle)')
+for signature in ['static void ApolloDuoPostsCoverFeed(', 'static void ApolloDuoPostsEndCover(',
+                  'static void ApolloDuoPostsUncoverFeed(', 'BOOL ApolloDuoSplitThreadUncoverBegin(']:
+    part = body(signature)
+    if 'ApolloDuoPostsSplitDisabled' in part or 'setBool' in part or 'UDKeyDuoSplitFeedShare' in part:
+        fail('%s persists something' % signature)
+toggle = body('static void ApolloDuoPostsToggleSplit(')
+if toggle.count('ApolloDuoPostsSplitDisabled') != 1 or toggle.index('ApolloDuoPostsSplitDisabled') < toggle.index('} else {') \
+        or toggle.index('ApolloDuoPostsEndCover(') > toggle.index('} else {'):
+    fail('the split button pressed while covered must end the cover without persisting')
+uncover = body('BOOL ApolloDuoSplitThreadUncoverBegin(')
+if not (uncover.index('ApolloDuoPostsNewPaneDrag(') < uncover.index('ApolloDuoPostsCloseAdvance(') < uncover.index('[CATransaction flush]')
+        < uncover.index('dispatch_async(')) or 'ApolloDuoPostsUncoverFeed(' in uncover or 'layoutIfNeeded' in uncover:
+    fail('the uncover drag must picture the full-width thread, register the drag and flush before the column change, which waits for the next turn')
+if 'drag.restoreSnapshot = nil' not in uncover or 'drag.uncovering = YES' not in uncover:
+    fail('the uncover drag must drop its restore picture and mark the cover as ending')
+under = body('static BOOL ApolloDuoPostsUncoverUnderDrag(ApolloDuoSplitState *state, ApolloDuoPostsCloseHandoff *drag) {')
+if not (under.index('drag.uncovering = NO') < under.index('ApolloDuoPostsCloseEventInterrupt') < under.index('ApolloDuoPostsUncoverFeed(')
+        < under.index('ApolloDuoPostsCloseEventBegin') < under.index('drag.gapInset = ')
+        < under.index('ApolloDuoPostsPlaceDivider(')) or 'afterScreenUpdates:YES' in under:
+    fail('the column change under the uncover drag must end the cover, measure the gap from the live feed column and never wait for the screen')
+if 'drag.uncovering ? ApolloDuoPostsPanesStill(state)' not in body('static BOOL ApolloDuoPostsDividerHolds('):
+    fail('an uncover drag is dropped before its column change runs')
+if 'drag.uncovering && !ApolloDuoPostsUncoverUnderDrag(state, drag)' not in finish:
+    fail('a release before the column change must run it first')
+if 'ApolloDuoSplitThreadDividerDrags(nav) && ' not in body('BOOL ApolloDuoSplitThreadCovered(') \
+        or 'postsCoveredByDrag' not in body('BOOL ApolloDuoSplitThreadCovered('):
+    fail('the covered fact is no longer the divider drag fact on a covered host')
+sync = body('static void ApolloDuoPostsSyncColumnsWithAnimation(')
+if sync.index('ApolloDuoPostsReviewCover(state);') > sync.index('state.interactiveClose) return;'):
+    fail('the column sync must review the cover before it bails')
+if '&& !state.host.postsCoveredByDrag;' not in sync:
+    fail('the columns pair while the feed is covered')
+if 'animate && !state.host.postsCoveredByDrag' not in body('static void ApolloDuoPostsCloseDetail('):
+    fail('the close of a covered thread replays the hidden feed')
+if '!ApolloDuoSplitThreadCovered(state.secondary)' not in body('static UINavigationController *ApolloDuoSplitRailDragThread('):
+    fail('the rail drag is offered while the feed is covered')
+if 'ApolloDuoPostsUncoverFeed(state, @"another thread opened")' not in body('static void ApolloDuoPostsOpenDetail(ApolloDuoSplitState *state, NSArray<UIViewController *> *pages, BOOL animated,\n                                     ApolloDuoPostsCloseHandoff *handoff) {'):
+    fail('another thread opened over a covered one keeps the cover')
 print('OK: split divider wiring')
 PY
 xcrun --sdk macosx clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
