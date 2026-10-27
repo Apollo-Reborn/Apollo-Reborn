@@ -48,10 +48,6 @@ static inline const char *ApolloDuoSplitCoverEndReason(ApolloDuoSplitCoverFacts 
     return NULL;
 }
 
-static inline bool ApolloDuoSplitCoverHolds(ApolloDuoSplitCoverFacts facts) {
-    return ApolloDuoSplitCoverEndReason(facts) == NULL;
-}
-
 enum {
     // Rightward (or leftward) speed that counts as a flick on release.
     ApolloDuoSplitFlickVelocity = 500,

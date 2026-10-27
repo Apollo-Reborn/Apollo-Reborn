@@ -89,7 +89,7 @@ void ApolloDuoSplitInteractiveRestoreCancel(UINavigationController *nav, BOOL an
 /// UIKit's own separator tap off. Begin covers the columns with the drag's
 /// pictures; NO when it can't. Update moves the divider to `dividerX` and
 /// returns NO once the split let the drag go. Finish lands the divider where
-/// it is let go, closes the thread or gives it the whole screen
+/// it is let go, closes the thread or covers the feed
 /// (ApolloDuoSplitReleaseFor), with one re-layout; Cancel removes the drag at once.
 CGFloat ApolloDuoSplitDividerPosition(UIView *host, BOOL *adjustable);
 BOOL ApolloDuoSplitDividerBegin(UIView *host);

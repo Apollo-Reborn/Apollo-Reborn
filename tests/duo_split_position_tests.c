@@ -240,8 +240,9 @@ int main(void) {
     ApolloDuoSplitCoverFacts off = holds;
     off.adjustable = false;
     Check(ApolloDuoSplitCoverEndReason(off) != NULL, "Cover ends when the setting is turned off, or the device folds");
-    Check(!ApolloDuoSplitCoverHolds(closed) && !ApolloDuoSplitCoverHolds(portrait) && !ApolloDuoSplitCoverHolds(off)
-          && ApolloDuoSplitCoverHolds(holds), "Cover holds only while every fact holds");
+    Check(ApolloDuoSplitCoverEndReason(holds) == NULL && ApolloDuoSplitCoverEndReason(closed) != NULL
+          && ApolloDuoSplitCoverEndReason(portrait) != NULL && ApolloDuoSplitCoverEndReason(off) != NULL,
+          "Cover holds only while every fact holds");
 
     // The guide at Half lights where the release would land on Half, no wider.
     Check(ApolloDuoSplitDividerAtHalf(475.5, canvas, fold, inset, wide), "The guide lights on Half itself");

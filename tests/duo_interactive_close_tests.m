@@ -185,27 +185,30 @@ int main(void) {
               @"restore spring: springing back off the screen keeps the finger's speed");
         // The snapshot taken as the thread closed serves only the same canvas.
         CGSize canvas = CGSizeMake(951, 700);
-        Check(ApolloDuoClosedThreadSnapshotFits(YES, canvas, CGSizeMake(951.4, 700), 475.5, 475.9),
+        Check(ApolloDuoClosedThreadSnapshotFits(YES, canvas, CGSizeMake(951.4, 700), 475.5, 475.9, 475.5),
               @"snapshot: kept for the same canvas and divider");
-        Check(!ApolloDuoClosedThreadSnapshotFits(NO, canvas, canvas, 475.5, 475.5)
-              && !ApolloDuoClosedThreadSnapshotFits(YES, canvas, CGSizeMake(980, 700), 475.5, 475.5)
-              && !ApolloDuoClosedThreadSnapshotFits(YES, canvas, CGSizeMake(951, 690), 475.5, 475.5),
+        Check(!ApolloDuoClosedThreadSnapshotFits(NO, canvas, canvas, 475.5, 475.5, 475.5)
+              && !ApolloDuoClosedThreadSnapshotFits(YES, canvas, CGSizeMake(980, 700), 475.5, 475.5, 475.5)
+              && !ApolloDuoClosedThreadSnapshotFits(YES, canvas, CGSizeMake(951, 690), 475.5, 475.5, 475.5),
               @"snapshot: none, or another canvas, leaves the restore discrete");
-        Check(!ApolloDuoClosedThreadSnapshotFits(YES, canvas, canvas, 475.5, 420),
+        Check(!ApolloDuoClosedThreadSnapshotFits(YES, canvas, canvas, 475.5, 475.5, 0.0)
+              && ApolloDuoClosedThreadSnapshotFits(YES, canvas, canvas, 475.5, 475.5, 475.9),
+              @"snapshot: a pane not starting at the remembered divider (a covered thread's full width) leaves the restore discrete");
+        Check(!ApolloDuoClosedThreadSnapshotFits(YES, canvas, canvas, 475.5, 420, 475.5),
               @"snapshot: a divider that moved since the close (a posture change) leaves the restore discrete");
-        // The same checks at the movable divider's three stops (canvas 951):
+        // The same checks at three divider positions (canvas 951):
         // the feed column, the surfaces that span it and the snapshot's
         // divider all follow the current divider, not the midpoint.
         {
-            CGFloat stops[3] = { 237.75, 475.5, 713.25 };
+            CGFloat stops[3] = { 237.75, 475.5, 607.0 };
             for (int i = 0; i < 3; i++) {
                 CGFloat divider = stops[i];
                 CGRect column = CGRectMake(0, 0, divider, 900);
                 Check(ApolloDuoPostsSpansColumn(CGRectMake(0, 0, divider, 120), column)
                       && (divider == 475.5 || !ApolloDuoPostsSpansColumn(CGRectMake(0, 0, 475.5, 120), column)),
                       @"stops: a surface spans only the column at the current divider");
-                Check(ApolloDuoClosedThreadSnapshotFits(YES, canvas, canvas, divider, divider)
-                      && !ApolloDuoClosedThreadSnapshotFits(YES, canvas, canvas, divider, stops[(i + 1) % 3]),
+                Check(ApolloDuoClosedThreadSnapshotFits(YES, canvas, canvas, divider, divider, divider)
+                      && !ApolloDuoClosedThreadSnapshotFits(YES, canvas, canvas, divider, stops[(i + 1) % 3], divider),
                       @"stops: a snapshot taken at one stop never serves another");
             }
         }

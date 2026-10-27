@@ -173,7 +173,7 @@ static char kApolloDuoSplitDividerKey;
                 self.lastMove = now;
             }
             CGFloat velocity = ApolloDuoSplitDividerReleaseVelocity(self.velocity, self.lastMove, now);
-            // Cleared first: the split's landing, close or full screen runs with no drag left.
+            // Cleared first: the split's landing, close or cover runs with no drag left.
             [self endDrag];
             ApolloDuoSplitDividerFinish(host, divider, velocity);
             return;

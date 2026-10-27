@@ -59,9 +59,11 @@ if snap.count('ApolloDuoSplitApplyPostsStop(') != 1 or snap.index('ApolloDuoSpli
     fail('a landing re-lays out the columns inside the settle, after its animation is flushed')
 if 'UIVisualEffectView' in settle or 'UIBlurEffect' in settle or 'animateWithDuration' in settle:
     fail('the reveal is a cut: no blur and no effect view')
-if 'ApolloDuoPostsFinishSettle(state)' not in body('BOOL ApolloDuoSplitDividerBegin(') \
-        or 'ApolloDuoPostsFinishSettle(state)' not in body('CGFloat ApolloDuoSplitDividerPosition('):
-    fail('a drag or a press that meets a settle in flight must end it, not be refused')
+if 'ApolloDuoPostsFinishSettle(state)' not in body('BOOL ApolloDuoSplitDividerBegin('):
+    fail('a drag that meets a settle in flight must end it, not be refused')
+if 'ApolloDuoPostsFinishSettle(state)' in body('CGFloat ApolloDuoSplitDividerPosition(') \
+        or 'sDuoPostsSettleOverlay' not in body('CGFloat ApolloDuoSplitDividerPosition('):
+    fail('a touch that is not a drag must not cut a settle short, and a settle must not refuse a press')
 if 'sDuoPostsSettleOverlay == overlay' not in settle:
     fail('the settle forgets itself when it is cut')
 for outcome in ['if (release.closesThread)', 'if (release.coversFeed)']:
@@ -144,7 +146,8 @@ if sync.index('ApolloDuoPostsReviewCover(state);') > sync.index('state.interacti
     fail('the column sync must review the cover before it bails')
 if '&& !state.host.postsCoveredByDrag;' not in sync:
     fail('the columns pair while the feed is covered')
-if 'animate && !state.host.postsCoveredByDrag' not in body('static void ApolloDuoPostsCloseDetail('):
+if 'animate && !state.host.postsCoveredByDrag' not in body('static void ApolloDuoPostsCloseDetail(') \
+        or 'paneShown && !state.host.postsCoveredByDrag' not in body('static void ApolloDuoPostsCloseDetail('):
     fail('the close of a covered thread replays the hidden feed')
 if '!ApolloDuoSplitThreadCovered(state.secondary)' not in body('static UINavigationController *ApolloDuoSplitRailDragThread('):
     fail('the rail drag is offered while the feed is covered')

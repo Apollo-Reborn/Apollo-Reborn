@@ -2133,7 +2133,7 @@ static void ApolloDuoPostsReviewClosedThread(ApolloDuoSplitState *state, ApolloD
 // Where the split's configured primary column ends: the divider a thread
 // pane sits beside, for the column widths in force whether or not a thread
 // shows (ApolloDuoSplitApplySidebarWidth). Posts landscape pins both bounds
-// to the wanted divider, so this follows the remembered stop.
+// to the wanted divider, so this follows the remembered position.
 static CGFloat ApolloDuoPostsSplitDivider(ApolloDuoSplitState *state) {
     UISplitViewController *split = state.split;
     CGFloat width = CGRectGetWidth(state.host.view.bounds);
@@ -3025,10 +3025,12 @@ static CGFloat ApolloDuoPostsRestoreProgress(CGFloat translation, CGFloat width)
 
 // The snapshot a close left serves only the canvas and the divider it was
 // taken with: a size, hinge or posture change since moved the pane, and the
-// restore is then discrete.
-static BOOL ApolloDuoClosedThreadSnapshotFits(BOOL snapshot, CGSize canvas, CGSize now, CGFloat divider, CGFloat nowDivider) {
+// restore is then discrete. So is a pane that did not start at its divider
+// (a covered thread's full width).
+static BOOL ApolloDuoClosedThreadSnapshotFits(BOOL snapshot, CGSize canvas, CGSize now, CGFloat divider, CGFloat nowDivider,
+                                              CGFloat paneX) {
     return snapshot && fabs(canvas.width - now.width) < 1.0 && fabs(canvas.height - now.height) < 1.0
-        && fabs(divider - nowDivider) < 1.0;
+        && fabs(divider - nowDivider) < 1.0 && fabs(paneX - divider) < 1.0;
 }
 
 // Widen a captured layer by `expansion` with its leading edge fixed.
@@ -3404,9 +3406,11 @@ static void ApolloDuoPostsCloseDetail(ApolloDuoSplitState *state, ApolloDuoPosts
     if (!handoff && animate && paneShown)
         snapshot = [surface resizableSnapshotViewFromRect:pane afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero];
     // What a forward swipe slides back in: the pane as it looks now (as the
-    // drag began, for a drag, whose own views cover the pane by now).
+    // drag began, for a drag, whose own views cover the pane by now). None
+    // while the feed is covered: the pane is the whole canvas, and the restore
+    // is then discrete.
     UIView *closedSnapshot = handoff ? handoff.restoreSnapshot
-        : paneShown ? [surface resizableSnapshotViewFromRect:pane afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero] : nil;
+        : paneShown && !state.host.postsCoveredByDrag ? [surface resizableSnapshotViewFromRect:pane afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero] : nil;
     CGRect closedPane = handoff ? handoff.pane : pane;
     if (snapshot && !handoff) {
         snapshot.frame = pane;
@@ -4012,6 +4016,8 @@ static ApolloDuoSplitState *ApolloDuoPostsStateForHostView(UIView *view) {
 }
 
 static void ApolloDuoPostsFinishSettle(ApolloDuoSplitState *state);
+// The landing settle's overlay, if one is in flight (see ApolloDuoPostsFinishSettle).
+static __weak UIView *sDuoPostsSettleOverlay;
 
 // A thread open in the landscape Posts split, and nothing else moving the
 // panes: a column change, a toggle, the drawer, a resize, a push.
@@ -4038,11 +4044,12 @@ CGFloat ApolloDuoSplitDividerPosition(UIView *view, BOOL *adjustable) {
     if (!on && !state.separatorTapDisabled) return -1.0;
     if (!state || !ApolloDuoPostsDividerMovable(state)) return -1.0;
     ApolloDuoPostsSyncSeparatorTap(state, on);
-    // A divider settle still running ends at once, so a press on the divider
-    // is never refused for it.
-    ApolloDuoPostsFinishSettle(state);
-    // A close or a restore still finishing holds the panes.
-    if (state.interactiveClose || state.host.postsTransitionSnapshot.window) return -1.0;
+    // A close or a restore still finishing holds the panes. A landing's settle
+    // does not: the live pane is already at the landed divider, and the press
+    // that begins a drag ends the settle (ApolloDuoSplitDividerBegin), so a
+    // touch elsewhere never cuts it short.
+    UIView *shown = state.host.postsTransitionSnapshot;
+    if (state.interactiveClose || (shown.window && shown != sDuoPostsSettleOverlay)) return -1.0;
     CGRect pane = ApolloDuoPostsDetailPane(state);
     if (CGRectIsNull(pane) || CGRectIsEmpty(pane)) return -1.0;
     // A thread UIKit laid out under the feed (its pane starting at the screen's
@@ -4249,7 +4256,6 @@ static const CGFloat kApolloDuoPostsLandingTravel = 8.0;
 // The settle in flight, if any: its overlay and the cut that ends it. A new
 // drag on the divider ends it at once (ApolloDuoPostsFinishSettle) instead of
 // being ignored until the pictures are gone.
-static __weak UIView *sDuoPostsSettleOverlay;
 static dispatch_block_t sDuoPostsSettleCut;
 
 // The pictures go in one frame: no fade and no effect, the columns having
@@ -4511,7 +4517,8 @@ BOOL ApolloDuoSplitInteractiveRestoreBegin(UINavigationController *nav) {
     ApolloDuoPostsClosedThread *closed = state.closedThread;
     BOOL restorable = ApolloDuoSplitCanRestoreClosedThread(nav) && surface.window && !sDuoSplitResizingTabs
         && ApolloDuoClosedThreadSnapshotFits(closed.snapshot != nil, closed.canvas, surface.bounds.size,
-                                             closed.divider, ApolloDuoPostsSplitDivider(state))
+                                             closed.divider, ApolloDuoPostsSplitDivider(state),
+                                             CGRectGetMinX(closed.pane))
         && !CGRectIsNull(closed.pane) && !CGRectIsEmpty(closed.pane)
         && !nav.transitionCoordinator && !state.secondary.transitionCoordinator
         && !host.postsTransitionSnapshot.window && ![state.secondary.view.layer animationForKey:@"ApolloDuoSlide"];
@@ -5527,6 +5534,16 @@ static UIView *ApolloDuoSplitRailContainer(UITabBarController *tabs) {
     if (found.window && [found isDescendantOfView:tabs.view]) return found;
     Class container = NSClassFromString(@"_UITabContainerView");
     if (!container) return nil;
+    // UIKit puts the container directly in the tab controller's view, or one
+    // level below: look there before the capped walk.
+    for (UIView *child in tabs.view.subviews) {
+        if ([child isKindOfClass:container] && child.window) return found = child;
+        for (UIView *grandchild in child.subviews) {
+            if ([grandchild isKindOfClass:container] && grandchild.window) return found = grandchild;
+        }
+    }
+    // Hidden or out of the window, the container is not worth the walk's cost.
+    if (!tabs.view.window) return nil;
     NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:tabs.view];
     for (NSUInteger visited = 0; queue.count && visited < 4000; visited++) {
         UIView *view = queue.firstObject;
