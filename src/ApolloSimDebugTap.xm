@@ -2245,6 +2245,21 @@ static BOOL ApolloSimDebugHandleIntegratedMainCommand(NSString *contents) {
         ApolloWebJSONSimSetBlockedRoutes(mask);
         return YES;
     }
+    // "routegate <route>[,<route>…]" or "routegate off": send those routes
+    // with a cookie Reddit doesn't know, so old.reddit.com answers with its
+    // sign-in gate, as it does an account it won't serve.
+    if ([contents hasPrefix:@"routegate "]) {
+        NSString *list = [[contents substringFromIndex:10]
+            stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        NSUInteger mask = 0;
+        for (NSString *name in [list componentsSeparatedByString:@","]) {
+            for (NSInteger r = ApolloWebJSONRouteWww; r <= ApolloWebJSONRouteLast; r++) {
+                if ([ApolloWebJSONRouteName((ApolloWebJSONRoute)r) isEqualToString:name]) mask |= (1u << r);
+            }
+        }
+        ApolloWebJSONSimSetGatedRoutes(mask);
+        return YES;
+    }
     // "routehealth" logs the API-Key-Free route health; "routehealth reset" clears it.
     if ([contents hasPrefix:@"routehealth"]) {
         if ([contents containsString:@"reset"]) ApolloWebJSONRouteHealthReset();
