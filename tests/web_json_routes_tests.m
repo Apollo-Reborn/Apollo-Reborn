@@ -85,6 +85,32 @@ static void TestBlockPage(void) {
     CHECK(!ApolloWebJSONRouteResponseIsBlockPage(nil), @"nil");
 }
 
+static NSHTTPURLResponse *ResponseAt(NSString *url, NSInteger status, NSString *contentType) {
+    NSDictionary *headers = contentType ? @{ @"Content-Type": contentType } : @{};
+    return [[NSHTTPURLResponse alloc] initWithURL:[NSURL URLWithString:url]
+                                       statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:headers];
+}
+
+static void TestSignInGate(void) {
+    // What old.reddit.com answers an account it won't serve (2026-10-27).
+    NSString *gate = @"https://old.reddit.com/login/?reason=lor2&dest=https%3A%2F%2Fold.reddit.com%2Fapi%2Finfo.json%3Fid%3Dt3_1#apollo-webjson-account=alice;route=2";
+    CHECK(ApolloWebJSONRouteResponseIsSignInGate(ResponseAt(gate, 200, @"text/html; charset=utf-8")), @"old gate");
+    CHECK(ApolloWebJSONRouteResponseIsRefusal(ResponseAt(gate, 200, @"text/html; charset=utf-8")), @"old gate is a refusal");
+    CHECK(ApolloWebJSONRouteResponseIsSignInGate(ResponseAt(@"https://www.reddit.com/login", 200, @"text/html")), @"www login");
+    CHECK(!ApolloWebJSONRouteResponseIsSignInGate(ResponseAt(@"https://old.reddit.com/api/info.json?id=t3_1", 200,
+                                                             @"application/json; charset=UTF-8")), @"old answered");
+    CHECK(!ApolloWebJSONRouteResponseIsSignInGate(ResponseAt(@"https://old.reddit.com/login.json", 200, @"application/json")),
+          @"not the /login page");
+    CHECK(!ApolloWebJSONRouteResponseIsSignInGate(ResponseAt(@"https://old.reddit.com/loginhelp", 200, @"text/html")),
+          @"another path");
+    CHECK(!ApolloWebJSONRouteResponseIsSignInGate(ResponseAt(@"https://example.com/login/", 200, @"text/html")), @"not Reddit");
+    CHECK(!ApolloWebJSONRouteResponseIsSignInGate(ResponseAt(@"https://notreddit.com/login/", 200, @"text/html")), @"lookalike");
+    CHECK(!ApolloWebJSONRouteResponseIsSignInGate(nil), @"nil");
+    CHECK(ApolloWebJSONRouteResponseIsRefusal(Response(403, @"text/html")), @"block page is a refusal");
+    CHECK(!ApolloWebJSONRouteResponseIsRefusal(Response(200, @"application/json")), @"an answer");
+    CHECK(!ApolloWebJSONRouteResponseIsRefusal(Response(429, @"text/html")), @"429 is a rate limit");
+}
+
 static NSString *const kInfo = @"/api/info.json";
 static NSTimeInterval const kHour = 3600.0;
 
@@ -333,6 +359,7 @@ int main(int argc, const char *argv[]) {
         TestEverythingElseStaysOnWww();
         TestRouteTransforms();
         TestBlockPage();
+        TestSignInGate();
         TestCooldownStartsAfterThreeBlocks();
         TestCooldownDoublesAndClears();
         TestChoose();

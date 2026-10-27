@@ -42,7 +42,9 @@ static NSString *ApolloWebJSONRouteEndpointKey(NSString *path) {
 //   Apollo POSTs it, but it only reads.
 // www-dotjson gets past www's block rather than being a documented route, and
 // Reddit is limiting old.reddit.com to accounts with recent Old Reddit use, so
-// either can stop working; old comes second.
+// either can stop working; old comes second. An account Old Reddit won't serve
+// gets its sign-in gate there, which counts as a refusal
+// (ApolloWebJSONRouteResponseIsSignInGate).
 static NSDictionary *ApolloWebJSONRouteEntry(NSString *method, NSString *path) {
     static NSArray<NSDictionary *> *table;
     static dispatch_once_t once;
@@ -85,6 +87,21 @@ BOOL ApolloWebJSONRouteResponseIsBlockPage(NSHTTPURLResponse *response) {
     if (![response isKindOfClass:[NSHTTPURLResponse class]] || response.statusCode != 403) return NO;
     NSString *contentType = [[response valueForHTTPHeaderField:@"Content-Type"] lowercaseString] ?: @"";
     return [contentType containsString:@"text/html"];
+}
+
+BOOL ApolloWebJSONRouteResponseIsSignInGate(NSHTTPURLResponse *response) {
+    if (![response isKindOfClass:[NSHTTPURLResponse class]]) return NO;
+    NSString *host = response.URL.host.lowercaseString ?: @"";
+    if (![host isEqualToString:@"reddit.com"] && ![host hasSuffix:@".reddit.com"]) return NO;
+    // No read asks for /login itself, so ending up there means a redirect.
+    NSString *path = response.URL.path.lowercaseString ?: @"";
+    if (![path isEqualToString:@"/login"] && ![path hasPrefix:@"/login/"]) return NO;
+    NSString *contentType = [[response valueForHTTPHeaderField:@"Content-Type"] lowercaseString] ?: @"";
+    return [contentType containsString:@"text/html"];
+}
+
+BOOL ApolloWebJSONRouteResponseIsRefusal(NSHTTPURLResponse *response) {
+    return ApolloWebJSONRouteResponseIsBlockPage(response) || ApolloWebJSONRouteResponseIsSignInGate(response);
 }
 
 #pragma mark - Remote route table (keyless-routes.json)

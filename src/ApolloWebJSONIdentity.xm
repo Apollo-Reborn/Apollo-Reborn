@@ -1119,7 +1119,9 @@ static BOOL ApolloWebJSONKeepSubscriptionListAfterFailedWalk(RDKUser *user, NSAr
         // route, and only the last answer reaches the caller. Writes never get
         // here (ApolloWebJSONRouteRequestMayRetry).
         NSInteger usedRoute = response ? ApolloWebJSONRouteFromURL(response.URL) : -1;
-        if (username && sWebJSONEnabled && ApolloWebJSONRouteResponseIsBlockPage(response)
+        // A refusal is the block page or, on old.reddit.com, Old Reddit's
+        // sign-in gate (a 200 HTML page RedditKit can't read).
+        if (username && sWebJSONEnabled && ApolloWebJSONRouteResponseIsRefusal(response)
             && ApolloWebJSONRouteRequestMayRetry(requestMethod, requestPath)) {
             NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
             // The response URL carries the route the rewrite stamped; without it,
@@ -1130,7 +1132,7 @@ static BOOL ApolloWebJSONKeepSubscriptionListAfterFailedWalk(RDKUser *user, NSAr
             NSString *blockedName = usedRoute >= 0 ? ApolloWebJSONRouteName((ApolloWebJSONRoute)usedRoute) : @"?";
             if (next >= 0) {
                 ApolloWebJSONLogRouteOutcomeOnce(requestMethod, requestPath, [NSString stringWithFormat:
-                    @"route %@ got the block page, trying %@", blockedName, ApolloWebJSONRouteName((ApolloWebJSONRoute)next)]);
+                    @"route %@ refused the read, trying %@", blockedName, ApolloWebJSONRouteName((ApolloWebJSONRoute)next)]);
                 sApolloWebJSONRoutesTriedForSend = tried;
                 @try {
                     [client taskWithMethod:requestMethod path:requestPath parameters:sentParameters completion:completion];
@@ -1140,7 +1142,7 @@ static BOOL ApolloWebJSONKeepSubscriptionListAfterFailedWalk(RDKUser *user, NSAr
                 return;
             }
             ApolloWebJSONLogRouteOutcomeOnce(requestMethod, requestPath, [NSString stringWithFormat:
-                @"route %@ got the block page, and every other route is blocked or cooling down", blockedName]);
+                @"route %@ refused the read, and every other route is blocked or cooling down", blockedName]);
             ApolloWebJSONShowRoutesBlockedToastOnce();
             ApolloLog(@"[WebJSON] %@", ApolloWebJSONRouteStatusSummary());
         } else if (routesTried != 0 && usedRoute >= 0 && response.statusCode >= 200 && response.statusCode < 300) {
