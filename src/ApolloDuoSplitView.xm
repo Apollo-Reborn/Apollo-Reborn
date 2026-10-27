@@ -1380,19 +1380,33 @@ static CGFloat ApolloDuoPostsFoldX(ApolloDuoSplitState *state, CGSize canvas) {
 // width for the split, which it holds against the thread less the rail.
 static const CGFloat kApolloDuoPostsMinimumThread = 240.0;
 
+// The thread width, beside the rail, that the Wide stop leaves: what the
+// post's five action buttons need (measured on the Duo: they keep their 53 pt
+// pitch and the last is clipped by the rail below 260). More than the minimum
+// above, which only keeps UIKit tiling.
+static const CGFloat kApolloDuoPostsWideStopThread = 260.0;
+
+// The trailing safe area UIKit holds the thread's minimum width against: the
+// rail on the Duo, read live.
+static CGFloat ApolloDuoPostsTrailingInset(ApolloDuoSplitState *state) {
+    return MAX(state.secondary.viewIfLoaded.safeAreaInsets.right, state.feed.viewIfLoaded.safeAreaInsets.right);
+}
+
 // The divider x the Posts landscape split should use now on `canvas`: the
 // remembered stop with the setting on, else half the canvas. Half with the
 // setting on ends the feed at the fold; mid-resize the region may still
 // describe the old canvas, so Half takes mid-canvas until the next update.
-// A stop that would leave the thread too narrow for UIKit to tile it beside
-// the rail gives way to Half rather than break the split.
+// The Wide stop already leaves the thread more than UIKit needs to tile it
+// beside the rail; any stop that would still leave it too narrow (the inset
+// changed since) gives way to Half rather than break the split.
 static CGFloat ApolloDuoPostsWantedDivider(ApolloDuoSplitState *state, CGSize canvas) {
     BOOL adjustable = ApolloDuoPostsAdjustableSplit();
     CGFloat foldX = adjustable ? ApolloDuoPostsFoldX(state, canvas) : 0.0;
     ApolloDuoSplitStop stop = ApolloDuoSplitStopSanitized(
         [NSUserDefaults.standardUserDefaults integerForKey:UDKeyDuoSplitStop]);
-    CGFloat trailing = MAX(state.secondary.viewIfLoaded.safeAreaInsets.right, state.feed.viewIfLoaded.safeAreaInsets.right);
-    return ApolloDuoPostsFittedPrimaryWidth(adjustable, stop, canvas.width, foldX, trailing, kApolloDuoPostsMinimumThread);
+    return ApolloDuoPostsFittedPrimaryWidth(adjustable, stop, canvas.width, foldX,
+                                            ApolloDuoPostsTrailingInset(state), kApolloDuoPostsWideStopThread,
+                                            kApolloDuoPostsMinimumThread);
 }
 
 // Apollo's native navigation delegate tests a 70pt edge band in its view.
@@ -3963,7 +3977,9 @@ void ApolloDuoSplitDividerFinish(UIView *view, CGFloat dividerX, CGFloat velocit
     CGFloat divider = CGRectGetMinX(drag.pane);
     ApolloDuoPostsPlaceDivider(drag, dividerX - divider);
     ApolloDuoSplitRelease release = ApolloDuoSplitReleaseFor(dividerX, velocityX, canvas.width,
-                                                             ApolloDuoPostsFoldX(state, canvas));
+                                                             ApolloDuoPostsFoldX(state, canvas),
+                                                             ApolloDuoPostsTrailingInset(state),
+                                                             kApolloDuoPostsWideStopThread);
     // Closing the thread and full screen leave the remembered stop as it was.
     if (release.closesThread) {
         ApolloLog(@"[DuoSplit] divider let go at %.0f, %.0f pt/s: close the thread", dividerX, velocityX);

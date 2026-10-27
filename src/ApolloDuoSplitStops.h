@@ -9,12 +9,15 @@ extern "C" {
 #include <objc/NSObjCRuntime.h>
 #include <stdbool.h>
 
-// Where the Posts split divider can rest on Duo's unfolded landscape display,
-// measured as the feed's share of the canvas. Stored as an integer.
+// Where the Posts split divider can rest on Duo's unfolded landscape display.
+// Quarter and Half are the feed's share of the canvas; Wide is the widest
+// feed that keeps the thread tiled beside it and its post actions visible,
+// at most three quarters. Stored
+// as an integer (3 was the old three quarters stop, so nothing migrates).
 typedef enum {
     ApolloDuoSplitStopFeedQuarter = 1,
     ApolloDuoSplitStopHalf = 2,
-    ApolloDuoSplitStopFeedThreeQuarters = 3,
+    ApolloDuoSplitStopFeedWide = 3,
 } ApolloDuoSplitStop;
 
 // What letting go of a drag does: land on a stop, close the thread, or give
@@ -36,20 +39,32 @@ enum {
 
 static inline ApolloDuoSplitStop ApolloDuoSplitStopSanitized(NSInteger stored) {
     if (stored == ApolloDuoSplitStopFeedQuarter ||
-        stored == ApolloDuoSplitStopFeedThreeQuarters) {
+        stored == ApolloDuoSplitStopFeedWide) {
         return (ApolloDuoSplitStop)stored;
     }
     return ApolloDuoSplitStopHalf;
 }
 
 // Half sits at the fold when the hinge reports one, otherwise mid-canvas.
+// Wide leaves the thread `wideThread` beside the trailing inset (the Duo's
+// rail), up to three quarters of the canvas, and never sits left of Half.
+// `wideThread` is the width the post's action bar needs, which is more than
+// UIKit's own minimum for tiling the thread.
 static inline CGFloat ApolloDuoSplitStopDivider(ApolloDuoSplitStop stop,
                                                 CGFloat canvasWidth,
-                                                CGFloat foldX) {
+                                                CGFloat foldX,
+                                                CGFloat trailingInset,
+                                                CGFloat wideThread) {
+    CGFloat half = foldX > 0 ? foldX : canvasWidth * 0.5;
     switch (ApolloDuoSplitStopSanitized(stop)) {
         case ApolloDuoSplitStopFeedQuarter: return canvasWidth * 0.25;
-        case ApolloDuoSplitStopFeedThreeQuarters: return canvasWidth * 0.75;
-        default: return foldX > 0 ? foldX : canvasWidth * 0.5;
+        case ApolloDuoSplitStopFeedWide: {
+            CGFloat wide = canvasWidth * 0.75;
+            CGFloat roomy = canvasWidth - trailingInset - wideThread;
+            if (roomy < wide) wide = roomy;
+            return wide > half ? wide : half;
+        }
+        default: return half;
     }
 }
 
@@ -58,9 +73,11 @@ static inline CGFloat ApolloDuoSplitStopDivider(ApolloDuoSplitStop stop,
 static inline CGFloat ApolloDuoPostsPrimaryWidth(bool adjustable,
                                                  ApolloDuoSplitStop stop,
                                                  CGFloat canvasWidth,
-                                                 CGFloat foldX) {
+                                                 CGFloat foldX,
+                                                 CGFloat trailingInset,
+                                                 CGFloat wideThread) {
     if (!adjustable) return canvasWidth * 0.5;
-    return ApolloDuoSplitStopDivider(stop, canvasWidth, foldX);
+    return ApolloDuoSplitStopDivider(stop, canvasWidth, foldX, trailingInset, wideThread);
 }
 
 // UIKit tiles the thread beside the feed only while the thread, less its
@@ -73,26 +90,35 @@ static inline bool ApolloDuoSplitStopFits(CGFloat dividerX, CGFloat canvasWidth,
 }
 
 // The feed width the split can honor: the remembered stop, or Half when that
-// stop would leave the thread too narrow to tile.
+// stop would leave the thread too narrow to tile (`minimumThread`, UIKit's
+// own minimum). A safety net: Wide leaves the thread more than that for the
+// same inset, so this trips only when the inset changes after the stop was
+// placed, or when no stop fits.
 static inline CGFloat ApolloDuoPostsFittedPrimaryWidth(bool adjustable,
                                                        ApolloDuoSplitStop stop,
                                                        CGFloat canvasWidth,
                                                        CGFloat foldX,
                                                        CGFloat trailingInset,
+                                                       CGFloat wideThread,
                                                        CGFloat minimumThread) {
-    CGFloat width = ApolloDuoPostsPrimaryWidth(adjustable, stop, canvasWidth, foldX);
+    CGFloat width = ApolloDuoPostsPrimaryWidth(adjustable, stop, canvasWidth, foldX,
+                                               trailingInset, wideThread);
     if (!adjustable || ApolloDuoSplitStopFits(width, canvasWidth, trailingInset, minimumThread)) return width;
-    return ApolloDuoSplitStopDivider(ApolloDuoSplitStopHalf, canvasWidth, foldX);
+    return ApolloDuoSplitStopDivider(ApolloDuoSplitStopHalf, canvasWidth, foldX,
+                                     trailingInset, wideThread);
 }
 
 static inline ApolloDuoSplitStop ApolloDuoSplitStopNearest(CGFloat dividerX,
                                                            CGFloat canvasWidth,
-                                                           CGFloat foldX) {
+                                                           CGFloat foldX,
+                                                           CGFloat trailingInset,
+                                                           CGFloat wideThread) {
     ApolloDuoSplitStop best = ApolloDuoSplitStopHalf;
     CGFloat bestDistance = -1;
     for (int stop = ApolloDuoSplitStopFeedQuarter;
-         stop <= ApolloDuoSplitStopFeedThreeQuarters; stop++) {
-        CGFloat distance = ApolloDuoSplitStopDivider((ApolloDuoSplitStop)stop, canvasWidth, foldX) - dividerX;
+         stop <= ApolloDuoSplitStopFeedWide; stop++) {
+        CGFloat distance = ApolloDuoSplitStopDivider((ApolloDuoSplitStop)stop, canvasWidth, foldX,
+                                                      trailingInset, wideThread) - dividerX;
         if (distance < 0) distance = -distance;
         if (bestDistance < 0 || distance < bestDistance) {
             bestDistance = distance;
@@ -105,23 +131,28 @@ static inline ApolloDuoSplitStop ApolloDuoSplitStopNearest(CGFloat dividerX,
 static inline ApolloDuoSplitRelease ApolloDuoSplitReleaseFor(CGFloat dividerX,
                                                              CGFloat velocityX,
                                                              CGFloat canvasWidth,
-                                                             CGFloat foldX) {
+                                                             CGFloat foldX,
+                                                             CGFloat trailingInset,
+                                                             CGFloat wideThread) {
     ApolloDuoSplitRelease release = { ApolloDuoSplitStopHalf, false, false };
-    CGFloat rightStop = ApolloDuoSplitStopDivider(ApolloDuoSplitStopFeedThreeQuarters, canvasWidth, foldX);
-    CGFloat leftStop = ApolloDuoSplitStopDivider(ApolloDuoSplitStopFeedQuarter, canvasWidth, foldX);
+    CGFloat rightStop = ApolloDuoSplitStopDivider(ApolloDuoSplitStopFeedWide, canvasWidth, foldX,
+                                                  trailingInset, wideThread);
+    CGFloat leftStop = ApolloDuoSplitStopDivider(ApolloDuoSplitStopFeedQuarter, canvasWidth, foldX,
+                                                 trailingInset, wideThread);
     CGFloat closeAt = rightStop + (canvasWidth - rightStop) * APOLLO_DUO_SPLIT_EDGE_COMMIT;
     CGFloat fullScreenAt = leftStop - leftStop * APOLLO_DUO_SPLIT_EDGE_COMMIT;
 
     if (dividerX >= closeAt ||
         (velocityX >= ApolloDuoSplitFlickVelocity && dividerX >= rightStop)) {
-        release.stop = ApolloDuoSplitStopFeedThreeQuarters;
+        release.stop = ApolloDuoSplitStopFeedWide;
         release.closesThread = true;
     } else if (dividerX <= fullScreenAt ||
                (velocityX <= -ApolloDuoSplitFlickVelocity && dividerX <= leftStop)) {
         release.stop = ApolloDuoSplitStopFeedQuarter;
         release.fullScreen = true;
     } else {
-        release.stop = ApolloDuoSplitStopNearest(dividerX, canvasWidth, foldX);
+        release.stop = ApolloDuoSplitStopNearest(dividerX, canvasWidth, foldX,
+                                                  trailingInset, wideThread);
     }
     return release;
 }
