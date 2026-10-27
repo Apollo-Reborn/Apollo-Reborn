@@ -43,6 +43,17 @@ NSString *ApolloWebJSONRoutePath(ApolloWebJSONRoute route, NSString *path);
 // Reddit's 403 HTML block page, as opposed to a 403 with a JSON error body.
 BOOL ApolloWebJSONRouteResponseIsBlockPage(NSHTTPURLResponse *_Nullable response);
 
+// A read Reddit redirected to its HTML sign-in page. Old Reddit's gate does
+// this for anyone signed out and for accounts without recent Old Reddit use:
+// old.reddit.com/api/info.json goes to old.reddit.com/login/?reason=lor2&dest=…,
+// a 200 text/html page (checked 2026-10-27). `response` is the final one, after
+// redirects.
+BOOL ApolloWebJSONRouteResponseIsSignInGate(NSHTTPURLResponse *_Nullable response);
+
+// The route refused the read: the block page or the sign-in gate. Either one
+// counts toward its cooldown and lets the read try the next route.
+BOOL ApolloWebJSONRouteResponseIsRefusal(NSHTTPURLResponse *_Nullable response);
+
 #pragma mark - Remote route table (keyless-routes.json)
 
 // Maintainers can change the order of routes without a release through

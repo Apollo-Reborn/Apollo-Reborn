@@ -1415,7 +1415,7 @@ void ApolloWebJSONNoteResponse(NSURLRequest *request, NSURLResponse *response) {
     NSInteger route = ApolloWebJSONRouteFromURL(url);
     NSString *requestedPath = url.path ?: @"/";
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-    if (route >= 0 && ApolloWebJSONRouteResponseIsBlockPage(http)) {
+    if (route >= 0 && ApolloWebJSONRouteResponseIsRefusal(http)) {
         if (ApolloWebJSONRouteHealthNoteBlockPage(username, requestedPath, (ApolloWebJSONRoute)route, now)) {
             ApolloLog(@"[WebJSON] Route %@ for %@ keeps getting the block page for u/%@; skipping it for %.0f min",
                       ApolloWebJSONRouteName((ApolloWebJSONRoute)route), ApolloWebJSONRoutePathPattern(requestedPath), username,
@@ -1454,6 +1454,9 @@ void ApolloWebJSONNoteResponse(NSURLRequest *request, NSURLResponse *response) {
     // A 403 with a JSON body (e.g. a private/quarantined subreddit) is a normal
     // per-content error — and proves the cookie still authenticates — so it must
     // NOT count toward expiry. Hence the text/html gate.
+    // Old Reddit's sign-in gate on a fallback route says nothing about the
+    // cookie on www either way, so it holds the streak like a 429.
+    if (ApolloWebJSONRouteResponseIsSignInGate(http)) return;
     NSString *contentType = [http.allHeaderFields[@"Content-Type"] lowercaseString] ?: @"";
     BOOL isBlockPage = (http.statusCode == 403) && [contentType containsString:@"text/html"];
 
