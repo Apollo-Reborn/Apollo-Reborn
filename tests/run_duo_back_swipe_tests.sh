@@ -15,8 +15,7 @@ policies = []
 for signature in ['UINavigationController *ApolloDuoSplitDetailNavigation(',
                   'BOOL ApolloDuoSplitAllowsNavigationSwipe(',
                   'BOOL ApolloDuoSplitCanRevealPostsListWithSwipe(',
-                  'BOOL ApolloDuoSplitCanReturnFromVisitedProfile(',
-                  'UINavigationController *ApolloDuoSplitPairedThreadNavigation(']:
+                  'BOOL ApolloDuoSplitCanReturnFromVisitedProfile(']:
     start = split.index(signature)
     policies.append(split[start:split.index('\n}', start) + 2])
 fixture = fixture.replace('// INCLUDE_PRODUCTION_SPLIT_POLICIES', '\n'.join(policies))

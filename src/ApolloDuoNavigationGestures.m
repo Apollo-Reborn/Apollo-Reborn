@@ -35,6 +35,8 @@ static BOOL ApolloDuoBackSwipeCanNavigate(UINavigationController *navigation) {
 // Gestures > Disable Left Swipes turns off the row actions a right swipe would
 // trigger, and Apollo's own Back pan then starts anywhere on the page. Give a
 // Duo pane the same reach; with the setting off only the edge strip qualifies.
+// Either way a swipe acts on the pane it starts in: the feed's own Back while
+// a thread stays open beside it, the thread's Back from the thread.
 static BOOL ApolloDuoBackSwipeStartsAnywhere(void) {
     return [NSUserDefaults.standardUserDefaults boolForKey:@"DisableLeftSwipeGestureActions"];
 }
@@ -82,10 +84,9 @@ static BOOL ApolloDuoBackSwipeTouchOwnsHorizontalDrag(UIView *view, UIView *cont
     return NO;
 }
 
-// Mirrors swiped: below. Closing a paired thread, leaving a visited profile
-// and popping a page are Back; only a plain root reveals its list.
+// Mirrors swiped: below. Leaving a visited profile and popping a page are
+// Back; only a plain root reveals its list.
 static BOOL ApolloDuoBackSwipeRevealsAtRoot(UINavigationController *navigation) {
-    if (ApolloDuoBackSwipeStartsAnywhere() && ApolloDuoSplitPairedThreadNavigation(navigation)) return NO;
     return navigation.viewControllers.count == 1 && !ApolloDuoSplitCanReturnFromVisitedProfile(navigation);
 }
 
@@ -193,16 +194,6 @@ static const NSTimeInterval kApolloDuoHighlightGuardDelay = 0.12;
 - (void)swiped:(UISwipeGestureRecognizer *)gesture {
     UINavigationController *navigation = self.navigation;
     if (gesture.state != UIGestureRecognizerStateRecognized || !ApolloDuoBackSwipeCanNavigate(navigation)) return;
-    BOOL animated = !UIAccessibilityIsReduceMotionEnabled();
-    // Swipe-anywhere is Apollo's Back: the thread opened beside the feed is the
-    // most recent navigation, so it closes before the feed itself moves.
-    UINavigationController *thread = ApolloDuoBackSwipeStartsAnywhere()
-        ? ApolloDuoSplitPairedThreadNavigation(navigation) : nil;
-    if (thread) {
-        ApolloLog(@"[DuoSwipe] feed pane: close the thread beside it first");
-        [thread popViewControllerAnimated:animated];
-        return;
-    }
     if (ApolloDuoSplitReturnFromVisitedProfile(navigation)) {
         ApolloLog(@"[DuoSwipe] visited profile: Back out of the profile");
         return;
@@ -213,7 +204,7 @@ static const NSTimeInterval kApolloDuoHighlightGuardDelay = 0.12;
         return;
     }
     ApolloLog(@"[DuoSwipe] Back in pane; stack pages=%lu", (unsigned long)navigation.viewControllers.count);
-    [navigation popViewControllerAnimated:animated];
+    [navigation popViewControllerAnimated:!UIAccessibilityIsReduceMotionEnabled()];
 }
 @end
 

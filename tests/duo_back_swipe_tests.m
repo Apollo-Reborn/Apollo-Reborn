@@ -396,8 +396,8 @@ int main(void) {
         Check([owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch], @"root reveal: the rest of the feed still opens the list");
         touch.view = card; rootSplit.host.postsShowingDetail = YES;
         rootThread.viewControllers = @[[UIViewController new], [UIViewController new]];
-        Check([owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch],
-              @"closing the paired thread is Back: a carousel at its leading end does not hold it");
+        Check(![owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch],
+              @"root reveal: a thread open beside the feed changes nothing, the carousel keeps the swipe");
         rootSplit.host.postsShowingDetail = NO; rootThread.viewControllers = @[[UIViewController new]];
         root.viewControllers = @[[UIViewController new], [UIViewController new]];
         Check([owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch], @"a pushed page with a carousel at its first item still goes Back");
@@ -438,8 +438,10 @@ int main(void) {
         account.profilePrefix = @[[UIViewController new]]; account.tabKind = @"profile";
         Check(!ApolloDuoBackSwipeCanNavigate(profile), @"the Account tab's own profile is a root, not a visit");
 
-        // Swipe-anywhere means Back: a thread opened beside the feed is the
-        // most recent navigation, so a swipe in the feed pane closes it first.
+        // Each pane's swipe acts on its own pane, with the setting on as off:
+        // a swipe in the feed does the feed's own Back (the list at its root)
+        // and leaves the thread beside it open; a swipe in the thread closes
+        // or pops the thread.
         UINavigationController *feed2 = Navigation(); UINavigationController *thread = Navigation();
         feed2.viewControllers = @[[UIViewController new]];
         ApolloDuoSplitState *posts = [ApolloDuoSplitState new];
@@ -450,15 +452,28 @@ int main(void) {
         NSUInteger revealsBefore = drawerReveals;
         leftSwipesDisabled = YES;
         [owner swiped:owner.swipe];
-        Check(thread.pops == 1 && drawerReveals == revealsBefore && feed2.pops == 0,
-              @"Disable Left Swipes: a feed-pane swipe closes the open thread before anything else");
-        posts.host.postsShowingDetail = NO;
+        Check(drawerReveals == revealsBefore + 1 && thread.pops == 0 && feed2.pops == 0,
+              @"Disable Left Swipes: a feed-root swipe opens the list and leaves the thread beside it open");
+        posts.host.listVisible = NO;
+        feed2.viewControllers = @[[UIViewController new], [UIViewController new]];
         [owner swiped:owner.swipe];
-        Check(drawerReveals == revealsBefore + 1, @"with the thread closed, the next feed-root swipe opens the list");
-        posts.host.listVisible = NO; posts.host.postsShowingDetail = YES; thread.viewControllers = @[[UIViewController new], [UIViewController new]];
+        Check(feed2.pops == 1 && thread.pops == 0 && drawerReveals == revealsBefore + 1,
+              @"Disable Left Swipes: a feed-pane swipe pops the feed's own page, not the thread beside it");
+        thread.viewControllers = @[[UIViewController new], [UIViewController new], [UIViewController new]];
+        ApolloDuoInstallBackSwipe(thread);
+        ApolloDuoBackSwipe *threadOwner = objc_getAssociatedObject(thread, &kApolloDuoBackSwipe);
+        threadOwner.swipe.state = UIGestureRecognizerStateRecognized;
+        [threadOwner swiped:threadOwner.swipe];
+        Check(thread.pops == 1 && thread.viewControllers.count == 2 && feed2.pops == 1,
+              @"Disable Left Swipes: a thread-pane swipe pops the page pushed over the thread");
+        [threadOwner swiped:threadOwner.swipe];
+        Check(thread.pops == 2 && thread.viewControllers.count == 1 && feed2.pops == 1 && drawerReveals == revealsBefore + 1,
+              @"Disable Left Swipes: the next thread-pane swipe closes the thread itself");
+        posts.host.postsShowingDetail = YES; thread.viewControllers = @[[UIViewController new], [UIViewController new]];
+        feed2.viewControllers = @[[UIViewController new]];
         leftSwipesDisabled = NO;
         [owner swiped:owner.swipe];
-        Check(thread.pops == 1 && drawerReveals == revealsBefore + 2,
+        Check(thread.pops == 2 && drawerReveals == revealsBefore + 2,
               @"with left swipes on, the feed edge keeps #1245's per-pane behavior (opens the list)");
         leftSwipesDisabled = NO;
         touch.view = cell;

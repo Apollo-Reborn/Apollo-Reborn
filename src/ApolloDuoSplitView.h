@@ -27,8 +27,6 @@ BOOL ApolloDuoSplitDismissPostsList(UINavigationController *navigation);
 /// Returns from a visited profile dashboard to its retained Posts Back stack.
 BOOL ApolloDuoSplitCanReturnFromVisitedProfile(UINavigationController *navigation);
 BOOL ApolloDuoSplitReturnFromVisitedProfile(UINavigationController *navigation);
-// The thread open beside `nav` when it is the paired Posts feed, else nil.
-UINavigationController *ApolloDuoSplitPairedThreadNavigation(UINavigationController *nav);
 BOOL ApolloDuoSplitShowSidebar(UINavigationController *navigation);
 __END_DECLS
 

@@ -1076,13 +1076,6 @@ BOOL ApolloDuoSplitAllowsNavigationSwipe(UINavigationController *nav) {
     return !state.host.listVisible && (nav == state.feed || nav == state.secondary);
 }
 
-// The thread open beside `nav` when `nav` is the paired Posts feed, else nil.
-UINavigationController *ApolloDuoSplitPairedThreadNavigation(UINavigationController *nav) {
-    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
-    if (!state.split || state.changing || state.feed != nav || !state.host.postsShowingDetail) return nil;
-    return state.secondary.viewControllers.count > 1 ? state.secondary : nil;
-}
-
 BOOL ApolloDuoSplitCanRevealPostsListWithSwipe(UINavigationController *nav) {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
     return state.split && !state.changing && state.feed == nav
