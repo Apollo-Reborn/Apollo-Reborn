@@ -31,3 +31,11 @@ NSString *ApolloLGLegacyClassicsIconID(NSString *iconID) {
     NSString *legacyID = [iconID substringFromIndex:3];
     return [ApolloLGLegacyClassicsIconIDs() containsObject:legacyID] ? legacyID : nil;
 }
+
+// Keep in sync with _LG_REFRESH_ICON_SUFFIX in scripts/modules/liquid-glass-assets.sh.
+NSString *const ApolloLGRefreshIconSuffix = @"__apollo_refresh";
+
+NSString *ApolloLGCanonicalAlternateIconName(NSString *name) {
+    if (![name hasSuffix:ApolloLGRefreshIconSuffix]) return name;
+    return [name substringToIndex:name.length - ApolloLGRefreshIconSuffix.length];
+}

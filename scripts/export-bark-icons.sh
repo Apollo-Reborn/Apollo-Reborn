@@ -81,6 +81,9 @@ alternates = info.get("CFBundleIcons", {}).get("CFBundleAlternateIcons", {})
 if not alternates:
     sys.exit("error: no CFBundleAlternateIcons in Info.plist")
 for name, entry in sorted(alternates.items()):
+    # Refresh twins repeat another key's icon (see liquid-glass-assets.sh).
+    if name.endswith("__apollo_refresh"):
+        continue
     files = entry.get("CFBundleIconFiles") or []
     src = os.path.join(app_dir, files[0] + "@2x.png") if files else ""
     print(name + "\t" + src)
