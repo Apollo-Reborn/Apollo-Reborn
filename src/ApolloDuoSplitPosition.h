@@ -205,6 +205,18 @@ static inline ApolloDuoSplitRelease ApolloDuoSplitReleaseFor(CGFloat dividerX,
     return release;
 }
 
+// Whether a divider dragged to `dividerX` would be let go at Half: the same
+// release the finger's lift runs, so the guide at Half lights exactly when
+// the magnet would take the divider there. Never with no range to move in.
+static inline bool ApolloDuoSplitDividerAtHalf(CGFloat dividerX, CGFloat canvasWidth, CGFloat foldX,
+                                               CGFloat trailingInset, CGFloat wideThread) {
+    if (!(canvasWidth > 0) || !isfinite(dividerX)) return false;
+    if (!ApolloDuoSplitHasRange(canvasWidth, foldX, trailingInset, wideThread)) return false;
+    ApolloDuoSplitRelease release = ApolloDuoSplitReleaseFor(dividerX, 0, canvasWidth, foldX,
+                                                             trailingInset, wideThread);
+    return !release.closesThread && !release.coversFeed && release.share == 0;
+}
+
 #ifdef __cplusplus
 }
 #endif

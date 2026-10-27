@@ -243,6 +243,18 @@ int main(void) {
     Check(!ApolloDuoSplitCoverHolds(closed) && !ApolloDuoSplitCoverHolds(portrait) && !ApolloDuoSplitCoverHolds(off)
           && ApolloDuoSplitCoverHolds(holds), "Cover holds only while every fact holds");
 
+    // The guide at Half lights where the release would land on Half, no wider.
+    Check(ApolloDuoSplitDividerAtHalf(475.5, canvas, fold, inset, wide), "The guide lights on Half itself");
+    Check(ApolloDuoSplitDividerAtHalf(491.5, canvas, fold, inset, wide), "The guide lights at the magnet's edge, right");
+    Check(!ApolloDuoSplitDividerAtHalf(491.6, canvas, fold, inset, wide), "The guide is faint just past the magnet, right");
+    Check(ApolloDuoSplitDividerAtHalf(459.5, canvas, fold, inset, wide), "The guide lights at the magnet's edge, left");
+    Check(!ApolloDuoSplitDividerAtHalf(459.4, canvas, fold, inset, wide), "The guide is faint just past the magnet, left");
+    Check(!ApolloDuoSplitDividerAtHalf(700, canvas, fold, inset, wide), "The guide is faint where the thread would close");
+    Check(!ApolloDuoSplitDividerAtHalf(100, canvas, fold, inset, wide), "The guide is faint where the feed would be covered");
+    Check(!ApolloDuoSplitDividerAtHalf(NAN, canvas, fold, inset, wide), "The guide is faint for a position that is not a number");
+    Check(!ApolloDuoSplitDividerAtHalf(10, 100, 10, inset, wide), "The guide never lights with no range to move in");
+    Check(ApolloDuoSplitDividerAtHalf(500, 1000, 0, 0, wide), "The guide lights around mid-canvas without a fold");
+
     printf("duo split position tests passed (%u checks)\n", checks);
     return 0;
 }

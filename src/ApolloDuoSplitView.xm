@@ -3084,6 +3084,15 @@ static void ApolloDuoPostsInflateGeometry(CGRect *bounds, CGPoint *position, CGR
 // (ApolloDuoPostsUncoverUnderDrag): the live columns under its pictures are
 // not paired yet, and the drag holds all the same.
 @property (nonatomic) BOOL uncovering;
+// The guide at Half while the divider is dragged (ApolloDuoPostsAddGuide): a
+// thin line above the pictures, in the overlay so every teardown takes it,
+// and what it needs to light where the release would land on Half.
+@property (nonatomic, strong) UIView *guide;
+@property (nonatomic) BOOL guideLit;
+@property (nonatomic) CGFloat guideHalf;
+@property (nonatomic) CGFloat guideCanvas;
+@property (nonatomic) CGFloat guideFold;
+@property (nonatomic) CGFloat guideInset;
 @end
 
 @implementation ApolloDuoPostsCloseHandoff
@@ -3986,6 +3995,8 @@ static void ApolloDuoPostsSyncSeparatorTap(ApolloDuoSplitState *state, BOOL adju
 }
 
 static BOOL ApolloDuoPostsUncoverUnderDrag(ApolloDuoSplitState *state, ApolloDuoPostsCloseHandoff *drag);
+static void ApolloDuoPostsAddGuide(ApolloDuoSplitState *state, ApolloDuoPostsCloseHandoff *drag);
+static void ApolloDuoPostsLightGuide(ApolloDuoPostsCloseHandoff *drag, CGFloat dividerX);
 
 static ApolloDuoSplitState *ApolloDuoPostsStateForHostView(UIView *view) {
     ApolloDuoSplitHost *host = [view.nextResponder isKindOfClass:ApolloDuoSplitHost.class] ? (id)view.nextResponder : nil;
@@ -4063,9 +4074,84 @@ BOOL ApolloDuoSplitDividerBegin(UIView *view) {
     fill.transform = CGAffineTransformMakeScale(ApolloDuoPostsCloseExtensionScale(0.0, growth), 1);
     [drag.overlay insertSubview:fill belowSubview:drag.snapshot];
     drag.fill = fill;
+    ApolloDuoPostsAddGuide(state, drag);
+    ApolloDuoPostsLightGuide(drag, CGRectGetMinX(pane));
     ApolloDuoPostsCloseAdvance(state, drag, ApolloDuoPostsCloseEventBegin);
     ApolloLog(@"[DuoSplit] divider drag began at %.0f of %.0f", CGRectGetMinX(pane), CGRectGetWidth(surface.bounds));
     return YES;
+}
+
+// The guide's widths: faint, and lit within the hinge magnet.
+static const CGFloat kApolloDuoPostsGuideWidth = 1.5;
+static const CGFloat kApolloDuoPostsGuideLitWidth = 3.0;
+static const NSTimeInterval kApolloDuoPostsGuideFade = 0.12;
+
+static CGRect ApolloDuoPostsGuideFrame(ApolloDuoPostsCloseHandoff *drag, CGFloat width) {
+    return CGRectMake(drag.guideHalf - width * 0.5, CGRectGetMinY(drag.pane), width, CGRectGetHeight(drag.pane));
+}
+
+// Faint (the label color, as the chrome has it, at a quarter) or lit (the app's tint, full), the
+// change eased, and instant under Reduce Motion.
+static void ApolloDuoPostsStyleGuide(ApolloDuoPostsCloseHandoff *drag, BOOL lit, BOOL animated) {
+    UIView *guide = drag.guide;
+    if (!guide) return;
+    UIColor *color = lit ? (ApolloThemeAccentColor() ?: guide.tintColor) : [(ApolloNavigationChromeColor() ?: UIColor.labelColor) colorWithAlphaComponent:0.25];
+    color = [color resolvedColorWithTraitCollection:guide.traitCollection];
+    CGRect frame = ApolloDuoPostsGuideFrame(drag, lit ? kApolloDuoPostsGuideLitWidth : kApolloDuoPostsGuideWidth);
+    void (^apply)(void) = ^{
+        guide.backgroundColor = color;
+        guide.frame = frame;
+    };
+    if (animated && !UIAccessibilityIsReduceMotionEnabled()) {
+        [UIView animateWithDuration:kApolloDuoPostsGuideFade delay:0 options:UIViewAnimationOptionCurveEaseInOut
+                         animations:apply completion:nil];
+    } else {
+        apply();
+    }
+}
+
+// The guide at Half, faint, above the drag's pictures: the fold when the
+// hinge reports one, else mid-canvas, as the position model has it. None with
+// no range to move the divider in. Decorative and never takes a touch.
+static void ApolloDuoPostsAddGuide(ApolloDuoSplitState *state, ApolloDuoPostsCloseHandoff *drag) {
+    CGSize canvas = state.host.view.bounds.size;
+    drag.guideCanvas = canvas.width;
+    drag.guideFold = ApolloDuoPostsFoldX(state, canvas);
+    drag.guideInset = ApolloDuoPostsTrailingInset(state);
+    if (!ApolloDuoSplitHasRange(drag.guideCanvas, drag.guideFold, drag.guideInset, kApolloDuoPostsWideStopThread)) return;
+    drag.guideHalf = ApolloDuoSplitHalfDivider(drag.guideCanvas, drag.guideFold);
+    UIView *guide = [UIView new];
+    guide.userInteractionEnabled = NO;
+    guide.accessibilityElementsHidden = YES;
+    drag.guide = guide;
+    drag.guideLit = NO;
+    // In the overlay first: the dynamic colors resolve against its traits.
+    [drag.overlay addSubview:guide];
+    ApolloDuoPostsStyleGuide(drag, NO, NO);
+}
+
+// Lit while the divider is where the release would land on Half.
+static void ApolloDuoPostsLightGuide(ApolloDuoPostsCloseHandoff *drag, CGFloat dividerX) {
+    if (!drag.guide) return;
+    BOOL lit = ApolloDuoSplitDividerAtHalf(dividerX, drag.guideCanvas, drag.guideFold, drag.guideInset,
+                                           kApolloDuoPostsWideStopThread);
+    if (lit == drag.guideLit) return;
+    drag.guideLit = lit;
+    ApolloDuoPostsStyleGuide(drag, lit, YES);
+}
+
+// The guide goes with the release: faded over the settle, or at once.
+static void ApolloDuoPostsEndGuide(ApolloDuoPostsCloseHandoff *drag, BOOL fade) {
+    UIView *guide = drag.guide;
+    drag.guide = nil;
+    if (!guide) return;
+    if (!fade || UIAccessibilityIsReduceMotionEnabled() || !guide.window) {
+        [guide removeFromSuperview];
+        return;
+    }
+    [UIView animateWithDuration:kApolloDuoPostsGuideFade * 2.0 delay:0 options:UIViewAnimationOptionCurveEaseOut
+                     animations:^{ guide.alpha = 0; }
+                     completion:^(__unused BOOL finished) { [guide removeFromSuperview]; }];
 }
 
 static ApolloDuoPostsCloseHandoff *ApolloDuoPostsDividerDrag(ApolloDuoSplitState *state) {
@@ -4081,6 +4167,7 @@ static void ApolloDuoPostsPlaceDivider(ApolloDuoPostsCloseHandoff *drag, CGFloat
     drag.fill.transform = CGAffineTransformMakeScale(ApolloDuoPostsCloseExtensionScale(-offset, CGRectGetMinX(drag.pane)), 1);
     drag.snapshot.layer.shadowOpacity = ApolloDuoPostsCloseShadowOpacity(
         ApolloDuoPostsCloseProgress(offset, CGRectGetWidth(drag.pane)));
+    ApolloDuoPostsLightGuide(drag, CGRectGetMinX(drag.pane) + offset);
 }
 
 // The setting turned off, the thread closed or the columns changed under the
@@ -4182,12 +4269,14 @@ void ApolloDuoSplitDividerFinish(UIView *view, CGFloat dividerX, CGFloat velocit
     // Closing the thread and covering the feed leave the remembered position as it was.
     if (release.closesThread) {
         ApolloLog(@"[DuoSplit] divider let go at %.0f, %.0f pt/s: close the thread", dividerX, velocityX);
+        ApolloDuoPostsEndGuide(drag, NO);
         // Past the right limit it is the close's drag: the same slide off the pane.
         [drag.fill removeFromSuperview];
         drag.fill = nil;
         ApolloDuoPostsCommitInteractiveClose(state, drag, velocityX);
         return;
     }
+    ApolloDuoPostsEndGuide(drag, YES);
     if (release.coversFeed) {
         // Cleared first: the cover syncs the columns, which the flag holds off.
         // The pictures spring to the screen's edge (an uncover drag's are
@@ -4307,6 +4396,8 @@ BOOL ApolloDuoSplitThreadUncoverBegin(UINavigationController *nav) {
     // No picture of the pane as the split will show it: a forward swipe
     // after a close restores the thread discretely.
     drag.restoreSnapshot = nil;
+    ApolloDuoPostsAddGuide(state, drag);
+    ApolloDuoPostsLightGuide(drag, drag.snapshot.transform.tx);
     ApolloDuoPostsCloseAdvance(state, drag, ApolloDuoPostsCloseEventBegin);
     // The pictures reach the render server before the column change stalls
     // the main thread: the picture follows the finger from its first move,
