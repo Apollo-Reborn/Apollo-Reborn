@@ -237,8 +237,19 @@ BOOL ApolloDevvitLinkShowsWidget(id link) {
     return ApolloDevvitLinkIsInteractive((RDKLink *)link);
 }
 
+// The widget page loads from sh.reddit.com, never www (#1551). An account with
+// "Use new Reddit as my default experience" turned off is served OLD Reddit at
+// www.reddit.com: no devvit element ever appears, so every interactive post sat
+// on "Loading interactive post…" until the probe gave up, on any device, for
+// that account only. sh.reddit.com always serves the current web app whatever
+// the account prefers — it is where Reddit's own old-Reddit fallback text sends
+// people ("Click here to view the full post"). The seeded session cookies are
+// .reddit.com-wide, so it is the same signed-in page.
+static NSString *const kApolloDevvitPageHost = @"sh.reddit.com";
+
 // RDKLink.permalink is NSString on some paths and a relative NSURL on others
-// (see ApolloShareAsImageLink.xm) — normalize to an absolute www URL.
+// (see ApolloShareAsImageLink.xm) — normalize to an absolute URL on the page
+// host. An absolute reddit permalink keeps its path and loses its host.
 static NSURL *ApolloDevvitPermalinkURL(RDKLink *link) {
     id perm = nil;
     @try { perm = [(id)link permalink]; } @catch (__unused id e) {}
@@ -246,9 +257,19 @@ static NSURL *ApolloDevvitPermalinkURL(RDKLink *link) {
     if ([perm isKindOfClass:[NSURL class]]) path = [(NSURL *)perm absoluteString];
     else if ([perm isKindOfClass:[NSString class]]) path = (NSString *)perm;
     if (path.length == 0) return nil;
-    if ([path hasPrefix:@"http"]) return [NSURL URLWithString:path];
+    if ([path hasPrefix:@"http"]) {
+        NSURLComponents *comps = [NSURLComponents componentsWithString:path];
+        NSString *host = comps.host.lowercaseString;
+        if (!host || !([host isEqualToString:@"reddit.com"] || [host hasSuffix:@".reddit.com"])) {
+            return [NSURL URLWithString:path];
+        }
+        comps.scheme = @"https";
+        comps.host = kApolloDevvitPageHost;
+        comps.port = nil;
+        return comps.URL;
+    }
     if (![path hasPrefix:@"/"]) path = [@"/" stringByAppendingString:path];
-    return [NSURL URLWithString:[@"https://www.reddit.com" stringByAppendingString:path]];
+    return [NSURL URLWithString:[NSString stringWithFormat:@"https://%@%@", kApolloDevvitPageHost, path]];
 }
 
 static NSString *ApolloDevvitFullName(RDKLink *link) {
@@ -721,7 +742,8 @@ static void ApolloDevvitCompileRuleList(void) {
 
 // "name=value; name2=value2" -> NSHTTPCookie array. __Host- prefixed cookies
 // must be host-scoped (the SocialLinks/BadgeBook variant — the Chat one drops
-// them silently).
+// them silently), and here that host is the one the page loads from: a
+// www-scoped copy would never reach sh.reddit.com.
 static NSArray<NSHTTPCookie *> *ApolloDevvitCookiesFromHeader(NSString *header) {
     NSMutableArray<NSHTTPCookie *> *cookies = [NSMutableArray array];
     for (NSString *pair in [header componentsSeparatedByString:@";"]) {
@@ -736,7 +758,7 @@ static NSArray<NSHTTPCookie *> *ApolloDevvitCookiesFromHeader(NSString *header) 
             NSHTTPCookieName: name,
             NSHTTPCookieValue: value,
             NSHTTPCookiePath: @"/",
-            NSHTTPCookieDomain: [name hasPrefix:@"__Host-"] ? @"www.reddit.com" : @".reddit.com",
+            NSHTTPCookieDomain: [name hasPrefix:@"__Host-"] ? kApolloDevvitPageHost : @".reddit.com",
             NSHTTPCookieSecure: @"TRUE",
             NSHTTPCookieExpires: [NSDate dateWithTimeIntervalSinceNow:60.0 * 60.0 * 24.0],
         };
@@ -1781,9 +1803,12 @@ static NSURL *ApolloDevvitNormalizedPermalink(NSURL *url) {
 // Main-document milestones, stamped from the load start: commit = first
 // bytes of the HTML are in (network + edge latency), finish = the document
 // and its synchronous resources are done (the shreddit shell is then still
-// hydrating, and the devvit app itself boots after that).
+// hydrating, and the devvit app itself boots after that). The commit names
+// the host the page landed on: anything but sh.reddit.com (old Reddit, a
+// login or block page) explains a widget that never appears (#1551).
 - (void)webView:(WKWebView *)webView didCommitNavigation:(WKNavigation *)navigation {
-    ApolloLog(@"[Devvit] %@ document committed +%.2fs", self.fullName, [self sinceLoadStart]);
+    ApolloLog(@"[Devvit] %@ document committed +%.2fs (%@)", self.fullName, [self sinceLoadStart],
+              webView.URL.host ?: @"no host");
 }
 
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
