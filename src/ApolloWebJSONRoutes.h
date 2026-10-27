@@ -19,12 +19,23 @@ typedef NS_ENUM(NSInteger, ApolloWebJSONRoute) {
     // both built-in endpoints for the cookie as of 2026-10-24, and is here so
     // keyless-routes.json can use it again without a release.
     ApolloWebJSONRouteApi,
-    ApolloWebJSONRouteLast = ApolloWebJSONRouteApi,
+    // oauth.reddit.com, path unchanged, with the cookie and no bearer. Only
+    // search uses it: www refuses post search for the cookie, and oauth
+    // refuses it for the desktop web client's token (token_v2), but oauth
+    // serves it signed in to the cookie alone.
+    ApolloWebJSONRouteOAuth,
+    ApolloWebJSONRouteLast = ApolloWebJSONRouteOAuth,
 };
 
-// "www", "www-dotjson", "old" or "api", for logs.
+// "www", "www-dotjson", "old", "api" or "oauth", for logs.
 NSString *ApolloWebJSONRouteName(ApolloWebJSONRoute route);
 NSString *ApolloWebJSONRouteHost(ApolloWebJSONRoute route);
+
+// GET search reads: global (/search), subreddit discovery
+// (/subreddits/search), and community (/r/<sub>/search), which also covers
+// Apollo's multireddit search (/r/<a>+<b>+<c>/search). Their built-in routes
+// are oauth, then old.
+BOOL ApolloWebJSONRequestIsSearchRead(NSString *method, NSString *path);
 
 // The routes to try for a request, in order; always at least one. Endpoints
 // not in the table get @[www]. `path` may be RedditKit's relative form
@@ -48,9 +59,10 @@ BOOL ApolloWebJSONRouteResponseIsBlockPage(NSHTTPURLResponse *_Nullable response
 // Maintainers can change the order of routes without a release through
 // keyless-routes.json in the repository (docs/keyless-routes.md). The file can
 // only pick among the routes above, never name a host or URL:
-// - an endpoint gets any order or subset of www, www-dotjson, old and api: a
-//   built-in one (above) for one of its own methods, another only as a GET on
-//   /api/<name>, so feeds and threads can't be moved to another route;
+// - an endpoint gets any order or subset of the routes: a built-in one (above)
+//   for one of its own methods, another only as a GET on /api/<name>, so feeds
+//   and threads can't be moved to another route. The search endpoints are
+//   named by their pattern ("GET /r/*/search");
 // - writes can't be added, and nothing the file says makes a write retry.
 // Which route an endpoint uses, Old Reddit included, is left to review of the
 // file's pull requests.

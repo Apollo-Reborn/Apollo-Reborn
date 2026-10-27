@@ -904,10 +904,17 @@ static id ApolloWebJSONThingProperty(id thing, SEL selector) {
 %end
 
 // The web-session account ApolloWebJSONRewriteRequest will attribute a request
-// from `client` to: the same resolution, run on the client's credential because
-// the request doesn't exist yet. nil for an OAuth account.
+// from `client` to, before its request exists or it has installed a credential.
+// Resolve its own identity first, then the bearer's owner for anonymous clients.
+// nil for an OAuth account.
 static NSString *ApolloWebJSONWebSessionUsernameForClient(RDKClient *client) {
     if (!client || !sWebJSONEnabled) return nil;
+    // A newly restored client may not have installed its synthetic credential
+    // yet. Its first moderator request still needs a bearer before the
+    // transport runs.
+    // Resolve named clients from their own identity, never the active account.
+    NSString *username = ApolloWebJSONClientUsername(client);
+    if (username.length > 0) return ApolloWebSessionFor(username) ? username : nil;
     id credential = [client respondsToSelector:@selector(authorizationCredential)] ? [client authorizationCredential] : nil;
     return ApolloWebJSONWebSessionUsernameForBearer(ApolloWebJSONCredentialTokenString(credential));
 }

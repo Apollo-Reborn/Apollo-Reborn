@@ -5,6 +5,7 @@ NSString *ApolloWebJSONRouteName(ApolloWebJSONRoute route) {
         case ApolloWebJSONRouteWwwDotJSON: return @"www-dotjson";
         case ApolloWebJSONRouteOld: return @"old";
         case ApolloWebJSONRouteApi: return @"api";
+        case ApolloWebJSONRouteOAuth: return @"oauth";
         case ApolloWebJSONRouteWww:
         default: return @"www";
     }
@@ -14,6 +15,7 @@ NSString *ApolloWebJSONRouteHost(ApolloWebJSONRoute route) {
     switch (route) {
         case ApolloWebJSONRouteOld: return @"old.reddit.com";
         case ApolloWebJSONRouteApi: return @"api.reddit.com";
+        case ApolloWebJSONRouteOAuth: return @"oauth.reddit.com";
         case ApolloWebJSONRouteWww:
         case ApolloWebJSONRouteWwwDotJSON:
         default: return @"www.reddit.com";
@@ -31,6 +33,26 @@ static NSString *ApolloWebJSONRouteEndpointKey(NSString *path) {
     return [@"/" stringByAppendingString:p];
 }
 
+// The search endpoints, as ApolloWebJSONRoutePathPattern names them. Apollo
+// searches a multireddit as its subreddits joined with "+" under /r/, never
+// by Reddit's /user/<name>/m/<multi>/search.
+static NSArray<NSString *> *ApolloWebJSONRouteSearchEndpoints(void) {
+    return @[ @"/search", @"/subreddits/search", @"/r/*/search" ];
+}
+
+// The endpoint a path is listed under: its pattern for search, whose paths
+// carry a subreddit or user, and its endpoint key for everything else.
+static NSString *ApolloWebJSONRouteTableEndpoint(NSString *path) {
+    NSString *pattern = ApolloWebJSONRoutePathPattern(path);
+    return [ApolloWebJSONRouteSearchEndpoints() containsObject:pattern] ? pattern : ApolloWebJSONRouteEndpointKey(path);
+}
+
+BOOL ApolloWebJSONRequestIsSearchRead(NSString *method, NSString *path) {
+    if (![method isKindOfClass:[NSString class]] || ![path isKindOfClass:[NSString class]]) return NO;
+    return [method.uppercaseString isEqualToString:@"GET"] &&
+           [ApolloWebJSONRouteSearchEndpoints() containsObject:ApolloWebJSONRoutePathPattern(path)];
+}
+
 // Endpoints www.reddit.com refuses for the cookie at their usual path, with the
 // routes that still served them (each checked live 2026-10-24 from the app with
 // an API-Key-Free session; api.reddit.com and oauth.reddit.com with the web
@@ -43,20 +65,36 @@ static NSString *ApolloWebJSONRouteEndpointKey(NSString *path) {
 // www-dotjson gets past www's block rather than being a documented route, and
 // Reddit is limiting old.reddit.com to accounts with recent Old Reddit use, so
 // either can stop working; old comes second.
-static NSDictionary *ApolloWebJSONRouteEntry(NSString *method, NSString *path) {
+// Search (ApolloWebJSONRequestIsSearchRead): www refuses post search for the
+// cookie, and oauth.reddit.com refuses it for tokens from Reddit's desktop web
+// client (cid 0R-WAMhuoo-MyQ), which is what the session's token_v2 cookie is.
+// It accepts tokens minted for the mobile client. oauth.reddit.com and
+// old.reddit.com both serve search signed in to the cookie with no token at
+// all (checked 2026-10-27, one account), so search needs no bearer. oauth comes
+// first for the same reason old comes second above.
+static NSArray<NSDictionary *> *ApolloWebJSONRouteBuiltInTable(void) {
     static NSArray<NSDictionary *> *table;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         NSArray *fallbacks = @[ @(ApolloWebJSONRouteWwwDotJSON), @(ApolloWebJSONRouteOld) ];
-        table = @[
+        NSMutableArray<NSDictionary *> *rows = [@[
             @{ @"endpoint": @"/api/info", @"methods": @[ @"GET" ], @"routes": fallbacks },
             @{ @"endpoint": @"/api/morechildren", @"methods": @[ @"GET", @"POST" ], @"routes": fallbacks },
-        ];
+        ] mutableCopy];
+        for (NSString *endpoint in ApolloWebJSONRouteSearchEndpoints()) {
+            [rows addObject:@{ @"endpoint": endpoint, @"methods": @[ @"GET" ],
+                               @"routes": @[ @(ApolloWebJSONRouteOAuth), @(ApolloWebJSONRouteOld) ] }];
+        }
+        table = [rows copy];
     });
+    return table;
+}
+
+static NSDictionary *ApolloWebJSONRouteEntry(NSString *method, NSString *path) {
     if (![method isKindOfClass:[NSString class]] || ![path isKindOfClass:[NSString class]]) return nil;
-    NSString *key = ApolloWebJSONRouteEndpointKey(path);
+    NSString *key = ApolloWebJSONRouteTableEndpoint(path);
     NSString *upper = method.uppercaseString;
-    for (NSDictionary *row in table) {
+    for (NSDictionary *row in ApolloWebJSONRouteBuiltInTable()) {
         if ([row[@"endpoint"] isEqualToString:key] && [row[@"methods"] containsObject:upper]) return row;
     }
     return nil;
@@ -91,7 +129,7 @@ BOOL ApolloWebJSONRouteResponseIsBlockPage(NSHTTPURLResponse *response) {
 
 static NSUInteger const kApolloWebJSONRouteTableMaxBytes = 16 * 1024;
 static NSUInteger const kApolloWebJSONRouteTableMaxEndpoints = 32;
-static NSUInteger const kApolloWebJSONRouteTableMaxRoutes = 4;
+static NSUInteger const kApolloWebJSONRouteTableMaxRoutes = ApolloWebJSONRouteLast + 1;
 
 static NSObject *ApolloWebJSONRemoteTableLock(void) {
     static NSObject *lock;
@@ -104,7 +142,7 @@ static NSObject *ApolloWebJSONRemoteTableLock(void) {
 static NSDictionary<NSString *, NSArray<NSNumber *> *> *sApolloWebJSONRemoteTable;
 
 static NSString *ApolloWebJSONRemoteTableKey(NSString *method, NSString *path) {
-    return [NSString stringWithFormat:@"%@ %@", method.uppercaseString, ApolloWebJSONRouteEndpointKey(path)];
+    return [NSString stringWithFormat:@"%@ %@", method.uppercaseString, ApolloWebJSONRouteTableEndpoint(path)];
 }
 
 static NSArray<NSNumber *> *ApolloWebJSONRemoteRoutes(NSString *method, NSString *path) {
@@ -159,14 +197,16 @@ NSDictionary<NSString *, NSArray<NSNumber *> *> *ApolloWebJSONRouteTableParse(NS
             if (![method isEqualToString:@"GET"] && ![method isEqualToString:@"POST"]) {
                 [rejected addObject:[label stringByAppendingString:@": method isn't GET or POST"]]; continue;
             }
-            // Exactly /api/<name>: no wildcards, query, listings or other segments.
+            // Exactly /api/<name>: no wildcards, query, listings or other
+            // segments. The search endpoints are named by their exact pattern.
             static NSRegularExpression *apiPath;
             static dispatch_once_t once;
             dispatch_once(&once, ^{
                 apiPath = [NSRegularExpression regularExpressionWithPattern:@"^/api/[a-z0-9_]+$" options:0 error:NULL];
             });
-            if (![apiPath firstMatchInString:path options:0 range:NSMakeRange(0, path.length)]) {
-                [rejected addObject:[label stringByAppendingString:@": path isn't /api/<name>"]]; continue;
+            if (![apiPath firstMatchInString:path options:0 range:NSMakeRange(0, path.length)] &&
+                ![ApolloWebJSONRouteSearchEndpoints() containsObject:path]) {
+                [rejected addObject:[label stringByAppendingString:@": path isn't /api/<name> or a search endpoint"]]; continue;
             }
             BOOL builtIn = ApolloWebJSONRouteEntry(method, path) != nil;
             if (!builtIn && ![method isEqualToString:@"GET"]) {
@@ -175,7 +215,7 @@ NSDictionary<NSString *, NSArray<NSNumber *> *> *ApolloWebJSONRouteTableParse(NS
             id entry = endpoints[key];
             id names = [entry isKindOfClass:[NSDictionary class]] ? entry[@"routes"] : nil;
             if (![names isKindOfClass:[NSArray class]] || [names count] == 0 || [names count] > kApolloWebJSONRouteTableMaxRoutes) {
-                [rejected addObject:[label stringByAppendingString:@": routes isn't a list of 1 to 4 names"]]; continue;
+                [rejected addObject:[label stringByAppendingString:@": routes isn't a list of 1 to 5 names"]]; continue;
             }
             NSMutableArray<NSNumber *> *routes = [NSMutableArray array];
             NSString *problem = nil;
@@ -378,10 +418,11 @@ NSArray<NSDictionary<NSString *, id> *> *ApolloWebJSONRouteHealthSnapshot(NSStri
 
 NSArray<NSString *> *ApolloWebJSONRouteFallbackEndpoints(void) {
     NSMutableSet<NSString *> *keys = [NSMutableSet set];
-    for (NSArray<NSString *> *builtIn in @[ @[ @"GET", @"/api/info" ], @[ @"GET", @"/api/morechildren" ],
-                                           @[ @"POST", @"/api/morechildren" ] ]) {
-        if (ApolloWebJSONRoutesForRequest(builtIn[0], builtIn[1]).count > 1) {
-            [keys addObject:ApolloWebJSONRemoteTableKey(builtIn[0], builtIn[1])];
+    for (NSDictionary *row in ApolloWebJSONRouteBuiltInTable()) {
+        for (NSString *method in row[@"methods"]) {
+            if (ApolloWebJSONRoutesForRequest(method, row[@"endpoint"]).count > 1) {
+                [keys addObject:ApolloWebJSONRemoteTableKey(method, row[@"endpoint"])];
+            }
         }
     }
     @synchronized (ApolloWebJSONRemoteTableLock()) {

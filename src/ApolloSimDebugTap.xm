@@ -2231,7 +2231,7 @@ static BOOL ApolloSimDebugHandleIntegratedMainCommand(NSString *contents) {
         return YES;
     }
     // "routeblock <route>[,<route>…]" or "routeblock off": make API-Key-Free
-    // routes (www-dotjson, old, api) get Reddit's real block page, to exercise
+    // routes (www-dotjson, old, api, oauth) get Reddit's real block page, to exercise
     // the fallback (ApolloWebJSONRoutes.m).
     if ([contents hasPrefix:@"routeblock "]) {
         NSString *list = [[contents substringFromIndex:11]

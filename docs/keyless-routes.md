@@ -12,8 +12,11 @@ Installs with API-Key-Free Mode on and **Use Route Updates** on (the default) fe
 | `www-dotjson` | `www.reddit.com/api/<endpoint>/.json` |
 | `old` | `old.reddit.com`, path unchanged |
 | `api` | `api.reddit.com`, path unchanged |
+| `oauth` | `oauth.reddit.com`, path unchanged, with the cookie and no bearer |
 
 These are the only routes. The file names them; it can't give a host or URL. `api` isn't in the built-in table: as of 2026-10-24 it refused both built-in endpoints for the cookie, and it's there so the file can use it again if Reddit reopens it. For `/api/info` alone, `www.reddit.com/r/all/api/info.json` also answered the cookie then; it isn't a route, but it's the next one to add if the others close.
+
+Search is built in as `oauth`, then `old`. www blocks post search for the cookie. `oauth.reddit.com` blocks it for tokens issued to Reddit's desktop web client (`cid` `0R-WAMhuoo-MyQ`), which includes the `token_v2` cookie, but accepts tokens minted for the mobile client. Search doesn't need either: `oauth` and `old` both served it signed in to the cookie alone on 2026-10-27 (tested on one account). Of the cookie, `reddit_session` is what matters; `token_v2` isn't needed, and a stale one doesn't break the request. The search endpoints are global (`/search`), subreddit discovery (`/subreddits/search`) and community (`/r/*/search`). The last also covers Apollo's multireddit search, which joins the subreddits with `+` (`/r/a+b+c/search`); Apollo never uses Reddit's `/user/<name>/m/<multi>/search` form.
 
 ## Format
 
@@ -23,22 +26,23 @@ These are the only routes. The file names them; it can't give a host or URL. `ap
   "endpoints": {
     "GET /api/info": { "routes": ["old", "www-dotjson"] },
     "POST /api/morechildren": { "routes": ["www-dotjson"] },
-    "GET /api/foo": { "routes": ["www-dotjson"] }
+    "GET /api/foo": { "routes": ["www-dotjson"] },
+    "GET /r/*/search": { "routes": ["old", "oauth"] }
   }
 }
 ```
 
-Each key is `<METHOD> /api/<name>`, and `routes` lists 1 to 4 route names to try in order. A request goes by the first route that isn't cooling down for that account, and a block page sends it again by the next one.
+Each key is `<METHOD> /api/<name>`, or `GET` and one of the search endpoints above, written exactly as listed (`*` is the only wildcard, and only there). `routes` lists 1 to 5 route names to try in order. A request goes by the first route that isn't cooling down for that account, and a block page sends it again by the next one.
 
-- **Built-in endpoints** (`GET /api/info`, `GET` and `POST /api/morechildren`) take any order or subset of the four routes.
-- **Other endpoints** can be added as a `GET` only, on exactly `/api/<name>`, with any of the four routes. Feeds and comment threads can't be added, so the file can't move general browsing to another route.
+- **Built-in endpoints** (`GET /api/info`, `GET` and `POST /api/morechildren`, and `GET` on each search endpoint) take any order or subset of the routes. Each search endpoint has its own key, so community search can move without global search.
+- **Other endpoints** can be added as a `GET` only, on exactly `/api/<name>`, with any of the routes. Feeds and comment threads can't be added, so the file can't move general browsing to another route.
 - Writes can't be added, and are never resent.
 
 The app leaves out any entry that breaks these rules and logs why. A file it can't read (not JSON, over 16 KB, more than 32 endpoints, `version` not `1`) is ignored whole, and the app keeps the routes it was using. `"endpoints": {}` means the built-in routes everywhere.
 
 ## Changing a route
 
-Review the route as well as the JSON. Reddit is limiting `old.reddit.com` to accounts with recent Old Reddit use, so list `old` only where the other routes are blocked, and after them unless they're blocked for everyone.
+Review the route as well as the JSON. Reddit is limiting `old.reddit.com` to accounts with recent Old Reddit use, so list `old` only where the other routes are blocked, and after them unless they're blocked for everyone. `oauth` is only known to work with the cookie for search; for other endpoints check what it answers first (with the cookie, `/api/v1/me` there returns only `features`).
 
 1. Check the new route works for an API-Key-Free session before listing it. In a simulator build, the debug bridge's `routeblock <route>` makes a route get Reddit's real block page, `routehealth` prints which routes answered, and `APOLLO_KEYLESS_ROUTES_URL` (passed as `SIMCTL_CHILD_APOLLO_KEYLESS_ROUTES_URL`, `file://` allowed) points the app at a local copy of this file.
 2. Edit the file on `main`. Keep it valid JSON; a rejected file changes nothing.

@@ -7,6 +7,8 @@ static int sFailures = 0;
     if (!(cond)) { sFailures++; fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, [NSString stringWithFormat:__VA_ARGS__].UTF8String); } \
 } while (0)
 
+static void BlockTimes(NSString *account, NSString *path, ApolloWebJSONRoute route, int times, NSTimeInterval at);
+
 static NSArray<NSNumber *> *Fallbacks(void) {
     return @[ @(ApolloWebJSONRouteWwwDotJSON), @(ApolloWebJSONRouteOld) ];
 }
@@ -24,6 +26,41 @@ static void TestTableEndpoints(void) {
             CHECK(ApolloWebJSONRouteRequestMayRetry(method, path), @"%@ %@ may retry", method, path);
         }
     }
+}
+
+static NSArray<NSString *> *SearchPaths(void) {
+    return @[ @"/search", @"search.json", @"/search/.json", @"/search.json?q=apollo&sort=new", @"/subreddits/search.json",
+              @"/r/iOS/search.json", @"/r/ios+apple/search/", @"/R/Apple/Search",
+              @"/r/apollosideloaded+ApolloReborn+ApolloAppBeta+apolloapp/search.json" ];
+}
+
+static void TestSearchEndpoints(void) {
+    NSArray *search = @[ @(ApolloWebJSONRouteOAuth), @(ApolloWebJSONRouteOld) ];
+    for (NSString *path in SearchPaths()) {
+        CHECK(ApolloWebJSONRequestIsSearchRead(@"GET", path), @"GET %@ is search", path);
+        CHECK(ApolloWebJSONRequestIsSearchRead(@"get", path), @"method is case-insensitive for %@", path);
+        CHECK([ApolloWebJSONRoutesForRequest(@"GET", path) isEqualToArray:search], @"GET %@: oauth, then old", path);
+        CHECK(ApolloWebJSONRouteRequestMayRetry(@"GET", path), @"GET %@ may retry", path);
+        for (NSString *method in @[ @"POST", @"PUT", @"DELETE", @"HEAD" ]) {
+            CHECK(!ApolloWebJSONRequestIsSearchRead(method, path), @"%@ %@ isn't a search read", method, path);
+            CHECK([ApolloWebJSONRoutesForRequest(method, path) isEqualToArray:@[ @(ApolloWebJSONRouteWww) ]], @"%@ %@ stays on www", method, path);
+        }
+    }
+    for (NSString *path in @[ @"/searching", @"/search/extra", @"/r/ios/search/extra", @"/user/alice/search",
+                              @"/user/Alice/m/dev/search.json", @"/u/Bob/m/search/search.json",
+                              @"/api/search_reddit_names", @"/subreddits/mine/subscriber", @"/r/ios/hot", @"/" ]) {
+        CHECK(!ApolloWebJSONRequestIsSearchRead(@"GET", path), @"%@ isn't search", path);
+    }
+    CHECK(!ApolloWebJSONRequestIsSearchRead((NSString *)(id)[NSNull null], @"/search"), @"bad method");
+    CHECK(!ApolloWebJSONRequestIsSearchRead(@"GET", (NSString *)(id)@42), @"bad path");
+    CHECK([ApolloWebJSONRoutePathPattern(@"/r/iOS/search.json") isEqualToString:@"/r/*/search"], @"community searches group");
+    ApolloWebJSONRouteHealthReset();
+    BlockTimes(@"alice", @"/r/apple/search.json", ApolloWebJSONRouteOAuth, 3, 0);
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", @"/r/iOS/search.json", 0, 1) == ApolloWebJSONRouteOld,
+          @"oauth cooling for community search: old");
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", @"/search.json", 0, 1) == ApolloWebJSONRouteOAuth,
+          @"global search has its own health");
+    ApolloWebJSONRouteHealthReset();
 }
 
 static void TestEverythingElseStaysOnWww(void) {
@@ -61,7 +98,11 @@ static void TestRouteTransforms(void) {
     CHECK([ApolloWebJSONRouteHost(ApolloWebJSONRouteApi) isEqualToString:@"api.reddit.com"], @"api host");
     CHECK([ApolloWebJSONRoutePath(ApolloWebJSONRouteApi, @"/api/info.json") isEqualToString:@"/api/info.json"], @"api keeps the path");
     CHECK([ApolloWebJSONRouteName(ApolloWebJSONRouteApi) isEqualToString:@"api"], @"api name");
-    CHECK(ApolloWebJSONRouteLast == ApolloWebJSONRouteApi, @"api is the last route");
+    CHECK([ApolloWebJSONRouteHost(ApolloWebJSONRouteOAuth) isEqualToString:@"oauth.reddit.com"], @"oauth host");
+    CHECK([ApolloWebJSONRoutePath(ApolloWebJSONRouteOAuth, @"/r/ios/search.json") isEqualToString:@"/r/ios/search.json"], @"oauth keeps the path");
+    CHECK([ApolloWebJSONRouteName(ApolloWebJSONRouteOAuth) isEqualToString:@"oauth"], @"oauth name");
+    CHECK(ApolloWebJSONRouteApi == 3 && ApolloWebJSONRouteOAuth == 4, @"route numbers in URL markers stay put");
+    CHECK(ApolloWebJSONRouteLast == ApolloWebJSONRouteOAuth, @"oauth is the last route");
     for (NSArray<NSString *> *builtIn in @[ @[ @"GET", @"/api/info" ], @[ @"GET", @"/api/morechildren" ], @[ @"POST", @"/api/morechildren" ] ]) {
         CHECK(![ApolloWebJSONRoutesForRequest(builtIn[0], builtIn[1]) containsObject:@(ApolloWebJSONRouteApi)],
               @"api isn't in the built-in table for %@ %@", builtIn[0], builtIn[1]);
@@ -190,15 +231,22 @@ static void TestTableParseValid(void) {
         "\"GET /api/morechildren\":{\"routes\":[\"www\",\"old\"]},"
         "\"GET /api/foo\":{\"routes\":[\"www-dotjson\",\"www\"]},"
         "\"GET /api/bar\":{\"routes\":[\"old\"]},"
-        "\"GET /api/baz\":{\"routes\":[\"www-dotjson\",\"old\",\"api\",\"www\"]}}}", &rejections);
-    CHECK(table.count == 6, @"6 entries (got %@, rejected %@)", table, rejections);
+        "\"GET /api/baz\":{\"routes\":[\"www-dotjson\",\"old\",\"api\",\"oauth\",\"www\"]},"
+        "\"GET /r/*/search\":{\"routes\":[\"old\",\"oauth\"]},"
+        "\"GET /search\":{\"routes\":[\"oauth\"]},"
+        "\"GET /subreddits/search\":{\"routes\":[\"old\"]}}}", &rejections);
+    CHECK(table.count == 9, @"9 entries (got %@, rejected %@)", table, rejections);
     CHECK(rejections.count == 0, @"nothing rejected: %@", rejections);
     CHECK([table[@"GET /api/info"] isEqualToArray:(@[ @(ApolloWebJSONRouteOld), @(ApolloWebJSONRouteWwwDotJSON) ])], @"reorder");
     CHECK([table[@"POST /api/morechildren"] isEqualToArray:@[ @(ApolloWebJSONRouteWwwDotJSON) ]], @"subset");
     CHECK([table[@"GET /api/foo"] isEqualToArray:(@[ @(ApolloWebJSONRouteWwwDotJSON), @(ApolloWebJSONRouteWww) ])], @"added GET");
     CHECK([table[@"GET /api/bar"] isEqualToArray:@[ @(ApolloWebJSONRouteOld) ]], @"added GET may use old");
     CHECK([table[@"GET /api/baz"] isEqualToArray:(@[ @(ApolloWebJSONRouteWwwDotJSON), @(ApolloWebJSONRouteOld),
-                                                     @(ApolloWebJSONRouteApi), @(ApolloWebJSONRouteWww) ])], @"all four routes, api included");
+                                                     @(ApolloWebJSONRouteApi), @(ApolloWebJSONRouteOAuth), @(ApolloWebJSONRouteWww) ])],
+          @"all five routes, api and oauth included");
+    CHECK([table[@"GET /r/*/search"] isEqualToArray:(@[ @(ApolloWebJSONRouteOld), @(ApolloWebJSONRouteOAuth) ])], @"search reorder");
+    CHECK([table[@"GET /search"] isEqualToArray:@[ @(ApolloWebJSONRouteOAuth) ]], @"search subset");
+    CHECK([table[@"GET /subreddits/search"] isEqualToArray:@[ @(ApolloWebJSONRouteOld) ]], @"subreddit discovery");
 
     CHECK([ParseJSON(@"{\"version\":1,\"endpoints\":{}}", NULL) count] == 0, @"empty endpoints: no overrides");
     CHECK(ParseJSON(@"{\"version\":1}", NULL) != nil, @"missing endpoints: no overrides, not rejected");
@@ -217,10 +265,17 @@ static void TestTableParseRejectsEntries(void) {
         @"\"GET /api/foo?x=1\":{\"routes\":[\"www\"]}": @"a query",
         @"\"GET  /api/foo\":{\"routes\":[\"www\"]}": @"a malformed key",
         @"\"GET /api/info\":{\"routes\":[\"https://evil.example\"]}": @"a URL as a route",
-        @"\"GET /api/info\":{\"routes\":[\"oauth\"]}": @"an unknown route",
+        @"\"GET /api/info\":{\"routes\":[\"bearer\"]}": @"an unknown route",
+        @"\"POST /search\":{\"routes\":[\"old\"]}": @"a search write",
+        @"\"GET /r/apple/search\":{\"routes\":[\"old\"]}": @"one subreddit's search",
+        @"\"GET /user/*/search\":{\"routes\":[\"old\"]}": @"not a search endpoint",
+        @"\"GET /user/*/m/*/search\":{\"routes\":[\"old\"]}": @"a multireddit form Apollo never sends",
+        @"\"GET /r/*/hot\":{\"routes\":[\"old\"]}": @"a listing pattern",
+        @"\"GET /search.json\":{\"routes\":[\"old\"]}": @"a .json search path",
+        @"\"GET /r/*/search/\":{\"routes\":[\"old\"]}": @"a trailing slash",
         @"\"GET /api/info\":{\"routes\":[]}": @"no routes",
         @"\"GET /api/info\":{\"routes\":[\"www\",\"www\"]}": @"a duplicate",
-        @"\"GET /api/info\":{\"routes\":[\"www\",\"old\",\"www-dotjson\",\"api\",\"www\"]}": @"more than 4",
+        @"\"GET /api/info\":{\"routes\":[\"www\",\"old\",\"www-dotjson\",\"api\",\"oauth\",\"www\"]}": @"more than 5",
         @"\"GET /api/info\":{\"routes\":\"old\"}": @"routes not a list",
         @"\"GET /api/info\":[\"old\"]": @"entry not an object",
     };
@@ -258,8 +313,16 @@ static void TestRemoteTableMerge(void) {
     NSArray *builtIn = @[ @(ApolloWebJSONRouteWwwDotJSON), @(ApolloWebJSONRouteOld) ];
     ApolloWebJSONRouteSetRemoteTable(ParseJSON(@"{\"version\":1,\"endpoints\":{"
         "\"GET /api/info\":{\"routes\":[\"old\"]},"
-        "\"GET /api/foo\":{\"routes\":[\"www-dotjson\",\"www\"]}}}", NULL));
+        "\"GET /api/foo\":{\"routes\":[\"www-dotjson\",\"www\"]},"
+        "\"GET /r/*/search\":{\"routes\":[\"old\"]}}}", NULL));
     CHECK([ApolloWebJSONRoutesForRequest(@"GET", @"api/info.json") isEqualToArray:@[ @(ApolloWebJSONRouteOld) ]], @"override applies");
+    CHECK([ApolloWebJSONRoutesForRequest(@"GET", @"/r/iOS/search.json?q=x") isEqualToArray:@[ @(ApolloWebJSONRouteOld) ]],
+          @"search override applies to every community");
+    CHECK(ApolloWebJSONRouteIsFromRemoteTable(@"GET", @"r/apple/search"), @"search override is remote");
+    CHECK([ApolloWebJSONRoutesForRequest(@"GET", @"/search.json") isEqualToArray:(@[ @(ApolloWebJSONRouteOAuth), @(ApolloWebJSONRouteOld) ])],
+          @"other search endpoints keep built-in");
+    CHECK([ApolloWebJSONRouteRemoteTableDescription() containsString:@"GET /r/*/search: old (built-in: oauth, old)"],
+          @"%@", ApolloWebJSONRouteRemoteTableDescription());
     CHECK(!ApolloWebJSONRouteRequestMayRetry(@"GET", @"/api/info.json"), @"one route: nothing to retry on");
     CHECK([ApolloWebJSONRoutesForRequest(@"POST", @"/api/morechildren.json") isEqualToArray:builtIn], @"other entries keep built-in");
     CHECK(ApolloWebJSONRouteRequestMayRetry(@"GET", @"/api/foo"), @"added GET with two routes may retry");
@@ -297,7 +360,8 @@ static void TestHealthSnapshot(void) {
 
 static void TestFallbackEndpoints(void) {
     ApolloWebJSONRouteSetRemoteTable(nil);
-    NSArray *builtIn = @[ @"GET /api/info", @"GET /api/morechildren", @"POST /api/morechildren" ];
+    NSArray *builtIn = @[ @"GET /api/info", @"GET /api/morechildren", @"GET /r/*/search", @"GET /search", @"GET /subreddits/search",
+                          @"POST /api/morechildren" ];
     CHECK([ApolloWebJSONRouteFallbackEndpoints() isEqualToArray:builtIn], @"built-in (got %@)", ApolloWebJSONRouteFallbackEndpoints());
     CHECK(!ApolloWebJSONRouteIsFromRemoteTable(@"GET", @"/api/info.json"), @"not remote");
 
@@ -305,7 +369,8 @@ static void TestFallbackEndpoints(void) {
         "\"GET /api/info\":{\"routes\":[\"old\"]},"
         "\"GET /api/foo\":{\"routes\":[\"www-dotjson\",\"old\"]},"
         "\"GET /api/bar\":{\"routes\":[\"www-dotjson\"]}}}", NULL));
-    NSArray *expected = @[ @"GET /api/foo", @"GET /api/morechildren", @"POST /api/morechildren" ];
+    NSArray *expected = @[ @"GET /api/foo", @"GET /api/morechildren", @"GET /r/*/search", @"GET /search", @"GET /subreddits/search",
+                           @"POST /api/morechildren" ];
     CHECK([ApolloWebJSONRouteFallbackEndpoints() isEqualToArray:expected],
           @"one route has no fallback; added ones with two do (got %@)", ApolloWebJSONRouteFallbackEndpoints());
     CHECK(ApolloWebJSONRouteIsFromRemoteTable(@"GET", @"/api/info.json"), @"remote");
@@ -330,6 +395,7 @@ int main(int argc, const char *argv[]) {
         TestFallbackEndpoints();
         if (argc > 1) TestRepositoryFile(argv[1]);
         TestTableEndpoints();
+        TestSearchEndpoints();
         TestEverythingElseStaysOnWww();
         TestRouteTransforms();
         TestBlockPage();

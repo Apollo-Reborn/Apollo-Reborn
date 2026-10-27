@@ -1384,22 +1384,25 @@ void ApolloWebJSONNoteResponse(NSURLRequest *request, NSURLResponse *response) {
     if (ApolloWebJSONURLIsProbe(url)) return;
 
     // Moderator requests sent to oauth.reddit.com with a web-session bearer
-    // (ApolloWebJSONWebBearerRequest) have their own failure handling.
-    if ([url.host.lowercaseString isEqualToString:@"oauth.reddit.com"]) {
+    // (ApolloWebJSONWebBearerRequest) have their own failure handling. The
+    // oauth route (search) goes there with the cookie, so it carries a Cookie
+    // header and is handled like any other cookie read below.
+    NSString *noteHost = url.host.lowercaseString;
+    BOOL hasCookie = [request valueForHTTPHeaderField:@"Cookie"].length > 0;
+    if ([noteHost isEqualToString:@"oauth.reddit.com"] && !hasCookie) {
         ApolloWebJSONNoteWebBearerResponse(request, (NSHTTPURLResponse *)response);
         return;
     }
 
     // old.reddit.com and api.reddit.com carry the cookie for fallback routes
-    // (ApolloWebJSONRoutes.m).
-    NSString *noteHost = url.host.lowercaseString;
+    // (ApolloWebJSONRoutes.m), and oauth.reddit.com for the oauth route.
     if (![noteHost isEqualToString:@"www.reddit.com"] && ![noteHost isEqualToString:@"old.reddit.com"] &&
-        ![noteHost isEqualToString:@"api.reddit.com"]) return;
+        ![noteHost isEqualToString:@"api.reddit.com"] && ![noteHost isEqualToString:@"oauth.reddit.com"]) return;
     // Only react to requests we authenticated with the cookie — those carry the
     // Cookie header we set in ApolloWebJSONRewriteRequest. This skips unrelated
     // www.reddit.com traffic (e.g. the trending-subreddits fetch) that could
     // legitimately 403 with HTML without meaning our session died.
-    if ([request valueForHTTPHeaderField:@"Cookie"].length == 0) return;
+    if (!hasCookie) return;
 
     // The account marker was stamped (as a URL fragment — never sent to Reddit,
     // see kApolloWebJSONAccountMarkerPrefix) by the rewrite that authenticated
@@ -1447,8 +1450,13 @@ void ApolloWebJSONNoteResponse(NSURLRequest *request, NSURLResponse *response) {
     if ([url.path hasPrefix:@"/api/mod/"]) return;
     // Same for the other OAuth-only moderator endpoints. They normally go out
     // with a web bearer instead; one only reaches www with the cookie when no
-    // bearer could be minted, and then its refusal is guaranteed.
-    if (ApolloWebJSONPathNeedsWebBearer(url.path)) return;
+    // bearer could be minted, and then its refusal is guaranteed. Search is
+    // left out too: Reddit already refuses post search for the cookie on www
+    // and for desktop-client tokens on oauth, so a block page there may be
+    // Reddit closing oauth search to the cookie as well, not the session
+    // expiring. Its old route is limited to accounts with
+    // recent Old Reddit use, so a block page there says nothing either.
+    if (ApolloWebJSONPathNeedsWebBearer(url.path) || ApolloWebJSONRequestIsSearchRead(request.HTTPMethod, url.path)) return;
 
     // Reddit's anonymous block page is HTTP 403 with a ~190 KB text/html body.
     // A 403 with a JSON body (e.g. a private/quarantined subreddit) is a normal
@@ -1704,7 +1712,12 @@ NSData *ApolloWebJSONFixupListingMediaResponseData(NSURLResponse *response, NSDa
     if (![response isKindOfClass:[NSHTTPURLResponse class]]) return data;
 
     NSURL *responseURL = ((NSHTTPURLResponse *)response).URL;
-    if (![responseURL.host.lowercaseString isEqualToString:@"www.reddit.com"]) return data;
+    // Listings a route sends elsewhere (search on oauth.reddit.com or
+    // old.reddit.com) are cookie listings too. Their URL carries the route
+    // marker; an API-key account's oauth listings, and the moderator requests
+    // sent with a web bearer, carry none and are left alone.
+    BOOL otherRoute = ApolloWebJSONRouteFromURL(responseURL) > ApolloWebJSONRouteWww;
+    if (![responseURL.host.lowercaseString isEqualToString:@"www.reddit.com"] && !otherRoute) return data;
     if ([responseURL.path.lowercaseString hasPrefix:@"/api/"]) return data;
 
     id root = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingMutableContainers error:NULL];
