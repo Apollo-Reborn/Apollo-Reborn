@@ -83,42 +83,22 @@ void ApolloDuoSplitInteractiveRestoreFinish(UINavigationController *nav, BOOL co
 void ApolloDuoSplitInteractiveRestoreCancel(UINavigationController *nav, BOOL animated);
 /// The Posts divider pressed and dragged (ApolloDuoSplitDivider.m), with
 /// the adjustable split on. Position is where the divider is in `host` (the
-/// Posts split host's view), or -1 without a thread beside the feed in the
-/// unfolded landscape split or while the panes move; `adjustable` says
-/// whether the setting is on. With it on, a touch-down there also keeps
-/// UIKit's own separator tap off. Begin covers the columns with the drag's
-/// pictures; NO when it can't. Update moves the divider to `dividerX` and
-/// returns NO once the split let the drag go. Finish lands the divider where
-/// it is let go, closes the thread or covers the feed
-/// (ApolloDuoSplitReleaseFor), with one re-layout; Cancel removes the drag at once.
+/// Posts split host's view): the thread pane's leading edge beside the feed,
+/// the screen's leading edge while the post covers the feed (the bar is
+/// there), or -1 without a thread in the unfolded landscape split or while
+/// the panes move; `adjustable` says whether the setting is on. With it on,
+/// a touch-down there also keeps UIKit's own separator tap off. Begin covers
+/// the columns with the drag's pictures (over a covered feed it is the
+/// uncover drag: the cover ends under the full-width picture); NO when it
+/// can't. Update moves the divider to `dividerX` and returns NO once the
+/// split let the drag go. Finish lands the divider where it is let go,
+/// closes the thread or covers the feed (ApolloDuoSplitReleaseFor), with one
+/// re-layout; Cancel removes the drag at once.
 CGFloat ApolloDuoSplitDividerPosition(UIView *host, BOOL *adjustable);
 BOOL ApolloDuoSplitDividerBegin(UIView *host);
 BOOL ApolloDuoSplitDividerUpdate(UIView *host, CGFloat dividerX);
 void ApolloDuoSplitDividerFinish(UIView *host, CGFloat dividerX, CGFloat velocityX);
 void ApolloDuoSplitDividerCancel(UIView *host);
-/// The same divider drag driven from the thread pane's own pan: a rightward
-/// or leftward drag of the post with Adjustable Split on. Drags says whether
-/// `nav` is the thread pane at its root beside the feed with the setting on
-/// (the interactive close's own condition). Begin starts the divider drag and
-/// remembers where the divider is; Update puts the divider at that place plus
-/// the translation (NO once the split let the drag go); Finish lets it go
-/// there with the finger's speed; Cancel removes it at once (nil: whichever
-/// is active). HasForwardPage: Apollo's own forward has a page for `nav`.
-BOOL ApolloDuoSplitThreadDividerDrags(UINavigationController *nav);
-BOOL ApolloDuoSplitHasForwardPage(UINavigationController *nav);
-BOOL ApolloDuoSplitThreadDividerBegin(UINavigationController *nav);
-BOOL ApolloDuoSplitThreadDividerUpdate(UINavigationController *nav, CGFloat translation);
-void ApolloDuoSplitThreadDividerFinish(UINavigationController *nav, CGFloat translation, CGFloat velocity);
-void ApolloDuoSplitThreadDividerCancel(UINavigationController *nav);
-/// The post pulled past the left limit covers the feed: that thread full
-/// width over it, for this thread only (never remembered). Covered says
-/// whether `nav` is that thread pane at its root. UncoverBegin starts the
-/// same divider drag from the full-width picture and ends the cover under
-/// it at once; the drag's Update, Finish and Cancel are the divider's, and
-/// its release lands the feed where the post is let go, closes the thread
-/// past the right limit, or covers the feed again short of the left one.
-BOOL ApolloDuoSplitThreadCovered(UINavigationController *nav);
-BOOL ApolloDuoSplitThreadUncoverBegin(UINavigationController *nav);
 BOOL ApolloDuoSplitShowSidebar(UINavigationController *navigation);
 /// The Posts split is moving a navigation between its columns. That takes the
 /// navigation out of the window and back in within one turn; its title keeps

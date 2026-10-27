@@ -61,6 +61,13 @@ fixture = fixture.replace('// INCLUDE_PRODUCTION_SPLIT_POLICIES', '\n'.join(poli
 fixture = fixture.replace('// INCLUDE_PRODUCTION_GESTURES', source)
 (build / 'duo_back_swipe_tests.m').write_text(fixture)
 PY
+# Adjustable Split moves the divider only from a hold on its bar
+# (ApolloDuoSplitDivider.m): the pane gestures never read the setting, so
+# every route is the same with it on or off.
+if grep -q 'AdjustableSplit\|ApolloDuoSplitDivider' "$swipe_root/src/ApolloDuoNavigationGestures.m"; then
+    echo "FAIL: the pane gestures read the adjustable split; the setting must not change a route" >&2
+    exit 1
+fi
 # Feed galleries make ancestor pans wait for their own drag. The Duo pane
 # Back is a pan too, and must stay exempt in the gallery's wiring loop.
 # (Community Highlights makes it wait on purpose and hands it the swipe at the

@@ -202,9 +202,9 @@ int main(void) {
     Check(Near(ApolloDuoPostsFittedPrimaryWidth(false, Share(0.6), canvas, fold, 84, wide, 240), 475.5),
           "Fitted: toggle off is half the canvas, as before the setting");
 
-    // The uncover drag: the post dragged back from full width. Its picture
-    // begins at the screen's edge, so the divider is the translation itself;
-    // the same release decides where it goes.
+    // The uncover drag: the divider dragged back from the screen's edge, where
+    // it sits while the post covers the feed. Its picture begins there, so the
+    // divider is how far it has come; the same release decides where it goes.
     r = ApolloDuoSplitReleaseFor(100, 0, canvas, fold, inset, wide);
     Check(r.coversFeed && !r.closesThread, "Uncover: let go short of the cover threshold, the feed is covered again");
     r = ApolloDuoSplitReleaseFor(0, 0, canvas, fold, inset, wide);

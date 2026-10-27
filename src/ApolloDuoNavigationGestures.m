@@ -106,29 +106,19 @@ static BOOL ApolloDuoForwardSwipeStartsAnywhere(void) {
 }
 
 static BOOL ApolloDuoForwardSwipeCanNavigate(UINavigationController *navigation) {
-    // Covered (the post over the feed), there is nothing further left.
-    BOOL dividerDrag = ApolloDuoSplitThreadDividerDrags(navigation) && !ApolloDuoSplitHasForwardPage(navigation)
-        && !ApolloDuoSplitThreadCovered(navigation);
-    return (ApolloDuoSplitCanRestoreClosedThread(navigation) || dividerDrag) && ApolloDuoSplitAllowsNavigationSwipe(navigation)
+    return ApolloDuoSplitCanRestoreClosedThread(navigation) && ApolloDuoSplitAllowsNavigationSwipe(navigation)
         && ApolloDuoSplitDetailNavigation(navigation) == navigation && ApolloDuoPaneGestureAllowed(navigation);
 }
 
-// The thread pane's frame includes the trailing rail (the safe area), which
-// takes no touch: its strip is measured from the visible edge beside it.
-static CGFloat ApolloDuoForwardSwipeStripInset(UINavigationController *navigation) {
-    return ApolloDuoSplitThreadDividerDrags(navigation) ? navigation.view.safeAreaInsets.right : 0.0;
-}
-
-static BOOL ApolloDuoForwardSwipeInEdgeStrip(CGRect pane, CGPoint point, CGFloat inset) {
-    return point.x >= CGRectGetMaxX(pane) - inset - 28.0;
+static BOOL ApolloDuoForwardSwipeInEdgeStrip(CGRect pane, CGPoint point) {
+    return point.x >= CGRectGetMaxX(pane) - 28.0;
 }
 
 static BOOL ApolloDuoForwardSwipeAcceptsPoint(UINavigationController *navigation, CGPoint point) {
     if (!ApolloDuoForwardSwipeCanNavigate(navigation)) return NO;
     CGRect pane = ApolloDuoBackSwipePane(navigation);
     if (CGRectIsEmpty(pane) || !CGRectContainsPoint(pane, point)) return NO;
-    return ApolloDuoForwardSwipeInEdgeStrip(pane, point, ApolloDuoForwardSwipeStripInset(navigation))
-        || ApolloDuoForwardSwipeStartsAnywhere();
+    return ApolloDuoForwardSwipeInEdgeStrip(pane, point) || ApolloDuoForwardSwipeStartsAnywhere();
 }
 
 // Away from the edge strip, content with its own sideways drag keeps it: a
@@ -174,8 +164,7 @@ static BOOL ApolloDuoBackSwipeAdmitsTouch(UINavigationController *navigation, UI
 }
 static BOOL ApolloDuoForwardSwipeAdmitsTouch(UINavigationController *navigation, UIView *view, CGPoint point) {
     if (!ApolloDuoForwardSwipeAcceptsPoint(navigation, point)) return NO;
-    return ApolloDuoForwardSwipeInEdgeStrip(ApolloDuoBackSwipePane(navigation), point,
-                                            ApolloDuoForwardSwipeStripInset(navigation))
+    return ApolloDuoForwardSwipeInEdgeStrip(ApolloDuoBackSwipePane(navigation), point)
         || !ApolloDuoBackSwipeTouchOwnsHorizontalDrag(view, navigation.view, YES, NO);
 }
 
@@ -185,8 +174,6 @@ static BOOL ApolloDuoForwardSwipeAdmitsTouch(UINavigationController *navigation,
 typedef NS_ENUM(NSInteger, ApolloDuoBackOwner) {
     ApolloDuoBackOwnerNative,          // Apollo's own Back pan; the pane pan stands down
     ApolloDuoBackOwnerThreadClose,     // the Posts split closes the thread column
-    ApolloDuoBackOwnerDivider,         // Adjustable Split: the post moves the divider
-    ApolloDuoBackOwnerUncover,         // Adjustable Split: the post over the feed brings the feed back
     ApolloDuoBackOwnerVisitedProfile,  // ApolloDuoSplitReturnFromVisitedProfile
     ApolloDuoBackOwnerSearchColumn,    // a Search subreddit's root reveals the hidden search column
     ApolloDuoBackOwnerDrawer,          // the feed root reveals the subreddit list
@@ -202,8 +189,6 @@ typedef struct {
     BOOL searchColumn;         // the root of a subreddit from Search, its column hidden
     BOOL root;                 // one page left
     BOOL threadAboveBackstop;  // the Posts thread pane, [backstop, thread]
-    BOOL dividerDrag;          // ApolloDuoSplitThreadDividerDrags: that pane, with Adjustable Split on
-    BOOL covered;              // ApolloDuoSplitThreadCovered: that pane, full width over the feed by a drag
 } ApolloDuoBackFacts;
 
 // One table for the Duo Back gestures, in the priority the pane swipe always
@@ -218,10 +203,8 @@ static ApolloDuoBackRouting ApolloDuoBackRoute(ApolloDuoBackFacts facts) {
         return (ApolloDuoBackRouting){ApolloDuoBackOwnerSearchColumn};
     if (facts.root)
         return (ApolloDuoBackRouting){ApolloDuoBackOwnerDrawer};
-    if (facts.threadAboveBackstop) {
-        if (!facts.dividerDrag) return (ApolloDuoBackRouting){ApolloDuoBackOwnerThreadClose};
-        return (ApolloDuoBackRouting){facts.covered ? ApolloDuoBackOwnerUncover : ApolloDuoBackOwnerDivider};
-    }
+    if (facts.threadAboveBackstop)
+        return (ApolloDuoBackRouting){ApolloDuoBackOwnerThreadClose};
     // Onto the Account Overview under its header, or an empty detail's placeholder.
     return (ApolloDuoBackRouting){ApolloDuoBackOwnerSplitPop};
 }
@@ -234,8 +217,6 @@ static ApolloDuoBackFacts ApolloDuoBackFactsForNavigation(UINavigationController
         .searchColumn = ApolloDuoSplitCanRevealSearchColumnWithSwipe(navigation),
         .root = navigation.viewControllers.count == 1,
         .threadAboveBackstop = ApolloDuoSplitBackClosesThread(navigation),
-        .dividerDrag = ApolloDuoSplitThreadDividerDrags(navigation),
-        .covered = ApolloDuoSplitThreadCovered(navigation),
     };
 }
 
@@ -267,7 +248,6 @@ static BOOL ApolloDuoNativeForwardInFlight(UINavigationController *navigation) {
 typedef NS_ENUM(NSInteger, ApolloDuoForwardOwner) {
     ApolloDuoForwardOwnerNone,          // nothing to bring back here; the pan stands down
     ApolloDuoForwardOwnerClosedThread,  // ApolloDuoSplitRestoreClosedThread
-    ApolloDuoForwardOwnerDivider,       // Adjustable Split: the post moves the divider, leftward
 };
 typedef struct {
     ApolloDuoForwardOwner owner;
@@ -277,53 +257,25 @@ typedef struct {
     BOOL closedThread;   // ApolloDuoSplitCanRestoreClosedThread
     BOOL paneHeld;       // the subreddit list is open, or the columns are changing
     BOOL nativeForward;  // Apollo's own forward pan is following a finger
-    BOOL dividerDrag;    // ApolloDuoSplitThreadDividerDrags: the thread pane, with Adjustable Split on
-    BOOL forwardPage;    // Apollo's own forward has a page to push here
-    BOOL covered;        // ApolloDuoSplitThreadCovered: the post is over the feed; nothing further left
 } ApolloDuoForwardFacts;
 
 static ApolloDuoForwardRouting ApolloDuoForwardRoute(ApolloDuoForwardFacts facts) {
-    if (!facts.split || facts.paneHeld || facts.nativeForward)
-        return (ApolloDuoForwardRouting){ApolloDuoForwardOwnerNone};
-    // The thread pane's leftward drag moves the divider, unless Apollo's own
-    // forward has a page of that thread to push, which keeps the swipe, or
-    // the post already covers the feed.
-    if (facts.dividerDrag && !facts.forwardPage && !facts.covered)
-        return (ApolloDuoForwardRouting){ApolloDuoForwardOwnerDivider};
-    if (!facts.closedThread)
+    if (!facts.split || !facts.closedThread || facts.paneHeld || facts.nativeForward)
         return (ApolloDuoForwardRouting){ApolloDuoForwardOwnerNone};
     return (ApolloDuoForwardRouting){ApolloDuoForwardOwnerClosedThread};
 }
 
-// The forward route with a driver: the closed thread brought back with the
-// finger, or the divider moved with it.
+// The forward route with a driver: the closed thread brought back with the finger.
 static BOOL ApolloDuoForwardRouteTracks(ApolloDuoForwardRouting route) {
-    return route.owner == ApolloDuoForwardOwnerClosedThread || route.owner == ApolloDuoForwardOwnerDivider;
-}
-static BOOL ApolloDuoForwardDragBegin(ApolloDuoForwardRouting route, UINavigationController *navigation) {
-    return route.owner == ApolloDuoForwardOwnerDivider ? ApolloDuoSplitThreadDividerBegin(navigation)
-        : ApolloDuoSplitInteractiveRestoreBegin(navigation);
-}
-static BOOL ApolloDuoForwardDragUpdate(ApolloDuoForwardRouting route, UINavigationController *navigation, CGFloat translation) {
-    return route.owner == ApolloDuoForwardOwnerDivider ? ApolloDuoSplitThreadDividerUpdate(navigation, translation)
-        : ApolloDuoSplitInteractiveRestoreUpdate(navigation, translation);
-}
-static void ApolloDuoForwardDragCancel(ApolloDuoForwardRouting route, UINavigationController *navigation) {
-    if (route.owner == ApolloDuoForwardOwnerDivider) ApolloDuoSplitThreadDividerCancel(navigation);
-    else ApolloDuoSplitInteractiveRestoreCancel(navigation, NO);
+    return route.owner == ApolloDuoForwardOwnerClosedThread;
 }
 
 static ApolloDuoForwardRouting ApolloDuoForwardRouteForNavigation(UINavigationController *navigation) {
-    // The forward page is only read where it can matter.
-    BOOL dividerDrag = ApolloDuoSplitThreadDividerDrags(navigation);
     return ApolloDuoForwardRoute((ApolloDuoForwardFacts){
         .split = ApolloDuoSplitIsActive(navigation),
         .closedThread = ApolloDuoSplitCanRestoreClosedThread(navigation),
         .paneHeld = !ApolloDuoSplitAllowsNavigationSwipe(navigation),
         .nativeForward = ApolloDuoNativeForwardInFlight(navigation),
-        .dividerDrag = dividerDrag,
-        .forwardPage = dividerDrag && ApolloDuoSplitHasForwardPage(navigation),
-        .covered = dividerDrag && ApolloDuoSplitThreadCovered(navigation),
     });
 }
 
@@ -334,26 +286,17 @@ static BOOL ApolloDuoForwardShouldCommit(CGFloat progress, CGFloat velocity) {
 }
 
 // Routes with a driver of their own follow the finger from Began: the Posts
-// thread close (ApolloDuoSplitInteractiveClose*), the divider with Adjustable
-// Split on (ApolloDuoSplitThreadDivider*, begun as the uncover when the post
-// covers the feed) and the subreddit drawer (ApolloDuoSplitInteractiveDrawer*);
-// every other route acts once on release.
-static BOOL ApolloDuoBackOwnerDragsDivider(ApolloDuoBackOwner owner) {
-    return owner == ApolloDuoBackOwnerDivider || owner == ApolloDuoBackOwnerUncover;
-}
+// thread close (ApolloDuoSplitInteractiveClose*) and the subreddit drawer
+// (ApolloDuoSplitInteractiveDrawer*); every other route acts once on release.
 static BOOL ApolloDuoBackRouteTracks(ApolloDuoBackRouting route) {
-    return (route.owner == ApolloDuoBackOwnerThreadClose || ApolloDuoBackOwnerDragsDivider(route.owner)
-            || route.owner == ApolloDuoBackOwnerDrawer);
+    return (route.owner == ApolloDuoBackOwnerThreadClose || route.owner == ApolloDuoBackOwnerDrawer);
 }
 // The driver a tracked route has, so each phase of the drag reads the same.
 static BOOL ApolloDuoBackDragBegin(ApolloDuoBackRouting route, UINavigationController *navigation) {
-    if (route.owner == ApolloDuoBackOwnerUncover) return ApolloDuoSplitThreadUncoverBegin(navigation);
-    if (route.owner == ApolloDuoBackOwnerDivider) return ApolloDuoSplitThreadDividerBegin(navigation);
     return route.owner == ApolloDuoBackOwnerDrawer ? ApolloDuoSplitInteractiveDrawerBegin(navigation)
         : ApolloDuoSplitInteractiveCloseBegin(navigation);
 }
 static BOOL ApolloDuoBackDragUpdate(ApolloDuoBackRouting route, UINavigationController *navigation, CGFloat translation) {
-    if (ApolloDuoBackOwnerDragsDivider(route.owner)) return ApolloDuoSplitThreadDividerUpdate(navigation, translation);
     return route.owner == ApolloDuoBackOwnerDrawer ? ApolloDuoSplitInteractiveDrawerUpdate(navigation, translation)
         : ApolloDuoSplitInteractiveCloseUpdate(navigation, translation);
 }
@@ -362,8 +305,7 @@ static void ApolloDuoBackDragFinish(ApolloDuoBackRouting route, UINavigationCont
     else ApolloDuoSplitInteractiveCloseFinish(navigation, commit, velocity);
 }
 static void ApolloDuoBackDragCancel(ApolloDuoBackRouting route, UINavigationController *navigation, BOOL animated) {
-    if (ApolloDuoBackOwnerDragsDivider(route.owner)) ApolloDuoSplitThreadDividerCancel(navigation);
-    else if (route.owner == ApolloDuoBackOwnerDrawer) ApolloDuoSplitInteractiveDrawerCancel(navigation, animated);
+    if (route.owner == ApolloDuoBackOwnerDrawer) ApolloDuoSplitInteractiveDrawerCancel(navigation, animated);
     else ApolloDuoSplitInteractiveCloseCancel(navigation, animated);
 }
 
@@ -762,28 +704,6 @@ BOOL ApolloDuoNativeBackInFlight(UINavigationController *navigation) {
         return;
     }
     if (drag == ApolloDuoBackDragAbandoned) return;
-    if (ApolloDuoBackOwnerDragsDivider(self.route.owner)) {
-        // The divider's position model decides the release, not the Back's
-        // threshold: it lands, closes or covers the feed. A drag the split
-        // could not begin (a settle still running) leaves today's discrete
-        // close on release. An uncover that began ended the cover under the
-        // finger, so its pane now routes as the divider: either is this drag.
-        if (drag != ApolloDuoBackDragTracking) {
-            CGFloat paneWidth = CGRectGetWidth(ApolloDuoBackSwipePane(navigation));
-            ApolloDuoBackRouting close = {ApolloDuoBackOwnerThreadClose};
-            if (ApolloDuoBackShouldCommit(paneWidth > 0.0 ? translation / paneWidth : 0.0, [pan velocityInView:nil].x)
-                && ApolloDuoBackRouteForNavigation(navigation).owner == self.route.owner
-                && [self backIsFree:close])
-                [self performBack:close];
-            return;
-        }
-        BOOL sameBack = ApolloDuoBackOwnerDragsDivider(ApolloDuoBackRouteForNavigation(navigation).owner)
-            && [self backIsFree:self.route];
-        if (ApolloDuoBackReleaseFor(YES, sameBack, !ApolloDuoBackSwipeCanNavigate(navigation)) == ApolloDuoBackReleaseCommit)
-            ApolloDuoSplitThreadDividerFinish(navigation, translation, [pan velocityInView:nil].x);
-        else ApolloDuoSplitThreadDividerCancel(navigation);
-        return;
-    }
     // The drawer commits by the share of the drawer shown, not of the pane
     // (deliberate: that is what the finger moves), tracked or discrete alike.
     CGFloat width = CGRectGetWidth(ApolloDuoBackSwipePane(navigation));
@@ -829,14 +749,14 @@ BOOL ApolloDuoNativeBackInFlight(UINavigationController *navigation) {
         pan.touchView = nil;
         // No picture of the thread to bring in, or another transition still
         // moving the panes: the restore acts on release, as before.
-        self.drag = ApolloDuoForwardRouteTracks(self.forwardRoute) && ApolloDuoForwardDragBegin(self.forwardRoute, navigation)
+        self.drag = ApolloDuoForwardRouteTracks(self.forwardRoute) && ApolloDuoSplitInteractiveRestoreBegin(navigation)
             ? ApolloDuoBackDragTracking : ApolloDuoBackDragNone;
         return;
     }
     if (pan.state == UIGestureRecognizerStateChanged) {
         if (self.drag != ApolloDuoBackDragTracking) return;
         // A sheet presented mid-drag, a resize, or a split that let the drag go.
-        if (ApolloDuoForwardSwipeCanNavigate(navigation) && ApolloDuoForwardDragUpdate(self.forwardRoute, navigation, translation)) return;
+        if (ApolloDuoForwardSwipeCanNavigate(navigation) && ApolloDuoSplitInteractiveRestoreUpdate(navigation, translation)) return;
         [self abandonDrag:pan];
         return;
     }
@@ -845,20 +765,10 @@ BOOL ApolloDuoNativeBackInFlight(UINavigationController *navigation) {
     self.forward = NO;
     if (pan.state != UIGestureRecognizerStateEnded) {
         // Cancelled (the app resigned active, the system took the touch) or failed.
-        if (drag == ApolloDuoBackDragTracking) ApolloDuoForwardDragCancel(self.forwardRoute, navigation);
+        if (drag == ApolloDuoBackDragTracking) ApolloDuoSplitInteractiveRestoreCancel(navigation, NO);
         return;
     }
     if (drag == ApolloDuoBackDragAbandoned) return;
-    if (self.forwardRoute.owner == ApolloDuoForwardOwnerDivider) {
-        // As Back's: the divider's position model decides the release.
-        if (drag != ApolloDuoBackDragTracking) return;
-        ApolloDuoForwardRouting route = ApolloDuoForwardRouteForNavigation(navigation);
-        BOOL sameForward = route.owner == ApolloDuoForwardOwnerDivider && [self forwardIsFree:route];
-        if (ApolloDuoBackReleaseFor(YES, sameForward, !ApolloDuoPaneGestureAllowed(navigation)) == ApolloDuoBackReleaseCommit)
-            ApolloDuoSplitThreadDividerFinish(navigation, translation, [pan velocityInView:nil].x);
-        else ApolloDuoSplitThreadDividerCancel(navigation);
-        return;
-    }
     // A tracked restore commits by the thread pane it fills; the discrete one
     // keeps today's measure, the feed pane.
     CGFloat width = CGRectGetWidth(ApolloDuoBackSwipePane(navigation));
@@ -886,7 +796,6 @@ BOOL ApolloDuoNativeBackInFlight(UINavigationController *navigation) {
     if (!sameForward) return;
     switch (route.owner) {
         case ApolloDuoForwardOwnerNone:
-        case ApolloDuoForwardOwnerDivider:
             return;
         case ApolloDuoForwardOwnerClosedThread:
             ApolloLog(@"[DuoSwipe] feed pane: bring back the thread a Back closed");
@@ -899,7 +808,7 @@ BOOL ApolloDuoNativeBackInFlight(UINavigationController *navigation) {
 // A navigation that is gone cancels whichever drag is active (nil below).
 - (void)abandonDrag:(UIPanGestureRecognizer *)pan {
     self.drag = ApolloDuoBackDragAbandoned;
-    if (self.forward) ApolloDuoForwardDragCancel(self.forwardRoute, self.navigation);
+    if (self.forward) ApolloDuoSplitInteractiveRestoreCancel(self.navigation, NO);
     else ApolloDuoBackDragCancel(self.route, self.navigation, NO);
     pan.enabled = NO;
     pan.enabled = YES;
@@ -939,8 +848,6 @@ BOOL ApolloDuoNativeBackInFlight(UINavigationController *navigation) {
     BOOL animated = !UIAccessibilityIsReduceMotionEnabled();
     switch (route.owner) {
         case ApolloDuoBackOwnerNative:
-        case ApolloDuoBackOwnerDivider:
-        case ApolloDuoBackOwnerUncover:
             return;
         case ApolloDuoBackOwnerThreadClose:
             ApolloLog(@"[DuoSwipe] thread pane: close the thread");
@@ -1280,120 +1187,4 @@ void ApolloDuoInstallBackSwipe(UINavigationController *navigation) {
     [navigation.view addGestureRecognizer:flick];
     [navigation.view addGestureRecognizer:hideGuard];
     [navigation.view addGestureRecognizer:tap];
-}
-
-// The post drag from the trailing rail. The open Duo is held with the right
-// thumb on the rail, and the thread pane's own pan never sees a touch there:
-// the rail is the tab controller's bar above the pane, not part of its view.
-// Its own pan, on the rail, drives the same divider drag as the thread pane's
-// leftward one (ApolloDuoSplitThreadDivider*), only for the same case: the
-// adjustable split on and the thread at its root beside the feed. Taps, the
-// rail's own hold and a vertical move never begin it.
-static char kApolloDuoRailDrag;
-static NSString *const kApolloDuoRailDragName = @"ApolloReborn.Duo.RailDrag";
-
-// A clearly sideways, leftward move (the pane swipe's own measure) while the
-// thread pane is a divider drag.
-static BOOL ApolloDuoRailDragBegins(BOOL dividerDrag, CGPoint motion, CGPoint velocity) {
-    if (!dividerDrag || motion.x > 0.0) return NO;
-    // UIKit can strip its hysteresis from the motion, leaving only the speed.
-    if (motion.x == 0.0) return velocity.x < 0.0 && fabs(velocity.x) > fabs(velocity.y) * 1.5;
-    if (fabs(motion.y) > fabs(motion.x)) return NO;
-    return (velocity.x < 0.0 && fabs(velocity.x) > fabs(velocity.y) * 1.5) || fabs(motion.x) > fabs(motion.y) * 1.5;
-}
-
-// iOS 26's Liquid Lens (a drag across the rail's tabs, which selects the one
-// under the finger on release) arms on the same touch. The post drag ends it,
-// so letting go over a tab does not also switch to it.
-static void ApolloDuoCancelRailLens(UIView *rail) {
-    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:rail];
-    for (NSUInteger visited = 0; queue.count && visited < 200; visited++) {
-        UIView *view = queue.firstObject;
-        [queue removeObjectAtIndex:0];
-        for (UIGestureRecognizer *gesture in view.gestureRecognizers) {
-            if (![NSStringFromClass(gesture.class) isEqualToString:@"_UIContinuousSelectionGestureRecognizer"]) continue;
-            gesture.enabled = NO;
-            gesture.enabled = YES;
-        }
-        [queue addObjectsFromArray:view.subviews];
-    }
-}
-
-@interface ApolloDuoRailDrag : NSObject <UIGestureRecognizerDelegate>
-@property(nonatomic, strong) UIPanGestureRecognizer *pan;
-// The thread pane's navigation while it is a divider drag, else nil.
-@property(nonatomic, copy) UINavigationController *(^thread)(void);
-@property(nonatomic, weak) UINavigationController *dragging;
-@end
-
-@implementation ApolloDuoRailDrag
-- (UINavigationController *)divider {
-    UINavigationController *thread = self.thread ? self.thread() : nil;
-    return thread && ApolloDuoSplitThreadDividerDrags(thread) && !ApolloDuoSplitHasForwardPage(thread)
-        && ApolloDuoPaneGestureAllowed(thread) ? thread : nil;
-}
-- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gesture {
-    if (gesture != self.pan) return NO;
-    return ApolloDuoRailDragBegins([self divider] != nil, [self.pan translationInView:nil],
-                                   [self.pan velocityInView:nil]);
-}
-// The rail's own recognizers (iOS 26's Liquid Lens drag across the tabs, the
-// Account and Settings holds) arm on the same touch and would otherwise be
-// the only recognizer to begin: this pan only begins on a leftward move,
-// which none of them is.
-- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture
-        shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
-    return gesture == self.pan && other != self.pan;
-}
-- (void)panned:(UIPanGestureRecognizer *)pan {
-    CGFloat translation = [pan translationInView:nil].x;
-    UINavigationController *thread = self.dragging ?: [self divider];
-    switch (pan.state) {
-        case UIGestureRecognizerStateBegan:
-            self.dragging = thread && ApolloDuoSplitThreadDividerBegin(thread) ? thread : nil;
-            if (self.dragging) ApolloDuoCancelRailLens(pan.view);
-            return;
-        case UIGestureRecognizerStateChanged:
-            if (!self.dragging) return;
-            // A sheet presented mid-drag, a resize, or a split that let the drag go.
-            if ([self divider] == self.dragging && ApolloDuoSplitThreadDividerUpdate(self.dragging, translation)) return;
-            [self cancel:pan];
-            return;
-        case UIGestureRecognizerStateEnded: {
-            UINavigationController *dragging = self.dragging;
-            self.dragging = nil;
-            if (!dragging) return;
-            if ([self divider] == dragging) ApolloDuoSplitThreadDividerFinish(dragging, translation, [pan velocityInView:nil].x);
-            else ApolloDuoSplitThreadDividerCancel(dragging);
-            return;
-        }
-        default: {
-            UINavigationController *dragging = self.dragging;
-            self.dragging = nil;
-            if (dragging) ApolloDuoSplitThreadDividerCancel(dragging);
-            return;
-        }
-    }
-}
-// Removes the drag at once and cancels this pan, so its release is nothing.
-- (void)cancel:(UIPanGestureRecognizer *)pan {
-    UINavigationController *dragging = self.dragging;
-    self.dragging = nil;
-    if (dragging) ApolloDuoSplitThreadDividerCancel(dragging);
-    pan.enabled = NO;
-    pan.enabled = YES;
-}
-@end
-
-void ApolloDuoInstallRailDrag(UIView *rail, UINavigationController *(^thread)(void)) {
-    if (!ApolloDeviceIsDuo() || !rail || objc_getAssociatedObject(rail, &kApolloDuoRailDrag)) return;
-    ApolloDuoRailDrag *owner = [ApolloDuoRailDrag new];
-    owner.thread = thread;
-    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:owner action:@selector(panned:)];
-    pan.maximumNumberOfTouches = 1;
-    pan.delegate = owner;
-    pan.name = kApolloDuoRailDragName;
-    owner.pan = pan;
-    objc_setAssociatedObject(rail, &kApolloDuoRailDrag, owner, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    [rail addGestureRecognizer:pan];
 }

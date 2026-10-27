@@ -234,6 +234,8 @@ int main(void) {
               && !ApolloDuoSplitDividerShouldBegin(YES, YES, 475.5, 475.5, 10),
               @"admission: a touch that moved a tap's jitter is a swipe (Back, close, drawer), never the divider");
         Check(ApolloDuoSplitDividerShouldBegin(YES, YES, 476, 475.5, 3), @"admission: a still press on the divider moves it");
+        Check(ApolloDuoSplitDividerShouldBegin(YES, YES, 8, 0, 0) && !ApolloDuoSplitDividerShouldBegin(YES, YES, 13, 0, 0),
+              @"admission: with the post over the feed the divider is at the screen's edge, the same band");
 
         // The finger's speed: each move eased into the last, none once it stops.
         Check(Near(ApolloDuoSplitDividerVelocity(0, 400, 1.0, 410, 1.01), 600), @"velocity: a first move's speed, eased in");
@@ -419,6 +421,19 @@ int main(void) {
         touch.point = CGPointMake(476, 500);
         Check(![divider gestureRecognizer:press shouldReceiveTouch:(id)touch], @"second finger: not taken while dragging");
         Release(host, UIGestureRecognizerStateEnded, 100.1);
+
+        // The post over the feed: the divider is at the screen's edge, and the
+        // same hold there, dragged right, brings the feed back.
+        Reset();
+        testDivider = 0;
+        Check(PressAt(host, 6) && begins == 1 && divider.dragging && Near(Grabber(host).center.x, 0),
+              @"edge: a hold within the band at the screen's edge begins the drag, the grabber at the edge");
+        MoveTo(host, 400, 100.10);
+        Check(Near(updates.lastObject.doubleValue, 394) && Near(Grabber(host).center.x, 394),
+              @"edge: the divider follows the finger in from the edge, keeping its offset");
+        Release(host, UIGestureRecognizerStateEnded, 100.11);
+        Check(finishes == 1 && Near(finishedAt, 394) && !divider.dragging && host.subviews.count == 0,
+              @"edge: the release hands the split where the feed's edge was let go");
 
         printf("OK: %lu split divider checks\n", (unsigned long)checks);
     }

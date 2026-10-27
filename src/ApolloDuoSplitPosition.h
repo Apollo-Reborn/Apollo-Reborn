@@ -23,8 +23,9 @@ typedef struct {
 // What letting go of a drag does: land at `divider`, close the thread, or
 // cover the feed with the thread (full width, for this thread only). `share`
 // is what to remember for a landing: 0 for Half, else divider over canvas.
-// The uncover drag (the post dragged back from full width) releases through
-// the same decision: its divider is where the picture's edge is let go.
+// The uncover drag (the divider dragged back from the screen's edge, the post
+// over the feed) releases through the same decision: its divider is where
+// the picture's edge is let go.
 typedef struct {
     CGFloat divider;
     double share;
