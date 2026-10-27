@@ -401,6 +401,8 @@ static NSString *ApolloWebAuthConsentSubmitJS(BOOL accept) {
         if (error || ![hasForm respondsToSelector:@selector(boolValue)] || ![hasForm boolValue]) {
             ApolloLog(@"[WebAuth] No consent form on the page, not offering an in-app answer (%@)",
                       error ? error.localizedDescription : @"not found");
+            // After a 400 the explanation still has to show.
+            if (afterRejection) [s _explainRejectedSignInWithStatus:400 offerOldReddit:!s.oldRedditUnavailable];
             return;
         }
         s.offeredInAppConsent = YES;
@@ -428,12 +430,13 @@ static NSString *ApolloWebAuthConsentSubmitJS(BOOL accept) {
 
 - (void)_sendInAppConsent:(BOOL)accept {
     if (self.finished) return;
-    self.sentInAppConsent = YES;
     ApolloLog(@"[WebAuth] Sending %@ to Reddit's consent form from Apollo", accept ? @"Accept" : @"Decline");
     __weak typeof(self) weakSelf = self;
     [self.webView evaluateJavaScript:ApolloWebAuthConsentSubmitJS(accept) completionHandler:^(id result, NSError *error) {
         typeof(self) s = weakSelf;
         NSString *outcome = [result isKindOfClass:[NSString class]] ? result : nil;
+        // Only an answer that went out counts: a later 400 then means the key.
+        if ([outcome isEqualToString:@"submitted"]) s.sentInAppConsent = YES;
         if (!s || [outcome isEqualToString:@"submitted"]) return;
         ApolloLog(@"[WebAuth] In-app consent answer not sent: %@", outcome ?: error.localizedDescription ?: @"no result");
         if (s.finished || s.presentedViewController) return;
