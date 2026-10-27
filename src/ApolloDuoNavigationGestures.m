@@ -1264,3 +1264,119 @@ void ApolloDuoInstallBackSwipe(UINavigationController *navigation) {
     [navigation.view addGestureRecognizer:hideGuard];
     [navigation.view addGestureRecognizer:tap];
 }
+
+// The post drag from the trailing rail. The open Duo is held with the right
+// thumb on the rail, and the thread pane's own pan never sees a touch there:
+// the rail is the tab controller's bar above the pane, not part of its view.
+// Its own pan, on the rail, drives the same divider drag as the thread pane's
+// leftward one (ApolloDuoSplitThreadDivider*), only for the same case: the
+// adjustable split on and the thread at its root beside the feed. Taps, the
+// rail's own hold and a vertical move never begin it.
+static char kApolloDuoRailDrag;
+static NSString *const kApolloDuoRailDragName = @"ApolloReborn.Duo.RailDrag";
+
+// A clearly sideways, leftward move (the pane swipe's own measure) while the
+// thread pane is a divider drag.
+static BOOL ApolloDuoRailDragBegins(BOOL dividerDrag, CGPoint motion, CGPoint velocity) {
+    if (!dividerDrag || motion.x > 0.0) return NO;
+    // UIKit can strip its hysteresis from the motion, leaving only the speed.
+    if (motion.x == 0.0) return velocity.x < 0.0 && fabs(velocity.x) > fabs(velocity.y) * 1.5;
+    if (fabs(motion.y) > fabs(motion.x)) return NO;
+    return (velocity.x < 0.0 && fabs(velocity.x) > fabs(velocity.y) * 1.5) || fabs(motion.x) > fabs(motion.y) * 1.5;
+}
+
+// iOS 26's Liquid Lens (a drag across the rail's tabs, which selects the one
+// under the finger on release) arms on the same touch. The post drag ends it,
+// so letting go over a tab does not also switch to it.
+static void ApolloDuoCancelRailLens(UIView *rail) {
+    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:rail];
+    for (NSUInteger visited = 0; queue.count && visited < 200; visited++) {
+        UIView *view = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        for (UIGestureRecognizer *gesture in view.gestureRecognizers) {
+            if (![NSStringFromClass(gesture.class) isEqualToString:@"_UIContinuousSelectionGestureRecognizer"]) continue;
+            gesture.enabled = NO;
+            gesture.enabled = YES;
+        }
+        [queue addObjectsFromArray:view.subviews];
+    }
+}
+
+@interface ApolloDuoRailDrag : NSObject <UIGestureRecognizerDelegate>
+@property(nonatomic, strong) UIPanGestureRecognizer *pan;
+// The thread pane's navigation while it is a divider drag, else nil.
+@property(nonatomic, copy) UINavigationController *(^thread)(void);
+@property(nonatomic, weak) UINavigationController *dragging;
+@end
+
+@implementation ApolloDuoRailDrag
+- (UINavigationController *)divider {
+    UINavigationController *thread = self.thread ? self.thread() : nil;
+    return thread && ApolloDuoSplitThreadDividerDrags(thread) && !ApolloDuoSplitHasForwardPage(thread)
+        && ApolloDuoPaneGestureAllowed(thread) ? thread : nil;
+}
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gesture {
+    if (gesture != self.pan) return NO;
+    return ApolloDuoRailDragBegins([self divider] != nil, [self.pan translationInView:nil],
+                                   [self.pan velocityInView:nil]);
+}
+// The rail's own recognizers (iOS 26's Liquid Lens drag across the tabs, the
+// Account and Settings holds) arm on the same touch and would otherwise be
+// the only recognizer to begin: this pan only begins on a leftward move,
+// which none of them is.
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture
+        shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
+    return gesture == self.pan && other != self.pan;
+}
+- (void)panned:(UIPanGestureRecognizer *)pan {
+    CGFloat translation = [pan translationInView:nil].x;
+    UINavigationController *thread = self.dragging ?: [self divider];
+    switch (pan.state) {
+        case UIGestureRecognizerStateBegan:
+            self.dragging = thread && ApolloDuoSplitThreadDividerBegin(thread) ? thread : nil;
+            if (self.dragging) ApolloDuoCancelRailLens(pan.view);
+            return;
+        case UIGestureRecognizerStateChanged:
+            if (!self.dragging) return;
+            // A sheet presented mid-drag, a resize, or a split that let the drag go.
+            if ([self divider] == self.dragging && ApolloDuoSplitThreadDividerUpdate(self.dragging, translation)) return;
+            [self cancel:pan];
+            return;
+        case UIGestureRecognizerStateEnded: {
+            UINavigationController *dragging = self.dragging;
+            self.dragging = nil;
+            if (!dragging) return;
+            if ([self divider] == dragging) ApolloDuoSplitThreadDividerFinish(dragging, translation, [pan velocityInView:nil].x);
+            else ApolloDuoSplitThreadDividerCancel(dragging);
+            return;
+        }
+        default: {
+            UINavigationController *dragging = self.dragging;
+            self.dragging = nil;
+            if (dragging) ApolloDuoSplitThreadDividerCancel(dragging);
+            return;
+        }
+    }
+}
+// Removes the drag at once and cancels this pan, so its release is nothing.
+- (void)cancel:(UIPanGestureRecognizer *)pan {
+    UINavigationController *dragging = self.dragging;
+    self.dragging = nil;
+    if (dragging) ApolloDuoSplitThreadDividerCancel(dragging);
+    pan.enabled = NO;
+    pan.enabled = YES;
+}
+@end
+
+void ApolloDuoInstallRailDrag(UIView *rail, UINavigationController *(^thread)(void)) {
+    if (!ApolloDeviceIsDuo() || !rail || objc_getAssociatedObject(rail, &kApolloDuoRailDrag)) return;
+    ApolloDuoRailDrag *owner = [ApolloDuoRailDrag new];
+    owner.thread = thread;
+    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:owner action:@selector(panned:)];
+    pan.maximumNumberOfTouches = 1;
+    pan.delegate = owner;
+    pan.name = kApolloDuoRailDragName;
+    owner.pan = pan;
+    objc_setAssociatedObject(rail, &kApolloDuoRailDrag, owner, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [rail addGestureRecognizer:pan];
+}

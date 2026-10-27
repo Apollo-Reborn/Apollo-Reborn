@@ -3879,6 +3879,8 @@ static ApolloDuoSplitState *ApolloDuoPostsStateForHostView(UIView *view) {
     return state.host == host && state.feed ? state : nil;
 }
 
+static void ApolloDuoPostsFinishSettle(ApolloDuoSplitState *state);
+
 // A thread open beside the feed in the landscape Posts split, and nothing
 // else moving the panes: a column change, a toggle, the drawer, a resize, a push.
 static BOOL ApolloDuoPostsDividerMovable(ApolloDuoSplitState *state) {
@@ -3899,6 +3901,9 @@ CGFloat ApolloDuoSplitDividerPosition(UIView *view, BOOL *adjustable) {
     if (!on && !state.separatorTapDisabled) return -1.0;
     if (!state || !ApolloDuoPostsDividerMovable(state)) return -1.0;
     ApolloDuoPostsSyncSeparatorTap(state, on);
+    // A divider settle still running ends at once, so a press on the divider
+    // is never refused for it.
+    ApolloDuoPostsFinishSettle(state);
     // A close or a restore still finishing holds the panes.
     if (state.interactiveClose || state.host.postsTransitionSnapshot.window) return -1.0;
     CGRect pane = ApolloDuoPostsDetailPane(state);
@@ -3913,6 +3918,9 @@ BOOL ApolloDuoSplitDividerBegin(UIView *view) {
     ApolloDuoSplitState *state = ApolloDuoPostsStateForHostView(view);
     if (!state) return NO;
     UIView *surface = state.host.view;
+    // A divider settle still running ends at once: the new drag begins from
+    // where the divider really is, never ignored.
+    ApolloDuoPostsFinishSettle(state);
     // Another drag, or a close or restore still finishing, holds the panes.
     if (!ApolloDuoPostsAdjustableSplit() || !ApolloDuoPostsDividerMovable(state) || state.interactiveClose
         || state.host.postsTransitionSnapshot.window
@@ -3976,96 +3984,63 @@ BOOL ApolloDuoSplitDividerUpdate(UIView *view, CGFloat dividerX) {
 static BOOL sDuoPostsApplyUnanimated;
 
 // A landing's spring: critically damped like the close's, but quicker, and
-// ended at a known time, so the reveal never waits out a long tail.
+// ended at a known time, so the reveal never waits out a tail.
 static const CGFloat kApolloDuoPostsLandingOmega = 2.0 * M_PI / 0.2;
 static const NSTimeInterval kApolloDuoPostsLandingDuration = 0.26;
-// The reveal: the pictures blur as they fade, so the old-width picture never
-// shows as a second image over the columns laid out under it (iPadOS's own
-// split-resize idiom). The blur lives in the overlay, so every removal of the
-// overlay takes it too; touches go through all of it.
-static const NSTimeInterval kApolloDuoPostsRevealDuration = 0.08;
 // A landing this near where the pictures already are has nothing to spring.
 static const CGFloat kApolloDuoPostsLandingTravel = 8.0;
 
-// The blur's first half: the pictures fade out under a blur that comes in.
-// Core Animation, so it keeps running through a main-thread stall once flushed.
-static UIVisualEffectView *ApolloDuoPostsBlurPicturesOut(UIView *overlay, void (^completion)(void)) {
-    UIVisualEffectView *blur = [[UIVisualEffectView alloc] initWithEffect:nil];
-    blur.frame = overlay.bounds;
-    blur.userInteractionEnabled = NO;
-    [overlay addSubview:blur];
-    NSArray<UIView *> *pictures = [overlay.subviews filteredArrayUsingPredicate:
-        [NSPredicate predicateWithBlock:^BOOL(UIView *view, __unused id bindings) { return view != blur; }]];
-    [UIView animateWithDuration:kApolloDuoPostsRevealDuration delay:0 options:UIViewAnimationOptionCurveEaseIn
-                     animations:^{
-        blur.effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterial];
-        for (UIView *picture in pictures) picture.alpha = 0;
-    } completion:^(__unused BOOL ended) { if (completion) completion(); }];
-    return blur;
-}
+// The settle in flight, if any: its overlay and the cut that ends it. A new
+// drag on the divider ends it at once (ApolloDuoPostsFinishSettle) instead of
+// being ignored until the pictures are gone.
+static __weak UIView *sDuoPostsSettleOverlay;
+static dispatch_block_t sDuoPostsSettleCut;
 
-// Its second half: the blur clears off the columns now laid out under it, and
-// the overlay goes, with the blur in it. A timeout stands behind the
-// animations: the overlay can never outlive its reveal. Idempotent.
-static void ApolloDuoPostsClearBlur(ApolloDuoSplitHost *host, UIView *overlay, UIVisualEffectView *blur) {
-    __weak ApolloDuoSplitHost *weakHost = host;
-    __block BOOL finished = NO;
-    dispatch_block_t finish = ^{
-        if (finished) return;
-        finished = YES;
-        ApolloDuoPostsRemoveOverlay(weakHost, overlay);
-        ApolloDuoSplitScheduleUpdate();
-    };
-    [UIView animateWithDuration:kApolloDuoPostsRevealDuration delay:0 options:UIViewAnimationOptionCurveEaseOut
-                     animations:^{ blur.alpha = 0; } completion:^(__unused BOOL ended) { finish(); }];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), finish);
-}
-
-// The reveal when the columns are already laid out: Reduce Motion, a plain
-// short fade; otherwise the blur both ways.
-static void ApolloDuoPostsRevealSettle(ApolloDuoSplitHost *host, UIView *overlay) {
-    __weak ApolloDuoSplitHost *weakHost = host;
-    if (!overlay.window || UIAccessibilityIsReduceMotionEnabled()) {
-        dispatch_block_t done = ^{
-            ApolloDuoPostsRemoveOverlay(weakHost, overlay);
-            ApolloDuoSplitScheduleUpdate();
-        };
-        if (!overlay.window) done();
-        else [UIView animateWithDuration:0.15 animations:^{ overlay.alpha = 0; }
-                              completion:^(__unused BOOL ended) { done(); }];
-        return;
-    }
-    __block UIVisualEffectView *blur = nil;
-    blur = ApolloDuoPostsBlurPicturesOut(overlay, ^{ ApolloDuoPostsClearBlur(weakHost, overlay, blur); });
+// The pictures go in one frame: no fade and no effect, the columns having
+// been laid out and committed under them at the landing width. Idempotent.
+static void ApolloDuoPostsFinishSettle(ApolloDuoSplitState *state) {
+    UIView *overlay = sDuoPostsSettleOverlay;
+    dispatch_block_t cut = sDuoPostsSettleCut;
+    if (!overlay || !cut || state.host.postsTransitionSnapshot != overlay) return;
+    ApolloLog(@"[DuoSplit] a new divider drag ended the settle in flight");
+    cut();
 }
 
 // A landing or full screen: the render server owns what the pictures do from
 // here, flushed before the expensive part (`relayout`, the column change,
 // which stalls the main thread for a Texture re-measure), as the close's
-// commit does. Where the pictures have a way to go they spring there, and
-// are revealed off once they land; where they are already in place (a plain
-// landing) they blur out instead, through the stall. Touches go through.
+// commit does. Where the pictures have a way to go they spring there and are
+// cut once they land; where they are already in place (a plain landing) they
+// are cut as soon as the columns under them are committed. Touches go
+// through, Reduce Motion or not.
 static void ApolloDuoPostsSettleDivider(ApolloDuoSplitState *state, ApolloDuoPostsCloseHandoff *drag, CGFloat offset,
                                         CGFloat velocity, dispatch_block_t relayout) {
     __weak ApolloDuoSplitHost *weakHost = state.host;
     UIView *overlay = drag.overlay;
     overlay.userInteractionEnabled = NO;
-    if (UIAccessibilityIsReduceMotionEnabled() || !overlay.window) {
-        if (relayout) relayout();
-        ApolloDuoPostsRevealSettle(weakHost, overlay);
-        return;
-    }
+    __block BOOL cutDone = NO;
+    dispatch_block_t cut = ^{
+        if (cutDone) return;
+        cutDone = YES;
+        if (sDuoPostsSettleOverlay == overlay) {
+            sDuoPostsSettleOverlay = nil;
+            sDuoPostsSettleCut = nil;
+        }
+        ApolloDuoPostsRemoveOverlay(weakHost, overlay);
+        ApolloDuoSplitScheduleUpdate();
+    };
+    sDuoPostsSettleOverlay = overlay;
+    sDuoPostsSettleCut = cut;
     CGFloat shown = drag.snapshot.transform.tx;
-    if (fabs(offset - shown) < kApolloDuoPostsLandingTravel) {
-        UIVisualEffectView *blur = ApolloDuoPostsBlurPicturesOut(overlay, nil);
-        [CATransaction flush];
+    if (UIAccessibilityIsReduceMotionEnabled() || !overlay.window || fabs(offset - shown) < kApolloDuoPostsLandingTravel) {
+        if (overlay.window && !UIAccessibilityIsReduceMotionEnabled()) [CATransaction flush];
         if (relayout) relayout();
-        ApolloDuoPostsClearBlur(weakHost, overlay, blur);
+        // Committed first, so the cut shows the new columns and nothing between.
+        [CATransaction flush];
+        dispatch_async(dispatch_get_main_queue(), cut);
         return;
     }
-    ApolloDuoPostsSpringDragWith(drag, offset, velocity, kApolloDuoPostsLandingOmega, kApolloDuoPostsLandingDuration, ^{
-        ApolloDuoPostsRevealSettle(weakHost, overlay);
-    });
+    ApolloDuoPostsSpringDragWith(drag, offset, velocity, kApolloDuoPostsLandingOmega, kApolloDuoPostsLandingDuration, cut);
     [CATransaction flush];
     if (relayout) relayout();
 }
@@ -5194,6 +5169,48 @@ BOOL ApolloDuoSplitReturnFromVisitedProfile(UINavigationController *navigation) 
     return YES;
 }
 
+// The thread pane of the selected tab's Posts split when the post can be
+// dragged from the rail (the same case as the pane's own drag), else nil.
+static UINavigationController *ApolloDuoSplitRailDragThread(UITabBarController *tabs) {
+    UIViewController *selected = tabs.selectedViewController;
+    if (![selected isKindOfClass:UINavigationController.class]) return nil;
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation((id)selected, NO);
+    return state.feed && ApolloDuoSplitThreadDividerDrags(state.secondary) ? state.secondary : nil;
+}
+
+// The visible rail is not the UITabBar (which has no subviews on iOS 26):
+// UIKit hosts the floating bar's platters in a _UITabContainerView of the
+// tab controller's view, and a touch on a rail button hits those, never the
+// bar. The post drag's pan lives on that container, which holds the rail and
+// nothing else, so a touch anywhere else never reaches it.
+static UIView *ApolloDuoSplitRailContainer(UITabBarController *tabs) {
+    static __weak UIView *found;
+    if (found.window && [found isDescendantOfView:tabs.view]) return found;
+    Class container = NSClassFromString(@"_UITabContainerView");
+    if (!container) return nil;
+    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:tabs.view];
+    for (NSUInteger visited = 0; queue.count && visited < 4000; visited++) {
+        UIView *view = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        if ([view isKindOfClass:container]) {
+            found = view;
+            return view;
+        }
+        [queue addObjectsFromArray:view.subviews];
+    }
+    return nil;
+}
+
+static void ApolloDuoSplitInstallRailDrag(UITabBarController *tabs) {
+    UIView *rail = ApolloDuoSplitRailContainer(tabs);
+    if (!rail) return;
+    __weak UITabBarController *weakTabs = tabs;
+    ApolloDuoInstallRailDrag(rail, ^UINavigationController *{
+        UITabBarController *live = weakTabs;
+        return live ? ApolloDuoSplitRailDragThread(live) : nil;
+    });
+}
+
 static void ApolloDuoSplitUpdate(void) {
     UITabBarController *tabs = (id)ApolloMainTabBarController();
     if (sDuoSplitUpdating || ![tabs isKindOfClass:UITabBarController.class] || !tabs.isViewLoaded) return;
@@ -5201,6 +5218,7 @@ static void ApolloDuoSplitUpdate(void) {
         && !ApolloDuoRailHasVisibleSideBar()) return;
     sDuoSplitUpdating = YES;
     ApolloDuoSplitObserveHinge(tabs);
+    ApolloDuoSplitInstallRailDrag(tabs);
     BOOL open = ApolloDuoSplitShouldOpen(tabs);
     for (UIViewController *child in tabs.viewControllers) {
         if (![child isKindOfClass:UINavigationController.class]) continue;

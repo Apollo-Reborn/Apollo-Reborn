@@ -11,6 +11,7 @@
 typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 @interface UIView : NSObject
 @property(nonatomic) UIEdgeInsets safeAreaInsets;
+@property(nonatomic, strong) NSArray *subviews;
 @property(nonatomic) CGRect bounds;
 @property(nonatomic, weak) UIView *superview;
 @property(nonatomic, strong) NSObject *window;
@@ -2589,6 +2590,78 @@ int main(void) {
                   @"strip: setting off, the forward swipe is not offered at all");
             dividerAdjustable = YES;
             dThread.pane = CGRectNull;
+
+            // The rail: a leftward pan on it moves the post, only as the thread
+            // pane's own drag would, and only when clearly sideways.
+            Check(ApolloDuoRailDragBegins(YES, CGPointMake(-12, 2), CGPointMake(-300, 20)),
+                  @"rail: a clearly leftward move begins the post drag");
+            Check(!ApolloDuoRailDragBegins(NO, CGPointMake(-12, 2), CGPointMake(-300, 20)),
+                  @"rail: not when the thread pane is no divider drag (setting off, no thread)");
+            Check(!ApolloDuoRailDragBegins(YES, CGPointMake(12, 2), CGPointMake(300, 20)),
+                  @"rail: rightward on the rail does nothing new");
+            Check(!ApolloDuoRailDragBegins(YES, CGPointMake(-3, 14), CGPointMake(-20, 300))
+                  && !ApolloDuoRailDragBegins(YES, CGPointMake(0, 14), CGPointMake(-20, 300)),
+                  @"rail: vertical movement is not it");
+            Check(!ApolloDuoRailDragBegins(YES, CGPointMake(-10, 9), CGPointMake(-200, 200)),
+                  @"rail: a diagonal that is not clearly sideways is not it");
+            Check(ApolloDuoRailDragBegins(YES, CGPointMake(0, 1), CGPointMake(-300, 10))
+                  && !ApolloDuoRailDragBegins(YES, CGPointMake(0, 0), CGPointMake(300, 0)),
+                  @"rail: a move UIKit has stripped to its velocity is read by that");
+            UIView *rail = [UIView new];
+            __block UINavigationController *railThread = dThread;
+            ApolloDuoInstallRailDrag(rail, ^UINavigationController *{ return railThread; });
+            Check(rail.gestureRecognizers.count == 1, @"rail: one pan on it");
+            ApolloDuoInstallRailDrag(rail, ^UINavigationController *{ return railThread; });
+            Check(rail.gestureRecognizers.count == 1, @"rail: installed once");
+            ApolloDuoRailDrag *railOwner = objc_getAssociatedObject(rail, &kApolloDuoRailDrag);
+            UIPanGestureRecognizer *railPan = railOwner.pan;
+            railPan.translation = CGPointMake(-12, 2); railPan.velocity = CGPointMake(-300, 20);
+            Check([railOwner gestureRecognizerShouldBegin:railPan], @"rail: begins with the thread a divider drag");
+            railThread = nil;
+            Check(![railOwner gestureRecognizerShouldBegin:railPan], @"rail: not with no thread beside the feed");
+            railThread = dThread;
+            dividerAdjustable = NO;
+            Check(![railOwner gestureRecognizerShouldBegin:railPan], @"rail: not with the setting off");
+            dividerAdjustable = YES;
+            forwardPageOnStack = YES;
+            Check(![railOwner gestureRecognizerShouldBegin:railPan], @"rail: not where Apollo's forward has a page");
+            forwardPageOnStack = NO;
+            dThread.presentedViewController = [UIViewController new];
+            Check(![railOwner gestureRecognizerShouldBegin:railPan], @"rail: not behind a sheet");
+            dThread.presentedViewController = nil;
+            railPan.velocity = CGPointMake(-20, 300); railPan.translation = CGPointMake(-3, 14);
+            Check(![railOwner gestureRecognizerShouldBegin:railPan], @"rail: a vertical move on it is left to the rail");
+            railPan.velocity = CGPointMake(-300, 20); railPan.translation = CGPointZero;
+            begun = dividerBegun; finished = dividerFinished; cancelled = dividerCancelled;
+            UIView *platter = [UIView new]; rail.subviews = @[platter];
+            Class lensClass = objc_allocateClassPair(UIGestureRecognizer.class, "_UIContinuousSelectionGestureRecognizer", 0);
+            objc_registerClassPair(lensClass);
+            UIGestureRecognizer *lens = [lensClass new]; [platter addGestureRecognizer:lens];
+            UIGestureRecognizer *other = [UIGestureRecognizer new]; [platter addGestureRecognizer:other];
+            railPan.state = UIGestureRecognizerStateBegan; [railOwner panned:railPan];
+            Check(lens.disables == 1 && lens.enabled && other.disables == 0,
+                  @"rail: the post drag ends Liquid Lens, so letting go over a tab does not switch to it");
+            railPan.translation = CGPointMake(-150, 3); railPan.state = UIGestureRecognizerStateChanged; [railOwner panned:railPan];
+            railPan.velocity = CGPointMake(-250, 3); railPan.state = UIGestureRecognizerStateEnded; [railOwner panned:railPan];
+            railPan.state = UIGestureRecognizerStatePossible;
+            Check(dividerBegun == begun + 1 && Near(dividerTranslation, -150) && dividerFinished == finished + 1
+                  && Near(dividerFinishTranslation, -150) && Near(dividerVelocity, -250),
+                  @"rail: the drag moves the divider by the finger and lands where it is let go");
+            railPan.translation = CGPointZero;
+            railPan.state = UIGestureRecognizerStateBegan; [railOwner panned:railPan];
+            railPan.state = UIGestureRecognizerStateCancelled; [railOwner panned:railPan];
+            railPan.state = UIGestureRecognizerStatePossible;
+            Check(dividerCancelled == cancelled + 1 && dividerFinished == finished + 1,
+                  @"rail: a cancelled pan removes the drag at once");
+            NSUInteger railDisables = railPan.disables;
+            dividerTracks = NO;
+            railPan.state = UIGestureRecognizerStateBegan; [railOwner panned:railPan];
+            railPan.translation = CGPointMake(-50, 1); railPan.state = UIGestureRecognizerStateChanged; [railOwner panned:railPan];
+            railPan.state = UIGestureRecognizerStateEnded; [railOwner panned:railPan];
+            railPan.state = UIGestureRecognizerStatePossible;
+            dividerTracks = YES;
+            Check(railPan.disables == railDisables + 1 && dividerFinished == finished + 1,
+                  @"rail: a drag the split let go is removed at once, its pan cancelled, and its release is nothing");
             leftSwipesDisabled = NO; rightSwipesDisabled = NO;
         }
         printf("OK: %lu checks\n", (unsigned long)checks);

@@ -24,4 +24,8 @@ BOOL ApolloDuoNativeBackInFlight(UINavigationController *navigation);
 /// Called when Apollo's own Back pan is allowed to begin, and when a page shows.
 void ApolloDuoNoteNativeBackBegan(UINavigationController *navigation);
 void ApolloDuoNoteNativeBackShown(UINavigationController *navigation);
+/// The post drag from the trailing rail: a leftward pan on `rail` (the tab
+/// controller's bar) drives the thread pane's divider drag while `thread`
+/// answers the thread pane that is one (nil otherwise). Once per rail.
+void ApolloDuoInstallRailDrag(UIView *rail, UINavigationController *(^thread)(void));
 __END_DECLS
