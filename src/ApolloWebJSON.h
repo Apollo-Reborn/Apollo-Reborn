@@ -144,6 +144,12 @@ void ApolloWebJSONInvalidateOAuthBearerForAccount(NSString *username, NSString *
 // URL path or RedditKit's relative "api/v1/..." / "r/<sub>/api/..." path.
 BOOL ApolloWebJSONPathNeedsWebBearer(NSString *path);
 
+// The moderator endpoints above, plus GET search reads (global, subreddit
+// discovery, community and multireddit). Search uses the session's own web
+// bearer on oauth.reddit.com; it does not depend on Old Reddit. Method-aware
+// so search-like writes never enter its mint/rewrite path.
+BOOL ApolloWebJSONRequestNeedsWebBearer(NSString *method, NSString *path);
+
 // The web-session account a Reddit request carrying `bearer` belongs to (nil
 // for an OAuth account's request) — the transport's per-request attribution.
 NSString *ApolloWebJSONWebSessionUsernameForBearer(NSString *bearer);
@@ -155,7 +161,7 @@ NSString *ApolloWebJSONReadyWebBearer(NSString *username);
 
 // YES when a web-session account has no web bearer on hand and a mint is worth
 // trying now (none held off, no recent mint failure). The RedditKit request
-// hook mints before sending an ApolloWebJSONPathNeedsWebBearer request then.
+// hook mints before sending an ApolloWebJSONRequestNeedsWebBearer request then.
 BOOL ApolloWebJSONWebBearerNeedsMint(NSString *username);
 
 // Hydrates the legacy single-session globals from the keychain, migrating any

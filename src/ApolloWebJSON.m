@@ -517,6 +517,29 @@ static void ApolloWebJSONNoteRoute(NSString *method, NSString *path, ApolloWebJS
               ApolloWebJSONRouteHost(route), sentPath);
 }
 
+// Search's cookie endpoints now return the block page on www, even while the
+// same session still authenticates /api/me. A freshly minted web bearer serves
+// the native Listing shape on oauth.reddit.com (verified 2026-10-27 for global,
+// subreddit-discovery and community-scoped searches, including second pages).
+// Keep this method-aware: only GET search reads use that bearer. The moderator
+// endpoints retain their existing read/write handling above.
+BOOL ApolloWebJSONRequestNeedsWebBearer(NSString *method, NSString *path) {
+    if (ApolloWebJSONPathNeedsWebBearer(path)) return YES;
+    if (![method.uppercaseString isEqualToString:@"GET"] || ![path isKindOfClass:NSString.class]) return NO;
+    NSString *p = [path componentsSeparatedByString:@"?"].firstObject.lowercaseString;
+    while ([p hasSuffix:@"/"]) p = [p substringToIndex:p.length - 1];
+    if ([p hasSuffix:@".json"]) p = [p substringToIndex:p.length - 5];
+    while ([p hasSuffix:@"/"]) p = [p substringToIndex:p.length - 1];
+    static NSRegularExpression *searchPaths;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        searchPaths = [NSRegularExpression regularExpressionWithPattern:
+            @"^/?(search|subreddits/search|r/[^/]+/search|(user|u)/[^/]+/m/[^/]+/search)$"
+                                                               options:0 error:NULL];
+    });
+    return [searchPaths firstMatchInString:p options:0 range:NSMakeRange(0, p.length)] != nil;
+}
+
 // Which web-session account a Reddit request carrying `bearer` belongs to, or
 // nil when it's an OAuth account's request. Resolved per request rather than
 // from whichever account is globally active: Apollo runs background polls
@@ -618,10 +641,10 @@ NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
     NSString *path = url.path ?: @"/";
     BOOL isWrite = !([method isEqualToString:@"GET"] || [method isEqualToString:@"HEAD"]);
 
-    // OAuth-only moderator endpoints (ApolloWebJSONPathNeedsWebBearer): the
-    // cookie can never authenticate them, so they go to oauth.reddit.com with
-    // this account's own web-session bearer. This runs on NSURLSession's work
-    // queue and must not block on a mint, so it only uses a bearer that's
+    // Search and OAuth-only moderator endpoints refuse the cookie. Send them
+    // to oauth.reddit.com with this account's own web-session bearer.
+    // This runs on NSURLSession's work queue and must not block on a mint,
+    // so it only uses a bearer that's
     // already on hand — the RedditKit request hook (ApolloWebJSONIdentity.xm)
     // mints one before sending. With none (mint failed, or held off after a
     // 401) the request falls through to the handling below, as before. Reddit
@@ -629,7 +652,7 @@ NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
     // and the /r/<sub>/api/ writes stay on oauth with the placeholder bearer.
     // /moderators keeps its legacy mirror and /moderators_invited its empty
     // stub.
-    if (ApolloWebJSONPathNeedsWebBearer(path)) {
+    if (ApolloWebJSONRequestNeedsWebBearer(method, path)) {
         NSString *webBearer = ApolloWebJSONReadyWebBearer(sessionUsername);
         NSURLRequest *oauthRequest = webBearer.length > 0
             ? ApolloWebJSONWebBearerRequest(request, sessionUsername, webBearer) : nil;
@@ -1383,7 +1406,7 @@ void ApolloWebJSONNoteResponse(NSURLRequest *request, NSURLResponse *response) {
     // feed their own results back into the counter.
     if (ApolloWebJSONURLIsProbe(url)) return;
 
-    // Moderator requests sent to oauth.reddit.com with a web-session bearer
+    // Search/moderator requests sent to oauth.reddit.com with a web-session bearer
     // (ApolloWebJSONWebBearerRequest) have their own failure handling.
     if ([url.host.lowercaseString isEqualToString:@"oauth.reddit.com"]) {
         ApolloWebJSONNoteWebBearerResponse(request, (NSHTTPURLResponse *)response);
@@ -1445,10 +1468,10 @@ void ApolloWebJSONNoteResponse(NSURLRequest *request, NSURLResponse *response) {
     // counting them would poison the expiry streak with permanent false
     // evidence. They say nothing about the session either way — ignore them.
     if ([url.path hasPrefix:@"/api/mod/"]) return;
-    // Same for the other OAuth-only moderator endpoints. They normally go out
-    // with a web bearer instead; one only reaches www with the cookie when no
+    // Same for search and the other OAuth-only moderator endpoints. They
+    // normally go out with a web bearer instead; one only reaches www when no
     // bearer could be minted, and then its refusal is guaranteed.
-    if (ApolloWebJSONPathNeedsWebBearer(url.path)) return;
+    if (ApolloWebJSONRequestNeedsWebBearer(request.HTTPMethod, url.path)) return;
 
     // Reddit's anonymous block page is HTTP 403 with a ~190 KB text/html body.
     // A 403 with a JSON body (e.g. a private/quarantined subreddit) is a normal

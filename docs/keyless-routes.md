@@ -15,6 +15,8 @@ Installs with API-Key-Free Mode on and **Use Route Updates** on (the default) fe
 
 These are the only routes. The file names them; it can't give a host or URL. `api` isn't in the built-in table: as of 2026-10-24 it refused both built-in endpoints for the cookie, and it's there so the file can use it again if Reddit reopens it. For `/api/info` alone, `www.reddit.com/r/all/api/info.json` also answered the cookie then; it isn't a route, but it's the next one to add if the others close.
 
+Search does not use these cookie routes. Global, subreddit-discovery, community and multireddit searches use the account's web-session bearer on `oauth.reddit.com`, minting it from the existing login when needed. This needs no user-supplied API key and does not depend on Old Reddit. The bearer stays in memory; it is not written into the session's stored cookies.
+
 ## Format
 
 ```json

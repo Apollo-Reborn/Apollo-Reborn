@@ -904,10 +904,16 @@ static id ApolloWebJSONThingProperty(id thing, SEL selector) {
 %end
 
 // The web-session account ApolloWebJSONRewriteRequest will attribute a request
-// from `client` to: the same resolution, run on the client's credential because
-// the request doesn't exist yet. nil for an OAuth account.
+// from `client` to, before its request exists or it has installed a credential.
+// Resolve its own identity first, then the bearer's owner for anonymous clients.
+// nil for an OAuth account.
 static NSString *ApolloWebJSONWebSessionUsernameForClient(RDKClient *client) {
     if (!client || !sWebJSONEnabled) return nil;
+    // A newly restored client may not have installed its synthetic credential
+    // yet. Its first search still needs a bearer before the transport runs.
+    // Resolve named clients from their own identity, never the active account.
+    NSString *username = ApolloWebJSONClientUsername(client);
+    if (username.length > 0) return ApolloWebSessionFor(username) ? username : nil;
     id credential = [client respondsToSelector:@selector(authorizationCredential)] ? [client authorizationCredential] : nil;
     return ApolloWebJSONWebSessionUsernameForBearer(ApolloWebJSONCredentialTokenString(credential));
 }
@@ -916,6 +922,68 @@ static NSString *ApolloWebJSONWebSessionUsernameForClient(RDKClient *client) {
 // so that pass never defers again: one mint attempt per request, whatever it
 // returns.
 static __thread BOOL sApolloWebJSONResendingAfterWebBearerMint = NO;
+
+// A search may be cancelled while its first web bearer is being prepared.
+// Keep a task-shaped handle across that asynchronous gap, and transfer a
+// cancellation racing with attachment to the real task. A cancelled local
+// placeholder supplies Foundation's task interface before attachment; it is
+// never resumed and sends no request.
+@interface ApolloWebJSONDeferredTask : NSProxy {
+    NSURLSessionDataTask *_placeholder;
+    NSURLSessionTask *_task;
+    BOOL _cancelled;
+    BOOL _finished;
+}
+- (instancetype)init;
+- (BOOL)isCancelled;
+- (void)attachTask:(NSURLSessionTask *)task;
+- (void)cancel;
+- (BOOL)markFinished;
+@end
+
+@implementation ApolloWebJSONDeferredTask
+- (instancetype)init {
+    _placeholder = ApolloWebJSONSharedReadPlaceholderTask();
+    [_placeholder cancel];
+    return self;
+}
+- (BOOL)isCancelled {
+    @synchronized (self) { return _cancelled; }
+}
+- (void)cancel {
+    NSURLSessionTask *task;
+    @synchronized (self) { if (_finished) return; _cancelled = YES; task = _task; }
+    [task cancel];
+}
+- (void)attachTask:(NSURLSessionTask *)task {
+    BOOL cancelled;
+    @synchronized (self) { _task = task; cancelled = _cancelled; }
+    if (cancelled) [task cancel];
+}
+- (void)resume {
+    NSURLSessionTask *task;
+    @synchronized (self) { if (_cancelled) return; task = _task; }
+    [task resume];
+}
+- (NSURLSessionTaskState)state {
+    @synchronized (self) {
+        if (_finished) return NSURLSessionTaskStateCompleted;
+        if (_cancelled) return NSURLSessionTaskStateCanceling;
+        return _task ? [_task state] : NSURLSessionTaskStateRunning;
+    }
+}
+- (BOOL)markFinished {
+    @synchronized (self) { if (_finished) return NO; _finished = YES; return YES; }
+}
+- (NSMethodSignature *)methodSignatureForSelector:(SEL)selector {
+    @synchronized (self) { return [(_task ?: _placeholder) methodSignatureForSelector:selector]; }
+}
+- (void)forwardInvocation:(NSInvocation *)invocation {
+    id target;
+    @synchronized (self) { target = _task ?: _placeholder; }
+    [invocation invokeWithTarget:target];
+}
+@end
 
 // Route fallback for API-Key-Free reads www.reddit.com refuses at their usual
 // path (ApolloWebJSONRoutes.m). When a route answers with Reddit's block page,
@@ -1075,35 +1143,48 @@ static BOOL ApolloWebJSONKeepSubscriptionListAfterFailedWalk(RDKUser *user, NSAr
     NSUInteger routesTried = sApolloWebJSONRoutesTriedForSend;
     sApolloWebJSONRoutesTriedForSend = 0;
     if (!completion) return %orig;
-    // OAuth-only moderator endpoints (removal reasons, modactions) go to
-    // oauth.reddit.com with the account's web bearer (ApolloWebJSONRewriteRequest),
-    // but the transport can only use a bearer that's already on hand. The first
-    // such request after launch, or after the last bearer aged out, mints one
-    // here off the main thread and is then sent through this method again.
-    // Every caller of these endpoints discards the returned task (all 30 call
-    // sites in Apollo 1.15.11: the six removal-reason methods and
+    // Search and OAuth-only moderator endpoints go to oauth.reddit.com with
+    // the account's web bearer. When none is ready, mint off the main thread
+    // and send through this method again. Search keeps a cancellable handle
+    // across that gap. The moderator callers discard the returned task (all
+    // 30 call sites in Apollo 1.15.11: the six removal-reason methods and
     // bulkRemoveComments:, the contributors/banned/muted list and single-user
     // lookups, the moderators and invited-moderators lists, and the ban,
     // invite, accept- and decline-invite writes), so the deferred send returns
-    // nil. Anything else passes straight through.
-    if (sWebJSONEnabled && !sApolloWebJSONResendingAfterWebBearerMint && ApolloWebJSONPathNeedsWebBearer(path)) {
+    // nil for those moderator calls.
+    if (sWebJSONEnabled && !sApolloWebJSONResendingAfterWebBearerMint && ApolloWebJSONRequestNeedsWebBearer(method, path)) {
         NSString *sessionUsername = ApolloWebJSONWebSessionUsernameForClient(self).lowercaseString;
         if (ApolloWebJSONWebBearerNeedsMint(sessionUsername)) {
             RDKClient *client = self;
+            NSString *deferredMethod = [method copy];
+            NSString *deferredPath = [path copy];
+            id deferredParameters = [parameters isKindOfClass:NSDictionary.class] ? [parameters copy] : parameters;
+            ApolloWebJSONDeferredTask *pending = !ApolloWebJSONPathNeedsWebBearer(path)
+                ? [[ApolloWebJSONDeferredTask alloc] init] : nil;
+            void (^finish)(NSHTTPURLResponse *, id, NSError *) = ^(NSHTTPURLResponse *response, id object, NSError *error) {
+                if (pending && ![pending markFinished]) return;
+                if (pending.isCancelled) {
+                    completion(response, nil, [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCancelled userInfo:nil]);
+                } else {
+                    completion(response, object, error);
+                }
+            };
             dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
                 BOOL minted = ApolloWebJSONKeylessOAuthBearer(sessionUsername).length > 0;
                 dispatch_async(dispatch_get_main_queue(), ^{
+                    if (pending.isCancelled) { finish(nil, nil, nil); return; }
                     ApolloLog(@"[WebJSON] %@ a web bearer for u/%@ before %@ %@",
-                              minted ? @"Minted" : @"Could not mint", sessionUsername, method, path);
+                              minted ? @"Minted" : @"Could not mint", sessionUsername, deferredMethod, deferredPath);
                     sApolloWebJSONResendingAfterWebBearerMint = YES;
                     @try {
-                        [client taskWithMethod:method path:path parameters:parameters completion:completion];
+                        id task = [client taskWithMethod:deferredMethod path:deferredPath parameters:deferredParameters completion:finish];
+                        [pending attachTask:task];
                     } @finally {
                         sApolloWebJSONResendingAfterWebBearerMint = NO;
                     }
                 });
             });
-            return nil;
+            return pending;
         }
     }
     NSString *requestMethod = [method copy];
