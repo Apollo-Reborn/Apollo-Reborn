@@ -2983,7 +2983,8 @@ static void ApolloDuoPostsInflateGeometry(CGRect *bounds, CGPoint *position, CGR
 @property (nonatomic) CGFloat slideFrom;
 @property (nonatomic) CGFloat slideSpring;
 // The divider pressed and dragged (ApolloDuoSplitDivider*): the same drag
-// with the divider as its offset, either way. No pane gesture drives it.
+// with the divider as its offset, either way. The press drives it with no
+// pane navigation; the thread pane's own pan drives it with one.
 @property (nonatomic) BOOL dividing;
 // What a divider dragged left uncovers at the thread's trailing edge, laid
 // out once at the feed's whole width and scaled from that edge.
@@ -4141,7 +4142,11 @@ BOOL ApolloDuoSplitThreadDividerBegin(UINavigationController *nav) {
     // A close still springing back is let go, as the close's own Begin does;
     // a divider drag already held (the press) keeps hold.
     if (state.interactiveClose && !ApolloDuoPostsDividerDrag(state)) ApolloDuoPostsCancelInteractiveClose(state, NO, 0.0);
-    return ApolloDuoSplitDividerBegin(state.host.view);
+    if (!ApolloDuoSplitDividerBegin(state.host.view)) return NO;
+    // The pan's own drag: the routine split update's sweep keeps it, as it
+    // keeps a close that has a pane navigation.
+    ApolloDuoPostsDividerDrag(state).navigation = nav;
+    return YES;
 }
 
 // The divider `translation` from where the drag began, kept on the canvas.
@@ -5206,9 +5211,10 @@ static void ApolloDuoSplitUpdate(void) {
         // the interruptions that do need an update cancel it before this runs.
         // One whose views have left the window, or whose pane navigation
         // is gone while it still tracks, is over: let it go. The divider's
-        // drag has no pane navigation; it is over once its press is.
+        // drag is held by its press, or by the thread pane's pan, which has
+        // a pane navigation as the close's has.
         ApolloDuoPostsCloseHandoff *drag = state.interactiveClose;
-        BOOL held = drag.dividing ? ApolloDuoSplitDividerHolding(state.host.viewIfLoaded)
+        BOOL held = drag.dividing ? (ApolloDuoSplitDividerHolding(state.host.viewIfLoaded) || drag.navigation)
             : drag.navigation || drag.phase != ApolloDuoPostsClosePhaseTracking;
         if (drag.overlay.window && held) continue;
         ApolloDuoPostsCancelInteractiveClose(state, NO, 0.0);

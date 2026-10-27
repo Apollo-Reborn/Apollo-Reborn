@@ -152,6 +152,11 @@ static inline ApolloDuoSplitRelease ApolloDuoSplitReleaseFor(CGFloat dividerX,
                                                              CGFloat trailingInset,
                                                              CGFloat wideThread) {
     ApolloDuoSplitRelease release = { 0, 0, false, false };
+    // No canvas to speak of, or a position that is not a number: Half, no commit.
+    if (!(canvasWidth > 0) || !isfinite(dividerX)) {
+        release.divider = ApolloDuoSplitHalfDivider(canvasWidth > 0 ? canvasWidth : 0, foldX);
+        return release;
+    }
     CGFloat left = ApolloDuoSplitLeftLimit(canvasWidth);
     CGFloat right = ApolloDuoSplitRightLimit(canvasWidth, foldX, trailingInset, wideThread);
     CGFloat half = ApolloDuoSplitHalfDivider(canvasWidth, foldX);

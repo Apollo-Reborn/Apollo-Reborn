@@ -111,15 +111,22 @@ static BOOL ApolloDuoForwardSwipeCanNavigate(UINavigationController *navigation)
         && ApolloDuoSplitDetailNavigation(navigation) == navigation && ApolloDuoPaneGestureAllowed(navigation);
 }
 
-static BOOL ApolloDuoForwardSwipeInEdgeStrip(CGRect pane, CGPoint point) {
-    return point.x >= CGRectGetMaxX(pane) - 28.0;
+// The thread pane's frame includes the trailing rail (the safe area), which
+// takes no touch: its strip is measured from the visible edge beside it.
+static CGFloat ApolloDuoForwardSwipeStripInset(UINavigationController *navigation) {
+    return ApolloDuoSplitThreadDividerDrags(navigation) ? navigation.view.safeAreaInsets.right : 0.0;
+}
+
+static BOOL ApolloDuoForwardSwipeInEdgeStrip(CGRect pane, CGPoint point, CGFloat inset) {
+    return point.x >= CGRectGetMaxX(pane) - inset - 28.0;
 }
 
 static BOOL ApolloDuoForwardSwipeAcceptsPoint(UINavigationController *navigation, CGPoint point) {
     if (!ApolloDuoForwardSwipeCanNavigate(navigation)) return NO;
     CGRect pane = ApolloDuoBackSwipePane(navigation);
     if (CGRectIsEmpty(pane) || !CGRectContainsPoint(pane, point)) return NO;
-    return ApolloDuoForwardSwipeInEdgeStrip(pane, point) || ApolloDuoForwardSwipeStartsAnywhere();
+    return ApolloDuoForwardSwipeInEdgeStrip(pane, point, ApolloDuoForwardSwipeStripInset(navigation))
+        || ApolloDuoForwardSwipeStartsAnywhere();
 }
 
 // Away from the edge strip, content with its own sideways drag keeps it: a
@@ -165,7 +172,8 @@ static BOOL ApolloDuoBackSwipeAdmitsTouch(UINavigationController *navigation, UI
 }
 static BOOL ApolloDuoForwardSwipeAdmitsTouch(UINavigationController *navigation, UIView *view, CGPoint point) {
     if (!ApolloDuoForwardSwipeAcceptsPoint(navigation, point)) return NO;
-    return ApolloDuoForwardSwipeInEdgeStrip(ApolloDuoBackSwipePane(navigation), point)
+    return ApolloDuoForwardSwipeInEdgeStrip(ApolloDuoBackSwipePane(navigation), point,
+                                            ApolloDuoForwardSwipeStripInset(navigation))
         || !ApolloDuoBackSwipeTouchOwnsHorizontalDrag(view, navigation.view, YES, NO);
 }
 
@@ -297,13 +305,15 @@ static void ApolloDuoForwardDragCancel(ApolloDuoForwardRouting route, UINavigati
 }
 
 static ApolloDuoForwardRouting ApolloDuoForwardRouteForNavigation(UINavigationController *navigation) {
+    // The forward page is only read where it can matter.
+    BOOL dividerDrag = ApolloDuoSplitThreadDividerDrags(navigation);
     return ApolloDuoForwardRoute((ApolloDuoForwardFacts){
         .split = ApolloDuoSplitIsActive(navigation),
         .closedThread = ApolloDuoSplitCanRestoreClosedThread(navigation),
         .paneHeld = !ApolloDuoSplitAllowsNavigationSwipe(navigation),
         .nativeForward = ApolloDuoNativeForwardInFlight(navigation),
-        .dividerDrag = ApolloDuoSplitThreadDividerDrags(navigation),
-        .forwardPage = ApolloDuoSplitHasForwardPage(navigation),
+        .dividerDrag = dividerDrag,
+        .forwardPage = dividerDrag && ApolloDuoSplitHasForwardPage(navigation),
     });
 }
 
@@ -740,8 +750,17 @@ BOOL ApolloDuoNativeBackInFlight(UINavigationController *navigation) {
     if (self.route.owner == ApolloDuoBackOwnerDivider) {
         // The divider's position model decides the release, not the Back's
         // threshold: it lands, closes or goes full screen. A drag the split
-        // could not begin has no discrete Back behind it.
-        if (drag != ApolloDuoBackDragTracking) return;
+        // could not begin (a settle still running) leaves today's discrete
+        // close on release.
+        if (drag != ApolloDuoBackDragTracking) {
+            CGFloat paneWidth = CGRectGetWidth(ApolloDuoBackSwipePane(navigation));
+            ApolloDuoBackRouting close = {ApolloDuoBackOwnerThreadClose};
+            if (ApolloDuoBackShouldCommit(paneWidth > 0.0 ? translation / paneWidth : 0.0, [pan velocityInView:nil].x)
+                && ApolloDuoBackRouteForNavigation(navigation).owner == ApolloDuoBackOwnerDivider
+                && [self backIsFree:close])
+                [self performBack:close];
+            return;
+        }
         BOOL sameBack = ApolloDuoBackRouteForNavigation(navigation).owner == ApolloDuoBackOwnerDivider
             && [self backIsFree:self.route];
         if (ApolloDuoBackReleaseFor(YES, sameBack, !ApolloDuoBackSwipeCanNavigate(navigation)) == ApolloDuoBackReleaseCommit)

@@ -110,6 +110,15 @@ int main(void) {
     r = ApolloDuoSplitReleaseFor(500, 2000, canvas, fold, inset, wide);
     Check(!r.closesThread && !r.fullScreen, "A flick in the middle of the range lands, it does not commit");
 
+    // Nothing to land on: no canvas, or a position that is not a number.
+    r = ApolloDuoSplitReleaseFor(0, 0, 0, 0, inset, wide);
+    Check(!r.closesThread && !r.fullScreen && r.share == 0, "A zero canvas never reports a close");
+    r = ApolloDuoSplitReleaseFor(500, 900, 0, 0, inset, wide);
+    Check(!r.closesThread && !r.fullScreen, "A zero canvas ignores a flick");
+    r = ApolloDuoSplitReleaseFor(NAN, 0, canvas, fold, inset, wide);
+    Check(Near(r.divider, 475.5) && r.share == 0 && !r.closesThread && !r.fullScreen,
+          "A position that is not a number lands on Half");
+
     // Book fold: the display half is 455.7 and the limits move with the canvas.
     r = ApolloDuoSplitReleaseFor(460, 0, 911.4, 455.7, inset, wide);
     Check(Near(r.divider, 455.7) && r.share == 0, "Book: Half is the fold at 455.7");

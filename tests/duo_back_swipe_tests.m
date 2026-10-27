@@ -8,7 +8,9 @@
 @property(nonatomic) CGRect layoutFrame;
 @end
 @implementation UILayoutGuide @end
+typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 @interface UIView : NSObject
+@property(nonatomic) UIEdgeInsets safeAreaInsets;
 @property(nonatomic) CGRect bounds;
 @property(nonatomic, weak) UIView *superview;
 @property(nonatomic, strong) NSObject *window;
@@ -72,7 +74,6 @@ static CGPoint ApolloDuoSplitReleaseTranslation(UIPanGestureRecognizer *gesture,
 // Reports its translation through the split's hook body, as the hooked UIKit pan does.
 - (CGPoint)translationInView:(UIView *)view { return ApolloDuoSplitReleaseTranslation(self, view, self.translation); }
 @end
-typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 @interface UIScrollView : UIView
 @property(nonatomic, strong) UIPanGestureRecognizer *panGestureRecognizer;
 @property(nonatomic) CGSize contentSize;
@@ -476,8 +477,8 @@ int main(void) {
                 Check(ApolloDuoBackSwipeAcceptsPoint(nav, CGPointMake(6, 300))
                       && !ApolloDuoBackSwipeAcceptsPoint(nav, CGPointMake(divider + 6, 300)),
                       @"stops: the feed pane's Back strip ends at the current divider");
-                Check(ApolloDuoForwardSwipeInEdgeStrip(nav.pane, CGPointMake(divider - 6, 300))
-                      && !ApolloDuoForwardSwipeInEdgeStrip(nav.pane, CGPointMake(divider - 60, 300)),
+                Check(ApolloDuoForwardSwipeInEdgeStrip(nav.pane, CGPointMake(divider - 6, 300), 0)
+                      && !ApolloDuoForwardSwipeInEdgeStrip(nav.pane, CGPointMake(divider - 60, 300), 0),
                       @"stops: the forward strip hugs the current divider");
             }
         }
@@ -2457,8 +2458,13 @@ int main(void) {
                   @"divider drive: the same rightward-begun drag carries on leftward past where it began");
             dividerBegins = NO;
             Drag(dOwner, 600, 900);
-            Check(dividerFinished == finished + 3 && dThread.pops == pops && closeBegun == closes,
-                  @"divider drive: a drag the split could not begin does nothing on release, no close behind it");
+            Check(dividerFinished == finished + 3 && dThread.pops == pops + 1 && closeBegun == closes,
+                  @"divider drive: a drag the split could not begin leaves today's discrete close on release");
+            dThread.viewControllers = @[dBackstop, [TestPage new]];
+            Drag(dOwner, 40, 0);
+            Check(dividerFinished == finished + 3 && dThread.pops == pops + 1,
+                  @"divider drive: and a short one, short of the Back's threshold, does nothing");
+            pops = dThread.pops;
             dividerBegins = YES;
             NSUInteger disables = dPan.disables;
             dividerTracks = NO;
@@ -2466,6 +2472,7 @@ int main(void) {
             Check(dividerCancelled == cancelled + 1 && dividerFinished == finished + 3 && dPan.disables == disables + 1,
                   @"divider drive: a drag the split let go is removed at once, its pan cancelled, and its release is nothing");
             dividerTracks = YES;
+            dThread.viewControllers = @[dBackstop, [TestPage new]];
             dPan.translation = CGPointZero; dPan.velocity = CGPointMake(300, 40);
             dPan.state = UIGestureRecognizerStateBegan; [dOwner panned:dPan];
             dThread.presentedViewController = [UIViewController new];
@@ -2532,6 +2539,56 @@ int main(void) {
             LeftDrag(-300, -200);
             Check(dividerBegun == begun, @"divider forward: setting off, a leftward drag on the thread does nothing new");
             dividerAdjustable = YES;
+            // A leftward-begun drag that ends rightward is still the divider's release.
+            finished = dividerFinished;
+            LeftDrag(120, 300);
+            Check(dividerFinished == finished + 1 && Near(dividerFinishTranslation, 120) && Near(dividerVelocity, 300),
+                  @"divider forward: a leftward-begun drag carries on rightward and lands there");
+            // A sheet, or the system, mid-drag removes it at once, as Back's.
+            cancelled = dividerCancelled; finished = dividerFinished;
+            {
+                UITouch *finger = [UITouch new]; finger.view = dRow; finger.point = CGPointMake(500, 300);
+                [dOwner gestureRecognizer:dPan shouldReceiveTouch:finger];
+                [dPan touchesBegan:[NSSet setWithObject:finger] withEvent:[UIEvent new]];
+                dPan.location = CGPointMake(484, 301); dPan.velocity = CGPointMake(-300, 20);
+                [dOwner gestureRecognizerShouldBegin:dPan];
+                dPan.translation = CGPointZero; dPan.state = UIGestureRecognizerStateBegan; [dOwner panned:dPan];
+                dThread.presentedViewController = [UIViewController new];
+                dPan.translation = CGPointMake(-200, 2); dPan.velocity = CGPointMake(-900, 0);
+                dPan.state = UIGestureRecognizerStateEnded; [dOwner panned:dPan];
+                [dPan reset];
+                dThread.presentedViewController = nil;
+                Check(dividerCancelled == cancelled + 1 && dividerFinished == finished,
+                      @"divider forward: a sheet that arrived before the release cancels instead of landing");
+                [dOwner gestureRecognizer:dPan shouldReceiveTouch:finger];
+                [dPan touchesBegan:[NSSet setWithObject:finger] withEvent:[UIEvent new]];
+                dPan.location = CGPointMake(484, 301); dPan.velocity = CGPointMake(-300, 20);
+                [dOwner gestureRecognizerShouldBegin:dPan];
+                dPan.translation = CGPointZero; dPan.state = UIGestureRecognizerStateBegan; [dOwner panned:dPan];
+                dPan.state = UIGestureRecognizerStateCancelled; [dOwner panned:dPan];
+                [dPan reset];
+                Check(dividerCancelled == cancelled + 2 && dividerFinished == finished,
+                      @"divider forward: a pan the system cancelled removes the drag at once");
+            }
+            // The thread pane's strip is the visible edge beside the rail, not
+            // the pane's own edge under it (Disable Right Swipes off).
+            rightSwipesDisabled = NO;
+            dThread.pane = CGRectMake(475, 80, 476, 669);
+            dThread.view.safeAreaInsets = (UIEdgeInsets){0, 0, 0, 84};
+            UITouch *strip = [UITouch new]; strip.view = dRow;
+            strip.point = CGPointMake(850, 300);
+            Check(ApolloDuoForwardSwipeAdmitsTouch(dThread, dRow, strip.point),
+                  @"strip: the 28pt beside the rail starts the leftward drag");
+            Check(ApolloDuoForwardSwipeAdmitsTouch(dThread, dRow, CGPointMake(840, 300))
+                  && !ApolloDuoForwardSwipeAdmitsTouch(dThread, dRow, CGPointMake(838, 300)),
+                  @"strip: it starts 28pt before the rail (951 - 84 - 28), not 28pt before the pane's own edge");
+            Check(!ApolloDuoForwardSwipeAdmitsTouch(dThread, dRow, CGPointMake(800, 300)),
+                  @"strip: nor the middle of the pane");
+            dividerAdjustable = NO;
+            Check(!ApolloDuoForwardSwipeAdmitsTouch(dThread, dRow, strip.point),
+                  @"strip: setting off, the forward swipe is not offered at all");
+            dividerAdjustable = YES;
+            dThread.pane = CGRectNull;
             leftSwipesDisabled = NO; rightSwipesDisabled = NO;
         }
         printf("OK: %lu checks\n", (unsigned long)checks);

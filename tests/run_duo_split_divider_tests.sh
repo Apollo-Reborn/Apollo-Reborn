@@ -82,8 +82,15 @@ if 'ApolloDuoSplitDividerInstall(self.view)' not in body('- (void)viewDidLoad {\
 # whose press has ended or whose views left the window.
 update = body('static void ApolloDuoSplitUpdate(void) {')
 sweep = update[:update.index('ApolloDuoPostsCancelInteractiveClose(state, NO, 0.0);')]
-if 'drag.dividing ? ApolloDuoSplitDividerHolding(' not in sweep or 'drag.overlay.window && held) continue;' not in sweep:
-    fail("the split update's stale-drag sweep drops a divider drag its press still holds")
+if 'drag.dividing ? (ApolloDuoSplitDividerHolding(' not in sweep or '|| drag.navigation)' not in sweep or 'drag.overlay.window && held) continue;' not in sweep:
+    fail("the split update's stale-drag sweep drops a divider drag its press or its thread pane's pan still holds")
+# The pan-driven drag has the pane's navigation, which is what the sweep keeps it by.
+if '.navigation = nav' not in body('BOOL ApolloDuoSplitThreadDividerBegin('):
+    fail('a pane-driven divider drag has no navigation, so the routine split update would drop it')
+# The production predicate the route tables' fact comes from, which the
+# gesture tests can only stub.
+if 'ApolloDuoPostsAdjustableSplit() && ApolloDuoSplitBackClosesThread(nav)' not in body('BOOL ApolloDuoSplitThreadDividerDrags('):
+    fail('the divider drag fact is no longer the setting on the thread pane at its root')
 # A stored position UIKit can't tile beside the rail gives way to Half, and the
 # split's minimum thread width is the one the fit is measured against.
 if 'ApolloDuoPostsFittedPrimaryWidth(' not in body('static CGFloat ApolloDuoPostsWantedDivider('):
