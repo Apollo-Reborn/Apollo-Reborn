@@ -3090,6 +3090,13 @@ static void ApolloDuoPostsInflateGeometry(CGRect *bounds, CGPoint *position, CGR
 @property (nonatomic, strong) UIView *guide;
 @property (nonatomic) BOOL guideLit;
 @property (nonatomic) CGFloat guideHalf;
+// The divider's last place, time and speed seen by the guide, when it entered
+// the magnet (0 outside), and the timer that lights it for a finger gone still.
+@property (nonatomic) CGFloat guideX;
+@property (nonatomic) CFTimeInterval guideTime;
+@property (nonatomic) CGFloat guideSpeed;
+@property (nonatomic) CFTimeInterval guideEntered;
+@property (nonatomic, copy) dispatch_block_t guideTimer;
 @property (nonatomic) CGFloat guideCanvas;
 @property (nonatomic) CGFloat guideFold;
 @property (nonatomic) CGFloat guideInset;
@@ -4081,38 +4088,29 @@ BOOL ApolloDuoSplitDividerBegin(UIView *view) {
     return YES;
 }
 
-// The guide's widths: faint, and lit within the hinge magnet.
-static const CGFloat kApolloDuoPostsGuideWidth = 1.5;
-static const CGFloat kApolloDuoPostsGuideLitWidth = 3.0;
-static const NSTimeInterval kApolloDuoPostsGuideFade = 0.12;
+// The guide: one width, whole device pixels, and only its color changes.
+static const CGFloat kApolloDuoPostsGuideWidth = 2.0;
+static const NSTimeInterval kApolloDuoPostsGuideFade = 0.15;
 
-static CGRect ApolloDuoPostsGuideFrame(ApolloDuoPostsCloseHandoff *drag, CGFloat width) {
-    return CGRectMake(drag.guideHalf - width * 0.5, CGRectGetMinY(drag.pane), width, CGRectGetHeight(drag.pane));
-}
-
-// Faint (the label color, as the chrome has it, at a quarter) or lit (the app's tint, full), the
-// change eased, and instant under Reduce Motion.
+// Faint (the label color, as the chrome has it, at a quarter) or lit (the
+// app's tint, full): crossfaded, and instant under Reduce Motion.
 static void ApolloDuoPostsStyleGuide(ApolloDuoPostsCloseHandoff *drag, BOOL lit, BOOL animated) {
     UIView *guide = drag.guide;
     if (!guide) return;
     UIColor *color = lit ? (ApolloThemeAccentColor() ?: guide.tintColor) : [(ApolloNavigationChromeColor() ?: UIColor.labelColor) colorWithAlphaComponent:0.25];
     color = [color resolvedColorWithTraitCollection:guide.traitCollection];
-    CGRect frame = ApolloDuoPostsGuideFrame(drag, lit ? kApolloDuoPostsGuideLitWidth : kApolloDuoPostsGuideWidth);
-    void (^apply)(void) = ^{
-        guide.backgroundColor = color;
-        guide.frame = frame;
-    };
     if (animated && !UIAccessibilityIsReduceMotionEnabled()) {
         [UIView animateWithDuration:kApolloDuoPostsGuideFade delay:0 options:UIViewAnimationOptionCurveEaseInOut
-                         animations:apply completion:nil];
+                         animations:^{ guide.backgroundColor = color; } completion:nil];
     } else {
-        apply();
+        guide.backgroundColor = color;
     }
 }
 
 // The guide at Half, faint, above the drag's pictures: the fold when the
 // hinge reports one, else mid-canvas, as the position model has it. None with
-// no range to move the divider in. Decorative and never takes a touch.
+// no range to move the divider in. Decorative and never takes a touch. Its x
+// and width sit on the screen's pixel grid, so it stays crisp over what moves.
 static void ApolloDuoPostsAddGuide(ApolloDuoSplitState *state, ApolloDuoPostsCloseHandoff *drag) {
     CGSize canvas = state.host.view.bounds.size;
     drag.guideCanvas = canvas.width;
@@ -4120,30 +4118,81 @@ static void ApolloDuoPostsAddGuide(ApolloDuoSplitState *state, ApolloDuoPostsClo
     drag.guideInset = ApolloDuoPostsTrailingInset(state);
     if (!ApolloDuoSplitHasRange(drag.guideCanvas, drag.guideFold, drag.guideInset, kApolloDuoPostsWideStopThread)) return;
     drag.guideHalf = ApolloDuoSplitHalfDivider(drag.guideCanvas, drag.guideFold);
+    CGFloat scale = drag.overlay.window.screen.scale ?: UIScreen.mainScreen.scale;
+    CGFloat width = round(kApolloDuoPostsGuideWidth * scale) / scale;
+    CGFloat x = round((drag.guideHalf - width * 0.5) * scale) / scale;
     UIView *guide = [UIView new];
+    guide.frame = CGRectMake(x, CGRectGetMinY(drag.pane), width, CGRectGetHeight(drag.pane));
     guide.userInteractionEnabled = NO;
     guide.accessibilityElementsHidden = YES;
     drag.guide = guide;
     drag.guideLit = NO;
+    drag.guideEntered = 0;
+    drag.guideTime = 0;
+    drag.guideSpeed = 0;
     // In the overlay first: the dynamic colors resolve against its traits.
     [drag.overlay addSubview:guide];
     ApolloDuoPostsStyleGuide(drag, NO, NO);
 }
 
-// Lit while the divider is where the release would land on Half.
-static void ApolloDuoPostsLightGuide(ApolloDuoPostsCloseHandoff *drag, CGFloat dividerX) {
+static void ApolloDuoPostsCancelGuideTimer(ApolloDuoPostsCloseHandoff *drag) {
+    if (drag.guideTimer) dispatch_block_cancel(drag.guideTimer);
+    drag.guideTimer = nil;
+}
+
+// Lit while the drag is aiming for Half (ApolloDuoSplitGuideLit): the divider
+// inside the magnet and slow, or lingering there. The speed is the divider
+// driver's own blend of the last speed and the last move's. A finger that
+// stops sends no moves, so a timer relights for the dwell. `moved` is NO for
+// that timer's own call.
+static void ApolloDuoPostsLightGuideAt(ApolloDuoPostsCloseHandoff *drag, CGFloat dividerX, BOOL moved) {
     if (!drag.guide) return;
-    BOOL lit = ApolloDuoSplitDividerAtHalf(dividerX, drag.guideCanvas, drag.guideFold, drag.guideInset,
-                                           kApolloDuoPostsWideStopThread);
+    CFTimeInterval now = CACurrentMediaTime();
+    if (moved) {
+        CFTimeInterval elapsed = now - drag.guideTime;
+        if (drag.guideTime > 0 && elapsed > 0) {
+            drag.guideSpeed = 0.6 * (dividerX - drag.guideX) / elapsed + 0.4 * drag.guideSpeed;
+        }
+        drag.guideX = dividerX;
+        drag.guideTime = now;
+    }
+    BOOL inZone = ApolloDuoSplitDividerAtHalf(dividerX, drag.guideCanvas, drag.guideFold, drag.guideInset,
+                                              kApolloDuoPostsWideStopThread);
+    if (!inZone) {
+        drag.guideEntered = 0;
+        ApolloDuoPostsCancelGuideTimer(drag);
+    } else if (drag.guideEntered == 0) {
+        drag.guideEntered = now;
+    }
+    BOOL lit = ApolloDuoSplitGuideLit(inZone, drag.guideSpeed, drag.guideEntered > 0 ? now - drag.guideEntered : 0.0,
+                                      drag.guideLit);
+    if (inZone && !lit && !drag.guideTimer) {
+        __weak ApolloDuoPostsCloseHandoff *weakDrag = drag;
+        NSTimeInterval wait = APOLLO_DUO_SPLIT_GUIDE_DWELL - (now - drag.guideEntered);
+        dispatch_block_t timer = dispatch_block_create((dispatch_block_flags_t)0, ^{
+            ApolloDuoPostsCloseHandoff *live = weakDrag;
+            live.guideTimer = nil;
+            if (live.guide.superview) ApolloDuoPostsLightGuideAt(live, live.guideX, NO);
+        });
+        drag.guideTimer = timer;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(MAX(wait, 0.0) * NSEC_PER_SEC) + 2 * NSEC_PER_MSEC),
+                       dispatch_get_main_queue(), timer);
+    }
     if (lit == drag.guideLit) return;
     drag.guideLit = lit;
+    if (lit) ApolloDuoPostsCancelGuideTimer(drag);
     ApolloDuoPostsStyleGuide(drag, lit, YES);
+}
+
+static void ApolloDuoPostsLightGuide(ApolloDuoPostsCloseHandoff *drag, CGFloat dividerX) {
+    ApolloDuoPostsLightGuideAt(drag, dividerX, YES);
 }
 
 // The guide goes with the release: faded over the settle, or at once.
 static void ApolloDuoPostsEndGuide(ApolloDuoPostsCloseHandoff *drag, BOOL fade) {
     UIView *guide = drag.guide;
     drag.guide = nil;
+    ApolloDuoPostsCancelGuideTimer(drag);
     if (!guide) return;
     if (!fade || UIAccessibilityIsReduceMotionEnabled() || !guide.window) {
         [guide removeFromSuperview];

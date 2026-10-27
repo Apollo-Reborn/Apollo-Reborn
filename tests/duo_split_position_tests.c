@@ -255,6 +255,33 @@ int main(void) {
     Check(!ApolloDuoSplitDividerAtHalf(10, 100, 10, inset, wide), "The guide never lights with no range to move in");
     Check(ApolloDuoSplitDividerAtHalf(500, 1000, 0, 0, wide), "The guide lights around mid-canvas without a fold");
 
+    // The guide lights when the drag is aiming for Half, not on a pass through it.
+    Check(!ApolloDuoSplitGuideLit(true, 600, 0.0, false), "A fast pass into the zone does not light the guide");
+    Check(!ApolloDuoSplitGuideLit(true, -600, 0.04, false), "A fast pass still in the zone under 80 ms stays faint");
+    Check(ApolloDuoSplitGuideLit(true, 100, 0.0, false), "A slow approach lights the guide at once");
+    Check(ApolloDuoSplitGuideLit(true, -100, 0.0, false), "A slow approach from the other side lights it too");
+    Check(!ApolloDuoSplitGuideLit(true, 150, 0.0, false), "150 pt/s is not slower than the threshold");
+    Check(ApolloDuoSplitGuideLit(true, 600, 0.08, false), "Lingering 80 ms in the zone lights it, speed aside");
+    Check(ApolloDuoSplitGuideLit(true, 0, 0.5, false), "A still finger in the zone lights it");
+    Check(!ApolloDuoSplitGuideLit(false, 0, 1.0, false), "Outside the zone it is faint, however slow");
+    Check(!ApolloDuoSplitGuideLit(false, 0, 1.0, true), "Leaving the zone unlights it");
+    Check(ApolloDuoSplitGuideLit(true, 900, 0.01, true), "Lit, it stays lit in the zone as the speed rises");
+    Check(ApolloDuoSplitGuideLit(true, 40, 0.3, true), "Lit, it stays lit as the speed falls");
+    {
+        // One pass through the zone at a varying speed: it lights once and unlights once.
+        const CGFloat speeds[] = { 300, 200, 100, 400, 800, 120, 500 };
+        bool lit = false;
+        int toggles = 0;
+        for (unsigned i = 0; i < sizeof speeds / sizeof speeds[0]; i++) {
+            bool next = ApolloDuoSplitGuideLit(true, speeds[i], 0.01 * i, lit);
+            if (next != lit) toggles++;
+            lit = next;
+        }
+        Check(lit && toggles == 1, "At a varying speed in the zone the guide lights once and does not toggle");
+        bool next = ApolloDuoSplitGuideLit(false, 800, 0, lit);
+        Check(!next, "And it unlights when it leaves");
+    }
+
     printf("duo split position tests passed (%u checks)\n", checks);
     return 0;
 }

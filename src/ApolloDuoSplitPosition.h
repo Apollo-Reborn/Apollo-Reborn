@@ -217,6 +217,20 @@ static inline bool ApolloDuoSplitDividerAtHalf(CGFloat dividerX, CGFloat canvasW
     return !release.closesThread && !release.coversFeed && release.share == 0;
 }
 
+// The guide at Half lights when the drag is aiming for it, not on a pass
+// through: inside the magnet (`inZone`, ApolloDuoSplitDividerAtHalf) and slower
+// than this, or in it for this long.
+#define APOLLO_DUO_SPLIT_GUIDE_SLOW 150.0
+#define APOLLO_DUO_SPLIT_GUIDE_DWELL 0.08
+
+// `speed` is the divider's, pt/s either way; `dwell` the seconds it has been
+// inside the magnet. Once lit it stays lit until the divider leaves the
+// magnet, so a changing speed inside never toggles it.
+static inline bool ApolloDuoSplitGuideLit(bool inZone, CGFloat speed, double dwell, bool wasLit) {
+    if (!inZone) return false;
+    return wasLit || fabs(speed) < APOLLO_DUO_SPLIT_GUIDE_SLOW || dwell >= APOLLO_DUO_SPLIT_GUIDE_DWELL;
+}
+
 #ifdef __cplusplus
 }
 #endif
