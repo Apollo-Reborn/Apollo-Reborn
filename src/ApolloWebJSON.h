@@ -312,6 +312,9 @@ NSInteger ApolloWebJSONRouteFromURL(NSURL *url);
 // Sim debug bridge: send these ApolloWebJSONRoutes' requests (a bit per route)
 // where Reddit blocks them, to exercise the fallback; 0 turns it off.
 void ApolloWebJSONSimSetBlockedRoutes(NSUInteger routeMask);
+// Same, but send them with a cookie Reddit doesn't know, so old.reddit.com
+// answers with its real sign-in gate, as it does an account it won't serve.
+void ApolloWebJSONSimSetGatedRoutes(NSUInteger routeMask);
 #endif
 
 // Seconds the tweak's optional reads (author avatars, subreddit header info)

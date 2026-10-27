@@ -4535,9 +4535,9 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
 @end
 
 BOOL ApolloModernMailboxOSSupported(void) {
-    // Same iOS 16 floor _isModernRedditSupported enforces for the web-session
-    // login (ApolloWebSessionLoginViewController.m): modern reddit.com does
-    // not render on iOS 14/15 WebKit, so never route anyone into it there.
+    // Same iOS 16 floor _isModernRedditSupported enforces for the OAuth
+    // sign-in (ApolloWebAuthViewController.m): modern reddit.com does not
+    // render on iOS 14/15 WebKit, so never route anyone into it there.
     if (@available(iOS 16.0, *)) return YES;
     static dispatch_once_t once;
     dispatch_once(&once, ^{

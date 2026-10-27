@@ -488,6 +488,19 @@ static NSUInteger ApolloWebJSONTriedRoutesFromURL(NSURL *url) {
 // block, so the fallback can be exercised against a real block page. A bit per
 // ApolloWebJSONRoute; 0 when off.
 static _Atomic NSUInteger sApolloWebJSONSimBlockedRoutes = 0;
+// "routegate <route>[,<route>]": those routes' requests carry a cookie Reddit
+// doesn't know instead of the session's, so old.reddit.com answers with its
+// sign-in gate (ApolloWebJSONRouteResponseIsSignInGate).
+static _Atomic NSUInteger sApolloWebJSONSimGatedRoutes = 0;
+
+void ApolloWebJSONSimSetGatedRoutes(NSUInteger routeMask) {
+    atomic_store(&sApolloWebJSONSimGatedRoutes, routeMask);
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    for (NSInteger r = ApolloWebJSONRouteWww; r <= ApolloWebJSONRouteLast; r++) {
+        if (routeMask & (1u << r)) [names addObject:ApolloWebJSONRouteName((ApolloWebJSONRoute)r)];
+    }
+    ApolloLog(@"[WebJSON] (sim) Routes sent signed out: %@", names.count ? [names componentsJoinedByString:@", "] : @"none");
+}
 
 void ApolloWebJSONSimSetBlockedRoutes(NSUInteger routeMask) {
     atomic_store(&sApolloWebJSONSimBlockedRoutes, routeMask);
@@ -765,6 +778,11 @@ NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
     // and HTTPShouldHandleCookies=NO stops the session from overriding our
     // header with (or storing) jar cookies.
     [mutable setValue:session.cookieHeader forHTTPHeaderField:@"Cookie"];
+#if APOLLO_SIM_BUILD
+    if (atomic_load(&sApolloWebJSONSimGatedRoutes) & (1u << route)) {
+        [mutable setValue:@"apollo_sim_signed_out=1" forHTTPHeaderField:@"Cookie"];
+    }
+#endif
     mutable.HTTPShouldHandleCookies = NO;
 
     // Writes need the modhash. Reddit's web API accepts it either as the
@@ -1417,7 +1435,7 @@ void ApolloWebJSONNoteResponse(NSURLRequest *request, NSURLResponse *response) {
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
     if (route >= 0 && ApolloWebJSONRouteResponseIsRefusal(http)) {
         if (ApolloWebJSONRouteHealthNoteBlockPage(username, requestedPath, (ApolloWebJSONRoute)route, now)) {
-            ApolloLog(@"[WebJSON] Route %@ for %@ keeps getting the block page for u/%@; skipping it for %.0f min",
+            ApolloLog(@"[WebJSON] Route %@ for %@ keeps refusing u/%@ (block page or sign-in gate); skipping it for %.0f min",
                       ApolloWebJSONRouteName((ApolloWebJSONRoute)route), ApolloWebJSONRoutePathPattern(requestedPath), username,
                       ceil(ApolloWebJSONRouteCooldownRemaining(username, requestedPath, (ApolloWebJSONRoute)route, now) / 60.0));
         }
