@@ -351,6 +351,38 @@ static void ApolloDuoSplitInteractiveRestoreCancel(UINavigationController *nav, 
     restoreCancels++;
     if (animated) restoreAnimatedCancels++;
 }
+// The movable divider, as the pane gestures drive it from the thread pane.
+// Adjustable Split on makes the thread at its root beside the feed a divider
+// drag; Begin answers dividerBegins, Update answers dividerTracks. A forward
+// page is one Apollo's own forward pan would push.
+static BOOL dividerAdjustable, forwardPageOnStack, dividerBegins = YES, dividerTracks = YES;
+static NSUInteger dividerBegun, dividerUpdated, dividerFinished, dividerCancelled;
+static CGFloat dividerTranslation, dividerFinishTranslation, dividerVelocity;
+static __weak UINavigationController *dividerNavigation;
+static BOOL ApolloDuoSplitThreadDividerDrags(UINavigationController *nav) {
+    return dividerAdjustable && ApolloDuoSplitBackClosesThread(nav);
+}
+static BOOL ApolloDuoSplitHasForwardPage(UINavigationController *nav) {
+    return forwardPageOnStack && nav != nil;
+}
+static BOOL ApolloDuoSplitThreadDividerBegin(UINavigationController *nav) {
+    dividerNavigation = nav;
+    if (dividerBegins) dividerBegun++;
+    return dividerBegins;
+}
+static BOOL ApolloDuoSplitThreadDividerUpdate(UINavigationController *nav, CGFloat translation) {
+    if (nav != dividerNavigation) return NO;
+    dividerUpdated++; dividerTranslation = translation;
+    return dividerTracks;
+}
+static void ApolloDuoSplitThreadDividerFinish(UINavigationController *nav, CGFloat translation, CGFloat velocity) {
+    if (nav != dividerNavigation) return;
+    dividerFinished++; dividerFinishTranslation = translation; dividerVelocity = velocity;
+}
+static void ApolloDuoSplitThreadDividerCancel(UINavigationController *nav) {
+    // nil: the split cancels whichever drag is active.
+    if (nav == dividerNavigation || !nav) dividerCancelled++;
+}
 // INCLUDE_PRODUCTION_GESTURES
 static NSUInteger checks;
 static void Check(BOOL valid, NSString *message) {
@@ -2334,6 +2366,173 @@ int main(void) {
                   @"restore: without a driver the forward swipe restores on release as before");
             Check(restoreBegun == 11, @"restore: every tracked forward swipe began the restore once");
             closedThreadFeed = nil;
+        }
+
+        // The movable divider: with Adjustable Split on, a drag of the post
+        // in the thread pane (at its root, beside the feed) moves the divider,
+        // either way. Everything else routes as it always did.
+        {
+            typedef ApolloDuoBackFacts BFacts;
+            typedef ApolloDuoForwardFacts FFacts;
+            Check(ApolloDuoBackRoute((BFacts){.split = YES, .threadAboveBackstop = YES, .dividerDrag = YES}).owner
+                  == ApolloDuoBackOwnerDivider, @"divider route: the thread pane at its root, setting on, drags the divider");
+            Check(ApolloDuoBackRoute((BFacts){.split = YES, .threadAboveBackstop = YES}).owner == ApolloDuoBackOwnerThreadClose,
+                  @"divider route: setting off, the same pane is the thread close, unchanged");
+            Check(ApolloDuoBackRoute((BFacts){.split = YES, .root = YES}).owner == ApolloDuoBackOwnerDrawer,
+                  @"divider route: a drag from the feed root stays the drawer; the divider is the thread pane's");
+            Check(ApolloDuoBackRoute((BFacts){.dividerDrag = YES, .threadAboveBackstop = YES}).owner == ApolloDuoBackOwnerNative,
+                  @"divider route: with no split nothing else matters");
+            Check(ApolloDuoBackRoute((BFacts){.split = YES, .nativeOwns = YES, .dividerDrag = YES}).owner == ApolloDuoBackOwnerNative,
+                  @"divider route: a pop onto a real page is native");
+            Check(ApolloDuoBackRouteTracks((ApolloDuoBackRouting){ApolloDuoBackOwnerDivider}),
+                  @"divider route: it follows the finger");
+            Check(ApolloDuoForwardRoute((FFacts){.split = YES, .dividerDrag = YES}).owner == ApolloDuoForwardOwnerDivider
+                  && ApolloDuoForwardRouteTracks((ApolloDuoForwardRouting){ApolloDuoForwardOwnerDivider}),
+                  @"divider forward: a leftward drag from the thread pane moves the divider, following the finger");
+            Check(ApolloDuoForwardRoute((FFacts){.split = YES}).owner == ApolloDuoForwardOwnerNone,
+                  @"divider forward: setting off, nothing to bring back, none");
+            Check(ApolloDuoForwardRoute((FFacts){.split = YES, .dividerDrag = YES, .forwardPage = YES}).owner
+                  == ApolloDuoForwardOwnerNone, @"divider forward: a page Apollo's forward would push keeps the swipe");
+            Check(ApolloDuoForwardRoute((FFacts){.dividerDrag = YES}).owner == ApolloDuoForwardOwnerNone
+                  && ApolloDuoForwardRoute((FFacts){.split = YES, .dividerDrag = YES, .paneHeld = YES}).owner == ApolloDuoForwardOwnerNone
+                  && ApolloDuoForwardRoute((FFacts){.split = YES, .dividerDrag = YES, .nativeForward = YES}).owner == ApolloDuoForwardOwnerNone,
+                  @"divider forward: never folded, with the list open, or alongside Apollo's own forward pan");
+
+            // The facts come from the split.
+            UINavigationController *dFeed = Navigation(), *dThread = Navigation();
+            dFeed.viewControllers = @[[UIViewController new]];
+            UIViewController *dBackstop = [UIViewController new];
+            dThread.viewControllers = @[dBackstop, [TestPage new]];
+            ApolloDuoSplitState *dPosts = [ApolloDuoSplitState new];
+            dPosts.split = [TestSplit new]; dPosts.host = [TestDuoHost new]; dPosts.host.postsShowingDetail = YES;
+            dPosts.feed = dFeed; dPosts.secondary = dThread;
+            dFeed.duoState = dPosts; dThread.duoState = dPosts;
+            leftSwipesDisabled = YES; rightSwipesDisabled = YES; dividerAdjustable = NO; forwardPageOnStack = NO;
+            Check(ApolloDuoBackRouteForNavigation(dThread).owner == ApolloDuoBackOwnerThreadClose
+                  && ApolloDuoForwardRouteForNavigation(dThread).owner == ApolloDuoForwardOwnerNone,
+                  @"divider: setting off, the thread pane routes to the close and has no forward, as before");
+            dividerAdjustable = YES;
+            Check(ApolloDuoBackRouteForNavigation(dThread).owner == ApolloDuoBackOwnerDivider
+                  && ApolloDuoForwardRouteForNavigation(dThread).owner == ApolloDuoForwardOwnerDivider,
+                  @"divider: setting on, the thread pane at its root routes to the divider both ways");
+            Check(ApolloDuoBackRouteForNavigation(dFeed).owner == ApolloDuoBackOwnerDrawer
+                  && ApolloDuoForwardRouteForNavigation(dFeed).owner == ApolloDuoForwardOwnerNone,
+                  @"divider: the feed root stays the drawer, and has no forward with a thread beside it");
+            dThread.viewControllers = @[dBackstop, [TestPage new], [TestPage new]];
+            Check(ApolloDuoBackRouteForNavigation(dThread).owner == ApolloDuoBackOwnerNative
+                  && ApolloDuoForwardRouteForNavigation(dThread).owner == ApolloDuoForwardOwnerNone,
+                  @"divider: a page pushed on the thread is a Back, not a divider drag");
+            dThread.viewControllers = @[dBackstop, [TestPage new]];
+            forwardPageOnStack = YES;
+            Check(ApolloDuoBackRouteForNavigation(dThread).owner == ApolloDuoBackOwnerDivider
+                  && ApolloDuoForwardRouteForNavigation(dThread).owner == ApolloDuoForwardOwnerNone,
+                  @"divider: with a forward page Apollo's forward keeps the leftward swipe; the rightward one still drags");
+            forwardPageOnStack = NO;
+            dPosts.split = nil;
+            Check(ApolloDuoBackRouteForNavigation(dThread).owner == ApolloDuoBackOwnerNative
+                  && ApolloDuoForwardRouteForNavigation(dThread).owner == ApolloDuoForwardOwnerNone,
+                  @"divider: folded, every route is native");
+            dPosts.split = [TestSplit new];
+
+            // Driving the pane gesture: the split's divider alone decides the
+            // release, so there is no pop and no close driver.
+            ApolloDuoInstallBackSwipe(dThread);
+            ApolloDuoBackSwipe *dOwner = objc_getAssociatedObject(dThread, &kApolloDuoBackSwipe);
+            ApolloDuoPaneBackPan *dPan = dOwner.pan;
+            NSUInteger pops = dThread.pops, closes = closeBegun, begun = dividerBegun, finished = dividerFinished,
+                       cancelled = dividerCancelled, commits = closeCommits, springs = closeSpringBacks;
+            Drag(dOwner, 200, 150);
+            Check(dividerBegun == begun + 1 && dividerNavigation == dThread && dividerUpdated >= 1 && Near(dividerTranslation, 200),
+                  @"divider drive: a rightward drag moves the divider by the finger's translation");
+            Check(dividerFinished == finished + 1 && Near(dividerFinishTranslation, 200) && Near(dividerVelocity, 150),
+                  @"divider drive: the release hands the split the translation and the speed");
+            Check(dThread.pops == pops && closeBegun == closes && closeCommits == commits && closeSpringBacks == springs,
+                  @"divider drive: neither the close driver nor a pop runs");
+            Drag(dOwner, 20, 0);
+            Check(dividerFinished == finished + 2 && Near(dividerFinishTranslation, 20) && dThread.pops == pops,
+                  @"divider drive: a short drag is still the divider's release, never a spring back or a close");
+            Drag(dOwner, -180, -400);
+            Check(dividerFinished == finished + 3 && Near(dividerTranslation, -180) && Near(dividerFinishTranslation, -180)
+                  && Near(dividerVelocity, -400) && dThread.pops == pops,
+                  @"divider drive: the same rightward-begun drag carries on leftward past where it began");
+            dividerBegins = NO;
+            Drag(dOwner, 600, 900);
+            Check(dividerFinished == finished + 3 && dThread.pops == pops && closeBegun == closes,
+                  @"divider drive: a drag the split could not begin does nothing on release, no close behind it");
+            dividerBegins = YES;
+            NSUInteger disables = dPan.disables;
+            dividerTracks = NO;
+            Drag(dOwner, 200, 0);
+            Check(dividerCancelled == cancelled + 1 && dividerFinished == finished + 3 && dPan.disables == disables + 1,
+                  @"divider drive: a drag the split let go is removed at once, its pan cancelled, and its release is nothing");
+            dividerTracks = YES;
+            dPan.translation = CGPointZero; dPan.velocity = CGPointMake(300, 40);
+            dPan.state = UIGestureRecognizerStateBegan; [dOwner panned:dPan];
+            dThread.presentedViewController = [UIViewController new];
+            dPan.translation = CGPointMake(200, 4); dPan.state = UIGestureRecognizerStateEnded; [dOwner panned:dPan];
+            dPan.state = UIGestureRecognizerStatePossible;
+            dThread.presentedViewController = nil;
+            Check(dividerCancelled == cancelled + 2 && dividerFinished == finished + 3,
+                  @"divider drive: a sheet that arrived before the release cancels instead of landing");
+            dPan.translation = CGPointZero;
+            dPan.state = UIGestureRecognizerStateBegan; [dOwner panned:dPan];
+            dPan.state = UIGestureRecognizerStateCancelled; [dOwner panned:dPan];
+            dPan.state = UIGestureRecognizerStatePossible;
+            Check(dividerCancelled == cancelled + 3 && dividerFinished == finished + 3,
+                  @"divider drive: a pan the system cancelled removes the drag at once");
+
+            // Setting off: the same drag is the interactive close, exactly as before.
+            dividerAdjustable = NO; closeBegins = YES; closeTracks = YES;
+            begun = dividerBegun;
+            Drag(dOwner, 1280 * 0.35, 0);
+            Check(dividerBegun == begun && closeBegun == closes + 1 && closeCommits == commits + 1,
+                  @"divider off: the thread-pane drag drives the close and commits past the threshold, as before");
+            dividerAdjustable = YES;
+
+            // Leftward from the thread pane: the divider's forward owner.
+            UIView *dRow = [UIView new]; dRow.superview = dThread.view;
+            UIPanGestureRecognizer *dForwardPan = dPan;
+            void (^LeftDrag)(CGFloat, CGFloat) = ^(CGFloat dx, CGFloat vx) {
+                UITouch *finger = [UITouch new]; finger.view = dRow; finger.point = CGPointMake(500, 300);
+                [dOwner gestureRecognizer:dPan shouldReceiveTouch:finger];
+                [dPan touchesBegan:[NSSet setWithObject:finger] withEvent:[UIEvent new]];
+                dPan.location = CGPointMake(484, 301); dPan.velocity = CGPointMake(-300, 20);
+                if (![dOwner gestureRecognizerShouldBegin:dPan]) { [dPan reset]; return; }
+                dPan.translation = CGPointZero;
+                dPan.state = UIGestureRecognizerStateBegan; [dOwner panned:dPan];
+                dPan.translation = CGPointMake(dx, 3); dPan.velocity = CGPointMake(vx, 10);
+                dPan.state = UIGestureRecognizerStateChanged; [dOwner panned:dPan];
+                dPan.state = UIGestureRecognizerStateEnded; [dOwner panned:dPan];
+                [dPan reset];
+            };
+            (void)dForwardPan;
+            begun = dividerBegun; finished = dividerFinished; NSUInteger restores = restoreBegun;
+            LeftDrag(-300, -200);
+            Check(dividerBegun == begun + 1 && Near(dividerTranslation, -300) && dividerFinished == finished + 1
+                  && Near(dividerFinishTranslation, -300) && Near(dividerVelocity, -200) && restoreBegun == restores,
+                  @"divider forward: a leftward drag anywhere in the thread pane (Disable Right Swipes) moves the divider");
+            rightSwipesDisabled = NO;
+            begun = dividerBegun;
+            LeftDrag(-300, -200);
+            Check(dividerBegun == begun,
+                  @"divider forward: with Disable Right Swipes off only the trailing strip starts it, not the middle of the pane");
+            rightSwipesDisabled = YES;
+            forwardPageOnStack = YES;
+            LeftDrag(-300, -200);
+            Check(dividerBegun == begun, @"divider forward: with a forward page Apollo's forward keeps the swipe");
+            forwardPageOnStack = NO;
+            UIScrollView *gallery = [UIScrollView new]; gallery.superview = dThread.view; gallery.scrollEnabled = YES;
+            gallery.contentSize = CGSizeMake(2000, 300); gallery.bounds = CGRectMake(0, 0, 500, 300);
+            gallery.panGestureRecognizer = [UIPanGestureRecognizer new]; gallery.panGestureRecognizer.view = gallery;
+            dRow.superview = gallery;
+            LeftDrag(-300, -200);
+            Check(dividerBegun == begun, @"divider forward: a gallery that can still page leftward keeps its own drag");
+            dRow.superview = dThread.view;
+            dividerAdjustable = NO;
+            LeftDrag(-300, -200);
+            Check(dividerBegun == begun, @"divider forward: setting off, a leftward drag on the thread does nothing new");
+            dividerAdjustable = YES;
+            leftSwipesDisabled = NO; rightSwipesDisabled = NO;
         }
         printf("OK: %lu checks\n", (unsigned long)checks);
     }

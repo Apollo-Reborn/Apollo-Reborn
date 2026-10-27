@@ -96,6 +96,20 @@ BOOL ApolloDuoSplitDividerBegin(UIView *host);
 BOOL ApolloDuoSplitDividerUpdate(UIView *host, CGFloat dividerX);
 void ApolloDuoSplitDividerFinish(UIView *host, CGFloat dividerX, CGFloat velocityX);
 void ApolloDuoSplitDividerCancel(UIView *host);
+/// The same divider drag driven from the thread pane's own pan: a rightward
+/// or leftward drag of the post with Adjustable Split on. Drags says whether
+/// `nav` is the thread pane at its root beside the feed with the setting on
+/// (the interactive close's own condition). Begin starts the divider drag and
+/// remembers where the divider is; Update puts the divider at that place plus
+/// the translation (NO once the split let the drag go); Finish lets it go
+/// there with the finger's speed; Cancel removes it at once (nil: whichever
+/// is active). HasForwardPage: Apollo's own forward has a page for `nav`.
+BOOL ApolloDuoSplitThreadDividerDrags(UINavigationController *nav);
+BOOL ApolloDuoSplitHasForwardPage(UINavigationController *nav);
+BOOL ApolloDuoSplitThreadDividerBegin(UINavigationController *nav);
+BOOL ApolloDuoSplitThreadDividerUpdate(UINavigationController *nav, CGFloat translation);
+void ApolloDuoSplitThreadDividerFinish(UINavigationController *nav, CGFloat translation, CGFloat velocity);
+void ApolloDuoSplitThreadDividerCancel(UINavigationController *nav);
 BOOL ApolloDuoSplitShowSidebar(UINavigationController *navigation);
 /// The Posts split is moving a navigation between its columns. That takes the
 /// navigation out of the window and back in within one turn; its title keeps

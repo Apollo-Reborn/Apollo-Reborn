@@ -4031,6 +4031,57 @@ void ApolloDuoSplitDividerCancel(UIView *view) {
     if (state.interactiveClose.dividing) ApolloDuoPostsCancelInteractiveClose(state, NO, 0.0);
 }
 
+// The same drag from the post itself: the thread pane's pan (the pane Back
+// rightward, the forward swipe leftward) with Adjustable Split on. The pan's
+// translation moves the divider from where it began, so the thread follows
+// the finger either way; the release is the divider's own (a landing, the
+// close or full screen), never the Back's threshold.
+BOOL ApolloDuoSplitThreadDividerDrags(UINavigationController *nav) {
+    return ApolloDuoPostsAdjustableSplit() && ApolloDuoSplitBackClosesThread(nav);
+}
+
+BOOL ApolloDuoSplitThreadDividerBegin(UINavigationController *nav) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    if (!state.feed || nav != state.secondary) return NO;
+    // A close still springing back is let go, as the close's own Begin does;
+    // a divider drag already held (the press) keeps hold.
+    if (state.interactiveClose && !ApolloDuoPostsDividerDrag(state)) ApolloDuoPostsCancelInteractiveClose(state, NO, 0.0);
+    return ApolloDuoSplitDividerBegin(state.host.view);
+}
+
+// The divider `translation` from where the drag began, kept on the canvas.
+static BOOL ApolloDuoPostsThreadDividerX(UINavigationController *nav, CGFloat translation, UIView **host,
+                                         CGFloat *dividerX) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    ApolloDuoPostsCloseHandoff *drag = state.feed && nav == state.secondary ? ApolloDuoPostsDividerDrag(state) : nil;
+    if (!drag) return NO;
+    *host = state.host.view;
+    *dividerX = MIN(MAX(0.0, CGRectGetMinX(drag.pane) + translation), CGRectGetWidth(state.host.view.bounds));
+    return YES;
+}
+
+BOOL ApolloDuoSplitThreadDividerUpdate(UINavigationController *nav, CGFloat translation) {
+    UIView *host = nil;
+    CGFloat dividerX = 0.0;
+    return ApolloDuoPostsThreadDividerX(nav, translation, &host, &dividerX) && ApolloDuoSplitDividerUpdate(host, dividerX);
+}
+
+void ApolloDuoSplitThreadDividerFinish(UINavigationController *nav, CGFloat translation, CGFloat velocity) {
+    UIView *host = nil;
+    CGFloat dividerX = 0.0;
+    if (ApolloDuoPostsThreadDividerX(nav, translation, &host, &dividerX)) ApolloDuoSplitDividerFinish(host, dividerX, velocity);
+}
+
+void ApolloDuoSplitThreadDividerCancel(UINavigationController *nav) {
+    // The pane's navigation is gone: whatever drag is active still goes.
+    if (!nav) {
+        ApolloDuoPostsCancelActiveInteractiveClose();
+        return;
+    }
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    if (state.interactiveClose.dividing) ApolloDuoPostsCancelInteractiveClose(state, NO, 0.0);
+}
+
 // The forward swipe's restore, the close's driver run the other way. The
 // snapshot the close left waits fully off screen at the feed pane's trailing
 // edge and comes in with the finger over the live full-width feed, which is
@@ -4283,6 +4334,10 @@ static UIViewController *ApolloDuoSplitForwardPage(UINavigationController *nav) 
     if (![storage respondsToSelector:@selector(firstObject)]) return nil;
     id page = [storage firstObject];
     return [page isKindOfClass:UIViewController.class] ? page : nil;
+}
+
+BOOL ApolloDuoSplitHasForwardPage(UINavigationController *nav) {
+    return ApolloDuoSplitForwardPage(nav) != nil;
 }
 
 static BOOL ApolloDuoSplitOpenStartupFeed(ApolloDuoSplitState *state) {
