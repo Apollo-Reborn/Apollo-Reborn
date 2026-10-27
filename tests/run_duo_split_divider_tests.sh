@@ -46,6 +46,21 @@ finish = body('void ApolloDuoSplitDividerFinish(')
 snap = finish[finish.index('// A landing.'):]
 if not (snap.index('ApolloDuoPostsCloseEventInterrupt') < snap.index('setDouble:') < snap.index('ApolloDuoSplitApplyPostsStop(')):
     fail('a landing clears its drag, then remembers the position, then applies it')
+# The pictures' landing spring is on the render server, flushed, before the
+# column change runs; the reveal blurs the pictures out inside the overlay,
+# so any removal of the overlay takes the blur with it.
+settle = body('static void ApolloDuoPostsSettleDivider(')
+if settle.count('[CATransaction flush]') != 2 or settle.count('relayout();') != 3:
+    fail('a settle flushes its animation before every column change')
+spring = settle[settle.index('ApolloDuoPostsSpringDragWith('):]
+if not (spring.index('ApolloDuoPostsSpringDragWith(') < spring.index('[CATransaction flush]') < spring.index('relayout();', spring.index('[CATransaction flush]'))):
+    fail('a settle starts its spring and flushes it before the column change')
+if snap.count('ApolloDuoSplitApplyPostsStop(') != 1 or snap.index('ApolloDuoSplitApplyPostsStop(') < snap.index('ApolloDuoPostsSettleDivider('):
+    fail('a landing re-lays out the columns inside the settle, after its animation is flushed')
+blurs = body('static UIVisualEffectView *ApolloDuoPostsBlurPicturesOut(')
+reveal = body('static void ApolloDuoPostsRevealSettle(')
+if '[overlay addSubview:blur]' not in blurs or 'UIAccessibilityIsReduceMotionEnabled()' not in reveal:
+    fail('the reveal blurs inside the overlay and keeps a plain fade for Reduce Motion')
 for outcome in ['if (release.closesThread)', 'if (release.fullScreen)']:
     part = finish[finish.index(outcome):]
     part = part[:part.index('return;')]

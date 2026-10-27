@@ -3005,16 +3005,23 @@ static void ApolloDuoPostsRemoveOverlay(ApolloDuoSplitHost *host, UIView *overla
     ApolloDuoPostsRemoveEmptyOverlay(host, overlay);
 }
 
-static CASpringAnimation *ApolloDuoPostsSpring(NSString *keyPath, id from, id to, CGFloat velocity) {
+// `omega` is the spring's natural frequency; a `cap` above 0 ends it that
+// early (a critically damped tail is under 1% of the distance by then).
+static CASpringAnimation *ApolloDuoPostsSpringWith(NSString *keyPath, id from, id to, CGFloat velocity,
+                                                   CGFloat omega, NSTimeInterval cap) {
     CASpringAnimation *spring = [CASpringAnimation animationWithKeyPath:keyPath];
     spring.mass = 1.0;
-    spring.stiffness = kApolloDuoPostsSpringOmega * kApolloDuoPostsSpringOmega;
-    spring.damping = 2.0 * kApolloDuoPostsSpringOmega;
+    spring.stiffness = omega * omega;
+    spring.damping = 2.0 * omega;
     spring.initialVelocity = velocity;
     spring.fromValue = from;
     spring.toValue = to;
-    spring.duration = spring.settlingDuration;
+    spring.duration = cap > 0 ? MIN(cap, spring.settlingDuration) : spring.settlingDuration;
     return spring;
+}
+
+static CASpringAnimation *ApolloDuoPostsSpring(NSString *keyPath, id from, id to, CGFloat velocity) {
+    return ApolloDuoPostsSpringWith(keyPath, from, to, velocity, kApolloDuoPostsSpringOmega, 0.0);
 }
 
 // Springs the dragged thread to `offset` (0, back over the pane, or the full
@@ -3023,8 +3030,8 @@ static CASpringAnimation *ApolloDuoPostsSpring(NSString *keyPath, id from, id to
 // Animation, so the render server keeps it moving through a main-thread stall.
 // The completion runs however the springs end (finished or removed), so the
 // drag's flag can never outlive its views.
-static void ApolloDuoPostsSpringDrag(ApolloDuoPostsCloseHandoff *drag, CGFloat offset, CGFloat velocity,
-                                     dispatch_block_t completion) {
+static void ApolloDuoPostsSpringDragWith(ApolloDuoPostsCloseHandoff *drag, CGFloat offset, CGFloat velocity,
+                                         CGFloat omega, NSTimeInterval cap, dispatch_block_t completion) {
     UIView *page = drag.snapshot, *extension = drag.extension;
     CGFloat from = page.transform.tx;
     CGFloat spring = ApolloDuoPostsSpringVelocity(from, offset, velocity);
@@ -3044,23 +3051,28 @@ static void ApolloDuoPostsSpringDrag(ApolloDuoPostsCloseHandoff *drag, CGFloat o
     extension.transform = CGAffineTransformMakeScale(toScale, 1);
     fill.transform = CGAffineTransformMakeScale(toFill, 1);
     page.layer.shadowOpacity = toOpacity;
-    CASpringAnimation *slide = ApolloDuoPostsSpring(@"transform",
+    CASpringAnimation *slide = ApolloDuoPostsSpringWith(@"transform",
         [NSValue valueWithCATransform3D:CATransform3DMakeTranslation(from, 0, 0)],
-        [NSValue valueWithCATransform3D:CATransform3DMakeTranslation(offset, 0, 0)], spring);
+        [NSValue valueWithCATransform3D:CATransform3DMakeTranslation(offset, 0, 0)], spring, omega, cap);
     drag.slideFrom = from;
     drag.slideSpring = spring;
     [CATransaction begin];
     [CATransaction setCompletionBlock:completion];
     [page.layer addAnimation:slide forKey:@"ApolloDuoSlide"];
-    [page.layer addAnimation:ApolloDuoPostsSpring(@"shadowOpacity", @(fromOpacity), @(toOpacity), spring)
+    [page.layer addAnimation:ApolloDuoPostsSpringWith(@"shadowOpacity", @(fromOpacity), @(toOpacity), spring, omega, cap)
                       forKey:@"ApolloDuoShadow"];
-    [extension.layer addAnimation:ApolloDuoPostsSpring(@"transform",
+    [extension.layer addAnimation:ApolloDuoPostsSpringWith(@"transform",
         [NSValue valueWithCATransform3D:CATransform3DMakeScale(fromScale, 1, 1)],
-        [NSValue valueWithCATransform3D:CATransform3DMakeScale(toScale, 1, 1)], spring) forKey:@"ApolloDuoSlide"];
-    [fill.layer addAnimation:ApolloDuoPostsSpring(@"transform",
+        [NSValue valueWithCATransform3D:CATransform3DMakeScale(toScale, 1, 1)], spring, omega, cap) forKey:@"ApolloDuoSlide"];
+    [fill.layer addAnimation:ApolloDuoPostsSpringWith(@"transform",
         [NSValue valueWithCATransform3D:CATransform3DMakeScale(fromFill, 1, 1)],
-        [NSValue valueWithCATransform3D:CATransform3DMakeScale(toFill, 1, 1)], spring) forKey:@"ApolloDuoSlide"];
+        [NSValue valueWithCATransform3D:CATransform3DMakeScale(toFill, 1, 1)], spring, omega, cap) forKey:@"ApolloDuoSlide"];
     [CATransaction commit];
+}
+
+static void ApolloDuoPostsSpringDrag(ApolloDuoPostsCloseHandoff *drag, CGFloat offset, CGFloat velocity,
+                                     dispatch_block_t completion) {
+    ApolloDuoPostsSpringDragWith(drag, offset, velocity, kApolloDuoPostsSpringOmega, 0.0, completion);
 }
 
 // The rest of a committed drag's slide: a close's off the pane, widening the
@@ -3959,23 +3971,102 @@ BOOL ApolloDuoSplitDividerUpdate(UIView *view, CGFloat dividerX) {
     return YES;
 }
 
-// A snap or full screen: the drag's pictures spring to where the columns now
-// are, then fade off the columns laid out under them. Touches go through.
+// Set while a landing lays the columns out (ApolloDuoSplitApplyPostsStop).
+static BOOL sDuoPostsApplyUnanimated;
+
+// A landing's spring: critically damped like the close's, but quicker, and
+// ended at a known time, so the reveal never waits out a long tail.
+static const CGFloat kApolloDuoPostsLandingOmega = 2.0 * M_PI / 0.2;
+static const NSTimeInterval kApolloDuoPostsLandingDuration = 0.26;
+// The reveal: the pictures blur as they fade, so the old-width picture never
+// shows as a second image over the columns laid out under it (iPadOS's own
+// split-resize idiom). The blur lives in the overlay, so every removal of the
+// overlay takes it too; touches go through all of it.
+static const NSTimeInterval kApolloDuoPostsRevealDuration = 0.08;
+// A landing this near where the pictures already are has nothing to spring.
+static const CGFloat kApolloDuoPostsLandingTravel = 8.0;
+
+// The blur's first half: the pictures fade out under a blur that comes in.
+// Core Animation, so it keeps running through a main-thread stall once flushed.
+static UIVisualEffectView *ApolloDuoPostsBlurPicturesOut(UIView *overlay, void (^completion)(void)) {
+    UIVisualEffectView *blur = [[UIVisualEffectView alloc] initWithEffect:nil];
+    blur.frame = overlay.bounds;
+    blur.userInteractionEnabled = NO;
+    [overlay addSubview:blur];
+    NSArray<UIView *> *pictures = [overlay.subviews filteredArrayUsingPredicate:
+        [NSPredicate predicateWithBlock:^BOOL(UIView *view, __unused id bindings) { return view != blur; }]];
+    [UIView animateWithDuration:kApolloDuoPostsRevealDuration delay:0 options:UIViewAnimationOptionCurveEaseIn
+                     animations:^{
+        blur.effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterial];
+        for (UIView *picture in pictures) picture.alpha = 0;
+    } completion:^(__unused BOOL ended) { if (completion) completion(); }];
+    return blur;
+}
+
+// Its second half: the blur clears off the columns now laid out under it, and
+// the overlay goes, with the blur in it. A timeout stands behind the
+// animations: the overlay can never outlive its reveal. Idempotent.
+static void ApolloDuoPostsClearBlur(ApolloDuoSplitHost *host, UIView *overlay, UIVisualEffectView *blur) {
+    __weak ApolloDuoSplitHost *weakHost = host;
+    __block BOOL finished = NO;
+    dispatch_block_t finish = ^{
+        if (finished) return;
+        finished = YES;
+        ApolloDuoPostsRemoveOverlay(weakHost, overlay);
+        ApolloDuoSplitScheduleUpdate();
+    };
+    [UIView animateWithDuration:kApolloDuoPostsRevealDuration delay:0 options:UIViewAnimationOptionCurveEaseOut
+                     animations:^{ blur.alpha = 0; } completion:^(__unused BOOL ended) { finish(); }];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), finish);
+}
+
+// The reveal when the columns are already laid out: Reduce Motion, a plain
+// short fade; otherwise the blur both ways.
+static void ApolloDuoPostsRevealSettle(ApolloDuoSplitHost *host, UIView *overlay) {
+    __weak ApolloDuoSplitHost *weakHost = host;
+    if (!overlay.window || UIAccessibilityIsReduceMotionEnabled()) {
+        dispatch_block_t done = ^{
+            ApolloDuoPostsRemoveOverlay(weakHost, overlay);
+            ApolloDuoSplitScheduleUpdate();
+        };
+        if (!overlay.window) done();
+        else [UIView animateWithDuration:0.15 animations:^{ overlay.alpha = 0; }
+                              completion:^(__unused BOOL ended) { done(); }];
+        return;
+    }
+    __block UIVisualEffectView *blur = nil;
+    blur = ApolloDuoPostsBlurPicturesOut(overlay, ^{ ApolloDuoPostsClearBlur(weakHost, overlay, blur); });
+}
+
+// A landing or full screen: the render server owns what the pictures do from
+// here, flushed before the expensive part (`relayout`, the column change,
+// which stalls the main thread for a Texture re-measure), as the close's
+// commit does. Where the pictures have a way to go they spring there, and
+// are revealed off once they land; where they are already in place (a plain
+// landing) they blur out instead, through the stall. Touches go through.
 static void ApolloDuoPostsSettleDivider(ApolloDuoSplitState *state, ApolloDuoPostsCloseHandoff *drag, CGFloat offset,
-                                        CGFloat velocity) {
+                                        CGFloat velocity, dispatch_block_t relayout) {
     __weak ApolloDuoSplitHost *weakHost = state.host;
     UIView *overlay = drag.overlay;
     overlay.userInteractionEnabled = NO;
-    BOOL reduceMotion = UIAccessibilityIsReduceMotionEnabled();
-    dispatch_block_t reveal = ^{
-        [UIView animateWithDuration:reduceMotion ? 0.15 : 0.12 animations:^{ overlay.alpha = 0; }
-                         completion:^(__unused BOOL finished) {
-            ApolloDuoPostsRemoveOverlay(weakHost, overlay);
-            ApolloDuoSplitScheduleUpdate();
-        }];
-    };
-    if (reduceMotion || !overlay.window) reveal();
-    else ApolloDuoPostsSpringDrag(drag, offset, velocity, reveal);
+    if (UIAccessibilityIsReduceMotionEnabled() || !overlay.window) {
+        if (relayout) relayout();
+        ApolloDuoPostsRevealSettle(weakHost, overlay);
+        return;
+    }
+    CGFloat shown = drag.snapshot.transform.tx;
+    if (fabs(offset - shown) < kApolloDuoPostsLandingTravel) {
+        UIVisualEffectView *blur = ApolloDuoPostsBlurPicturesOut(overlay, nil);
+        [CATransaction flush];
+        if (relayout) relayout();
+        ApolloDuoPostsClearBlur(weakHost, overlay, blur);
+        return;
+    }
+    ApolloDuoPostsSpringDragWith(drag, offset, velocity, kApolloDuoPostsLandingOmega, kApolloDuoPostsLandingDuration, ^{
+        ApolloDuoPostsRevealSettle(weakHost, overlay);
+    });
+    [CATransaction flush];
+    if (relayout) relayout();
 }
 
 void ApolloDuoSplitDividerFinish(UIView *view, CGFloat dividerX, CGFloat velocityX) {
@@ -4005,25 +4096,29 @@ void ApolloDuoSplitDividerFinish(UIView *view, CGFloat dividerX, CGFloat velocit
         // The toggle clears the host's transition picture; the drag's
         // pictures cover its column change instead.
         UIView *overlay = drag.overlay;
-        host.postsTransitionSnapshot = nil;
         BOOL wasSplit = host.postsSplitEnabled;
-        ApolloDuoPostsToggleSplit(state);
-        BOOL full = wasSplit && !host.postsSplitEnabled;
-        if (overlay.window && !host.postsTransitionSnapshot) host.postsTransitionSnapshot = overlay;
-        ApolloLog(@"[DuoSplit] divider let go at %.0f, %.0f pt/s: %@", dividerX, velocityX,
-                  full ? @"full screen" : @"full screen refused, back to the position");
-        ApolloDuoPostsSettleDivider(state, drag, full ? -divider : 0.0, velocityX);
+        ApolloLog(@"[DuoSplit] divider let go at %.0f, %.0f pt/s: full screen", dividerX, velocityX);
+        ApolloDuoPostsSettleDivider(state, drag, wasSplit ? -divider : 0.0, velocityX, ^{
+            host.postsTransitionSnapshot = nil;
+            ApolloDuoPostsToggleSplit(state);
+            if (overlay.window && !host.postsTransitionSnapshot) host.postsTransitionSnapshot = overlay;
+            if (wasSplit && host.postsSplitEnabled) ApolloLog(@"[DuoSplit] full screen refused, the pictures stay at the position");
+        });
         return;
     }
     // A landing. Cleared first, so the position applies (it waits for no drag).
     // Half is stored as 0, so it follows the fold.
     ApolloDuoPostsCloseAdvance(state, drag, ApolloDuoPostsCloseEventInterrupt);
     [NSUserDefaults.standardUserDefaults setDouble:release.share forKey:UDKeyDuoSplitFeedShare];
-    ApolloDuoSplitApplyPostsStop(state.feed);
-    CGFloat target = ApolloDuoPostsSplitDivider(state);
+    // Where the columns will be, known before they are laid out.
+    CGFloat target = ApolloDuoPostsWantedDivider(state, canvas);
     ApolloLog(@"[DuoSplit] divider let go at %.0f, %.0f pt/s: landed at %.0f (share %.3f)", dividerX, velocityX,
               target, release.share);
-    ApolloDuoPostsSettleDivider(state, drag, target - divider, velocityX);
+    ApolloDuoPostsSettleDivider(state, drag, target - divider, velocityX, ^{
+        sDuoPostsApplyUnanimated = YES;
+        ApolloDuoSplitApplyPostsStop(state.feed);
+        sDuoPostsApplyUnanimated = NO;
+    });
 }
 
 void ApolloDuoSplitDividerCancel(UIView *view) {
@@ -5200,10 +5295,14 @@ static void ApolloDuoSplitApplyPostsStopToState(ApolloDuoSplitState *state) {
         ApolloDuoSplitApplySidebarWidth(state, state.halfWidthSidebar);
         return;
     }
-    [UIView animateWithDuration:0.25 animations:^{
+    void (^apply)(void) = ^{
         ApolloDuoSplitApplySidebarWidth(state, state.halfWidthSidebar);
         [state.split.view layoutIfNeeded];
-    }];
+    };
+    // A divider landing lays the columns out at once under its pictures: an
+    // animated width would still be moving after they have been revealed.
+    if (sDuoPostsApplyUnanimated) apply();
+    else [UIView animateWithDuration:0.25 animations:apply];
 }
 
 void ApolloDuoSplitApplyPostsStop(UINavigationController *anyPostsNavigation) {
