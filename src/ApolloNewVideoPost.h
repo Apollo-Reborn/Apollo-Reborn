@@ -8,9 +8,10 @@ extern "C" {
 // ID): holds the submit success, and with it Apollo's "Posted! Tap to view."
 // banner, until Reddit has attached the transcoded video, so tapping the banner
 // opens a post that already plays. Calls `deliver` exactly once, on a background
-// queue, as soon as the video is there or after 20 s at most; if Reddit is still
-// processing by then, a comments screen opened on the post switches to the video
-// once it's ready. Safe to call from any queue.
+// queue, as soon as the video is there or after about 20 s (a timer of its own,
+// whether or not a check came back); if Reddit is still processing by then, a
+// comments screen opened on the post switches to the video once it's ready. Safe
+// to call from any queue.
 void ApolloNewVideoPostDeliverWhenPlayable(NSString *linkID, dispatch_block_t deliver);
 
 #ifdef __cplusplus
