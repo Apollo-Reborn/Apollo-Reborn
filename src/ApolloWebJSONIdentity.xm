@@ -1124,11 +1124,15 @@ static BOOL ApolloWebJSONKeepSubscriptionListAfterFailedWalk(RDKUser *user, NSAr
     void (^wrapped)(NSHTTPURLResponse *, id, NSError *) = ^(NSHTTPURLResponse *response, id object, NSError *error) {
         // A read that has another route gets sent again on it, at most once per
         // route, and only the last answer reaches the caller. Writes never get
-        // here (ApolloWebJSONRouteRequestMayRetry).
+        // here (ApolloWebJSONRouteRequestMayRetry). A bearer route's 401 is a
+        // refusal of its minted bearer, which ApolloWebJSONNoteResponse has
+        // dropped, so it moves on too.
         NSInteger usedRoute = response ? ApolloWebJSONRouteFromURL(response.URL) : -1;
+        BOOL bearerRefused = usedRoute >= 0 && response.statusCode == 401
+            && ApolloWebJSONRouteGetAuth((ApolloWebJSONRoute)usedRoute) == ApolloWebJSONRouteAuthBearer;
         // A refusal is the block page or, on old.reddit.com, Old Reddit's
         // sign-in gate (a 200 HTML page RedditKit can't read).
-        if (username && sWebJSONEnabled && ApolloWebJSONRouteResponseIsRefusal(response)
+        if (username && sWebJSONEnabled && (ApolloWebJSONRouteResponseIsRefusal(response) || bearerRefused)
             && ApolloWebJSONRouteRequestMayRetry(requestMethod, requestPath)) {
             NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
             // The response URL carries the route the rewrite stamped; without it,
@@ -1137,9 +1141,10 @@ static BOOL ApolloWebJSONKeepSubscriptionListAfterFailedWalk(RDKUser *user, NSAr
             NSUInteger tried = routesTried | (usedRoute >= 0 ? (1u << usedRoute) : 0);
             NSInteger next = ApolloWebJSONRouteChoose(username, requestMethod, requestPath, tried, now);
             NSString *blockedName = usedRoute >= 0 ? ApolloWebJSONRouteName((ApolloWebJSONRoute)usedRoute) : @"?";
+            NSString *refusal = bearerRefused ? @"had its bearer refused" : @"refused the read";
             if (next >= 0) {
                 ApolloWebJSONLogRouteOutcomeOnce(requestMethod, requestPath, [NSString stringWithFormat:
-                    @"route %@ refused the read, trying %@", blockedName, ApolloWebJSONRouteName((ApolloWebJSONRoute)next)]);
+                    @"route %@ %@, trying %@", blockedName, refusal, ApolloWebJSONRouteName((ApolloWebJSONRoute)next)]);
                 sApolloWebJSONRoutesTriedForSend = tried;
                 @try {
                     [client taskWithMethod:requestMethod path:requestPath parameters:sentParameters completion:completion];
@@ -1149,7 +1154,7 @@ static BOOL ApolloWebJSONKeepSubscriptionListAfterFailedWalk(RDKUser *user, NSAr
                 return;
             }
             ApolloWebJSONLogRouteOutcomeOnce(requestMethod, requestPath, [NSString stringWithFormat:
-                @"route %@ refused the read, and every other route is blocked or cooling down", blockedName]);
+                @"route %@ %@, and every other route is blocked or cooling down", blockedName, refusal]);
             ApolloWebJSONShowRoutesBlockedToastOnce();
             ApolloLog(@"[WebJSON] %@", ApolloWebJSONRouteStatusSummary());
         } else if (routesTried != 0 && usedRoute >= 0 && response.statusCode >= 200 && response.statusCode < 300) {

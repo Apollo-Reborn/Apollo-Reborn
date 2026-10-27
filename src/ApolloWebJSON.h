@@ -156,6 +156,16 @@ NSString *ApolloWebJSONWebSessionUsernameForBearer(NSString *bearer);
 // minute after oauth.reddit.com refused it with a 401.
 NSString *ApolloWebJSONReadyWebBearer(NSString *username);
 
+// The bearer for routes with bearer auth (ApolloWebJSONRoutes.h): a bearer
+// minted for Reddit's mobile client that's already on hand, never token_v2;
+// nil when there's none.
+NSString *ApolloWebJSONReadyRouteBearer(NSString *username);
+
+// Mints `username`'s route bearer (the active web-session account when nil) in
+// the background, while an entry in effect lists a bearer route and none is on
+// hand. Returns at once; any thread.
+void ApolloWebJSONPrepareRouteBearer(NSString *username);
+
 // YES when a web-session account has no web bearer on hand and a mint is worth
 // trying now (none held off, no recent mint failure). The RedditKit request
 // hook mints before sending an ApolloWebJSONPathNeedsWebBearer request then.

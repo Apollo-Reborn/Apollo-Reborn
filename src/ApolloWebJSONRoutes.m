@@ -1,25 +1,80 @@
 #import "ApolloWebJSONRoutes.h"
 
+#pragma mark - Routes
+
+// Every route, by its ApolloWebJSONRoute value. Bearer auth is only listed
+// for oauth.reddit.com: www, old and api read the cookie and ignore a bearer.
+typedef struct {
+    const char *host;
+    ApolloWebJSONRoutePathForm path;
+    ApolloWebJSONRouteAuth auth;
+} ApolloWebJSONRouteParts;
+
+static const ApolloWebJSONRouteParts kApolloWebJSONRouteCatalog[] = {
+    [ApolloWebJSONRouteWww]                 = { "www",   ApolloWebJSONRoutePathSame,    ApolloWebJSONRouteAuthCookie },
+    [ApolloWebJSONRouteWwwDotJSON]          = { "www",   ApolloWebJSONRoutePathDotJSON, ApolloWebJSONRouteAuthCookie },
+    [ApolloWebJSONRouteOld]                 = { "old",   ApolloWebJSONRoutePathSame,    ApolloWebJSONRouteAuthCookie },
+    [ApolloWebJSONRouteApi]                 = { "api",   ApolloWebJSONRoutePathSame,    ApolloWebJSONRouteAuthCookie },
+    [ApolloWebJSONRouteOAuth]               = { "oauth", ApolloWebJSONRoutePathSame,    ApolloWebJSONRouteAuthCookie },
+    [ApolloWebJSONRouteOAuthBearer]         = { "oauth", ApolloWebJSONRoutePathSame,    ApolloWebJSONRouteAuthBearer },
+    [ApolloWebJSONRouteWwwRAll]             = { "www",   ApolloWebJSONRoutePathRAll,    ApolloWebJSONRouteAuthCookie },
+    [ApolloWebJSONRouteOldDotJSON]          = { "old",   ApolloWebJSONRoutePathDotJSON, ApolloWebJSONRouteAuthCookie },
+    [ApolloWebJSONRouteOldRAll]             = { "old",   ApolloWebJSONRoutePathRAll,    ApolloWebJSONRouteAuthCookie },
+    [ApolloWebJSONRouteApiDotJSON]          = { "api",   ApolloWebJSONRoutePathDotJSON, ApolloWebJSONRouteAuthCookie },
+    [ApolloWebJSONRouteApiRAll]             = { "api",   ApolloWebJSONRoutePathRAll,    ApolloWebJSONRouteAuthCookie },
+    [ApolloWebJSONRouteOAuthDotJSON]        = { "oauth", ApolloWebJSONRoutePathDotJSON, ApolloWebJSONRouteAuthCookie },
+    [ApolloWebJSONRouteOAuthRAll]           = { "oauth", ApolloWebJSONRoutePathRAll,    ApolloWebJSONRouteAuthCookie },
+    [ApolloWebJSONRouteOAuthDotJSONBearer]  = { "oauth", ApolloWebJSONRoutePathDotJSON, ApolloWebJSONRouteAuthBearer },
+    [ApolloWebJSONRouteOAuthRAllBearer]     = { "oauth", ApolloWebJSONRoutePathRAll,    ApolloWebJSONRouteAuthBearer },
+};
+_Static_assert(sizeof(kApolloWebJSONRouteCatalog) / sizeof(kApolloWebJSONRouteCatalog[0]) == ApolloWebJSONRouteLast + 1,
+               "every route has its parts");
+
+// The parts keyless-routes.json may name, in the order of their enums.
+static NSArray<NSString *> *ApolloWebJSONRouteHostNames(void) { return @[ @"www", @"old", @"api", @"oauth" ]; }
+static NSArray<NSString *> *ApolloWebJSONRoutePathFormNames(void) { return @[ @"same", @"dotjson", @"r-all" ]; }
+static NSArray<NSString *> *ApolloWebJSONRouteAuthNames(void) { return @[ @"cookie", @"bearer" ]; }
+
+static ApolloWebJSONRouteParts ApolloWebJSONRoutePartsFor(ApolloWebJSONRoute route) {
+    if (route < ApolloWebJSONRouteWww || route > ApolloWebJSONRouteLast) route = ApolloWebJSONRouteWww;
+    return kApolloWebJSONRouteCatalog[route];
+}
+
 NSString *ApolloWebJSONRouteName(ApolloWebJSONRoute route) {
-    switch (route) {
-        case ApolloWebJSONRouteWwwDotJSON: return @"www-dotjson";
-        case ApolloWebJSONRouteOld: return @"old";
-        case ApolloWebJSONRouteApi: return @"api";
-        case ApolloWebJSONRouteOAuth: return @"oauth";
-        case ApolloWebJSONRouteWww:
-        default: return @"www";
-    }
+    ApolloWebJSONRouteParts parts = ApolloWebJSONRoutePartsFor(route);
+    NSMutableString *name = [NSMutableString stringWithUTF8String:parts.host];
+    if (parts.path != ApolloWebJSONRoutePathSame) [name appendFormat:@"-%@", ApolloWebJSONRoutePathFormNames()[parts.path]];
+    if (parts.auth == ApolloWebJSONRouteAuthBearer) [name appendString:@"+bearer"];
+    return name;
 }
 
 NSString *ApolloWebJSONRouteHost(ApolloWebJSONRoute route) {
-    switch (route) {
-        case ApolloWebJSONRouteOld: return @"old.reddit.com";
-        case ApolloWebJSONRouteApi: return @"api.reddit.com";
-        case ApolloWebJSONRouteOAuth: return @"oauth.reddit.com";
-        case ApolloWebJSONRouteWww:
-        case ApolloWebJSONRouteWwwDotJSON:
-        default: return @"www.reddit.com";
+    return [NSString stringWithFormat:@"%s.reddit.com", ApolloWebJSONRoutePartsFor(route).host];
+}
+
+ApolloWebJSONRoutePathForm ApolloWebJSONRouteGetPathForm(ApolloWebJSONRoute route) {
+    return ApolloWebJSONRoutePartsFor(route).path;
+}
+
+ApolloWebJSONRouteAuth ApolloWebJSONRouteGetAuth(ApolloWebJSONRoute route) {
+    return ApolloWebJSONRoutePartsFor(route).auth;
+}
+
+// The route with these parts, or -1 when there's none (bearer auth off oauth).
+static NSInteger ApolloWebJSONRouteWithParts(NSString *host, ApolloWebJSONRoutePathForm path, ApolloWebJSONRouteAuth auth) {
+    for (NSInteger r = ApolloWebJSONRouteWww; r <= ApolloWebJSONRouteLast; r++) {
+        ApolloWebJSONRouteParts parts = kApolloWebJSONRouteCatalog[r];
+        if ([host isEqualToString:@(parts.host)] && parts.path == path && parts.auth == auth) return r;
     }
+    return -1;
+}
+
+static NSInteger ApolloWebJSONRouteFromName(id name) {
+    if (![name isKindOfClass:[NSString class]]) return -1;
+    for (NSInteger r = ApolloWebJSONRouteWww; r <= ApolloWebJSONRouteLast; r++) {
+        if ([ApolloWebJSONRouteName((ApolloWebJSONRoute)r) isEqualToString:name]) return r;
+    }
+    return -1;
 }
 
 // "/api/info" for "api/info.json", "/api/info/.json?id=…", "/API/info/" and so
@@ -33,18 +88,63 @@ static NSString *ApolloWebJSONRouteEndpointKey(NSString *path) {
     return [@"/" stringByAppendingString:p];
 }
 
+// The segments of an endpoint key or pattern; none for "/".
+static NSArray<NSString *> *ApolloWebJSONRouteSegments(NSString *key) {
+    return key.length > 1 ? [[key substringFromIndex:1] componentsSeparatedByString:@"/"] : @[];
+}
+
+#pragma mark - Entries and matching
+
+static BOOL ApolloWebJSONRouteSegmentIsWildcard(NSString *segment) {
+    return [segment isEqualToString:@"*"] || [segment isEqualToString:@"+"];
+}
+
+// Two or more non-empty names joined with "+". A lone "+" counts too, so a
+// pattern used as a path ("/r/+/search") matches its own entry.
+static BOOL ApolloWebJSONRouteSegmentIsJoinedList(NSString *segment) {
+    if ([segment isEqualToString:@"+"]) return YES;
+    NSArray<NSString *> *names = [segment componentsSeparatedByString:@"+"];
+    if (names.count < 2) return NO;
+    for (NSString *name in names) if (name.length == 0) return NO;
+    return YES;
+}
+
+static BOOL ApolloWebJSONRoutePatternMatches(NSArray<NSString *> *pattern, NSArray<NSString *> *segments) {
+    if (pattern.count != segments.count) return NO;
+    for (NSUInteger i = 0; i < pattern.count; i++) {
+        NSString *want = pattern[i], *have = segments[i];
+        if ([want isEqualToString:@"*"]) {
+            if (have.length == 0 || [have containsString:@"+"]) return NO;
+        } else if ([want isEqualToString:@"+"]) {
+            if (!ApolloWebJSONRouteSegmentIsJoinedList(have)) return NO;
+        } else if (![want isEqualToString:have]) {
+            return NO;
+        }
+    }
+    return YES;
+}
+
+// YES when `a` is more specific than `b` (same length, both matching one path):
+// the first segment where one has a literal and the other a wildcard decides.
+static BOOL ApolloWebJSONRoutePatternIsMoreSpecific(NSArray<NSString *> *a, NSArray<NSString *> *b) {
+    for (NSUInteger i = 0; i < a.count && i < b.count; i++) {
+        BOOL aLiteral = !ApolloWebJSONRouteSegmentIsWildcard(a[i]), bLiteral = !ApolloWebJSONRouteSegmentIsWildcard(b[i]);
+        if (aLiteral != bLiteral) return aLiteral;
+    }
+    return NO;
+}
+
+// An entry: "method", "pattern", "segments", "routes" and "remote" (NSNumber).
+static NSDictionary *ApolloWebJSONRouteMakeEntry(NSString *method, NSString *pattern, NSArray<NSNumber *> *routes, BOOL remote) {
+    return @{ @"method": method, @"pattern": pattern, @"segments": ApolloWebJSONRouteSegments(pattern),
+              @"routes": routes, @"remote": @(remote) };
+}
+
 // The search endpoints, as ApolloWebJSONRoutePathPattern names them. Apollo
 // searches a multireddit as its subreddits joined with "+" under /r/, never
 // by Reddit's /user/<name>/m/<multi>/search.
 static NSArray<NSString *> *ApolloWebJSONRouteSearchEndpoints(void) {
-    return @[ @"/search", @"/subreddits/search", @"/r/*/search" ];
-}
-
-// The endpoint a path is listed under: its pattern for search, whose paths
-// carry a subreddit or user, and its endpoint key for everything else.
-static NSString *ApolloWebJSONRouteTableEndpoint(NSString *path) {
-    NSString *pattern = ApolloWebJSONRoutePathPattern(path);
-    return [ApolloWebJSONRouteSearchEndpoints() containsObject:pattern] ? pattern : ApolloWebJSONRouteEndpointKey(path);
+    return @[ @"/search", @"/subreddits/search", @"/r/*/search", @"/r/+/search" ];
 }
 
 BOOL ApolloWebJSONRequestIsSearchRead(NSString *method, NSString *path) {
@@ -72,79 +172,125 @@ BOOL ApolloWebJSONRequestIsSearchRead(NSString *method, NSString *path) {
 // old.reddit.com both serve search signed in to the cookie with no token at
 // all (checked 2026-10-27, one account), so search needs no bearer. oauth comes
 // first for the same reason old comes second above.
+// /r/all: www answers every path under /r/all with the block page, for the
+// cookie and signed out alike (since 2026-10-27), while /r/popular, single
+// subreddits (r/allergies too) and "+" lists still load there. Apollo's front
+// page sends /r/All/best.json, and its filter forms match these entries too
+// (ApolloWebJSONRouteMatchSegments). oauth, api and old all served /r/all
+// listings signed in to the cookie (checked 2026-10-27 and 2026-10-28: the
+// account's saved posts and votes came back), and api's carry the same image
+// fields www's feeds have. oauth comes first for the same reason as in search.
 static NSArray<NSDictionary *> *ApolloWebJSONRouteBuiltInTable(void) {
     static NSArray<NSDictionary *> *table;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         NSArray *fallbacks = @[ @(ApolloWebJSONRouteWwwDotJSON), @(ApolloWebJSONRouteOld) ];
+        NSArray *cookieOAuth = @[ @(ApolloWebJSONRouteOAuth), @(ApolloWebJSONRouteOld) ];
+        NSArray *rAll = @[ @(ApolloWebJSONRouteOAuth), @(ApolloWebJSONRouteApi), @(ApolloWebJSONRouteOld) ];
         NSMutableArray<NSDictionary *> *rows = [@[
-            @{ @"endpoint": @"/api/info", @"methods": @[ @"GET" ], @"routes": fallbacks },
-            @{ @"endpoint": @"/api/morechildren", @"methods": @[ @"GET", @"POST" ], @"routes": fallbacks },
+            ApolloWebJSONRouteMakeEntry(@"GET", @"/api/info", fallbacks, NO),
+            ApolloWebJSONRouteMakeEntry(@"GET", @"/api/morechildren", fallbacks, NO),
+            ApolloWebJSONRouteMakeEntry(@"POST", @"/api/morechildren", fallbacks, NO),
+            ApolloWebJSONRouteMakeEntry(@"GET", @"/r/all", rAll, NO),
+            ApolloWebJSONRouteMakeEntry(@"GET", @"/r/all/*", rAll, NO),
         ] mutableCopy];
         for (NSString *endpoint in ApolloWebJSONRouteSearchEndpoints()) {
-            [rows addObject:@{ @"endpoint": endpoint, @"methods": @[ @"GET" ],
-                               @"routes": @[ @(ApolloWebJSONRouteOAuth), @(ApolloWebJSONRouteOld) ] }];
+            [rows addObject:ApolloWebJSONRouteMakeEntry(@"GET", endpoint, cookieOAuth, NO)];
         }
         table = [rows copy];
     });
     return table;
 }
 
-static NSDictionary *ApolloWebJSONRouteEntry(NSString *method, NSString *path) {
-    if (![method isKindOfClass:[NSString class]] || ![path isKindOfClass:[NSString class]]) return nil;
-    NSString *key = ApolloWebJSONRouteTableEndpoint(path);
-    NSString *upper = method.uppercaseString;
-    for (NSDictionary *row in ApolloWebJSONRouteBuiltInTable()) {
-        if ([row[@"endpoint"] isEqualToString:key] && [row[@"methods"] containsObject:upper]) return row;
-    }
-    return nil;
-}
-
-// r/all's listings: every sort, and the filter forms r/all-<sub>-<sub> and
-// r/all+<sub>. www.reddit.com answers every path under /r/all with its block
-// page, for the cookie and signed out alike, while r/popular, Home and other
-// subreddits (r/allergies too) still load; api.reddit.com serves these
-// listings signed in to the cookie, with the same image fields www's feeds
-// have, and old.reddit.com does for accounts Old Reddit still serves (each
-// checked 2026-10-28 from the app with an API-Key-Free session). Search under
-// r/all, its comments and its about page aren't listings and keep their own
-// routes. The routes are built in: keyless-routes.json can't move feeds.
-static BOOL ApolloWebJSONRouteIsAllListing(NSString *path) {
-    if (![path isKindOfClass:[NSString class]]) return NO;
-    static NSRegularExpression *allListing;
+static NSObject *ApolloWebJSONRemoteTableLock(void) {
+    static NSObject *lock;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        allListing = [NSRegularExpression regularExpressionWithPattern:
-            @"^/r/all([-+][^/]*)?(/(hot|new|top|rising|controversial|best))?$" options:0 error:NULL];
-    });
-    NSString *key = ApolloWebJSONRouteEndpointKey(path);
-    return [allListing firstMatchInString:key options:0 range:NSMakeRange(0, key.length)] != nil;
+    dispatch_once(&once, ^{ lock = [NSObject new]; });
+    return lock;
 }
 
-static NSArray<NSNumber *> *ApolloWebJSONRouteAllListingRoutes(NSString *method, NSString *path) {
-    if (![method isKindOfClass:[NSString class]] || ![method.uppercaseString isEqualToString:@"GET"]) return nil;
-    if (!ApolloWebJSONRouteIsAllListing(path)) return nil;
-    return @[ @(ApolloWebJSONRouteApi), @(ApolloWebJSONRouteOld) ];
+// Guarded by ApolloWebJSONRemoteTableLock: the overrides as parsed, and as
+// entries.
+static NSDictionary<NSString *, NSArray<NSNumber *> *> *sApolloWebJSONRemoteTable;
+static NSArray<NSDictionary *> *sApolloWebJSONRemoteEntries;
+
+static NSArray<NSDictionary *> *ApolloWebJSONRemoteEntries(void) {
+    @synchronized (ApolloWebJSONRemoteTableLock()) {
+        return sApolloWebJSONRemoteEntries ?: @[];
+    }
 }
 
-static NSArray<NSNumber *> *ApolloWebJSONRemoteRoutes(NSString *method, NSString *path);
+// The segments a path is matched by. r/all's filter forms count as r/all, so
+// the /r/all entries cover them: r/all-<sub>-<sub> is r/all without those
+// subreddits (All Posts' Exclude Subscriptions builds it from the account's
+// subscriptions, at 0x1005a46c0), and www blocks r/all+<sub> as it does r/all.
+// Subreddit names can't contain "-", and r/all is the only feed Reddit filters
+// this way: it answers r/popular-<sub> as a subreddit it can't find, and
+// Popular's Exclude Subscriptions filters the loaded posts without a request.
+static NSArray<NSString *> *ApolloWebJSONRouteMatchSegments(NSString *path) {
+    NSArray<NSString *> *segments = ApolloWebJSONRouteSegments(ApolloWebJSONRouteEndpointKey(path));
+    if (segments.count < 2 || ![segments[0] isEqualToString:@"r"]) return segments;
+    if (![segments[1] hasPrefix:@"all-"] && ![segments[1] hasPrefix:@"all+"]) return segments;
+    NSMutableArray<NSString *> *all = [segments mutableCopy];
+    all[1] = @"all";
+    return all;
+}
+
+// The entry `method` and `path` match: the most specific, a remote one ahead of
+// a built-in one with the same pattern. nil when none does.
+static NSDictionary *ApolloWebJSONRouteMatchIn(NSArray<NSArray<NSDictionary *> *> *tables, NSString *method, NSString *path) {
+    if (![method isKindOfClass:[NSString class]] || ![path isKindOfClass:[NSString class]]) return nil;
+    NSString *upper = method.uppercaseString;
+    NSArray<NSString *> *segments = ApolloWebJSONRouteMatchSegments(path);
+    NSDictionary *best = nil;
+    for (NSArray<NSDictionary *> *table in tables) {
+        for (NSDictionary *entry in table) {
+            if (![entry[@"method"] isEqualToString:upper] || !ApolloWebJSONRoutePatternMatches(entry[@"segments"], segments)) continue;
+            if (!best || ApolloWebJSONRoutePatternIsMoreSpecific(entry[@"segments"], best[@"segments"])) best = entry;
+        }
+    }
+    return best;
+}
+
+static NSDictionary *ApolloWebJSONRouteMatch(NSString *method, NSString *path) {
+    return ApolloWebJSONRouteMatchIn(@[ ApolloWebJSONRemoteEntries(), ApolloWebJSONRouteBuiltInTable() ], method, path);
+}
+
+static NSDictionary *ApolloWebJSONRouteBuiltInMatch(NSString *method, NSString *path) {
+    return ApolloWebJSONRouteMatchIn(@[ ApolloWebJSONRouteBuiltInTable() ], method, path);
+}
 
 NSArray<NSNumber *> *ApolloWebJSONRoutesForRequest(NSString *method, NSString *path) {
-    return ApolloWebJSONRemoteRoutes(method, path) ?: ApolloWebJSONRouteEntry(method, path)[@"routes"]
-        ?: ApolloWebJSONRouteAllListingRoutes(method, path) ?: @[ @(ApolloWebJSONRouteWww) ];
+    return ApolloWebJSONRouteMatch(method, path)[@"routes"] ?: @[ @(ApolloWebJSONRouteWww) ];
 }
 
-// Every built-in entry is a read (see above), r/all's routes are GET-only, and
-// the remote table can only add GETs (ApolloWebJSONRouteTableParse), so a
-// request with more than one route may try them in turn. Anything else, writes
-// included, has only www and is never resent.
+NSString *ApolloWebJSONRouteHealthGroup(NSString *method, NSString *path) {
+    return ApolloWebJSONRouteMatch(method, path)[@"pattern"] ?: ApolloWebJSONRoutePathPattern(path);
+}
+
+// Every built-in entry is a read (see above), and the remote table can only add
+// GETs (ApolloWebJSONRouteTableParse), so a request with more than one route
+// may try them in turn. Anything else, writes included, has only www and is
+// never resent.
 BOOL ApolloWebJSONRouteRequestMayRetry(NSString *method, NSString *path) {
     return ApolloWebJSONRoutesForRequest(method, path).count > 1;
 }
 
 NSString *ApolloWebJSONRoutePath(ApolloWebJSONRoute route, NSString *path) {
-    if (route != ApolloWebJSONRouteWwwDotJSON) return path;
-    return [ApolloWebJSONRouteEndpointKey(path) stringByAppendingString:@"/.json"];
+    switch (ApolloWebJSONRouteGetPathForm(route)) {
+        case ApolloWebJSONRoutePathDotJSON:
+            return [ApolloWebJSONRouteEndpointKey(path) stringByAppendingString:@"/.json"];
+        case ApolloWebJSONRoutePathRAll:
+            return [@"/r/all" stringByAppendingString:[path hasPrefix:@"/"] ? path : [@"/" stringByAppendingString:path]];
+        case ApolloWebJSONRoutePathSame:
+        default:
+            return path;
+    }
+}
+
+NSString *ApolloWebJSONRouteRequestedPath(ApolloWebJSONRoute route, NSString *sentPath) {
+    if (ApolloWebJSONRouteGetPathForm(route) != ApolloWebJSONRoutePathRAll || ![sentPath hasPrefix:@"/r/all/"]) return sentPath;
+    return [sentPath substringFromIndex:@"/r/all".length];
 }
 
 BOOL ApolloWebJSONRouteResponseIsBlockPage(NSHTTPURLResponse *response) {
@@ -170,52 +316,118 @@ BOOL ApolloWebJSONRouteResponseIsRefusal(NSHTTPURLResponse *response) {
     return ApolloWebJSONRouteResponseIsBlockPage(response) || ApolloWebJSONRouteResponseIsSignInGate(response);
 }
 
-#pragma mark - Remote route table (keyless-routes.json)
-
-static NSUInteger const kApolloWebJSONRouteTableMaxBytes = 16 * 1024;
-static NSUInteger const kApolloWebJSONRouteTableMaxEndpoints = 32;
-static NSUInteger const kApolloWebJSONRouteTableMaxRoutes = ApolloWebJSONRouteLast + 1;
-
-static NSObject *ApolloWebJSONRemoteTableLock(void) {
+static NSObject *ApolloWebJSONBearerHandlerLock(void) {
     static NSObject *lock;
     static dispatch_once_t once;
     dispatch_once(&once, ^{ lock = [NSObject new]; });
     return lock;
 }
 
-// Guarded by ApolloWebJSONRemoteTableLock.
-static NSDictionary<NSString *, NSArray<NSNumber *> *> *sApolloWebJSONRemoteTable;
+// Guarded by ApolloWebJSONBearerHandlerLock.
+static BOOL (^sApolloWebJSONBearerReady)(NSString *account);
 
-static NSString *ApolloWebJSONRemoteTableKey(NSString *method, NSString *path) {
-    return [NSString stringWithFormat:@"%@ %@", method.uppercaseString, ApolloWebJSONRouteTableEndpoint(path)];
-}
-
-static NSArray<NSNumber *> *ApolloWebJSONRemoteRoutes(NSString *method, NSString *path) {
-    if (![method isKindOfClass:[NSString class]] || ![path isKindOfClass:[NSString class]]) return nil;
-    @synchronized (ApolloWebJSONRemoteTableLock()) {
-        if (sApolloWebJSONRemoteTable.count == 0) return nil;
-        return sApolloWebJSONRemoteTable[ApolloWebJSONRemoteTableKey(method, path)];
+void ApolloWebJSONRouteSetBearerReadyHandler(BOOL (^handler)(NSString *account)) {
+    @synchronized (ApolloWebJSONBearerHandlerLock()) {
+        sApolloWebJSONBearerReady = [handler copy];
     }
 }
+
+static BOOL ApolloWebJSONRouteBearerReady(NSString *account) {
+    BOOL (^handler)(NSString *);
+    @synchronized (ApolloWebJSONBearerHandlerLock()) {
+        handler = sApolloWebJSONBearerReady;
+    }
+    return handler && account.length > 0 && handler(account);
+}
+
+BOOL ApolloWebJSONRouteTableUsesBearerAuth(void) {
+    for (NSArray<NSDictionary *> *table in @[ ApolloWebJSONRemoteEntries(), ApolloWebJSONRouteBuiltInTable() ]) {
+        for (NSDictionary *entry in table) {
+            for (NSNumber *route in entry[@"routes"]) {
+                if (ApolloWebJSONRouteGetAuth((ApolloWebJSONRoute)route.integerValue) == ApolloWebJSONRouteAuthBearer) return YES;
+            }
+        }
+    }
+    return NO;
+}
+
+#pragma mark - Remote route table (keyless-routes.json)
+
+static NSUInteger const kApolloWebJSONRouteTableMaxBytes = 16 * 1024;
+static NSUInteger const kApolloWebJSONRouteTableMaxEndpoints = 32;
+static NSUInteger const kApolloWebJSONRouteTableMaxRoutes = 5;
 
 void ApolloWebJSONRouteSetRemoteTable(NSDictionary<NSString *, NSArray<NSNumber *> *> *overrides) {
+    NSMutableArray<NSDictionary *> *entries = [NSMutableArray array];
+    for (NSString *key in overrides) {
+        NSArray<NSString *> *parts = [key componentsSeparatedByString:@" "];
+        if (parts.count != 2) continue;
+        [entries addObject:ApolloWebJSONRouteMakeEntry(parts[0], parts[1], overrides[key], YES)];
+    }
     @synchronized (ApolloWebJSONRemoteTableLock()) {
         sApolloWebJSONRemoteTable = [overrides copy];
+        sApolloWebJSONRemoteEntries = [entries copy];
     }
-}
-
-static NSInteger ApolloWebJSONRouteFromName(id name) {
-    if (![name isKindOfClass:[NSString class]]) return -1;
-    for (NSInteger r = ApolloWebJSONRouteWww; r <= ApolloWebJSONRouteLast; r++) {
-        if ([ApolloWebJSONRouteName((ApolloWebJSONRoute)r) isEqualToString:name]) return r;
-    }
-    return -1;
 }
 
 static NSString *ApolloWebJSONRouteNames(NSArray<NSNumber *> *routes) {
     NSMutableArray<NSString *> *names = [NSMutableArray arrayWithCapacity:routes.count];
     for (NSNumber *route in routes) [names addObject:ApolloWebJSONRouteName((ApolloWebJSONRoute)route.integerValue)];
     return [names componentsJoinedByString:@", "];
+}
+
+// Why `path` can't be a key's pattern, or nil when it can: "/" then segments
+// that are each a lowercase literal, "*" or "+", without .json, a query or a
+// trailing slash, and narrower than every subreddit or every top-level path.
+static NSString *ApolloWebJSONRoutePatternProblem(NSString *path) {
+    static NSRegularExpression *literal;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        literal = [NSRegularExpression regularExpressionWithPattern:@"^[a-z0-9_-]+$" options:0 error:NULL];
+    });
+    if (![path hasPrefix:@"/"]) return @"path doesn't start with /";
+    NSArray<NSString *> *segments = ApolloWebJSONRouteSegments(path);
+    BOOL allWildcards = segments.count > 0, subredditWildcards = segments.count > 1 && [segments[0] isEqualToString:@"r"];
+    for (NSUInteger i = 0; i < segments.count; i++) {
+        NSString *segment = segments[i];
+        BOOL wildcard = ApolloWebJSONRouteSegmentIsWildcard(segment);
+        if (!wildcard && ![literal firstMatchInString:segment options:0 range:NSMakeRange(0, segment.length)]) {
+            return [NSString stringWithFormat:@"segment \"%@\" isn't a lowercase name, * or +", segment];
+        }
+        if (!wildcard) allWildcards = NO;
+        if (i > 0 && ![segment isEqualToString:@"*"]) subredditWildcards = NO;
+    }
+    if (allWildcards || subredditWildcards) return @"pattern would match every subreddit or every path";
+    // r/all's filter forms match as /r/all (ApolloWebJSONRouteMatchSegments).
+    if (segments.count > 1 && [segments[0] isEqualToString:@"r"] && [segments[1] hasPrefix:@"all-"]) {
+        return @"r/all-<sub> can't be matched apart from r/all; use /r/all";
+    }
+    return nil;
+}
+
+// A route given as a name ("old") or as parts ({"host": "oauth", "auth":
+// "bearer"}; "path" defaults to "same" and "auth" to "cookie"). Sets `problem`
+// and returns -1 when it isn't one of the routes.
+static NSInteger ApolloWebJSONRouteFromSpec(id spec, NSString **problem) {
+    if ([spec isKindOfClass:[NSString class]]) {
+        NSInteger route = ApolloWebJSONRouteFromName(spec);
+        if (route < 0) *problem = [NSString stringWithFormat:@"unknown route %@", spec];
+        return route;
+    }
+    if (![spec isKindOfClass:[NSDictionary class]]) { *problem = @"a route isn't a name or an object"; return -1; }
+    NSDictionary *parts = spec;
+    for (id key in parts) {
+        if (![@[ @"host", @"path", @"auth" ] containsObject:key]) { *problem = [NSString stringWithFormat:@"unknown route part %@", key]; return -1; }
+    }
+    id host = parts[@"host"], path = parts[@"path"] ?: @"same", auth = parts[@"auth"] ?: @"cookie";
+    if (![ApolloWebJSONRouteHostNames() containsObject:host]) { *problem = [NSString stringWithFormat:@"unknown host %@", host]; return -1; }
+    NSUInteger pathForm = [path isKindOfClass:[NSString class]] ? [ApolloWebJSONRoutePathFormNames() indexOfObject:path] : NSNotFound;
+    if (pathForm == NSNotFound) { *problem = [NSString stringWithFormat:@"unknown path form %@", path]; return -1; }
+    NSUInteger authMethod = [auth isKindOfClass:[NSString class]] ? [ApolloWebJSONRouteAuthNames() indexOfObject:auth] : NSNotFound;
+    if (authMethod == NSNotFound) { *problem = [NSString stringWithFormat:@"unknown auth %@", auth]; return -1; }
+    NSInteger route = ApolloWebJSONRouteWithParts(host, (ApolloWebJSONRoutePathForm)pathForm, (ApolloWebJSONRouteAuth)authMethod);
+    if (route < 0) *problem = [NSString stringWithFormat:@"%@ auth only works on oauth", auth];
+    return route;
 }
 
 NSDictionary<NSString *, NSArray<NSNumber *> *> *ApolloWebJSONRouteTableParse(NSData *data, NSArray<NSString *> **rejections) {
@@ -242,36 +454,39 @@ NSDictionary<NSString *, NSArray<NSNumber *> *> *ApolloWebJSONRouteTableParse(NS
             if (![method isEqualToString:@"GET"] && ![method isEqualToString:@"POST"]) {
                 [rejected addObject:[label stringByAppendingString:@": method isn't GET or POST"]]; continue;
             }
-            // Exactly /api/<name>: no wildcards, query, listings or other
-            // segments. The search endpoints are named by their exact pattern.
-            static NSRegularExpression *apiPath;
-            static dispatch_once_t once;
-            dispatch_once(&once, ^{
-                apiPath = [NSRegularExpression regularExpressionWithPattern:@"^/api/[a-z0-9_]+$" options:0 error:NULL];
-            });
-            if (![apiPath firstMatchInString:path options:0 range:NSMakeRange(0, path.length)] &&
-                ![ApolloWebJSONRouteSearchEndpoints() containsObject:path]) {
-                [rejected addObject:[label stringByAppendingString:@": path isn't /api/<name> or a search endpoint"]]; continue;
+            NSString *patternProblem = ApolloWebJSONRoutePatternProblem(path);
+            if (patternProblem) { [rejected addObject:[NSString stringWithFormat:@"%@: %@", label, patternProblem]]; continue; }
+            // A POST only where a built-in entry has exactly this POST: the
+            // read-only /api/morechildren.
+            BOOL builtInPOST = NO;
+            for (NSDictionary *entry in ApolloWebJSONRouteBuiltInTable()) {
+                if ([entry[@"method"] isEqualToString:method] && [entry[@"pattern"] isEqualToString:path]) builtInPOST = YES;
             }
-            BOOL builtIn = ApolloWebJSONRouteEntry(method, path) != nil;
-            if (!builtIn && ![method isEqualToString:@"GET"]) {
+            if (![method isEqualToString:@"GET"] && !builtInPOST) {
                 [rejected addObject:[label stringByAppendingString:@": only GETs can be added"]]; continue;
             }
             id entry = endpoints[key];
-            id names = [entry isKindOfClass:[NSDictionary class]] ? entry[@"routes"] : nil;
-            if (![names isKindOfClass:[NSArray class]] || [names count] == 0 || [names count] > kApolloWebJSONRouteTableMaxRoutes) {
-                [rejected addObject:[label stringByAppendingString:@": routes isn't a list of 1 to 5 names"]]; continue;
+            id specs = [entry isKindOfClass:[NSDictionary class]] ? entry[@"routes"] : nil;
+            if (![specs isKindOfClass:[NSArray class]] || [specs count] == 0 || [specs count] > kApolloWebJSONRouteTableMaxRoutes) {
+                [rejected addObject:[label stringByAppendingString:@": routes isn't a list of 1 to 5 routes"]]; continue;
             }
             NSMutableArray<NSNumber *> *routes = [NSMutableArray array];
             NSString *problem = nil;
-            for (id name in names) {
-                NSInteger route = ApolloWebJSONRouteFromName(name);
-                if (route < 0) { problem = [NSString stringWithFormat:@": unknown route %@", name]; break; }
-                if ([routes containsObject:@(route)]) { problem = [NSString stringWithFormat:@": route %@ listed twice", name]; break; }
+            for (id spec in specs) {
+                NSInteger route = ApolloWebJSONRouteFromSpec(spec, &problem);
+                if (route < 0) break;
+                if ([routes containsObject:@(route)]) {
+                    problem = [NSString stringWithFormat:@"route %@ listed twice", ApolloWebJSONRouteName((ApolloWebJSONRoute)route)]; break;
+                }
+                // /r/all/api/<endpoint> is a path Reddit serves; /r/all in front
+                // of anything else isn't the same read.
+                if (ApolloWebJSONRouteGetPathForm((ApolloWebJSONRoute)route) == ApolloWebJSONRoutePathRAll && ![path hasPrefix:@"/api/"]) {
+                    problem = [NSString stringWithFormat:@"route %@ is for /api/ paths only", ApolloWebJSONRouteName((ApolloWebJSONRoute)route)]; break;
+                }
                 [routes addObject:@(route)];
             }
-            if (problem) { [rejected addObject:[label stringByAppendingString:problem]]; continue; }
-            overrides[ApolloWebJSONRemoteTableKey(method, path)] = [routes copy];
+            if (problem) { [rejected addObject:[NSString stringWithFormat:@"%@: %@", label, problem]]; continue; }
+            overrides[[NSString stringWithFormat:@"%@ %@", method, path]] = [routes copy];
         }
         result = [overrides copy];
     } while (0);
@@ -288,7 +503,7 @@ NSString *ApolloWebJSONRouteRemoteTableDescription(void) {
     NSMutableArray<NSString *> *lines = [NSMutableArray array];
     for (NSString *key in [table.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
         NSArray<NSString *> *parts = [key componentsSeparatedByString:@" "];
-        NSArray<NSNumber *> *builtIn = ApolloWebJSONRouteEntry(parts.firstObject, parts.lastObject)[@"routes"];
+        NSArray<NSNumber *> *builtIn = ApolloWebJSONRouteBuiltInMatch(parts.firstObject, parts.lastObject)[@"routes"];
         [lines addObject:[NSString stringWithFormat:@"%@: %@ (built-in: %@)", key, ApolloWebJSONRouteNames(table[key]),
                           builtIn ? ApolloWebJSONRouteNames(builtIn) : @"www"]];
     }
@@ -300,7 +515,8 @@ NSString *ApolloWebJSONRouteRemoteTableDescription(void) {
 static NSInteger const kApolloWebJSONRouteBlocksBeforeCooldown = 3;
 static NSTimeInterval const kApolloWebJSONRouteFirstCooldown = 60.0 * 60.0;
 static NSTimeInterval const kApolloWebJSONRouteLongestCooldown = 8.0 * 60.0 * 60.0;
-// Every keyless path is counted, so bound the store: paths group by pattern,
+// Every keyless path is counted, so bound the store: paths group by entry or
+// pattern,
 // and an account's health starts over if it ever grows past this.
 static NSUInteger const kApolloWebJSONRouteHealthMaxEntries = 512;
 
@@ -323,13 +539,11 @@ static NSObject *ApolloWebJSONRouteHealthLock(void) {
     return lock;
 }
 
-// Guarded by ApolloWebJSONRouteHealthLock. "<account>|<pattern>|<route>".
+// Guarded by ApolloWebJSONRouteHealthLock. "<account>|<group>|<route>".
 static NSMutableDictionary<NSString *, ApolloWebJSONRouteHealthEntry *> *sApolloWebJSONRouteHealth;
 
 NSString *ApolloWebJSONRoutePathPattern(NSString *path) {
     if (![path isKindOfClass:[NSString class]]) return @"/";
-    // One endpoint for every r/all sort and filter, so they share route health.
-    if (ApolloWebJSONRouteIsAllListing(path)) return @"/r/all";
     NSArray<NSString *> *segments = [[ApolloWebJSONRouteEndpointKey(path) substringFromIndex:1] componentsSeparatedByString:@"/"];
     static NSSet<NSString *> *variableAfter;
     static dispatch_once_t once;
@@ -340,15 +554,22 @@ NSString *ApolloWebJSONRoutePathPattern(NSString *path) {
     for (NSUInteger i = 0; i < segments.count; i++) {
         // The segment after one of those names, unless that name was itself a
         // value ("/r/user/…"), and a comment link's slug ("/comments/<id>/<slug>").
-        BOOL afterName = i > 0 && [variableAfter containsObject:segments[i - 1]] && ![pattern.lastObject isEqualToString:@"*"];
+        // Names joined with "+" (a multireddit) are "+", so they group apart
+        // from single subreddits.
+        BOOL afterName = i > 0 && [variableAfter containsObject:segments[i - 1]] &&
+                         !ApolloWebJSONRouteSegmentIsWildcard(pattern.lastObject);
         BOOL slug = i > 1 && [segments[i - 2] isEqualToString:@"comments"];
-        [pattern addObject:afterName || slug ? @"*" : segments[i]];
+        if (afterName || slug) {
+            [pattern addObject:ApolloWebJSONRouteSegmentIsJoinedList(segments[i]) ? @"+" : @"*"];
+        } else {
+            [pattern addObject:segments[i]];
+        }
     }
     return [@"/" stringByAppendingString:[pattern componentsJoinedByString:@"/"]];
 }
 
-static NSString *ApolloWebJSONRouteHealthKey(NSString *account, NSString *path, ApolloWebJSONRoute route) {
-    return [NSString stringWithFormat:@"%@|%@|%@", account.lowercaseString ?: @"", ApolloWebJSONRoutePathPattern(path),
+static NSString *ApolloWebJSONRouteHealthKey(NSString *account, NSString *method, NSString *path, ApolloWebJSONRoute route) {
+    return [NSString stringWithFormat:@"%@|%@|%@", account.lowercaseString ?: @"", ApolloWebJSONRouteHealthGroup(method, path),
             ApolloWebJSONRouteName(route)];
 }
 
@@ -364,10 +585,10 @@ static ApolloWebJSONRouteHealthEntry *ApolloWebJSONRouteHealthEntryFor(NSString 
     return entry;
 }
 
-BOOL ApolloWebJSONRouteHealthNoteBlockPage(NSString *account, NSString *path, ApolloWebJSONRoute route, NSTimeInterval now) {
+BOOL ApolloWebJSONRouteHealthNoteBlockPage(NSString *account, NSString *method, NSString *path, ApolloWebJSONRoute route, NSTimeInterval now) {
     if (account.length == 0) return NO;
     @synchronized (ApolloWebJSONRouteHealthLock()) {
-        ApolloWebJSONRouteHealthEntry *entry = ApolloWebJSONRouteHealthEntryFor(ApolloWebJSONRouteHealthKey(account, path, route), YES);
+        ApolloWebJSONRouteHealthEntry *entry = ApolloWebJSONRouteHealthEntryFor(ApolloWebJSONRouteHealthKey(account, method, path, route), YES);
         entry.blocks++;
         entry.lastBlockAt = now;
         if (now < entry.cooldownUntil) return NO; // a request sent before the cooldown began
@@ -383,10 +604,10 @@ BOOL ApolloWebJSONRouteHealthNoteBlockPage(NSString *account, NSString *path, Ap
     }
 }
 
-void ApolloWebJSONRouteHealthNoteSuccess(NSString *account, NSString *path, ApolloWebJSONRoute route, NSTimeInterval now) {
+void ApolloWebJSONRouteHealthNoteSuccess(NSString *account, NSString *method, NSString *path, ApolloWebJSONRoute route, NSTimeInterval now) {
     if (account.length == 0) return;
     @synchronized (ApolloWebJSONRouteHealthLock()) {
-        ApolloWebJSONRouteHealthEntry *entry = ApolloWebJSONRouteHealthEntryFor(ApolloWebJSONRouteHealthKey(account, path, route), YES);
+        ApolloWebJSONRouteHealthEntry *entry = ApolloWebJSONRouteHealthEntryFor(ApolloWebJSONRouteHealthKey(account, method, path, route), YES);
         entry.successes++;
         entry.lastSuccessAt = now;
         entry.consecutiveBlocks = 0;
@@ -395,10 +616,10 @@ void ApolloWebJSONRouteHealthNoteSuccess(NSString *account, NSString *path, Apol
     }
 }
 
-NSTimeInterval ApolloWebJSONRouteCooldownRemaining(NSString *account, NSString *path, ApolloWebJSONRoute route, NSTimeInterval now) {
+NSTimeInterval ApolloWebJSONRouteCooldownRemaining(NSString *account, NSString *method, NSString *path, ApolloWebJSONRoute route, NSTimeInterval now) {
     if (account.length == 0) return 0;
     @synchronized (ApolloWebJSONRouteHealthLock()) {
-        ApolloWebJSONRouteHealthEntry *entry = ApolloWebJSONRouteHealthEntryFor(ApolloWebJSONRouteHealthKey(account, path, route), NO);
+        ApolloWebJSONRouteHealthEntry *entry = ApolloWebJSONRouteHealthEntryFor(ApolloWebJSONRouteHealthKey(account, method, path, route), NO);
         return entry ? MAX(0, entry.cooldownUntil - now) : 0;
     }
 }
@@ -409,8 +630,11 @@ NSInteger ApolloWebJSONRouteChoose(NSString *account, NSString *method, NSString
     for (NSNumber *number in routes) {
         ApolloWebJSONRoute route = (ApolloWebJSONRoute)number.integerValue;
         if (triedMask & (1u << route)) continue;
+        // A bearer route without a bearer on hand can't be sent at all; the
+        // handler may start a mint for a later request.
+        if (ApolloWebJSONRouteGetAuth(route) == ApolloWebJSONRouteAuthBearer && !ApolloWebJSONRouteBearerReady(account)) continue;
         if (firstUntried < 0) firstUntried = route;
-        if (ApolloWebJSONRouteCooldownRemaining(account, path, route, now) <= 0) return route;
+        if (ApolloWebJSONRouteCooldownRemaining(account, method, path, route, now) <= 0) return route;
     }
     return triedMask == 0 ? firstUntried : -1;
 }
@@ -465,21 +689,18 @@ NSArray<NSDictionary<NSString *, id> *> *ApolloWebJSONRouteHealthSnapshot(NSStri
 
 NSArray<NSString *> *ApolloWebJSONRouteFallbackEndpoints(void) {
     NSMutableSet<NSString *> *keys = [NSMutableSet set];
-    for (NSDictionary *row in ApolloWebJSONRouteBuiltInTable()) {
-        for (NSString *method in row[@"methods"]) {
-            if (ApolloWebJSONRoutesForRequest(method, row[@"endpoint"]).count > 1) {
-                [keys addObject:ApolloWebJSONRemoteTableKey(method, row[@"endpoint"])];
+    for (NSArray<NSDictionary *> *table in @[ ApolloWebJSONRouteBuiltInTable(), ApolloWebJSONRemoteEntries() ]) {
+        for (NSDictionary *entry in table) {
+            // A built-in entry the remote table overrides with one route has
+            // no fallback any more.
+            if (ApolloWebJSONRoutesForRequest(entry[@"method"], entry[@"pattern"]).count > 1) {
+                [keys addObject:[NSString stringWithFormat:@"%@ %@", entry[@"method"], entry[@"pattern"]]];
             }
         }
-    }
-    @synchronized (ApolloWebJSONRemoteTableLock()) {
-        [sApolloWebJSONRemoteTable enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSArray<NSNumber *> *routes, __unused BOOL *stop) {
-            if (routes.count > 1) [keys addObject:key];
-        }];
     }
     return [keys.allObjects sortedArrayUsingSelector:@selector(compare:)];
 }
 
 BOOL ApolloWebJSONRouteIsFromRemoteTable(NSString *method, NSString *path) {
-    return ApolloWebJSONRemoteRoutes(method, path) != nil;
+    return [ApolloWebJSONRouteMatch(method, path)[@"remote"] boolValue];
 }
