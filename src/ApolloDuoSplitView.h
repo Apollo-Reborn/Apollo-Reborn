@@ -2,7 +2,7 @@
 __BEGIN_DECLS
 void ApolloDuoSplitScheduleUpdate(void);
 // Re-applies the Posts split's feed width after the adjustable split setting
-// or its remembered stop changed; nil applies it to every Posts split.
+// or its remembered position changed; nil applies it to every Posts split.
 void ApolloDuoSplitApplyPostsStop(UINavigationController *anyPostsNavigation);
 BOOL ApolloDuoSplitIsResizing(void);
 BOOL ApolloDuoSplitIsUnfolded(void);
@@ -88,9 +88,9 @@ void ApolloDuoSplitInteractiveRestoreCancel(UINavigationController *nav, BOOL an
 /// whether the setting is on. With it on, a touch-down there also keeps
 /// UIKit's own separator tap off. Begin covers the columns with the drag's
 /// pictures; NO when it can't. Update moves the divider to `dividerX` and
-/// returns NO once the split let the drag go. Finish snaps to a stop,
-/// closes the thread or gives it the whole screen (ApolloDuoSplitReleaseFor),
-/// with one re-layout; Cancel removes the drag at once.
+/// returns NO once the split let the drag go. Finish lands the divider where
+/// it is let go, closes the thread or gives it the whole screen
+/// (ApolloDuoSplitReleaseFor), with one re-layout; Cancel removes the drag at once.
 CGFloat ApolloDuoSplitDividerPosition(UIView *host, BOOL *adjustable);
 BOOL ApolloDuoSplitDividerBegin(UIView *host);
 BOOL ApolloDuoSplitDividerUpdate(UIView *host, CGFloat dividerX);

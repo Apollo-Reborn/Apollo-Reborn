@@ -1,6 +1,6 @@
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
-#import "ApolloDuoSplitStops.h"
+#import "ApolloDuoSplitPosition.h"
 
 @class UIView;
 

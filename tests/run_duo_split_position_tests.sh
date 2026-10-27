@@ -2,7 +2,7 @@
 set -eu
 
 test_repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-test_build_dir=$(mktemp -d "${TMPDIR:-/tmp}/apollo-duo-split-stops.XXXXXX")
+test_build_dir=$(mktemp -d "${TMPDIR:-/tmp}/apollo-duo-split-position.XXXXXX")
 trap 'rm -rf -- "$test_build_dir"' EXIT HUP INT TERM
 
 compiler=clang
@@ -12,6 +12,6 @@ fi
 
 "$compiler" -std=c11 -Wall -Wextra -Werror \
     -I "$test_repo_root/src" \
-    "$test_repo_root/tests/duo_split_stops_tests.c" \
-    -o "$test_build_dir/duo_split_stops_tests"
-"$test_build_dir/duo_split_stops_tests"
+    "$test_repo_root/tests/duo_split_position_tests.c" \
+    -o "$test_build_dir/duo_split_position_tests"
+"$test_build_dir/duo_split_position_tests"

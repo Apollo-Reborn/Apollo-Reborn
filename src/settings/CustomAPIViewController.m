@@ -2994,9 +2994,9 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
         }];
     panelStyle.visible = ^BOOL { return ApolloDuoUsesAdaptiveBars(); };
 
-    // Press-and-hold divider resize for the unfolded landscape Posts split.
-    // Off keeps the fixed 50/50 split; the drag itself lives in
-    // ApolloDuoSplitView.xm.
+    // Movable divider for the unfolded landscape Posts split: drag the post,
+    // or press and hold the divider. Off keeps the fixed 50/50 split; the
+    // drags live in ApolloDuoSplitView.xm.
     ApolloSettingsRow *adjustableSplit =
         [ApolloSettingsRow switchRowWithID:@"sub.adjustableSplit"
                                      title:@"Adjustable Split"

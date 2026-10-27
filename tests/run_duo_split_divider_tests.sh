@@ -24,7 +24,7 @@ if grep -n 'requireGestureRecognizerToFail\|shouldRequireFailureOfGestureRecogni
     exit 1
 fi
 # The split's side: the columns are laid out once, on release, never per drag
-# frame; the release clears the drag before it applies the stop; every
+# frame; the release clears the drag before it applies the position; every
 # interruption of a close lets the divider go too; the setting turned off
 # removes a drag first.
 python3 - "$divider_root" <<'PY'
@@ -43,16 +43,18 @@ for signature in ['BOOL ApolloDuoSplitDividerUpdate(', 'static void ApolloDuoPos
         if layout in frame:
             fail('%s lays out (%s) on a drag frame' % (signature, layout))
 finish = body('void ApolloDuoSplitDividerFinish(')
-snap = finish[finish.index('// A snap.'):]
-if not (snap.index('ApolloDuoPostsCloseEventInterrupt') < snap.index('setInteger:') < snap.index('ApolloDuoSplitApplyPostsStop(')):
-    fail('a snap clears its drag, then remembers the stop, then applies it')
+snap = finish[finish.index('// A landing.'):]
+if not (snap.index('ApolloDuoPostsCloseEventInterrupt') < snap.index('setDouble:') < snap.index('ApolloDuoSplitApplyPostsStop(')):
+    fail('a landing clears its drag, then remembers the position, then applies it')
 for outcome in ['if (release.closesThread)', 'if (release.fullScreen)']:
     part = finish[finish.index(outcome):]
     part = part[:part.index('return;')]
-    if 'UDKeyDuoSplitStop' in part:
-        fail('%s changes the remembered stop' % outcome)
-if finish.count('UDKeyDuoSplitStop') != 1:
-    fail('only the snap remembers a stop')
+    if 'UDKeyDuoSplitFeedShare' in part:
+        fail('%s changes the remembered position' % outcome)
+if finish.count('UDKeyDuoSplitFeedShare') != 1:
+    fail('only a landing remembers a position')
+if 'setInteger' in finish or 'UDKeyDuoSplitStop' in finish:
+    fail('the retired stop key is read for migration only, never written')
 if 'ApolloDuoSplitDividerLetGo(' not in body('static void ApolloDuoPostsCancelInteractiveClose(ApolloDuoSplitState *state, BOOL animated, CGFloat velocity) {'):
     fail("the close's interruptions no longer let the divider go")
 apply = body('static void ApolloDuoSplitApplyPostsStopToState(')
@@ -67,10 +69,10 @@ update = body('static void ApolloDuoSplitUpdate(void) {')
 sweep = update[:update.index('ApolloDuoPostsCancelInteractiveClose(state, NO, 0.0);')]
 if 'drag.dividing ? ApolloDuoSplitDividerHolding(' not in sweep or 'drag.overlay.window && held) continue;' not in sweep:
     fail("the split update's stale-drag sweep drops a divider drag its press still holds")
-# A stored stop UIKit can't tile beside the rail gives way to Half, and the
+# A stored position UIKit can't tile beside the rail gives way to Half, and the
 # split's minimum thread width is the one the fit is measured against.
 if 'ApolloDuoPostsFittedPrimaryWidth(' not in body('static CGFloat ApolloDuoPostsWantedDivider('):
-    fail('the Posts divider no longer falls back to Half for a stop that would break the split')
+    fail('the Posts divider no longer falls back to Half for a position that would break the split')
 if 'kApolloDuoPostsMinimumThread' not in body('static void ApolloDuoSplitApplySidebarWidth('):
     fail("the split's minimum thread width no longer matches the fit")
 # The divider is only where UIKit actually put the thread pane.

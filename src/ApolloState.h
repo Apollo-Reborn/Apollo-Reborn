@@ -203,7 +203,7 @@ extern NSInteger sDuoLandscapeFeedLayout;
 // Standard (default NO) or Liquid Glass for the open Duo subreddit panel.
 extern BOOL sDuoSubredditPanelGlassEnabled;
 // Adjustable Split (default NO): the unfolded landscape Posts divider moves
-// with a press and drag. Read live by ApolloDuoSplitView.
+// with a drag of the post or a press and drag of the divider. Read live by ApolloDuoSplitView.
 extern BOOL sDuoAdjustableSplit;
 BOOL ApolloSupportsNativeTabBarScrollBehavior(void);
 #ifdef __cplusplus

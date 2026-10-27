@@ -365,11 +365,16 @@ static NSString *const UDKeyDuoLandscapeFeedLayout = @"DuoLandscapeFeedLayout";
 // (default), YES = Liquid Glass. The panel keeps the same size and navigation.
 static NSString *const UDKeyDuoSubredditPanelGlassEnabled = @"DuoSubredditPanelGlassEnabled";
 // Duo only. When ON, the divider between feed and thread in the unfolded
-// landscape Posts split can be pressed, held and dragged to rest at one of
-// three stops. Opt-in; default OFF via registerDefaults (fixed 50/50 split).
+// landscape Posts split can be moved: the post dragged, or the divider pressed,
+// held and dragged, to rest wherever it is let go between two limits. Opt-in;
+// default OFF via registerDefaults (fixed 50/50 split).
 static NSString *const UDKeyDuoAdjustableSplit = @"DuoAdjustableSplit";
-// The remembered resting stop (ApolloDuoSplitStop, default Half). Unknown
-// values read back as Half; see ApolloDuoSplitStops.h.
+// The remembered divider position, a double: the divider x over the canvas
+// width. 0 or absent is Half (the fold, else mid-canvas); anything out of
+// range reads back as Half; see ApolloDuoSplitPosition.h.
+static NSString *const UDKeyDuoSplitFeedShare = @"DuoSplitFeedShare";
+// The retired stop this replaced (1 was 25%, 3 the widest feed). Read as the
+// position when no share is stored, never written.
 static NSString *const UDKeyDuoSplitStop = @"DuoSplitStop";
 // iPad only. When ON, replaces each tab's single navigation stack with a
 // multi-column UISplitViewController: sidebar (the tab's own root list) →

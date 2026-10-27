@@ -14,7 +14,7 @@
 #import "ApolloCommon.h"
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
-#import "ApolloDuoSplitStops.h"
+#import "ApolloDuoSplitPosition.h"
 #import "ApolloDuoSplitDivider.h"
 #import "ApolloDuoRail.h"
 #import "ApolloDuoCompatibility.h"
@@ -1380,7 +1380,7 @@ static CGFloat ApolloDuoPostsFoldX(ApolloDuoSplitState *state, CGSize canvas) {
 // width for the split, which it holds against the thread less the rail.
 static const CGFloat kApolloDuoPostsMinimumThread = 240.0;
 
-// The thread width, beside the rail, that the Wide stop leaves: what the
+// The thread width, beside the rail, that the right limit leaves: what the
 // post's five action buttons need (measured on the Duo: they keep their 53 pt
 // pitch and the last is clipped by the rail below 260). More than the minimum
 // above, which only keeps UIKit tiling.
@@ -1392,19 +1392,28 @@ static CGFloat ApolloDuoPostsTrailingInset(ApolloDuoSplitState *state) {
     return MAX(state.secondary.viewIfLoaded.safeAreaInsets.right, state.feed.viewIfLoaded.safeAreaInsets.right);
 }
 
+// The remembered divider position: the stored share, else the retired stop
+// (read-only; DuoSplitFeedShare is the only key written).
+static ApolloDuoSplitStored ApolloDuoPostsStoredPosition(void) {
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    id share = [defaults objectForKey:UDKeyDuoSplitFeedShare];
+    BOOL has = [share isKindOfClass:NSNumber.class];
+    return (ApolloDuoSplitStored){ has, has ? [share doubleValue] : 0.0,
+                                   [defaults integerForKey:UDKeyDuoSplitStop] };
+}
+
 // The divider x the Posts landscape split should use now on `canvas`: the
-// remembered stop with the setting on, else half the canvas. Half with the
-// setting on ends the feed at the fold; mid-resize the region may still
+// remembered position with the setting on, else half the canvas. Half with
+// the setting on ends the feed at the fold; mid-resize the region may still
 // describe the old canvas, so Half takes mid-canvas until the next update.
-// The Wide stop already leaves the thread more than UIKit needs to tile it
-// beside the rail; any stop that would still leave it too narrow (the inset
-// changed since) gives way to Half rather than break the split.
+// The position is re-clamped to the limits on this canvas, which already
+// leave the thread more than UIKit needs to tile it beside the rail; one that
+// would still leave it too narrow (the inset changed since) gives way to Half
+// rather than break the split.
 static CGFloat ApolloDuoPostsWantedDivider(ApolloDuoSplitState *state, CGSize canvas) {
     BOOL adjustable = ApolloDuoPostsAdjustableSplit();
     CGFloat foldX = adjustable ? ApolloDuoPostsFoldX(state, canvas) : 0.0;
-    ApolloDuoSplitStop stop = ApolloDuoSplitStopSanitized(
-        [NSUserDefaults.standardUserDefaults integerForKey:UDKeyDuoSplitStop]);
-    return ApolloDuoPostsFittedPrimaryWidth(adjustable, stop, canvas.width, foldX,
+    return ApolloDuoPostsFittedPrimaryWidth(adjustable, ApolloDuoPostsStoredPosition(), canvas.width, foldX,
                                             ApolloDuoPostsTrailingInset(state), kApolloDuoPostsWideStopThread,
                                             kApolloDuoPostsMinimumThread);
 }
@@ -1936,7 +1945,7 @@ static void ApolloDuoSplitApplySidebarWidth(ApolloDuoSplitState *state, BOOL hal
     CGFloat postsWidth = postsLandscape ? ApolloDuoPostsWantedDivider(state, canvas) : half;
     // UIKit may keep an earlier sidebar width across column replacement.
     // Bound both ends for Posts so its actual divider stays at the midpoint,
-    // or at the remembered stop with the adjustable split on.
+    // or at the remembered position with the adjustable split on.
     CGFloat maximum = postsLandscape ? postsWidth : (state.feed || halfWidth ? CGFLOAT_MAX : 420.0);
     // Settings' widest native row is "Touch ID & Passcode" + its value +
     // disclosure: a third of the flat inner display (~317pt) cut "Off" to "O".
@@ -3797,9 +3806,10 @@ void ApolloDuoSplitInteractiveCloseCancel(UINavigationController *nav, BOOL anim
 // The thread pane's snapshot follows the divider over the live feed, as in
 // the close. Rightward the close's gap continues the feed; leftward the
 // thread covers the feed and its trailing edge widens in its own color. The
-// columns are laid out once, on release: a snap re-pins them at the new stop
-// (ApolloDuoSplitApplyPostsStop) under the pictures springing to it, a close
-// past the last stop commits the drag as the close's own, and full screen
+// columns are laid out once, on release: a landing re-pins them where the
+// divider was let go (ApolloDuoSplitApplyPostsStop) under the pictures
+// springing to it, a close past the right limit commits the drag as the
+// close's own, and full screen
 // runs the split toggle. The close's interruptions (a fold, a resize, the
 // hinge, a tab switch, a sheet, disappearing, resigning) remove it the same
 // way, and so does any other close.
@@ -3980,10 +3990,10 @@ void ApolloDuoSplitDividerFinish(UIView *view, CGFloat dividerX, CGFloat velocit
                                                              ApolloDuoPostsFoldX(state, canvas),
                                                              ApolloDuoPostsTrailingInset(state),
                                                              kApolloDuoPostsWideStopThread);
-    // Closing the thread and full screen leave the remembered stop as it was.
+    // Closing the thread and full screen leave the remembered position as it was.
     if (release.closesThread) {
         ApolloLog(@"[DuoSplit] divider let go at %.0f, %.0f pt/s: close the thread", dividerX, velocityX);
-        // Past the last stop it is the close's drag: the same slide off the pane.
+        // Past the right limit it is the close's drag: the same slide off the pane.
         [drag.fill removeFromSuperview];
         drag.fill = nil;
         ApolloDuoPostsCommitInteractiveClose(state, drag, velocityX);
@@ -4001,17 +4011,18 @@ void ApolloDuoSplitDividerFinish(UIView *view, CGFloat dividerX, CGFloat velocit
         BOOL full = wasSplit && !host.postsSplitEnabled;
         if (overlay.window && !host.postsTransitionSnapshot) host.postsTransitionSnapshot = overlay;
         ApolloLog(@"[DuoSplit] divider let go at %.0f, %.0f pt/s: %@", dividerX, velocityX,
-                  full ? @"full screen" : @"full screen refused, back to the stop");
+                  full ? @"full screen" : @"full screen refused, back to the position");
         ApolloDuoPostsSettleDivider(state, drag, full ? -divider : 0.0, velocityX);
         return;
     }
-    // A snap. Cleared first, so the stop applies (it waits for no drag).
+    // A landing. Cleared first, so the position applies (it waits for no drag).
+    // Half is stored as 0, so it follows the fold.
     ApolloDuoPostsCloseAdvance(state, drag, ApolloDuoPostsCloseEventInterrupt);
-    [NSUserDefaults.standardUserDefaults setInteger:release.stop forKey:UDKeyDuoSplitStop];
+    [NSUserDefaults.standardUserDefaults setDouble:release.share forKey:UDKeyDuoSplitFeedShare];
     ApolloDuoSplitApplyPostsStop(state.feed);
     CGFloat target = ApolloDuoPostsSplitDivider(state);
-    ApolloLog(@"[DuoSplit] divider let go at %.0f, %.0f pt/s: stop %d at %.0f", dividerX, velocityX,
-              (int)release.stop, target);
+    ApolloLog(@"[DuoSplit] divider let go at %.0f, %.0f pt/s: landed at %.0f (share %.3f)", dividerX, velocityX,
+              target, release.share);
     ApolloDuoPostsSettleDivider(state, drag, target - divider, velocityX);
 }
 
@@ -5119,7 +5130,7 @@ void ApolloDuoSplitScheduleUpdate(void) {
     });
 }
 
-// Re-pin the Posts columns after the setting or the stop changed: at once
+// Re-pin the Posts columns after the setting or the position changed: at once
 // with no thread beside the feed, with the columns' animation when one is.
 static void ApolloDuoSplitApplyPostsStopToState(ApolloDuoSplitState *state) {
     // The setting turned off under a divider drag: the drag goes at once, and

@@ -1,0 +1,185 @@
+#ifndef APOLLO_DUO_SPLIT_POSITION_H
+#define APOLLO_DUO_SPLIT_POSITION_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include <CoreGraphics/CGBase.h>
+#include <math.h>
+#include <objc/NSObjCRuntime.h>
+#include <stdbool.h>
+
+// Where the Posts split divider rests on Duo's unfolded landscape display: any
+// x between a left and a right limit, remembered as a share of the canvas.
+// Half (a stored 0) sits at the fold when the hinge reports one, otherwise
+// mid-canvas, so it follows the fold wherever the fold is.
+typedef struct {
+    bool hasShare;       // DuoSplitFeedShare was stored
+    double share;        // the divider x over the canvas width; 0 is Half
+    NSInteger legacyStop; // the retired DuoSplitStop: 1 was 25%, 3 the widest feed
+} ApolloDuoSplitStored;
+
+// What letting go of a drag does: land at `divider`, close the thread, or
+// give the thread the whole screen. `share` is what to remember for a landing:
+// 0 for Half, else divider over canvas.
+typedef struct {
+    CGFloat divider;
+    double share;
+    bool closesThread;
+    bool fullScreen;
+} ApolloDuoSplitRelease;
+
+enum {
+    // Rightward (or leftward) speed that counts as a flick on release.
+    ApolloDuoSplitFlickVelocity = 500,
+};
+
+// A drag closes or expands once it has covered this share of the distance
+// from its limit to the screen edge.
+#define APOLLO_DUO_SPLIT_EDGE_COMMIT 0.35
+
+// The feed's least share (its rows are already tight there) and the most the
+// thread can give up.
+#define APOLLO_DUO_SPLIT_LEFT_SHARE 0.25
+#define APOLLO_DUO_SPLIT_RIGHT_SHARE 0.75
+
+// A landing this close to Half is Half. Without it nobody could get back to
+// an exact 50/50 on the hinge.
+#define APOLLO_DUO_SPLIT_HALF_MAGNET 16.0
+
+static inline CGFloat ApolloDuoSplitHalfDivider(CGFloat canvasWidth, CGFloat foldX) {
+    return foldX > 0 ? foldX : canvasWidth * 0.5;
+}
+
+static inline CGFloat ApolloDuoSplitLeftLimit(CGFloat canvasWidth) {
+    return canvasWidth * APOLLO_DUO_SPLIT_LEFT_SHARE;
+}
+
+// Leaves the thread `wideThread` beside the trailing inset (the Duo's rail),
+// up to three quarters of the canvas, and never sits left of Half.
+// `wideThread` is the width the post's action bar needs, which is more than
+// UIKit's own minimum for tiling the thread.
+static inline CGFloat ApolloDuoSplitRightLimit(CGFloat canvasWidth, CGFloat foldX,
+                                               CGFloat trailingInset, CGFloat wideThread) {
+    CGFloat right = canvasWidth * APOLLO_DUO_SPLIT_RIGHT_SHARE;
+    CGFloat roomy = canvasWidth - trailingInset - wideThread;
+    if (roomy < right) right = roomy;
+    CGFloat half = ApolloDuoSplitHalfDivider(canvasWidth, foldX);
+    return right > half ? right : half;
+}
+
+// Whether there is anywhere but Half to put the divider.
+static inline bool ApolloDuoSplitHasRange(CGFloat canvasWidth, CGFloat foldX,
+                                          CGFloat trailingInset, CGFloat wideThread) {
+    return ApolloDuoSplitRightLimit(canvasWidth, foldX, trailingInset, wideThread)
+        > ApolloDuoSplitLeftLimit(canvasWidth);
+}
+
+static inline CGFloat ApolloDuoSplitClampedDivider(CGFloat dividerX, CGFloat canvasWidth, CGFloat foldX,
+                                                   CGFloat trailingInset, CGFloat wideThread) {
+    if (!ApolloDuoSplitHasRange(canvasWidth, foldX, trailingInset, wideThread))
+        return ApolloDuoSplitHalfDivider(canvasWidth, foldX);
+    CGFloat left = ApolloDuoSplitLeftLimit(canvasWidth);
+    CGFloat right = ApolloDuoSplitRightLimit(canvasWidth, foldX, trailingInset, wideThread);
+    return dividerX < left ? left : (dividerX > right ? right : dividerX);
+}
+
+// The divider x for a stored position, re-clamped on this canvas every time
+// so rotation, fold and inset changes stay valid. A share out of range is
+// Half; with no stored share the retired stop is read, never written.
+static inline CGFloat ApolloDuoSplitDividerForStored(ApolloDuoSplitStored stored, CGFloat canvasWidth,
+                                                     CGFloat foldX, CGFloat trailingInset,
+                                                     CGFloat wideThread) {
+    CGFloat half = ApolloDuoSplitHalfDivider(canvasWidth, foldX);
+    if (!ApolloDuoSplitHasRange(canvasWidth, foldX, trailingInset, wideThread)) return half;
+    CGFloat divider = half;
+    if (stored.hasShare) {
+        if (isfinite(stored.share) && stored.share > 0 && stored.share < 1) {
+            divider = (CGFloat)stored.share * canvasWidth;
+        }
+    } else if (stored.legacyStop == 1) {
+        divider = ApolloDuoSplitLeftLimit(canvasWidth);
+    } else if (stored.legacyStop == 3) {
+        divider = ApolloDuoSplitRightLimit(canvasWidth, foldX, trailingInset, wideThread);
+    }
+    return ApolloDuoSplitClampedDivider(divider, canvasWidth, foldX, trailingInset, wideThread);
+}
+
+// The Posts feed column's width in the landscape split. With the setting off
+// it is half the canvas, as before the setting existed, whatever was stored.
+static inline CGFloat ApolloDuoPostsPrimaryWidth(bool adjustable,
+                                                 ApolloDuoSplitStored stored,
+                                                 CGFloat canvasWidth,
+                                                 CGFloat foldX,
+                                                 CGFloat trailingInset,
+                                                 CGFloat wideThread) {
+    if (!adjustable) return canvasWidth * 0.5;
+    return ApolloDuoSplitDividerForStored(stored, canvasWidth, foldX, trailingInset, wideThread);
+}
+
+// UIKit tiles the thread beside the feed only while the thread, less its
+// trailing safe area (the Duo's rail), keeps the split's minimum secondary
+// width. Narrower, it lays the thread out under the feed instead (measured on
+// the Duo: a 627 pt feed tiles beside the 84 pt rail inset, 627.67 does not).
+static inline bool ApolloDuoSplitDividerFits(CGFloat dividerX, CGFloat canvasWidth,
+                                             CGFloat trailingInset, CGFloat minimumThread) {
+    return canvasWidth - dividerX - trailingInset >= minimumThread;
+}
+
+// The feed width the split can honor: the remembered position, or Half when
+// that would leave the thread too narrow to tile (`minimumThread`, UIKit's
+// own minimum). A safety net: the right limit leaves the thread more than
+// that for the same inset, so this trips only when the inset changes after
+// the position was placed, or when nothing fits.
+static inline CGFloat ApolloDuoPostsFittedPrimaryWidth(bool adjustable,
+                                                       ApolloDuoSplitStored stored,
+                                                       CGFloat canvasWidth,
+                                                       CGFloat foldX,
+                                                       CGFloat trailingInset,
+                                                       CGFloat wideThread,
+                                                       CGFloat minimumThread) {
+    CGFloat width = ApolloDuoPostsPrimaryWidth(adjustable, stored, canvasWidth, foldX,
+                                               trailingInset, wideThread);
+    if (!adjustable || ApolloDuoSplitDividerFits(width, canvasWidth, trailingInset, minimumThread)) return width;
+    return ApolloDuoSplitHalfDivider(canvasWidth, foldX);
+}
+
+static inline ApolloDuoSplitRelease ApolloDuoSplitReleaseFor(CGFloat dividerX,
+                                                             CGFloat velocityX,
+                                                             CGFloat canvasWidth,
+                                                             CGFloat foldX,
+                                                             CGFloat trailingInset,
+                                                             CGFloat wideThread) {
+    ApolloDuoSplitRelease release = { 0, 0, false, false };
+    CGFloat left = ApolloDuoSplitLeftLimit(canvasWidth);
+    CGFloat right = ApolloDuoSplitRightLimit(canvasWidth, foldX, trailingInset, wideThread);
+    CGFloat half = ApolloDuoSplitHalfDivider(canvasWidth, foldX);
+    CGFloat closeAt = right + (canvasWidth - right) * APOLLO_DUO_SPLIT_EDGE_COMMIT;
+    CGFloat fullScreenAt = left - left * APOLLO_DUO_SPLIT_EDGE_COMMIT;
+
+    if (dividerX >= closeAt ||
+        (velocityX >= ApolloDuoSplitFlickVelocity && dividerX >= right)) {
+        release.divider = right;
+        release.closesThread = true;
+    } else if (dividerX <= fullScreenAt ||
+               (velocityX <= -ApolloDuoSplitFlickVelocity && dividerX <= left)) {
+        release.divider = left;
+        release.fullScreen = true;
+    } else {
+        CGFloat landed = ApolloDuoSplitClampedDivider(dividerX, canvasWidth, foldX,
+                                                      trailingInset, wideThread);
+        if (fabs(landed - half) <= APOLLO_DUO_SPLIT_HALF_MAGNET) landed = half;
+        release.divider = landed;
+        release.share = landed == half ? 0 : landed / canvasWidth;
+        return release;
+    }
+    release.share = canvasWidth > 0 ? release.divider / canvasWidth : 0;
+    return release;
+}
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
