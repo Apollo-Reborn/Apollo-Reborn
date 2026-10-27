@@ -112,6 +112,7 @@ static BOOL ApolloDevvitReserveFeedSlot(void);
 static BOOL ApolloDevvitReserveGlobalSlot(void);
 static void ApolloDevvitSetFailedHeight(NSString *fullName, BOOL failed);
 static void ApolloDevvitShedPagesOfOtherAccounts(NSString *identity);
+static void ApolloDevvitResetReloadBudget(NSString *fullName);
 
 NSString *const ApolloDevvitFeedOwnershipChangedNotification = @"ApolloDevvitFeedOwnershipChangedNotification";
 
@@ -277,6 +278,9 @@ static const CGFloat kApolloDevvitMaxHeight = 900.0;
 // app's expanded view): devvit's own "tall" size, which is what such a view
 // is designed for. Reverts through the normal correction path on close.
 static const CGFloat kApolloDevvitModalHeight = 512.0;
+// How long that size outlives Reddit's report sheet: the platform reopens the
+// expanded view the sheet replaced about a second after it closes.
+static const NSTimeInterval kApolloDevvitReportReopenGrace = 2.5;
 // Row height while a widget shows its retry cover. The tall default exists so
 // a never-seen post measures final on its first pass; a post that then FAILED
 // on that first sight must not keep a screen-high reservation for a cover
@@ -440,11 +444,23 @@ static NSString *const kApolloDevvitCropScript = @""
 "    + ':not(shreddit-devvit-ui-loader):not(shreddit-devvit-ui-loader *)'"
 "    + ':not(devvit-blocks-renderer):not(devvit-blocks-renderer *)'"
 "    + ':not([id^=\"devvit-app-permission-consent-dialog\"])'"
-"    + ':not([id^=\"devvit-app-permission-consent-dialog\"] *) { visibility: hidden !important; }'"
+"    + ':not([id^=\"devvit-app-permission-consent-dialog\"] *)'"
+"    + ':not(#report-flow-content-modal):not(#report-flow-content-modal *) { visibility: hidden !important; }'"
 "    + 'devvit2-custom-post, shreddit-devvit-ui-loader, devvit-blocks-renderer {'"
 "    + '  visibility: visible !important; position: fixed !important;'"
 "    + '  top: 0 !important; left: 0 !important; right: 0 !important; width: 100vw !important;'"
-"    + '  margin: 0 !important; z-index: 2147483000 !important; }'"
+"    + '  margin: 0 !important; z-index: 2147483000 !important;'"
+    /* Pointer events back on for the widget. The "View in Reddit App" sheet
+       hidden below opens as a modal and locks the page behind it with an
+       inline pointer-events:none on <body> until it is dismissed, which can
+       never happen once it is hidden. Everything inherits that lock, so only
+       the parts devvit re-enables itself (the app iframe) took taps, and the
+       platform-drawn controls around it were dead: an expanded view's ✕
+       ("open the full match thread") never closed it and its ••• menu never
+       opened. Declared on the widget root, this beats any lock an ancestor
+       inherits down; the rest of the page stays hidden, and hidden content
+       is never hit. */
+"    + '  pointer-events: auto !important; }'"
     /* Reddit's one-time "Give <app> limited access to your Reddit Account"
        prompt (Deny / Allow). An app asks for it (canRunAsUser) before it first
        acts as the user — Subscriber Goal's "Subscribe to r/X", posting or
@@ -456,6 +472,14 @@ static NSString *const kApolloDevvitCropScript = @""
        a modal over the widget, which the probe grows to the tall size while
        it is up. */
 "    + '[id^=\"devvit-app-permission-consent-dialog\"] { visibility: visible !important; }'"
+    /* Reddit's report sheet, the one item in an expanded view's ••• menu: the
+       platform closes its dialog and opens this page-level sheet instead.
+       Crop-hidden, it stayed open where nobody could close it, and the
+       platform queues every later dialog behind it, so the card could not be
+       expanded again until the page reloaded. Shown like the permission
+       prompt above (it takes taps through the body lock on its own), at the
+       tall size while it is open. */
+"    + '#report-flow-content-modal { visibility: visible !important; }'"
 "    + '#credential_picker_container, #credential_picker_iframe { display: none !important; }'"
     /* Overlays that escape the visibility crop by promoting into the top
        layer (dialog.showModal): the "View in Reddit App" xpromo sheet and
@@ -551,6 +575,14 @@ static NSString *const kApolloDevvitProbeScript = @""
 "    var rd = cd && cd.shadowRoot ? cd.shadowRoot.querySelector('rpl-dialog') : null;"
 "    if (rd && rd.hasAttribute('open')) { consent = 1; modal = 1; }"
 "  } catch (e) {}"
+    /* Reddit's report sheet (see the crop CSS): outside the devvit element
+       too, open for as long as it carries the attribute (dropped when the
+       sheet closes); it needs the tall size for its reasons and buttons. */
+"  var report = 0;"
+"  try {"
+"    var rf = document.getElementById('report-flow-content-modal');"
+"    if (rf && rf.hasAttribute('open')) { report = 1; modal = 1; }"
+"  } catch (e) {}"
     /* Offsite-link confirmation fix (#959): tapping an external link makes
        the devvit platform show devvit2-navigate-offsite-dialog, which is
        broken twice over on narrow viewports (both halves reproduce on mobile
@@ -633,7 +665,7 @@ static NSString *const kApolloDevvitProbeScript = @""
 "      }"
 "    })(el, 0);"
 "  } catch (e) {}"
-"  return JSON.stringify({ found: 1, h: h, w: Math.round(r.width), hostH: Math.round(r.height), deep: Math.round(deep), modal: modal, consent: consent, err: err, frames: frames, blocks: blocks, tag: el.tagName.toLowerCase() });"
+"  return JSON.stringify({ found: 1, h: h, w: Math.round(r.width), hostH: Math.round(r.height), deep: Math.round(deep), modal: modal, consent: consent, report: report, err: err, frames: frames, blocks: blocks, tag: el.tagName.toLowerCase() });"
 "})();";
 
 // Click the page's own retry control inside the devvit surface (the error
@@ -1039,6 +1071,10 @@ static void ApolloDevvitScheduleSubscriptionCheck(NSURL *permalink) {
 @property (nonatomic, strong) UIImageView *retryIcon;
 // Reddit's app-permission prompt was open at the last probe (log transitions).
 @property (nonatomic) BOOL consentShowing;
+// Reddit's report sheet was open at the last probe (log transitions), and
+// CACurrentMediaTime() of the last time it closed (the reopen hold).
+@property (nonatomic) BOOL reportShowing;
+@property (nonatomic) CFTimeInterval reportClosedAt;
 // In the keep-alive pool (no host; page still live) — see ApolloDevvitParkWidget.
 @property (nonatomic) BOOL parked;
 @property (nonatomic) CFTimeInterval parkedAt;
@@ -1230,6 +1266,11 @@ static const NSUInteger kApolloDevvitMaxLiveWidgets = 4;
     self.heightCorrections = 0;
     self.heightFrozen = NO;
     self.pendingProbeHeight = 0.0;
+    // The same goes for the feed row's reload budget: in a feed card every
+    // expand and every ✕ is a row reload, so a second expand-and-close inside
+    // a minute ran it out and left the row at the expanded height, the card
+    // collapsed above ~400pt of dead space.
+    ApolloDevvitResetReloadBudget(self.fullName);
     // Start a fresh brisk poll loop timed for the page's expand/collapse
     // animation to have finished; bumping the generation orphans whatever idle
     // tick was pending, so loops never double up. handleProbeResult then keeps
@@ -1407,6 +1448,10 @@ static const NSUInteger kApolloDevvitMaxLiveWidgets = 4;
     self.lastProbeHeight = 0;
     self.pendingProbeHeight = 0.0;
     self.heightFrozen = NO;
+    // A fresh page has no report sheet up; the reopen hold must not carry
+    // into its first measurements (recycled onto another post, or reloaded).
+    self.reportShowing = NO;
+    self.reportClosedAt = 0;
     [self pollAfter:kApolloDevvitFirstProbeDelay attempt:0 generation:gen];
 }
 
@@ -1456,6 +1501,21 @@ static const NSUInteger kApolloDevvitMaxLiveWidgets = 4;
     if (consent != self.consentShowing) {
         self.consentShowing = consent;
         ApolloLog(@"[Devvit] %@ app permission prompt %@", self.fullName, consent ? @"opened" : @"closed");
+    }
+    BOOL report = found && [info[@"report"] boolValue];
+    if (report != self.reportShowing) {
+        self.reportShowing = report;
+        if (!report) self.reportClosedAt = CACurrentMediaTime();
+        ApolloLog(@"[Devvit] %@ report sheet %@", self.fullName, report ? @"opened" : @"closed");
+    }
+    // The platform reopens the expanded view it closed for the report sheet
+    // ~1.4s after the sheet goes away (measured in the simulator). Hold the
+    // tall size across that gap; otherwise the row commits the compact card
+    // in between and grows straight back, bouncing everything below it.
+    if (found && !report && self.reportClosedAt > 0 &&
+        CACurrentMediaTime() - self.reportClosedAt < kApolloDevvitReportReopenGrace &&
+        h < kApolloDevvitModalHeight) {
+        h = kApolloDevvitModalHeight;
     }
 
     if (!self.revealed) {
@@ -2511,6 +2571,12 @@ static BOOL ApolloDevvitBurnReloadBudget(NSString *fullName) {
     if (attempts.count >= 3) return NO;
     [attempts addObject:@(now)];
     return YES;
+}
+
+// An explicit tap in the widget re-arms its post's budget (apolloDevvitTapPoke):
+// user-driven resizes are self-limiting, unlike a widget resizing itself.
+static void ApolloDevvitResetReloadBudget(NSString *fullName) {
+    if (fullName) [sDevvitReloadBudget removeObjectForKey:fullName];
 }
 
 // fullName -> widget detached from a row that is about to reload. The reloaded
