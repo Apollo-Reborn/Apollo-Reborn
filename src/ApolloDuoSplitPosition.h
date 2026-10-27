@@ -21,22 +21,44 @@ typedef struct {
 } ApolloDuoSplitStored;
 
 // What letting go of a drag does: land at `divider`, close the thread, or
-// give the thread the whole screen. `share` is what to remember for a landing:
-// 0 for Half, else divider over canvas.
+// cover the feed with the thread (full width, for this thread only). `share`
+// is what to remember for a landing: 0 for Half, else divider over canvas.
+// The uncover drag (the post dragged back from full width) releases through
+// the same decision: its divider is where the picture's edge is let go.
 typedef struct {
     CGFloat divider;
     double share;
     bool closesThread;
-    bool fullScreen;
+    bool coversFeed;
 } ApolloDuoSplitRelease;
+
+// The feed's cover lasts for the thread it was pulled over, in the unfolded
+// landscape split with the setting on. It is never remembered.
+typedef struct {
+    bool adjustable;  // Adjustable Split on, and the device unfolded
+    bool landscape;   // the Posts split has landscape columns
+    bool sameThread;  // the thread right above the backstop is the one dragged over the feed
+} ApolloDuoSplitCoverFacts;
+
+// Why the cover ends now, or NULL while it holds.
+static inline const char *ApolloDuoSplitCoverEndReason(ApolloDuoSplitCoverFacts facts) {
+    if (!facts.adjustable) return "the setting is off or the device folded";
+    if (!facts.landscape) return "the columns are portrait";
+    if (!facts.sameThread) return "the thread closed or another took its place";
+    return NULL;
+}
+
+static inline bool ApolloDuoSplitCoverHolds(ApolloDuoSplitCoverFacts facts) {
+    return ApolloDuoSplitCoverEndReason(facts) == NULL;
+}
 
 enum {
     // Rightward (or leftward) speed that counts as a flick on release.
     ApolloDuoSplitFlickVelocity = 500,
 };
 
-// A drag closes or expands once it has covered this share of the distance
-// from its limit to the screen edge.
+// A drag closes or covers the feed once it has covered this share of the
+// distance from its limit to the screen edge.
 #define APOLLO_DUO_SPLIT_EDGE_COMMIT 0.35
 
 // The feed's least share (its rows are already tight there) and the most the
@@ -161,16 +183,16 @@ static inline ApolloDuoSplitRelease ApolloDuoSplitReleaseFor(CGFloat dividerX,
     CGFloat right = ApolloDuoSplitRightLimit(canvasWidth, foldX, trailingInset, wideThread);
     CGFloat half = ApolloDuoSplitHalfDivider(canvasWidth, foldX);
     CGFloat closeAt = right + (canvasWidth - right) * APOLLO_DUO_SPLIT_EDGE_COMMIT;
-    CGFloat fullScreenAt = left - left * APOLLO_DUO_SPLIT_EDGE_COMMIT;
+    CGFloat coverAt = left - left * APOLLO_DUO_SPLIT_EDGE_COMMIT;
 
     if (dividerX >= closeAt ||
         (velocityX >= ApolloDuoSplitFlickVelocity && dividerX >= right)) {
         release.divider = right;
         release.closesThread = true;
-    } else if (dividerX <= fullScreenAt ||
+    } else if (dividerX <= coverAt ||
                (velocityX <= -ApolloDuoSplitFlickVelocity && dividerX <= left)) {
         release.divider = left;
-        release.fullScreen = true;
+        release.coversFeed = true;
     } else {
         CGFloat landed = ApolloDuoSplitClampedDivider(dividerX, canvasWidth, foldX,
                                                       trailingInset, wideThread);

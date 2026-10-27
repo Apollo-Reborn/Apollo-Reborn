@@ -64,7 +64,7 @@ if 'ApolloDuoPostsFinishSettle(state)' not in body('BOOL ApolloDuoSplitDividerBe
     fail('a drag or a press that meets a settle in flight must end it, not be refused')
 if 'sDuoPostsSettleOverlay == overlay' not in settle:
     fail('the settle forgets itself when it is cut')
-for outcome in ['if (release.closesThread)', 'if (release.fullScreen)']:
+for outcome in ['if (release.closesThread)', 'if (release.coversFeed)']:
     part = finish[finish.index(outcome):]
     part = part[:part.index('return;')]
     if 'UDKeyDuoSplitFeedShare' in part:

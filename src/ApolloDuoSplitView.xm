@@ -4066,7 +4066,7 @@ void ApolloDuoSplitDividerFinish(UIView *view, CGFloat dividerX, CGFloat velocit
         ApolloDuoPostsCommitInteractiveClose(state, drag, velocityX);
         return;
     }
-    if (release.fullScreen) {
+    if (release.coversFeed) {
         // Cleared first: the toggle syncs the columns, which the flag holds off.
         ApolloDuoPostsCloseAdvance(state, drag, ApolloDuoPostsCloseEventInterrupt);
         // The toggle clears the host's transition picture; the drag's

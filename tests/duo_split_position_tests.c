@@ -53,12 +53,12 @@ int main(void) {
 
     // Landing: wherever it is let go, between the limits.
     ApolloDuoSplitRelease r = ApolloDuoSplitReleaseFor(400, 0, canvas, fold, inset, wide);
-    Check(Near(r.divider, 400) && Near(r.share, 400 / canvas) && !r.closesThread && !r.fullScreen,
+    Check(Near(r.divider, 400) && Near(r.share, 400 / canvas) && !r.closesThread && !r.coversFeed,
           "400 lands at 400, remembered as a share of the canvas");
     r = ApolloDuoSplitReleaseFor(530, 0, canvas, fold, inset, wide);
     Check(Near(r.divider, 530) && Near(r.share, 530 / canvas), "530 lands at 530");
     r = ApolloDuoSplitReleaseFor(480, 0, canvas, fold, inset, wide);
-    Check(Near(r.divider, 475.5) && r.share == 0 && !r.closesThread && !r.fullScreen,
+    Check(Near(r.divider, 475.5) && r.share == 0 && !r.closesThread && !r.coversFeed,
           "480 is magnetised to Half, stored as 0 so it follows the fold");
     r = ApolloDuoSplitReleaseFor(491.5, 0, canvas, fold, inset, wide);
     Check(Near(r.divider, 475.5) && r.share == 0, "16 pt from Half is still Half");
@@ -67,24 +67,24 @@ int main(void) {
     r = ApolloDuoSplitReleaseFor(459.5, 0, canvas, fold, inset, wide);
     Check(Near(r.divider, 475.5) && r.share == 0, "The magnet works left of Half too");
     r = ApolloDuoSplitReleaseFor(700, 0, canvas, fold, inset, wide);
-    Check(Near(r.divider, 607) && !r.closesThread && !r.fullScreen,
+    Check(Near(r.divider, 607) && !r.closesThread && !r.coversFeed,
           "700 is below the close threshold and clamps to the right limit");
     r = ApolloDuoSplitReleaseFor(180, 0, canvas, fold, inset, wide);
-    Check(Near(r.divider, 237.75) && !r.closesThread && !r.fullScreen,
-          "180 is above the full screen threshold and clamps to the left limit");
+    Check(Near(r.divider, 237.75) && !r.closesThread && !r.coversFeed,
+          "180 is above the cover threshold and clamps to the left limit");
     r = ApolloDuoSplitReleaseFor(237.75, 0, canvas, fold, inset, wide);
     Check(Near(r.divider, 237.75) && Near(r.share, 0.25), "The left limit itself is kept");
     r = ApolloDuoSplitReleaseFor(607, 0, canvas, fold, inset, wide);
     Check(Near(r.divider, 607) && !r.closesThread, "The right limit itself is kept");
 
-    // Close and full screen: past a limit by the commit share, or flicked past it.
+    // Close and cover: past a limit by the commit share, or flicked past it.
     // 607 + 0.35 * (951 - 607) = 727.4 on the right, 237.75 - 0.35 * 237.75 = 154.54 on the left.
     r = ApolloDuoSplitReleaseFor(727, 0, canvas, fold, inset, wide);
     Check(!r.closesThread && Near(r.divider, 607), "Just inside the close threshold clamps to the right limit");
     r = ApolloDuoSplitReleaseFor(728, 0, canvas, fold, inset, wide);
-    Check(r.closesThread && !r.fullScreen, "Just past the close threshold closes the thread");
+    Check(r.closesThread && !r.coversFeed, "Just past the close threshold closes the thread");
     r = ApolloDuoSplitReleaseFor(900, 0, canvas, fold, inset, wide);
-    Check(r.closesThread && !r.fullScreen, "900 closes the thread");
+    Check(r.closesThread && !r.coversFeed, "900 closes the thread");
     r = ApolloDuoSplitReleaseFor(720, 600, canvas, fold, inset, wide);
     Check(r.closesThread, "A rightward flick past the right limit closes the thread");
     r = ApolloDuoSplitReleaseFor(607, 600, canvas, fold, inset, wide);
@@ -94,29 +94,29 @@ int main(void) {
     r = ApolloDuoSplitReleaseFor(720, 400, canvas, fold, inset, wide);
     Check(!r.closesThread, "A slow release just past the right limit does not close");
     r = ApolloDuoSplitReleaseFor(155, 0, canvas, fold, inset, wide);
-    Check(!r.fullScreen && Near(r.divider, 237.75), "Just inside the full screen threshold clamps to the left limit");
+    Check(!r.coversFeed && Near(r.divider, 237.75), "Just inside the cover threshold clamps to the left limit");
     r = ApolloDuoSplitReleaseFor(154, 0, canvas, fold, inset, wide);
-    Check(r.fullScreen && !r.closesThread, "Just past the full screen threshold goes full screen");
+    Check(r.coversFeed && !r.closesThread, "Just past the cover threshold covers the feed");
     r = ApolloDuoSplitReleaseFor(50, 0, canvas, fold, inset, wide);
-    Check(r.fullScreen && !r.closesThread, "50 goes full screen");
+    Check(r.coversFeed && !r.closesThread, "50 covers the feed");
     r = ApolloDuoSplitReleaseFor(230, -600, canvas, fold, inset, wide);
-    Check(r.fullScreen && !r.closesThread, "A leftward flick past the left limit goes full screen");
+    Check(r.coversFeed && !r.closesThread, "A leftward flick past the left limit covers the feed");
     r = ApolloDuoSplitReleaseFor(237.75, -600, canvas, fold, inset, wide);
-    Check(r.fullScreen, "A leftward flick from exactly the left limit goes full screen");
+    Check(r.coversFeed, "A leftward flick from exactly the left limit covers the feed");
     r = ApolloDuoSplitReleaseFor(350, -600, canvas, fold, inset, wide);
-    Check(!r.fullScreen && Near(r.divider, 350), "A leftward flick short of the left limit does not");
+    Check(!r.coversFeed && Near(r.divider, 350), "A leftward flick short of the left limit does not");
     r = ApolloDuoSplitReleaseFor(230, -400, canvas, fold, inset, wide);
-    Check(!r.fullScreen, "A slow leftward release just past the left limit does not");
+    Check(!r.coversFeed, "A slow leftward release just past the left limit does not");
     r = ApolloDuoSplitReleaseFor(500, 2000, canvas, fold, inset, wide);
-    Check(!r.closesThread && !r.fullScreen, "A flick in the middle of the range lands, it does not commit");
+    Check(!r.closesThread && !r.coversFeed, "A flick in the middle of the range lands, it does not commit");
 
     // Nothing to land on: no canvas, or a position that is not a number.
     r = ApolloDuoSplitReleaseFor(0, 0, 0, 0, inset, wide);
-    Check(!r.closesThread && !r.fullScreen && r.share == 0, "A zero canvas never reports a close");
+    Check(!r.closesThread && !r.coversFeed && r.share == 0, "A zero canvas never reports a close");
     r = ApolloDuoSplitReleaseFor(500, 900, 0, 0, inset, wide);
-    Check(!r.closesThread && !r.fullScreen, "A zero canvas ignores a flick");
+    Check(!r.closesThread && !r.coversFeed, "A zero canvas ignores a flick");
     r = ApolloDuoSplitReleaseFor(NAN, 0, canvas, fold, inset, wide);
-    Check(Near(r.divider, 475.5) && r.share == 0 && !r.closesThread && !r.fullScreen,
+    Check(Near(r.divider, 475.5) && r.share == 0 && !r.closesThread && !r.coversFeed,
           "A position that is not a number lands on Half");
 
     // Book fold: the display half is 455.7 and the limits move with the canvas.
@@ -127,12 +127,12 @@ int main(void) {
 
     // Tiny canvas / a fold left of the left limit: only Half.
     r = ApolloDuoSplitReleaseFor(20, 0, 100, 10, inset, wide);
-    Check(Near(r.divider, 10) && r.share == 0 && !r.closesThread && !r.fullScreen,
+    Check(Near(r.divider, 10) && r.share == 0 && !r.closesThread && !r.coversFeed,
           "With no room to move, a release lands on Half");
     Check(Near(ApolloDuoSplitDividerForStored(Share(0.4), 100, 10, inset, wide), 10),
           "With no room to move, any stored share sizes the feed as Half");
     r = ApolloDuoSplitReleaseFor(120, 0, 300, 150, inset, wide);
-    Check(!r.fullScreen && !r.closesThread && r.divider >= 75 && r.divider <= 150,
+    Check(!r.coversFeed && !r.closesThread && r.divider >= 75 && r.divider <= 150,
           "A narrow canvas still keeps a landing inside its limits (75 to 150)");
 
     // The stored share and its migration.
@@ -201,6 +201,47 @@ int main(void) {
           "Fitted: the 75% cap is kept where the canvas leaves the thread room");
     Check(Near(ApolloDuoPostsFittedPrimaryWidth(false, Share(0.6), canvas, fold, 84, wide, 240), 475.5),
           "Fitted: toggle off is half the canvas, as before the setting");
+
+    // The uncover drag: the post dragged back from full width. Its picture
+    // begins at the screen's edge, so the divider is the translation itself;
+    // the same release decides where it goes.
+    r = ApolloDuoSplitReleaseFor(100, 0, canvas, fold, inset, wide);
+    Check(r.coversFeed && !r.closesThread, "Uncover: let go short of the cover threshold, the feed is covered again");
+    r = ApolloDuoSplitReleaseFor(0, 0, canvas, fold, inset, wide);
+    Check(r.coversFeed && !r.closesThread, "Uncover: not moved at all, the feed stays covered");
+    r = ApolloDuoSplitReleaseFor(200, 0, canvas, fold, inset, wide);
+    Check(!r.coversFeed && !r.closesThread && Near(r.divider, 237.75),
+          "Uncover: past the cover threshold but short of the left limit, the feed comes back at the left limit");
+    r = ApolloDuoSplitReleaseFor(420, 0, canvas, fold, inset, wide);
+    Check(!r.coversFeed && !r.closesThread && Near(r.divider, 420) && Near(r.share, 420 / canvas),
+          "Uncover: dropped mid screen, the feed comes back there");
+    r = ApolloDuoSplitReleaseFor(470, 0, canvas, fold, inset, wide);
+    Check(!r.coversFeed && Near(r.divider, 475.5) && r.share == 0, "Uncover: the hinge magnet still applies");
+    r = ApolloDuoSplitReleaseFor(800, 0, canvas, fold, inset, wide);
+    Check(r.closesThread && !r.coversFeed, "Uncover: dragged far right, the thread closes");
+    r = ApolloDuoSplitReleaseFor(650, 700, canvas, fold, inset, wide);
+    Check(r.closesThread, "Uncover: a rightward flick past the right limit closes");
+    r = ApolloDuoSplitReleaseFor(300, 2000, canvas, fold, inset, wide);
+    Check(!r.closesThread && !r.coversFeed && Near(r.divider, 300),
+          "Uncover: a rightward flick inside the range lands, it does not close");
+    r = ApolloDuoSplitReleaseFor(60, -900, canvas, fold, inset, wide);
+    Check(r.coversFeed, "Uncover: a leftward flick near the edge covers again");
+
+    // The cover's lifetime: it lasts for that thread alone, in the unfolded
+    // landscape split with the setting on. Nothing is persisted for it.
+    ApolloDuoSplitCoverFacts holds = { .adjustable = true, .landscape = true, .sameThread = true };
+    Check(ApolloDuoSplitCoverEndReason(holds) == NULL, "Cover holds: the same thread, landscape, setting on");
+    ApolloDuoSplitCoverFacts closed = holds;
+    closed.sameThread = false;
+    Check(ApolloDuoSplitCoverEndReason(closed) != NULL, "Cover ends when the thread is closed or another replaces it");
+    ApolloDuoSplitCoverFacts portrait = holds;
+    portrait.landscape = false;
+    Check(ApolloDuoSplitCoverEndReason(portrait) != NULL, "Cover ends on rotation to portrait");
+    ApolloDuoSplitCoverFacts off = holds;
+    off.adjustable = false;
+    Check(ApolloDuoSplitCoverEndReason(off) != NULL, "Cover ends when the setting is turned off, or the device folds");
+    Check(!ApolloDuoSplitCoverHolds(closed) && !ApolloDuoSplitCoverHolds(portrait) && !ApolloDuoSplitCoverHolds(off)
+          && ApolloDuoSplitCoverHolds(holds), "Cover holds only while every fact holds");
 
     printf("duo split position tests passed (%u checks)\n", checks);
     return 0;
