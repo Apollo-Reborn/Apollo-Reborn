@@ -15,9 +15,10 @@ typedef NS_ENUM(NSInteger, ApolloWebJSONRoute) {
     ApolloWebJSONRouteWww = 0,      // www.reddit.com, path unchanged
     ApolloWebJSONRouteWwwDotJSON,   // www.reddit.com, /api/<endpoint>/.json
     ApolloWebJSONRouteOld,          // old.reddit.com, path unchanged
-    // api.reddit.com, path unchanged. Not in the built-in table: it refused
-    // both built-in endpoints for the cookie as of 2026-10-24, and is here so
-    // keyless-routes.json can use it again without a release.
+    // api.reddit.com, path unchanged. r/all's listings go here first. Not in
+    // the built-in table: it refused both built-in endpoints for the cookie as
+    // of 2026-10-24, and keyless-routes.json can use it for them again
+    // without a release.
     ApolloWebJSONRouteApi,
     ApolloWebJSONRouteLast = ApolloWebJSONRouteApi,
 };
@@ -29,7 +30,7 @@ NSString *ApolloWebJSONRouteHost(ApolloWebJSONRoute route);
 // The routes to try for a request, in order; always at least one. Endpoints
 // not in the table get @[www]. `path` may be RedditKit's relative form
 // ("api/info.json") or a URL path, with or without .json, a trailing slash or
-// a query.
+// a query. r/all's listings, which aren't in the table, get api, then old.
 NSArray<NSNumber *> *ApolloWebJSONRoutesForRequest(NSString *method, NSString *path);
 
 // YES when a block page on one route may be answered by sending the same
@@ -95,7 +96,8 @@ NSTimeInterval ApolloWebJSONRouteCooldownRemaining(NSString *account, NSString *
 NSInteger ApolloWebJSONRouteChoose(NSString *account, NSString *method, NSString *path, NSUInteger triedMask, NSTimeInterval now);
 
 // `path` with its variable segments (subreddit, user, post and comment ids)
-// replaced by "*", so the counts group by endpoint: "/r/*/comments/*".
+// replaced by "*", so the counts group by endpoint: "/r/*/comments/*". r/all's
+// listings, every sort and filter, are "/r/all".
 NSString *ApolloWebJSONRoutePathPattern(NSString *path);
 
 // One line per tracked account, path and route, for logs.
@@ -110,6 +112,8 @@ NSArray<NSDictionary<NSString *, id> *> *ApolloWebJSONRouteHealthSnapshot(NSStri
 
 // The endpoints that have more than one route, built-in and added by the
 // remote table, as "<METHOD> <endpoint>" keys ("GET /api/info"), sorted.
+// r/all's listings aren't in the table; their routes are fixed in
+// ApolloWebJSONRoutesForRequest, and the Routes screen adds them as "GET /r/all".
 NSArray<NSString *> *ApolloWebJSONRouteFallbackEndpoints(void);
 
 // YES when the remote table sets the routes for `method` and `path`.

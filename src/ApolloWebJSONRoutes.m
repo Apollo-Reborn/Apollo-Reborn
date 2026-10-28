@@ -62,16 +62,44 @@ static NSDictionary *ApolloWebJSONRouteEntry(NSString *method, NSString *path) {
     return nil;
 }
 
+// r/all's listings: every sort, and the filter forms r/all-<sub>-<sub> and
+// r/all+<sub>. www.reddit.com answers every path under /r/all with its block
+// page, for the cookie and signed out alike, while r/popular, Home and other
+// subreddits (r/allergies too) still load; api.reddit.com serves these
+// listings signed in to the cookie, with the same image fields www's feeds
+// have, and old.reddit.com does for accounts Old Reddit still serves (each
+// checked 2026-10-28 from the app with an API-Key-Free session). Search under
+// r/all, its comments and its about page aren't listings and keep their own
+// routes. The routes are built in: keyless-routes.json can't move feeds.
+static BOOL ApolloWebJSONRouteIsAllListing(NSString *path) {
+    if (![path isKindOfClass:[NSString class]]) return NO;
+    static NSRegularExpression *allListing;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        allListing = [NSRegularExpression regularExpressionWithPattern:
+            @"^/r/all([-+][^/]*)?(/(hot|new|top|rising|controversial|best))?$" options:0 error:NULL];
+    });
+    NSString *key = ApolloWebJSONRouteEndpointKey(path);
+    return [allListing firstMatchInString:key options:0 range:NSMakeRange(0, key.length)] != nil;
+}
+
+static NSArray<NSNumber *> *ApolloWebJSONRouteAllListingRoutes(NSString *method, NSString *path) {
+    if (![method isKindOfClass:[NSString class]] || ![method.uppercaseString isEqualToString:@"GET"]) return nil;
+    if (!ApolloWebJSONRouteIsAllListing(path)) return nil;
+    return @[ @(ApolloWebJSONRouteApi), @(ApolloWebJSONRouteOld) ];
+}
+
 static NSArray<NSNumber *> *ApolloWebJSONRemoteRoutes(NSString *method, NSString *path);
 
 NSArray<NSNumber *> *ApolloWebJSONRoutesForRequest(NSString *method, NSString *path) {
-    return ApolloWebJSONRemoteRoutes(method, path) ?: ApolloWebJSONRouteEntry(method, path)[@"routes"] ?: @[ @(ApolloWebJSONRouteWww) ];
+    return ApolloWebJSONRemoteRoutes(method, path) ?: ApolloWebJSONRouteEntry(method, path)[@"routes"]
+        ?: ApolloWebJSONRouteAllListingRoutes(method, path) ?: @[ @(ApolloWebJSONRouteWww) ];
 }
 
-// Every built-in entry is a read (see above), and the remote table can only add
-// GETs (ApolloWebJSONRouteTableParse), so a request with more than one route
-// may try them in turn. Anything else, writes included, has only www and is
-// never resent.
+// Every built-in entry is a read (see above), r/all's routes are GET-only, and
+// the remote table can only add GETs (ApolloWebJSONRouteTableParse), so a
+// request with more than one route may try them in turn. Anything else, writes
+// included, has only www and is never resent.
 BOOL ApolloWebJSONRouteRequestMayRetry(NSString *method, NSString *path) {
     return ApolloWebJSONRoutesForRequest(method, path).count > 1;
 }
@@ -243,6 +271,8 @@ static NSMutableDictionary<NSString *, ApolloWebJSONRouteHealthEntry *> *sApollo
 
 NSString *ApolloWebJSONRoutePathPattern(NSString *path) {
     if (![path isKindOfClass:[NSString class]]) return @"/";
+    // One endpoint for every r/all sort and filter, so they share route health.
+    if (ApolloWebJSONRouteIsAllListing(path)) return @"/r/all";
     NSArray<NSString *> *segments = [[ApolloWebJSONRouteEndpointKey(path) substringFromIndex:1] componentsSeparatedByString:@"/"];
     static NSSet<NSString *> *variableAfter;
     static dispatch_once_t once;

@@ -320,6 +320,57 @@ static void TestRepositoryFile(const char *repoRoot) {
     CHECK(table != nil && rejections.count == 0, @"keyless-routes.json parses cleanly (rejected %@)", rejections);
 }
 
+static void TestAllListings(void) {
+    NSArray *allRoutes = @[ @(ApolloWebJSONRouteApi), @(ApolloWebJSONRouteOld) ];
+    // Every sort and filter form, written the ways RedditKit and the rewrite do.
+    for (NSString *path in @[ @"r/All/best.json", @"/r/all", @"/r/all.json", @"/r/all/", @"/r/All/hot.json?after=t3_abc&count=25",
+                              @"/r/ALL/top.json?t=week", @"/r/all/new", @"/r/all/rising.json", @"/r/all/controversial.json?t=day",
+                              @"/r/all-askreddit/hot.json", @"/r/all-askreddit-pics/best", @"/r/all+pics/hot.json" ]) {
+        CHECK([ApolloWebJSONRoutesForRequest(@"GET", path) isEqualToArray:allRoutes], @"GET %@: api, then old", path);
+        CHECK(ApolloWebJSONRouteRequestMayRetry(@"GET", path), @"GET %@ may retry", path);
+        CHECK([ApolloWebJSONRoutePathPattern(path) isEqualToString:@"/r/all"], @"%@ is one endpoint (got %@)", path,
+              ApolloWebJSONRoutePathPattern(path));
+        CHECK([ApolloWebJSONRoutePath(ApolloWebJSONRouteApi, path) isEqualToString:path], @"api keeps %@", path);
+    }
+    CHECK([ApolloWebJSONRoutesForRequest(@"get", @"/r/all/hot.json") isEqualToArray:allRoutes], @"method is case-insensitive");
+
+    // Other subreddits, r/popular, and what under r/all isn't a listing.
+    NSArray *www = @[ @(ApolloWebJSONRouteWww) ];
+    for (NSString *path in @[ @"/r/allergies/hot.json", @"/r/AllThingsTerran/best.json", @"/r/pics+all/hot.json",
+                              @"/r/popular/best.json", @"/r/all/comments/abc123.json", @"/r/all/about.json", @"/r/all/gilded.json",
+                              @"/r/all/hot/extra", @"/user/all/submitted.json", @"/all/hot.json" ]) {
+        CHECK([ApolloWebJSONRoutesForRequest(@"GET", path) isEqualToArray:www], @"GET %@ stays on www", path);
+        CHECK(![ApolloWebJSONRoutePathPattern(path) isEqualToString:@"/r/all"], @"%@ isn't r/all", path);
+    }
+    // Search under r/all keeps search's routes and pattern.
+    CHECK(![ApolloWebJSONRoutesForRequest(@"GET", @"/r/all/search.json") containsObject:@(ApolloWebJSONRouteApi)], @"r/all search");
+    CHECK([ApolloWebJSONRoutePathPattern(@"/r/all/search.json") isEqualToString:@"/r/*/search"], @"r/all search pattern");
+    for (NSString *method in @[ @"POST", @"PUT", @"DELETE" ]) {
+        CHECK([ApolloWebJSONRoutesForRequest(method, @"/r/all/hot.json") isEqualToArray:www], @"%@ stays on www", method);
+        CHECK(!ApolloWebJSONRouteRequestMayRetry(method, @"/r/all/hot.json"), @"%@ is never resent", method);
+    }
+
+    // The sorts share their health: three block pages on any of them send all
+    // of r/all to old for the hour.
+    ApolloWebJSONRouteHealthReset();
+    NSInteger api = ApolloWebJSONRouteApi, old = ApolloWebJSONRouteOld;
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", @"r/All/best.json", 0, 0) == api, @"healthy: api");
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", @"r/All/best.json", 1u << api, 0) == old, @"resend: old");
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", @"r/All/best.json", (1u << api) | (1u << old), 0) == -1, @"both tried");
+    ApolloWebJSONRouteHealthNoteBlockPage(@"alice", @"/r/all/hot.json", ApolloWebJSONRouteApi, 0);
+    ApolloWebJSONRouteHealthNoteBlockPage(@"alice", @"/r/All/new.json", ApolloWebJSONRouteApi, 0);
+    CHECK(ApolloWebJSONRouteHealthNoteBlockPage(@"alice", @"/r/all-askreddit/top.json", ApolloWebJSONRouteApi, 0), @"3rd block");
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", @"r/All/best.json", 0, 1) == old, @"another sort skips api too");
+    CHECK(ApolloWebJSONRouteChoose(@"bob", @"GET", @"r/All/best.json", 0, 1) == api, @"per account");
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", @"/r/popular/best.json", 0, 1) == ApolloWebJSONRouteWww, @"r/popular");
+    ApolloWebJSONRouteHealthReset();
+
+    // keyless-routes.json can't move a feed, r/all included.
+    NSArray<NSString *> *rejections = nil;
+    NSDictionary *table = ParseJSON(@"{\"version\":1,\"endpoints\":{\"GET /r/all\":{\"routes\":[\"www\"]}}}", &rejections);
+    CHECK(table.count == 0 && rejections.count == 1, @"GET /r/all isn't a key (got %@, rejected %@)", table, rejections);
+}
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         TestTableParseValid();
@@ -337,6 +388,7 @@ int main(int argc, const char *argv[]) {
         TestCooldownDoublesAndClears();
         TestChoose();
         TestPathPatterns();
+        TestAllListings();
         TestDescription();
     }
     if (sFailures) {

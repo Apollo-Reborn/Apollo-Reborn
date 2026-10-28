@@ -267,6 +267,12 @@ NSDictionary<NSString *, id> *ApolloWebJSONRouteUpdatesStatus(void) {
     return status;
 }
 
+// The endpoints with more than one route: the table's, and r/all's listings,
+// whose routes are fixed outside it (ApolloWebJSONRoutesForRequest).
+static NSArray<NSString *> *ApolloRouteUpdatesFallbackEndpoints(void) {
+    return [ApolloWebJSONRouteFallbackEndpoints() arrayByAddingObject:@"GET /r/all"];
+}
+
 // Per fallback endpoint, for `account`: which route a request would take now,
 // and every route's counts. Methods of one path with the same routes share
 // their health (it's kept per path), so they're one entry ("GET/POST …").
@@ -274,7 +280,7 @@ NSDictionary<NSString *, id> *ApolloWebJSONRouteUpdatesStatus(void) {
 static NSArray<NSDictionary *> *ApolloRouteUpdatesEndpointStatus(NSString *account, NSTimeInterval now) {
     NSArray<NSDictionary *> *health = ApolloWebJSONRouteHealthSnapshot(account, now);
     NSMutableArray<NSDictionary *> *endpoints = [NSMutableArray array];
-    for (NSString *key in ApolloWebJSONRouteFallbackEndpoints()) {
+    for (NSString *key in ApolloRouteUpdatesFallbackEndpoints()) {
         NSArray<NSString *> *parts = [key componentsSeparatedByString:@" "];
         NSString *method = parts.firstObject, *path = parts.lastObject;
         NSArray<NSNumber *> *order = ApolloWebJSONRoutesForRequest(method, path);
@@ -314,7 +320,7 @@ NSArray<NSDictionary<NSString *, id> *> *ApolloWebJSONRouteStatusEndpoints(void)
 NSArray<NSDictionary<NSString *, id> *> *ApolloWebJSONRouteStatusBlockedPaths(void) {
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
     NSMutableSet<NSString *> *fallbackPatterns = [NSMutableSet set];
-    for (NSString *key in ApolloWebJSONRouteFallbackEndpoints()) {
+    for (NSString *key in ApolloRouteUpdatesFallbackEndpoints()) {
         [fallbackPatterns addObject:ApolloWebJSONRoutePathPattern([key componentsSeparatedByString:@" "].lastObject)];
     }
     NSMutableArray<NSDictionary *> *rows = [NSMutableArray array];
