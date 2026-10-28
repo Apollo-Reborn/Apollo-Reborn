@@ -60,12 +60,23 @@ static CGFloat ApolloDuoSplitDividerReleaseVelocity(CGFloat velocity, CFTimeInte
 // touch ends (reset), and giving back only the ones it turned off.
 @interface ApolloDuoSplitDividerPress : UILongPressGestureRecognizer
 @property(nonatomic, strong) NSHashTable<UIGestureRecognizer *> *heldMenus;
+// The row under the band touch: the table lights it after a beat and, with
+// this press holding the touch, nothing would ever clear it before release.
+@property(nonatomic, weak) UIView *touchedRow;
 - (void)holdMenusFrom:(UIView *)view;
+- (void)dropRowHighlight;
 @end
 
 @implementation ApolloDuoSplitDividerPress
 - (void)holdMenusFrom:(UIView *)view {
     BOOL menu = NO, held = NO;
+    self.touchedRow = nil;
+    for (UIView *row = view; row && row != self.view.superview; row = row.superview) {
+        if ([row isKindOfClass:UITableViewCell.class] || [row isKindOfClass:UICollectionViewCell.class]) {
+            self.touchedRow = row;
+            break;
+        }
+    }
     for (UIView *candidate = view; candidate && candidate != self.view.superview; candidate = candidate.superview) {
         for (id interaction in candidate.interactions) {
             if ([interaction isKindOfClass:UIContextMenuInteraction.class]) menu = YES;
@@ -83,8 +94,17 @@ static CGFloat ApolloDuoSplitDividerReleaseVelocity(CGFloat velocity, CFTimeInte
     if (menu && !held)
         ApolloLog(@"[DuoSplit] divider band: a context menu under the touch has no recognizer the divider knows to hold off");
 }
+// The hold has begun: the row drops its pressed tint, as when a scroll starts.
+- (void)dropRowHighlight {
+    UIView *row = self.touchedRow;
+    if ([row isKindOfClass:UITableViewCell.class]) [(UITableViewCell *)row setHighlighted:NO animated:NO];
+    else if ([row isKindOfClass:UICollectionViewCell.class]) ((UICollectionViewCell *)row).highlighted = NO;
+    // The split's picture of a pane is the last committed frame: commit this one.
+    if (row) [CATransaction flush];
+}
 - (void)reset {
     [super reset];
+    self.touchedRow = nil;
     for (UIGestureRecognizer *gesture in self.heldMenus.allObjects) gesture.enabled = YES;
     [self.heldMenus removeAllObjects];
 }
@@ -138,6 +158,8 @@ static char kApolloDuoSplitDividerKey;
         case UIGestureRecognizerStateBegan: {
             BOOL adjustable = NO;
             CGFloat divider = ApolloDuoSplitDividerPosition(host, &adjustable);
+            // Before the split snapshots its panes: no picture keeps the tint.
+            [self.press dropRowHighlight];
             if (!adjustable || divider < 0.0 || !ApolloDuoSplitDividerBegin(host)) {
                 // A column change or another drag got there first.
                 [self resetPress];

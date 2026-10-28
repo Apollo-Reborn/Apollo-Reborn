@@ -120,6 +120,31 @@ enum { UIGestureRecognizerStatePossible = 0,
 }
 @end
 
+// A row: the table or collection cell the band touch lit.
+@interface UITableViewCell : UIView
+@property(nonatomic) BOOL highlighted;
+@property(nonatomic) NSUInteger unhighlights;
+- (void)setHighlighted:(BOOL)highlighted animated:(BOOL)animated;
+@end
+@implementation UITableViewCell
+- (void)setHighlighted:(BOOL)highlighted animated:(__unused BOOL)animated {
+    if (!highlighted) self.unhighlights++;
+    _highlighted = highlighted;
+}
+@end
+@interface UICollectionViewCell : UIView
+@property(nonatomic, getter=isHighlighted) BOOL highlighted;
+@end
+@implementation UICollectionViewCell @end
+// The render commit the split's picture waits for.
+#define CATransaction TestTransaction
+@interface CATransaction : NSObject
++ (void)flush;
+@end
+static NSUInteger flushes;
+@implementation CATransaction
++ (void)flush { flushes++; }
+@end
 @interface UIContextMenuInteraction : NSObject @end
 @implementation UIContextMenuInteraction @end
 // What the divider logs.
@@ -143,7 +168,16 @@ static CGFloat ApolloDuoSplitDividerPosition(__unused UIView *host, BOOL *adjust
     if (adjustable) *adjustable = testAdjustable;
     return testDivider;
 }
-static BOOL ApolloDuoSplitDividerBegin(__unused UIView *host) { begins++; return testBegins; }
+// What the touched row looks like when the split takes its picture.
+static UITableViewCell *testRow;
+static BOOL rowLitAtBegin;
+static NSUInteger flushesAtBegin;
+static BOOL ApolloDuoSplitDividerBegin(__unused UIView *host) {
+    begins++;
+    rowLitAtBegin = testRow.highlighted;
+    flushesAtBegin = flushes;
+    return testBegins;
+}
 static BOOL ApolloDuoSplitDividerUpdate(__unused UIView *host, CGFloat dividerX) {
     [updates addObject:@(dividerX)];
     if (!testUpdates) ApolloDuoSplitDividerLetGo(testHost);
@@ -316,6 +350,46 @@ int main(void) {
         [press reset];
         [row removeFromSuperview];
         [navigationView removeFromSuperview];
+
+        // A row the table lit under the band touch drops its tint when the hold
+        // begins, and that frame is committed before the split takes its picture.
+        UITableViewCell *litRow = [[UITableViewCell alloc] initWithFrame:CGRectMake(0, 200, 475, 120)];
+        UIView *rowContent = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 475, 120)];
+        [host addSubview:litRow];
+        [litRow addSubview:rowContent];
+        litRow.highlighted = YES;
+        testRow = litRow;
+        UITouch *litTouch = [UITouch new];
+        litTouch.view = rowContent;
+        litTouch.point = CGPointMake(470, 300);
+        Reset();
+        flushes = 0;
+        Check([DividerOf(host) gestureRecognizer:press shouldReceiveTouch:(id)litTouch], @"row tint: a band touch on a row is the divider's");
+        Check(litRow.highlighted && litRow.unhighlights == 0, @"row tint: the touch alone leaves the row as the table lit it");
+        press.location = litTouch.point;
+        press.state = UIGestureRecognizerStateBegan;
+        [DividerOf(host) pressed:press];
+        Check(!litRow.highlighted && litRow.unhighlights == 1, @"row tint: the hold's beginning drops the row's tint");
+        Check(begins == 1 && !rowLitAtBegin && flushesAtBegin == 1 && flushes == 1,
+              @"row tint: the tint is gone and committed before the split's picture, not after");
+        Release(host, UIGestureRecognizerStateEnded, 100.5);
+        [press reset];
+        // No row under the touch, and a touch that never becomes a hold: nothing to drop.
+        Reset();
+        flushes = 0;
+        litRow.highlighted = YES;
+        litRow.unhighlights = 0;
+        litTouch.view = host;
+        Check([DividerOf(host) gestureRecognizer:press shouldReceiveTouch:(id)litTouch], @"row tint: a band touch off any row is the divider's");
+        press.location = litTouch.point;
+        press.state = UIGestureRecognizerStateBegan;
+        [DividerOf(host) pressed:press];
+        Check(litRow.highlighted && litRow.unhighlights == 0 && flushes == 0, @"row tint: with no row under the touch no other row is touched");
+        Release(host, UIGestureRecognizerStateEnded, 100.5);
+        [press reset];
+        [litRow removeFromSuperview];
+        testRow = nil;
+        Reset();
 
         // Touch-down: the same admission, at the live divider.
         ApolloDuoSplitDivider *divider = DividerOf(host);
