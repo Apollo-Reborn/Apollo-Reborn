@@ -233,6 +233,7 @@ static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat
 }
 
 @interface ApolloDuoSplitHost : UIViewController <UISplitViewControllerDelegate, ApolloDuoLayoutControl>
+@property(nonatomic) BOOL lastFoldActive;
 @property(nonatomic, strong) UISplitViewController *split;
 @property(nonatomic, strong) UINavigationController *subredditList;
 @property(nonatomic, weak) UINavigationController *postsNavigation;
@@ -838,11 +839,23 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
 - (void)viewSafeAreaInsetsDidChange {
     [super viewSafeAreaInsetsDidChange];
     [self scheduleSplitSafeAreaSync];
+    [self checkFoldPosture];
+}
+// Folding changes the division region and the safe area without a window
+// resize. Catch the posture here too, independent of hinge update timing.
+- (void)checkFoldPosture {
+    if (!self.viewIfLoaded.window || ApolloDuoSplitIsResizing()) return;
+    BOOL folded = !CGRectIsNull(ApolloDuoActiveVerticalDivision(self.view));
+    if (folded == self.lastFoldActive) return;
+    self.lastFoldActive = folded;
+    ApolloLog(@"[DuoSplit] division region %@ at layout; updating split", folded ? @"active" : @"inactive");
+    ApolloDuoSplitScheduleUpdate();
 }
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     [self scheduleSplitSafeAreaSync];
     if (!ApolloDuoSplitIsResizing()) ApolloDuoSplitApplyFoldInsets(self.split);
+    [self checkFoldPosture];
     if (self.subredditList) {
         CGFloat width = MIN(360, self.view.bounds.size.width - 96);
         BOOL portrait = self.view.bounds.size.width <= self.view.bounds.size.height;
@@ -1331,10 +1344,13 @@ static void ApolloDuoSplitObserveHinge(UITabBarController *tabs) {
             // Defer containment work out of UIKit's interaction delivery. The
             // normal update also prepares the tabs that are not selected.
             ApolloDuoSplitScheduleUpdate();
-            // The division region may publish a beat after the hinge reading;
-            // check once more instead of depending on the hinge update rate.
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{ ApolloDuoSplitScheduleUpdate(); });
+            // The division region can publish well after the hinge reading
+            // (on device, past 0.35s), which left the split one posture behind.
+            // Re-check a few times; an unchanged posture makes these no-ops.
+            for (NSNumber *delay in @[@0.35, @0.8, @1.5]) {
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
+                               dispatch_get_main_queue(), ^{ ApolloDuoSplitScheduleUpdate(); });
+            }
         };
         id<UIInteraction> interaction = ((id (*)(id, SEL, id))objc_msgSend)([cls alloc], NSSelectorFromString(@"initWithUpdateHandler:"), handler);
         objc_setAssociatedObject(tabs, &kDuoSplitHingeInteraction, interaction, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -2952,10 +2968,20 @@ static void ApolloDuoSplitUpdate(void) {
             if (state.split && state.halfWidthSidebar != halfWidth) {
                 // UIKit animates the same column containers; content and
                 // navigation chrome move with the divider in both directions.
-                [UIView animateWithDuration:0.25 animations:^{
+                // Lay out the whole host, and settle the fold insets for the
+                // new column frames, inside the same animation so the panes'
+                // content slides with the divider instead of jumping after it.
+                UIView *surface = state.host.viewIfLoaded ?: state.split.view;
+                [surface layoutIfNeeded];
+                [UIView animateWithDuration:0.3 delay:0
+                                    options:UIViewAnimationOptionCurveEaseInOut | UIViewAnimationOptionBeginFromCurrentState
+                                 animations:^{
                     ApolloDuoSplitApplySidebarWidth(state, halfWidth);
-                    [state.split.view layoutIfNeeded];
-                }];
+                    [state.split.view setNeedsLayout];
+                    [surface layoutIfNeeded];
+                    ApolloDuoSplitApplyFoldInsets(state.split);
+                    [surface layoutIfNeeded];
+                } completion:nil];
             }
             ApolloDuoSplitOpenDefault(state);
             ApolloDuoPostsSyncColumns(state);
