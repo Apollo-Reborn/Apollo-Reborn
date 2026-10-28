@@ -29,6 +29,7 @@
 
 static UITableView *ApolloDuoSplitFindTable(UIView *view);
 static void ApolloDuoPostsStopGeometry(UIView *feed);
+static void ApolloDuoSplitApplyFoldInsets(UISplitViewController *split);
 @class ApolloDuoSplitHost;
 static void ApolloDuoToggleFeedLayout(ApolloDuoSplitHost *host);
 static void ApolloDuoToggleVisibleFeedLayout(UIViewController *controller, BOOL enabled);
@@ -732,7 +733,43 @@ static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat
         if (!host) return;
         host.splitSafeAreaSyncScheduled = NO;
         [host syncSplitSafeArea];
+        if (!ApolloDuoSplitIsResizing()) ApolloDuoSplitApplyFoldInsets(host.split);
     });
+}
+// Book posture reserves the crease as an unsafe division region. Each column
+// gets that overlap as extra leading/trailing safe area, so the left pane's
+// trailing controls and the right pane's leading controls stay off the fold.
+// Only the amount added here is tracked and replaced; UIKit's own insets (if
+// it already reports the division) are respected rather than doubled.
+static char kDuoFoldInsets;
+static void ApolloDuoSplitApplyFoldInsets(UISplitViewController *split) {
+    UIView *splitView = split.viewIfLoaded;
+    if (!splitView.window) return;
+    CGRect fold = ApolloDuoActiveVerticalDivision(splitView);
+    for (UIViewController *column in split.viewControllers) {
+        UIView *view = column.viewIfLoaded;
+        if (!view.window) continue;
+        UIEdgeInsets ours = [objc_getAssociatedObject(column, &kDuoFoldInsets) UIEdgeInsetsValue];
+        UIEdgeInsets safe = view.safeAreaInsets;
+        CGRect content = UIEdgeInsetsInsetRect(view.bounds,
+            UIEdgeInsetsMake(0, safe.left - ours.left, 0, safe.right - ours.right));
+        content = [splitView convertRect:content fromView:view];
+        UIEdgeInsets want = UIEdgeInsetsZero;
+        if (!CGRectIsNull(fold) && CGRectGetWidth(content) > 0.0) {
+            if (CGRectGetMinX(content) >= CGRectGetMinX(fold) && CGRectGetMinX(content) < CGRectGetMaxX(fold))
+                want.left = CGRectGetMaxX(fold) - CGRectGetMinX(content);
+            if (CGRectGetMaxX(content) > CGRectGetMinX(fold) && CGRectGetMaxX(content) <= CGRectGetMaxX(fold))
+                want.right = CGRectGetMaxX(content) - CGRectGetMinX(fold);
+        }
+        if (fabs(want.left - ours.left) < 0.5 && fabs(want.right - ours.right) < 0.5) continue;
+        UIEdgeInsets additional = column.additionalSafeAreaInsets;
+        additional.left += want.left - ours.left;
+        additional.right += want.right - ours.right;
+        objc_setAssociatedObject(column, &kDuoFoldInsets, [NSValue valueWithUIEdgeInsets:want],
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        column.additionalSafeAreaInsets = additional;
+        ApolloLog(@"[DuoSplit] fold insets %@ for %@", NSStringFromUIEdgeInsets(want), column);
+    }
 }
 static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
     return fabs(a.top - b.top) < 0.5 && fabs(a.left - b.left) < 0.5
@@ -805,6 +842,7 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     [self scheduleSplitSafeAreaSync];
+    if (!ApolloDuoSplitIsResizing()) ApolloDuoSplitApplyFoldInsets(self.split);
     if (self.subredditList) {
         CGFloat width = MIN(360, self.view.bounds.size.width - 96);
         BOOL portrait = self.view.bounds.size.width <= self.view.bounds.size.height;
