@@ -944,6 +944,15 @@ static NSHashTable<ApolloDuoSplitState *> *sDuoSplitDeferredPresentations;
 static __weak UITabBarController *sDuoSplitKnownTabs;
 static __weak UITabBarController *sDuoSplitResizingTabs;
 static CGSize sDuoSplitTargetSize;
+
+// Flat landscape Posts gives the feed a narrower leading column (~380pt on the
+// inner display, close to Messages' list/conversation split) so the thread
+// pane gets the extra room; an even split looks lopsided under the landscape
+// status bar. Book posture still splits at the physical fold.
+static const CGFloat kDuoPostsLandscapeFeedFraction = 0.40;
+static CGFloat ApolloDuoPostsFeedFraction(BOOL bookPosture) {
+    return bookPosture ? 0.5 : kDuoPostsLandscapeFeedFraction;
+}
 static __weak id<UIViewControllerTransitionCoordinator> sDuoSplitSizeCoordinator;
 
 // Repair every Duo split host in this tab controller after its size change.
@@ -1027,8 +1036,11 @@ CGFloat ApolloDuoSplitTransitionContentWidth(UIView *view, CGFloat trailingInset
     if (state.feed && state.split && MIN(sDuoSplitTargetSize.width, sDuoSplitTargetSize.height) >= 600) {
         if (owner.navigationController == state.primary) return MIN(360, width - 96);
         BOOL paired = state.host.postsSplitEnabled && sDuoSplitTargetSize.width > sDuoSplitTargetSize.height && (state.secondary.viewControllers.count > 1 || state.feed.viewControllers.count > 1);
-        if (paired) width *= 0.5;
         BOOL feedColumn = paired && owner.navigationController == state.feed;
+        if (paired) {
+            CGFloat fraction = ApolloDuoPostsFeedFraction(state.halfWidthSidebar);
+            width *= feedColumn ? fraction : 1.0 - fraction;
+        }
         return MAX(0, width - (!feedColumn && sDuoSplitTargetSize.width > sDuoSplitTargetSize.height ? trailingInset : 0));
     }
     if (state.split && width >= 800.0 && width > sDuoSplitTargetSize.height) {
@@ -1300,18 +1312,18 @@ static void ApolloDuoSplitApplySidebarWidth(ApolloDuoSplitState *state, BOOL hal
     // display is 475.5pt, and retaining the 420pt cap misses the hinge.
     CGSize canvas = sDuoSplitResizingTabs ? sDuoSplitTargetSize : state.host.view.bounds.size;
     BOOL postsLandscape = state.feed && canvas.width > canvas.height;
-    CGFloat half = canvas.width * 0.5;
+    CGFloat postsWidth = round(canvas.width * ApolloDuoPostsFeedFraction(halfWidth));
     // UIKit may keep an earlier sidebar width across column replacement.
-    // Bound both ends for Posts so its actual divider stays at the midpoint.
-    CGFloat maximum = postsLandscape ? half : (state.feed || halfWidth ? CGFLOAT_MAX : 420.0);
+    // Bound both ends for Posts so its actual divider stays where we put it.
+    CGFloat maximum = postsLandscape ? postsWidth : (state.feed || halfWidth ? CGFLOAT_MAX : 420.0);
     // Settings' widest native row is "Touch ID & Passcode" + its value +
     // disclosure: a third of the flat inner display (~317pt) cut "Off" to "O".
     // Give that sidebar enough room for the value at the default text size.
     CGFloat sidebarMinimum = [state.kind isEqualToString:@"settings"] ? 340.0 : 240.0;
-    CGFloat minimum = postsLandscape ? half : sidebarMinimum;
+    CGFloat minimum = postsLandscape ? postsWidth : sidebarMinimum;
     if (split.maximumPrimaryColumnWidth != maximum) split.maximumPrimaryColumnWidth = maximum;
     if (split.minimumPrimaryColumnWidth != minimum) split.minimumPrimaryColumnWidth = minimum;
-    CGFloat fraction = halfWidth || state.feed ? 0.5 : 1.0 / 3.0;
+    CGFloat fraction = state.feed ? ApolloDuoPostsFeedFraction(halfWidth) : (halfWidth ? 0.5 : 1.0 / 3.0);
     if (halfWidth && !state.feed && canvas.width > 0.0) {
         // End the sidebar at the fold itself rather than an assumed midpoint.
         CGRect fold = ApolloDuoActiveVerticalDivision(state.host.view);
