@@ -107,13 +107,6 @@ static BOOL ApolloSubredditSheetIsActive(UITabBarController *tabs) {
     [self refreshResults];
 }
 
-- (void)viewDidAppear:(BOOL)animated {
-    [super viewDidAppear:animated];
-    // Wait for the sheet to enter its window before requesting text input;
-    // UIKit then presents and positions the keyboard with the sheet itself.
-    if (!self.choosing) [self.searchBar.searchTextField becomeFirstResponder];
-}
-
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     if (self.contentSizeUpdateScheduled) return;
