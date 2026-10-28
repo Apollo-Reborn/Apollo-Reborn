@@ -3843,11 +3843,6 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
         [[NSUserDefaults standardUserDefaults] setBool:NO forKey:UDKeyPassiveDeletedComments];
     }
     sFeedTextPostThumbnails = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyFeedTextPostThumbnails];
-    NSString *readingSessionOptInMigration = @"RestoreReadingSessionOptInResetApplied";
-    if (![standardDefaults boolForKey:readingSessionOptInMigration]) {
-        [standardDefaults setBool:NO forKey:UDKeyRestoreReadingSession];
-        [standardDefaults setBool:YES forKey:readingSessionOptInMigration];
-    }
     sRestoreReadingSession = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyRestoreReadingSession];
     sFeedGalleryCarousel = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyFeedGalleryCarousel];
     sFeedGalleryEdgeSwipeNav = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyFeedGalleryEdgeSwipeNav];

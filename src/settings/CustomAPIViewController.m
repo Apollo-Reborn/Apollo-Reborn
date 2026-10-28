@@ -2075,9 +2075,15 @@ typedef NS_ENUM(NSInteger, Tag) {
                                   onToggle:^(UISwitch *sender) { [weakSelf devvitFeedPostsSwitchToggled:sender]; }];
     devvitFeedPosts.visible = ^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyDevvitInteractivePosts]; };
 
+    ApolloSettingsRow *restoreReadingSession =
+        [ApolloSettingsRow switchRowWithID:@"media.restoreReadingSession"
+                                     title:@"Restore Reading Session"
+                                      isOn:^BOOL { return sRestoreReadingSession; }
+                                  onToggle:^(UISwitch *sender) { [weakSelf restoreReadingSessionSwitchToggled:sender]; }];
+
     return [ApolloSettingsSection sectionWithTitle:@"Feed"
-                                            footer:@"Feed Video Scrubber: drag the bar under a feed video to scrub it.\n\nSmoother Video Scrolling: prepares feed videos in the background and lets video posts finish drawing right after they scroll in instead of holding the frame for them. Turn off to get Apollo's original behavior back.\n\nForget Forward Swipe After Scrolling: once you've scrolled a few posts on, a forward swipe won't reopen the post you came back from.\n\nLive Interactive Posts: shows live scores, polls, brackets and other interactive posts instead of placeholder text. Show in Feed adds them to the feed as well as comments."
-                                              rows:@[ textPostThumbnails, infoRow, feedScrubber, videoScrollSmoothing, forwardSwipeForget, blockAnnouncements, devvitPosts, devvitFeedPosts ]];
+                                            footer:@"Feed Video Scrubber: drag the bar under a feed video to scrub it.\n\nSmoother Video Scrolling: prepares feed videos in the background and lets video posts finish drawing right after they scroll in instead of holding the frame for them. Turn off to get Apollo's original behavior back.\n\nForget Forward Swipe After Scrolling: once you've scrolled a few posts on, a forward swipe won't reopen the post you came back from.\n\nLive Interactive Posts: shows live scores, polls, brackets and other interactive posts instead of placeholder text. Show in Feed adds them to the feed as well as comments.\n\nRestore Reading Session: after iOS evicts Apollo, reopen the last feed, post and reading position on the next normal launch. Turn it off to delete the saved session immediately."
+                                              rows:@[ textPostThumbnails, infoRow, feedScrubber, videoScrollSmoothing, forwardSwipeForget, blockAnnouncements, devvitPosts, devvitFeedPosts, restoreReadingSession ]];
 }
 
 - (ApolloSettingsSection *)buildPostsFloatingTabsSection {
@@ -2698,12 +2704,6 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 - (ApolloSettingsSection *)buildMediaBrowsingSection {
     __weak typeof(self) weakSelf = self;
 
-    ApolloSettingsRow *restoreReadingSession =
-        [ApolloSettingsRow switchRowWithID:@"media.restoreReadingSession"
-                                     title:@"Restore Reading Session"
-                                      isOn:^BOOL { return sRestoreReadingSession; }
-                                  onToggle:^(UISwitch *sender) { [weakSelf restoreReadingSessionSwitchToggled:sender]; }];
-
     ApolloSettingsRow *feedGalleries =
         [ApolloSettingsRow switchRowWithID:@"media.feedGalleryCarousel"
                                      title:@"Swipe Through Feed Galleries"
@@ -2736,8 +2736,8 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                   onToggle:^(UISwitch *sender) { [weakSelf galleryAutoplayGIFsSwitchToggled:sender]; }];
 
     return [ApolloSettingsSection sectionWithTitle:@"Browsing"
-                                            footer:@"Restore Reading Session: after iOS evicts Apollo, reopen the last feed, post and reading position on the next normal launch. Turn it off to delete the saved session immediately.\n\nSwipe Through Feed Galleries: page through a gallery post's images without leaving the feed.\n\nSwipe Past Gallery to Navigate: at the first or last image, keep swiping to use your normal post swipes (vote, save, back or forward) instead of bouncing. From any image, a swipe that starts at the screen edge goes back or forward. Off by default.\n\nSwipe Up for Comments: in the fullscreen media viewer, swipe up or tap the comments button to open comments over the media. Off by default.\n\nPlay Videos / GIFs in Gallery View: video and GIF tiles play silently while they're on screen; tap one for the full-size viewer with sound. Paused in Low Power Mode."
-                                              rows:@[ restoreReadingSession, feedGalleries, edgeSwipeNav, swipeComments, galleryAutoplayVideos, galleryAutoplayGIFs ]];
+                                            footer:@"Swipe Through Feed Galleries: page through a gallery post's images without leaving the feed.\n\nSwipe Past Gallery to Navigate: at the first or last image, keep swiping to use your normal post swipes (vote, save, back or forward) instead of bouncing. From any image, a swipe that starts at the screen edge goes back or forward. Off by default.\n\nSwipe Up for Comments: in the fullscreen media viewer, swipe up or tap the comments button to open comments over the media. Off by default.\n\nPlay Videos / GIFs in Gallery View: video and GIF tiles play silently while they're on screen; tap one for the full-size viewer with sound. Paused in Low Power Mode."
+                                              rows:@[ feedGalleries, edgeSwipeNav, swipeComments, galleryAutoplayVideos, galleryAutoplayGIFs ]];
 }
 
 // NSFW Media. Lives here rather than in Apollo's native Filters & Blocks screen:
