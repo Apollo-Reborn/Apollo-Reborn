@@ -42,9 +42,7 @@ static NSString *ApolloWebJSONRouteEndpointKey(NSString *path) {
 //   Apollo POSTs it, but it only reads.
 // www-dotjson gets past www's block rather than being a documented route, and
 // Reddit is limiting old.reddit.com to accounts with recent Old Reddit use, so
-// either can stop working; old comes second. An account Old Reddit won't serve
-// gets its sign-in gate there, which counts as a refusal
-// (ApolloWebJSONRouteResponseIsSignInGate).
+// either can stop working; old comes second.
 static NSDictionary *ApolloWebJSONRouteEntry(NSString *method, NSString *path) {
     static NSArray<NSDictionary *> *table;
     static dispatch_once_t once;
@@ -89,6 +87,8 @@ BOOL ApolloWebJSONRouteResponseIsBlockPage(NSHTTPURLResponse *response) {
     return [contentType containsString:@"text/html"];
 }
 
+// What the fallback to old (the table above) gets for an account Old Reddit
+// won't serve. It counts as a refusal, like the block page.
 BOOL ApolloWebJSONRouteResponseIsSignInGate(NSHTTPURLResponse *response) {
     if (![response isKindOfClass:[NSHTTPURLResponse class]]) return NO;
     NSString *host = response.URL.host.lowercaseString ?: @"";
