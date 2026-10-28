@@ -435,6 +435,7 @@ static BOOL ApolloActionMenuApplyNativeLayout(id controller, ApolloActionMenuCon
 @end
 
 static const void *kApolloActionMenuSlotStateKey = &kApolloActionMenuSlotStateKey;
+static char kApolloActionMenuDirectActionKey;
 
 // Apollo's own actionsDescription Swift string for the sheet, falling back to
 // probing titleForHeaderInSection: the way ApolloPublicStickyAsSubreddit used to
@@ -472,7 +473,9 @@ static ApolloActionMenuSlotState *ApolloActionMenuSlotsForController(id controll
     // below lands before either rendering path reads the actions.
     ApolloActionMenuCaptureContextForController(controller);
     ApolloActionMenuContext context = objc_getAssociatedObject(controller, &kApolloActionMenuControllerContextKey);
-    BOOL customized = context && ApolloActionMenuContextIsCustomized(context);
+    BOOL customized = context &&
+        ![objc_getAssociatedObject(controller, &kApolloActionMenuDirectActionKey) boolValue] &&
+        ApolloActionMenuContextIsCustomized(context);
     // What Apollo put in this sheet, for the settings preview — read before
     // the saved layout drops anything.
     NSMutableArray<NSString *> *presentedItemIDs = context ? [NSMutableArray array] : nil;
@@ -556,6 +559,12 @@ static ApolloActionMenuSlotState *ApolloActionMenuSlotsForController(id controll
 
 void ApolloActionMenuPrepareController(id actionController, NSString *menuTitleHint) {
     (void)ApolloActionMenuSlotsForController(actionController, menuTitleHint);
+}
+
+void ApolloActionMenuPrepareControllerForDirectAction(id actionController) {
+    objc_setAssociatedObject(actionController, &kApolloActionMenuDirectActionKey, @YES,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloActionMenuPrepareController(actionController, nil);
 }
 
 static CGFloat ApolloActionMenuNativeRowHeight(id controller) {

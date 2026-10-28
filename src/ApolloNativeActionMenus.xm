@@ -898,6 +898,7 @@ static BOOL ApolloNativeActionMenuPerformPendingDirectAction(id actionController
     sApolloNativeDirectActionSourceView = nil;
     sApolloNativeDirectActionKind = UINT16_MAX;
 
+    ApolloActionMenuPrepareControllerForDirectAction(actionController);
     NSInteger row = ApolloNativeActionMenuRowForActionKind(actionController, actionKind);
     if (row == NSNotFound) {
         ApolloLog(@"[NativeActionMenu] Posts action kind %u unavailable", actionKind);

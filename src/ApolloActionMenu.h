@@ -150,6 +150,8 @@ void ApolloActionMenuArmModeratorFollowUp(id actionController);
 
 void ApolloActionMenuPrepareController(id actionController, NSString *_Nullable menuTitleHint);
 
+void ApolloActionMenuPrepareControllerForDirectAction(id actionController);
+
 // Glass path: remember which Action kind a native UIMenuElement was built from,
 // so ApolloActionMenuInjectMenuElements can place a customised tweak row among
 // Apollo's own rows (an untagged element is transparent to that placement).
