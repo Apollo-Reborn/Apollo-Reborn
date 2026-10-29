@@ -32,7 +32,7 @@ concurrency:
 
 jobs:
   build-release:
-    name: Build six IPA variants
+    name: Build two iOS 26+ IPA variants
     runs-on: macos-15
     permissions:
       contents: write
@@ -65,6 +65,15 @@ jobs:
       - name: Select Xcode 26.0.1
         run: sudo xcode-select -s /Applications/Xcode_26.0.1.app
 
+      - name: Verify release migration contracts
+        run: |
+          python3 -B tests/release_sunset_tests.py
+          bash tests/run_executable_sdk_tests.sh
+          bash tests/run_setup_preset_tests.sh
+          bash tests/run_update_manifest_tests.sh
+          bash tests/run_update_manifest_cache_tests.sh
+          bash tests/run_update_checker_tests.sh
+
       - name: Build rootful tweak package
         run: make package FINALPACKAGE=1
         env:
@@ -83,30 +92,6 @@ jobs:
 
       - name: Collect rootful debug symbols
         run: bash ./scripts/collect-debug-symbols.sh --label rootful --output-dir ./dist/symbols
-
-      - name: Clean before rootless build
-        run: make clean
-        env:
-          THEOS: ${{ github.workspace }}/theos
-
-      - name: Build rootless tweak package
-        run: make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
-        env:
-          THEOS: ${{ github.workspace }}/theos
-
-      - name: Rename rootless package
-        run: |
-          ROOTLESS_DEB=$(ls packages/*-arm64.deb | head -1)
-          if [ -z "$ROOTLESS_DEB" ]; then
-            echo "Error: no rootless .deb produced by make package"
-            exit 1
-          fi
-          ROOTLESS_RENAMED="${ROOTLESS_DEB%-arm64.deb}-arm64_rootless.deb"
-          mv "$ROOTLESS_DEB" "$ROOTLESS_RENAMED"
-          echo "Rootless tweak: $ROOTLESS_RENAMED"
-
-      - name: Collect rootless debug symbols
-        run: bash ./scripts/collect-debug-symbols.sh --label rootless --output-dir ./dist/symbols
 
       - name: Install cyan
         run: |
@@ -127,10 +112,7 @@ jobs:
 
       - name: Install xcodegen
         run: |
-          # Required so build_release_variants.sh can build + inject the Reborn
-          # widget extension into the extension-bearing variants (standard/Glass/
-          # GlassIcons). Without xcodegen the script's guard silently skips
-          # widgets and the release would ship widget-less.
+          # Required to build and inject widgets into Apollo Reborn.
           brew install xcodegen
           xcodegen --version
 
@@ -208,7 +190,6 @@ jobs:
           prerelease: ${{ inputs.prerelease }}
           files: |
             dist/out/*.ipa
-            packages/*.deb
             ${{ steps.symbols.outputs.symbols_zip }}
 
       - name: Summarize release outputs
@@ -238,7 +219,7 @@ jobs:
         # Only when this run actually regenerates/publishes the sources. Drafts
         # (and runs that skip the source update) would otherwise advertise
         # apps.json/manifest URLs for a release that has not been published.
-        if: github.ref == 'refs/heads/main' && inputs.update_sources && !inputs.draft
+        if: github.ref == 'refs/heads/main' && inputs.update_sources && !inputs.draft && !inputs.prerelease
         run: |
           {
             echo ""
@@ -263,14 +244,14 @@ jobs:
         # does NOT fire that event, so the two paths never double-run. The final
         # protected push is authenticated with a dedicated GitHub App token so
         # this can update main without opening a PR.
-        if: github.ref == 'refs/heads/main' && inputs.update_sources && !inputs.draft
+        if: github.ref == 'refs/heads/main' && inputs.update_sources && !inputs.draft && !inputs.prerelease
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           python3 ./scripts/update_source_json.py
 
       - name: Generate source updater app token
-        if: github.ref == 'refs/heads/main' && inputs.update_sources && !inputs.draft
+        if: github.ref == 'refs/heads/main' && inputs.update_sources && !inputs.draft && !inputs.prerelease
         id: source_updater_token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
@@ -279,14 +260,14 @@ jobs:
           permission-contents: write
 
       - name: Commit updated source JSON files
-        if: github.ref == 'refs/heads/main' && inputs.update_sources && !inputs.draft
+        if: github.ref == 'refs/heads/main' && inputs.update_sources && !inputs.draft && !inputs.prerelease
         env:
           APP_TOKEN: ${{ steps.source_updater_token.outputs.token }}
         run: |
           git config user.name "apollo-source-updater[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add apps.json apps_noext.json apps_glass.json apps_noext_glass.json \
-                  apps_glass_icons.json apps_noext_glass_icons.json release-manifest.json
+          git add apps_glass.json apps_noext_glass.json release-manifest-v2.json \
+                  release-manifest.json distribution/legacy
           if git diff --cached --quiet; then
             echo "No source JSON changes to commit."
             exit 0

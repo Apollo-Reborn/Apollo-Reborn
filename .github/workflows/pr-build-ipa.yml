@@ -144,6 +144,15 @@ jobs:
       - name: Select Xcode 26.0.1
         run: sudo xcode-select -s /Applications/Xcode_26.0.1.app
 
+      - name: Verify release migration contracts
+        run: |
+          python3 -B tests/release_sunset_tests.py
+          bash tests/run_executable_sdk_tests.sh
+          bash tests/run_setup_preset_tests.sh
+          bash tests/run_update_manifest_tests.sh
+          bash tests/run_update_manifest_cache_tests.sh
+          bash tests/run_update_checker_tests.sh
+
       - name: Build rootful tweak package
         # The .deb is only an intermediate here (and a short-lived PR artifact),
         # so skip Theos's default lzma -9 packaging (~16s on the runner) in
@@ -201,8 +210,7 @@ jobs:
           unzip -t Apollo.ipa >/dev/null
 
       - name: Build IPA variants
-        # PR builds skip the two GLASS icons-only variants; release builds still
-        # produce all six.
+        # PRs exercise the same two supported builds as releases.
         run: |
           WIDGET_ARGS=()
           if [ "${{ steps.widget_cache.outputs.cache-hit }}" = "true" ]; then
@@ -212,11 +220,10 @@ jobs:
             --ipa ./Apollo.ipa \
             --deb "${{ steps.rootful_deb.outputs.deb_path }}" \
             --output-dir ./dist/out \
-            --no-glass-icons \
             "${WIDGET_ARGS[@]}"
 
       - name: Validate IPA variants
-        run: bash ./scripts/validate_release_variants.sh --no-glass-icons ./dist/out
+        run: bash ./scripts/validate_release_variants.sh ./dist/out
 
       - name: Collect widget debug symbols
         run: |
@@ -234,7 +241,7 @@ jobs:
           SHORT_SHA=$(echo "${{ github.event.pull_request.head.sha }}" | cut -c1-7)
           PREFIX="Apollo-Reborn-PR${{ github.event.pull_request.number }}-${SHORT_SHA}"
           # build_release_variants.sh stamps the tweak version into filenames; the
-          # standard IPA is the only one without a -NOEXTENSIONS/-GLASS suffix, so
+          # main IPA is the only one without a -NOEXTENSIONS suffix, so
           # recover the base name from it for the exact upload paths.
           STD=$(ls dist/out/*.ipa | grep -vE -- '-(NOEXTENSIONS|GLASS)' | head -1)
           if [ -z "$STD" ]; then
@@ -249,11 +256,11 @@ jobs:
 
       # One artifact (one .zip) per variant so the comment can deep-link each via
       # the action's `artifact-url` (stable .../runs/<id>/artifacts/<id> redirect).
-      - name: Upload Standard IPA
+      - name: Upload Apollo Reborn IPA
         id: art_standard
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ${{ steps.meta.outputs.prefix }}-Standard
+          name: ${{ steps.meta.outputs.prefix }}-ApolloReborn
           path: dist/out/${{ steps.meta.outputs.base }}.ipa
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
           compression-level: 0
@@ -267,24 +274,6 @@ jobs:
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
           compression-level: 0
 
-      - name: Upload GLASS IPA
-        id: art_glass
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: ${{ steps.meta.outputs.prefix }}-GLASS
-          path: dist/out/${{ steps.meta.outputs.base }}-GLASS.ipa
-          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
-          compression-level: 0
-
-      - name: Upload GLASS No-Extensions IPA
-        id: art_glass_noext
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: ${{ steps.meta.outputs.prefix }}-GLASS-NoExtensions
-          path: dist/out/${{ steps.meta.outputs.base }}-GLASS-NOEXTENSIONS.ipa
-          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
-          compression-level: 0
-
       - name: Upload debug symbols artifact
         id: art_symbols
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -293,24 +282,11 @@ jobs:
           path: dist/symbols
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
 
-      - name: Upload tweak .deb artifact
-        id: art_deb
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: ${{ steps.meta.outputs.prefix }}-deb
-          path: ${{ steps.rootful_deb.outputs.deb_path }}
-          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
-          compression-level: 0
-
       - name: Build success comment
         env:
           URL_STANDARD: ${{ steps.art_standard.outputs.artifact-url }}
           URL_NOEXT: ${{ steps.art_noext.outputs.artifact-url }}
-          URL_GLASS: ${{ steps.art_glass.outputs.artifact-url }}
-          URL_GLASS_NOEXT: ${{ steps.art_glass_noext.outputs.artifact-url }}
           URL_SYMBOLS: ${{ steps.art_symbols.outputs.artifact-url }}
-          URL_DEB: ${{ steps.art_deb.outputs.artifact-url }}
-          DEB_PATH: ${{ steps.rootful_deb.outputs.deb_path }}
           BASE: ${{ steps.meta.outputs.base }}
           AUTHORIZED_VIA: ${{ needs.authorize.outputs.via }}
         run: |
@@ -326,15 +302,12 @@ jobs:
             echo "<!-- apollo-pr-ipa-build -->"
             echo "### 📦 PR Test IPAs"
             echo ""
-            echo "Built from ${{ steps.meta.outputs.short_sha }}. Each link downloads a \`.zip\` containing that variant's \`.ipa\` (or the rootful \`.deb\`)."
+            echo "Built from ${{ steps.meta.outputs.short_sha }}. Each link downloads a \`.zip\` containing that variant's \`.ipa\`."
             echo ""
             echo "| Variant | Download | Size |"
             echo "| --- | --- | ---: |"
-            echo "| Standard | [⬇️ Download](${URL_STANDARD}) | $(size_of "${BASE}.ipa") |"
-            echo "| No Extensions | [⬇️ Download](${URL_NOEXT}) | $(size_of "${BASE}-NOEXTENSIONS.ipa") |"
-            echo "| GLASS | [⬇️ Download](${URL_GLASS}) | $(size_of "${BASE}-GLASS.ipa") |"
-            echo "| GLASS · No Extensions | [⬇️ Download](${URL_GLASS_NOEXT}) | $(size_of "${BASE}-GLASS-NOEXTENSIONS.ipa") |"
-            echo "| Tweak package (rootful \`.deb\`) | [⬇️ Download](${URL_DEB}) | $(du -h "${DEB_PATH}" 2>/dev/null | cut -f1 || echo "?") |"
+            echo "| Apollo Reborn | [⬇️ Download](${URL_STANDARD}) | $(size_of "${BASE}.ipa") |"
+            echo "| Apollo Reborn No Extensions | [⬇️ Download](${URL_NOEXT}) | $(size_of "${BASE}-NOEXTENSIONS.ipa") |"
             echo ""
             echo "Debug symbols: [⬇️ dSYMs](${URL_SYMBOLS}) · [workflow run](${RUN_URL})"
             echo ""

@@ -8,22 +8,14 @@ IPA_PATH=""
 DEB_PATH=""
 OUTPUT_DIR="${REPO_DIR}/dist/out"
 NAME_PREFIX="Apollo"
-BUILD_GLASS_ICONS=1
 WIDGET_APPEX=""
 
 usage() {
     echo "Usage: $0 --ipa <Apollo.ipa> [--deb <packages/*.deb>] [--output-dir <dir>] [--name-prefix <name>]"
-    echo "          [--no-glass-icons] [--widget-appex <ApolloRebornWidgets.appex>]"
+    echo "          [--widget-appex <ApolloRebornWidgets.appex>]"
     echo ""
-    echo "Builds the six distributable IPA variants used by AltStore/SideStore/Feather:"
-    echo "  1. standard"
-    echo "  2. no-extensions"
-    echo "  3. standard + Liquid Glass"
-    echo "  4. no-extensions + Liquid Glass"
-    echo "  5. standard + Liquid Glass icons-only"
-    echo "  6. no-extensions + Liquid Glass icons-only"
+    echo "Builds Apollo Reborn and Apollo Reborn No Extensions (iOS 26+, Liquid Glass)."
     echo ""
-    echo "  --no-glass-icons   skip variants 5 and 6 (PR test builds)"
     echo "  --widget-appex     inject this prebuilt ApolloRebornWidgets.appex instead of"
     echo "                     building it with xcodegen + xcodebuild (CI cache hit)"
 }
@@ -117,10 +109,6 @@ while [[ $# -gt 0 ]]; do
             NAME_PREFIX="$2"
             shift 2
             ;;
-        --no-glass-icons)
-            BUILD_GLASS_ICONS=0
-            shift
-            ;;
         --widget-appex)
             WIDGET_APPEX="$2"
             shift 2
@@ -210,10 +198,6 @@ APP_BUILD_VERSION="$(read_source_build_version)"
 BASE_NAME="${NAME_PREFIX}-Reborn-${TWEAK_VERSION}"
 STANDARD_IPA="${OUTPUT_DIR}/${BASE_NAME}.ipa"
 NOEXT_IPA="${OUTPUT_DIR}/${BASE_NAME}-NOEXTENSIONS.ipa"
-GLASS_IPA="${OUTPUT_DIR}/${BASE_NAME}-GLASS.ipa"
-NOEXT_GLASS_IPA="${OUTPUT_DIR}/${BASE_NAME}-GLASS-NOEXTENSIONS.ipa"
-GLASS_ICONS_IPA="${OUTPUT_DIR}/${BASE_NAME}-GLASSICONS.ipa"
-NOEXT_GLASS_ICONS_IPA="${OUTPUT_DIR}/${BASE_NAME}-GLASSICONS-NOEXTENSIONS.ipa"
 
 echo "Input IPA     : $IPA_PATH"
 echo "Tweak DEB     : $DEB_PATH"
@@ -222,11 +206,14 @@ echo "Tweak version : $TWEAK_VERSION"
 echo "Build version : $APP_BUILD_VERSION"
 echo "Output dir    : $OUTPUT_DIR"
 
-rm -f "$STANDARD_IPA" "$NOEXT_IPA" "$GLASS_IPA" "$NOEXT_GLASS_IPA" \
-      "$GLASS_ICONS_IPA" "$NOEXT_GLASS_ICONS_IPA"
+# Remove outputs from earlier invocations too; stale classic assets must never ship.
+rm -f "$STANDARD_IPA" "$NOEXT_IPA" "${OUTPUT_DIR}/${BASE_NAME}-GLASS.ipa" \
+      "${OUTPUT_DIR}/${BASE_NAME}-GLASS-NOEXTENSIONS.ipa" \
+      "${OUTPUT_DIR}/${BASE_NAME}-GLASSICONS.ipa" \
+      "${OUTPUT_DIR}/${BASE_NAME}-GLASSICONS-NOEXTENSIONS.ipa"
 
 # Build the widget appex once; the inject-widgets module injects this prebuilt
-# product into the standard variant (Glass variants inherit it). A caller that
+# product into Apollo Reborn. A caller that
 # already has the product (CI cache hit) passes it via --widget-appex.
 WIDGETS_MODULE="inject-widgets"
 if [[ -n "$WIDGET_APPEX" ]]; then
@@ -240,14 +227,8 @@ fi
 VERSIONS_MODULE="patch-bundle-versions:${TWEAK_VERSION}:${APP_BUILD_VERSION}"
 SCHEMES_MODULE="inject-url-schemes:${DEFAULT_URL_SCHEMES}"
 
-if [[ $BUILD_GLASS_ICONS -eq 1 ]]; then
-    TOTAL_STEPS=6
-else
-    TOTAL_STEPS=4
-fi
-
 echo ""
-echo "[1/${TOTAL_STEPS}] Building standard injected IPA..."
+echo "[1/2] Building Apollo Reborn..."
 # cyan injects the tweak dylibs + CydiaSubstrate.framework into the stock base
 # IPA. Its output is only an intermediate that apply-patches.sh unpacks again
 # right away, so write it stored (-c 0): deflating ~300 MB of app contents is
@@ -256,12 +237,8 @@ echo "[1/${TOTAL_STEPS}] Building standard injected IPA..."
 # injected once, which the stock base never is; calling cyan directly here
 # skips that doomed attempt and matches the no-extensions path below.)
 cyan -i "$IPA_PATH" -f "$DEB_PATH" -o "$STANDARD_IPA" -c 0
-# Everything else for the standard variant in ONE unpack/repack: strip the
-# CydiaSubstrate arm64e slice, install the manual + legacy Safari extensions,
-# repair the Open-in-Apollo share extension, set versions, and inject the
-# widget extension. The GLASS and GLASSICONS variants are derived from this IPA
-# below and inherit all of it; the no-extensions variants have no appex and
-# omit the extension/widget modules.
+# Compose the full supported build in one unpack/repack. The second build uses
+# the same Glass modules while intentionally omitting all extension modules.
 apply_patches_in_place "$STANDARD_IPA" \
     --module backup-document \
     --module enable-promotion \
@@ -271,10 +248,12 @@ apply_patches_in_place "$STANDARD_IPA" \
     --module "$VERSIONS_MODULE" \
     --module "$SCHEMES_MODULE" \
     --module "$WIDGETS_MODULE" \
-    --module stamp-build-variant:ipa
+    --module liquid-glass-binary \
+    --module liquid-glass-assets \
+    --module stamp-build-variant:glass
 
 echo ""
-echo "[2/${TOTAL_STEPS}] Building no-extensions injected IPA..."
+echo "[2/2] Building Apollo Reborn No Extensions..."
 # `cyan -e` injects the tweak AND strips all PlugIns (the no-extensions variant);
 # the orchestrator then strips the CydiaSubstrate arm64e slice, sets versions,
 # and injects the default URL schemes in one unpack/repack.
@@ -285,43 +264,10 @@ apply_patches_in_place "$NOEXT_IPA" \
     --module strip-substrate-arm64e \
     --module "$VERSIONS_MODULE" \
     --module "$SCHEMES_MODULE" \
-    --module stamp-build-variant:ipa-noext
-
-echo ""
-echo "[3/${TOTAL_STEPS}] Applying Liquid Glass patch to standard IPA..."
-bash "$APPLY_PATCHES" --ipa "$STANDARD_IPA" -o "$GLASS_IPA" \
     --module liquid-glass-binary \
     --module liquid-glass-assets \
-    --module "$VERSIONS_MODULE" \
-    --module stamp-build-variant:glass
-
-echo ""
-echo "[4/${TOTAL_STEPS}] Applying Liquid Glass patch to no-extensions IPA..."
-bash "$APPLY_PATCHES" --ipa "$NOEXT_IPA" -o "$NOEXT_GLASS_IPA" \
-    --module liquid-glass-binary \
-    --module liquid-glass-assets \
-    --module "$VERSIONS_MODULE" \
     --module stamp-build-variant:glass-noext
-
-if [[ $BUILD_GLASS_ICONS -eq 1 ]]; then
-    echo ""
-    echo "[5/6] Applying Liquid Glass icons-only patch to standard IPA..."
-    bash "$APPLY_PATCHES" --ipa "$STANDARD_IPA" -o "$GLASS_ICONS_IPA" \
-        --module liquid-glass-assets \
-        --module "$VERSIONS_MODULE" \
-        --module stamp-build-variant:glassicons
-
-    echo ""
-    echo "[6/6] Applying Liquid Glass icons-only patch to no-extensions IPA..."
-    bash "$APPLY_PATCHES" --ipa "$NOEXT_IPA" -o "$NOEXT_GLASS_ICONS_IPA" \
-        --module liquid-glass-assets \
-        --module "$VERSIONS_MODULE" \
-        --module stamp-build-variant:glassicons-noext
-fi
 
 echo ""
 echo "Created:"
-printf '  %s\n' "$STANDARD_IPA" "$NOEXT_IPA" "$GLASS_IPA" "$NOEXT_GLASS_IPA"
-if [[ $BUILD_GLASS_ICONS -eq 1 ]]; then
-    printf '  %s\n' "$GLASS_ICONS_IPA" "$NOEXT_GLASS_ICONS_IPA"
-fi
+ls -lh "$STANDARD_IPA" "$NOEXT_IPA"
