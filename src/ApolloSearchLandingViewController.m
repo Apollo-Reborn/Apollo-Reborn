@@ -186,6 +186,28 @@
 }
 @end
 
+// Hide Bars on Scroll: UIKit only lets the navigation controller's hide-on-swipe
+// pan run alongside a scroll view whose top edge reaches the navigation bar's
+// bottom edge. A hidden bar leaves the hierarchy (bottom edge 0), and this
+// viewport starts at the safe area, so once the bars hid, dragging down could
+// never bring them back. Apollo's own full-height lists always pass that check.
+// Answering NO here falls through to UIScrollView's own (private) answer.
+@interface ApolloSearchLandingScrollView : UIScrollView
+@end
+
+@implementation ApolloSearchLandingScrollView
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+    shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
+    if (gestureRecognizer != self.panGestureRecognizer) return NO;
+    UIResponder *responder = self.nextResponder;
+    while (responder && ![responder isKindOfClass:[UIViewController class]]) responder = responder.nextResponder;
+    UINavigationController *navigationController = ((UIViewController *)responder).navigationController;
+    // Check hidesBarsOnSwipe first: the recognizer getter creates one on demand.
+    return navigationController.hidesBarsOnSwipe &&
+        otherGestureRecognizer == navigationController.barHideOnSwipeGestureRecognizer;
+}
+@end
+
 @interface ApolloSearchLandingViewController ()
 @property(nonatomic, strong, readwrite) UIScrollView *scrollView;
 @property(nonatomic, strong, readwrite) UIRefreshControl *refreshControl;
@@ -236,7 +258,7 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    _scrollView = [[UIScrollView alloc] init];
+    _scrollView = [[ApolloSearchLandingScrollView alloc] init];
     _scrollView.translatesAutoresizingMaskIntoConstraints = NO;
     _scrollView.alwaysBounceVertical = YES;
     _scrollView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
