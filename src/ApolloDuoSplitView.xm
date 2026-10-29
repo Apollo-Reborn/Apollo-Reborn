@@ -928,6 +928,8 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
 @property(nonatomic, weak) UIViewController *searchBackPage;
 @property(nonatomic, strong) UIBarButtonItem *searchBackItem;
 @property(nonatomic) BOOL searchBackSupplementedNative;
+// Set while a swipe-initiated, non-interactive thread close is queued.
+@property(nonatomic) BOOL closingBySwipe;
 @end
 @implementation ApolloDuoSplitState @end
 
@@ -1948,6 +1950,12 @@ static void ApolloDuoRestoreFeedAnchor(UITableView *table, ApolloDuoFeedAnchor *
     ApolloLog(@"[DuoSplit] feed anchor: row %ld.%ld offset %.1f -> %.1f", (long)path.section, (long)path.row,
               table.contentOffset.y, offset);
     [table setContentOffset:CGPointMake(table.contentOffset.x, offset) animated:NO];
+}
+
+// The comments thread is open beside the feed in the paired columns.
+static BOOL ApolloDuoPairedThread(ApolloDuoSplitState *state, UINavigationController *nav) {
+    return nav == state.secondary && nav.viewControllers.count == 2 && state.feed
+        && state.host.postsShowingDetail && ApolloDuoPostsUsesSplit(state) && !state.host.listVisible;
 }
 
 static void ApolloDuoPostsSetDetail(ApolloDuoSplitState *state, UIViewController *page, BOOL animated) {
@@ -3513,6 +3521,31 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     sDuoSplitGesture = NULL;
     sDuoSplitGestureView = NULL;
     sDuoSplitGestureOffset = 0.0;
+    // Paired columns: a native interactive pop of the comments column leaves the
+    // split mid-reflow (feed widening, drawer/primary column flashing in). Close
+    // the thread through the same Duo transition as the Back button instead,
+    // keeping Apollo's own rules for where a Back swipe may start.
+    if (result && back && ApolloDuoPairedThread(state, nav)
+        && [gesture isKindOfClass:UIPanGestureRecognizer.class]) {
+        // Apollo's native pop is what flashes here, so the pan never begins in
+        // paired columns; only a rightward drag also closes the thread.
+        if (state.closingBySwipe) return NO;
+        CGPoint closeVelocity = [(UIPanGestureRecognizer *)gesture velocityInView:nav.view];
+        if (closeVelocity.x <= 0.0 || fabs(closeVelocity.x) < fabs(closeVelocity.y)) return NO;
+        state.closingBySwipe = YES;
+        ApolloLog(@"[DuoSplit] back swipe in paired columns: closing the thread through the Duo transition");
+        __weak UINavigationController *weakNav = nav;
+        __weak ApolloDuoSplitState *weakState = state;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UINavigationController *strongNav = weakNav;
+            ApolloDuoSplitState *strongState = weakState;
+            strongState.closingBySwipe = NO;
+            if (!strongNav || !strongState || strongState.changing || strongNav.transitionCoordinator
+                || !ApolloDuoPairedThread(strongState, strongNav)) return;
+            [strongNav popViewControllerAnimated:YES];
+        });
+        return NO;
+    }
     return result;
 }
 - (void)pushViewController:(UIViewController *)controller animated:(BOOL)animated {
