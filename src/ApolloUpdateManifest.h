@@ -37,6 +37,7 @@ typedef NS_ENUM(NSInteger, ApolloUpdateSideloader) {
     ApolloUpdateSideloaderSideStore,
     ApolloUpdateSideloaderFeather,
     ApolloUpdateSideloaderFlareStore,
+    ApolloUpdateSideloaderTrollStore,
 };
 
 // One line of a release's notes. The source JSON stores them as plain text: an optional
@@ -86,16 +87,17 @@ NSComparisonResult ApolloUpdateCompareVersions(NSString *a, NSString *b);
 ApolloUpdateInfo *_Nullable ApolloUpdateInfoFromManifest(id _Nullable manifest,
                                                          NSString *_Nullable variantKey);
 
-// The URL that asks `sideloader` to add the given AltStore-style source. nil for FlareStore,
-// which is handed the IPA instead.
+// The URL that asks `sideloader` to add the given AltStore-style source. nil for FlareStore
+// and TrollStore, which are handed the IPA instead.
 NSURL *_Nullable ApolloUpdateSideloaderSourceURL(ApolloUpdateSideloader sideloader, NSURL *sourceURL);
 
 // The URL that makes `sideloader` download `ipaURL` straight away, whether or not the source
-// is added (feather://install/, flarestore://downloadApp=). nil for AltStore and SideStore,
-// which have no such link; callers use the source link there.
+// is added (feather://install/, flarestore://downloadApp=, apple-magnifier://install?url=).
+// nil for AltStore and SideStore, which have no such link; callers use the source link there.
 NSURL *_Nullable ApolloUpdateSideloaderInstallURL(ApolloUpdateSideloader sideloader, NSURL *ipaURL);
 
-// The bare scheme (altstore-classic://, ...): opens the app and nothing else.
+// The bare scheme (altstore-classic://, ...): opens the app and nothing else. TrollStore's
+// apple-magnifier:// is ambiguous by design (a device without TrollStore opens Magnifier).
 NSURL *ApolloUpdateSideloaderLaunchURL(ApolloUpdateSideloader sideloader);
 
 // What a chooser row opens: the IPA link, else the source link, for an exactly known variant;

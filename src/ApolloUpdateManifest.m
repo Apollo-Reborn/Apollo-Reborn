@@ -99,6 +99,7 @@ ApolloUpdateInfo *ApolloUpdateInfoFromManifest(id manifest, NSString *variantKey
 NSURL *ApolloUpdateSideloaderSourceURL(ApolloUpdateSideloader sideloader, NSURL *sourceURL) {
     switch (sideloader) {
         case ApolloUpdateSideloaderFlareStore:
+        case ApolloUpdateSideloaderTrollStore:
             return nil;
         case ApolloUpdateSideloaderFeather:
             // Feather takes the source URL as the path: feather://source/https://...
@@ -123,6 +124,17 @@ NSURL *ApolloUpdateSideloaderInstallURL(ApolloUpdateSideloader sideloader, NSURL
         case ApolloUpdateSideloaderFlareStore:
             // FlareStore's documented direct-IPA path (Settings > URL Schemes).
             return [NSURL URLWithString:[@"flarestore://downloadApp=" stringByAppendingString:ipaURL.absoluteString]];
+        case ApolloUpdateSideloaderTrollStore: {
+            // TrollStore 1.3+ replaces the system Magnifier scheme so jailbreak checks can't
+            // spot it; its install link downloads and installs the IPA, replacing this app in
+            // place (bundle id unchanged) and keeping the data container. Encode the IPA URL
+            // as a query item so its own query, if any, survives the trip.
+            NSURLComponents *components = [NSURLComponents new];
+            components.scheme = @"apple-magnifier";
+            components.host = @"install";
+            components.queryItems = @[[NSURLQueryItem queryItemWithName:@"url" value:ipaURL.absoluteString]];
+            return components.URL;
+        }
         case ApolloUpdateSideloaderAltStore:
         case ApolloUpdateSideloaderSideStore:
             return nil;
@@ -135,6 +147,8 @@ NSURL *ApolloUpdateSideloaderLaunchURL(ApolloUpdateSideloader sideloader) {
         case ApolloUpdateSideloaderSideStore:  return [NSURL URLWithString:@"sidestore://"];
         case ApolloUpdateSideloaderFeather:    return [NSURL URLWithString:@"feather://"];
         case ApolloUpdateSideloaderFlareStore: return [NSURL URLWithString:@"flarestore://"];
+        // No unique scheme exists; this is TrollStore's own alias for Magnifier's.
+        case ApolloUpdateSideloaderTrollStore: return [NSURL URLWithString:@"apple-magnifier://"];
     }
 }
 

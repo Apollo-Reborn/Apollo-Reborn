@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Features
+
+- Add **TrollStore** to the in-app update chooser: installs made with TrollStore can hand the new IPA straight to `apple-magnifier://install?url=…`, which replaces Apollo Reborn in place and keeps its data. The row leads the chooser on those installs and is hidden elsewhere, where the same scheme would just open Magnifier.
+
 ## [v4.0.0] - 2026-10-25
 
 ### Features
