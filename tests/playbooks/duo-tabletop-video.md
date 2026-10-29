@@ -6,6 +6,11 @@ Device Hub's actual Open / Partially Open / Closed and rotation controls.
 A video with Apollo's full playback bar (for example a Reddit-hosted video)
 is required; Apollo's GIF-style MP4 viewer has no playback bar and stays native.
 
+0. On Duo, open Apollo Reborn → iPhone Duo. Confirm Tabletop Video Controls
+   defaults off and partly folded playback stays native. Enable it, verify the
+   choice survives relaunch, and confirm enabling/disabling requires no restart.
+   Confirm the page stays available on the cover display. Ordinary iPhones and
+   iPads must have neither the hub entry nor the route/search results.
 1. Open a video while the inner display is flat in portrait. Confirm the
    ordinary fullscreen layout, native auto-hide, seek and playback controls.
 2. Partially fold the display. Confirm the picture aspect-fits above the
@@ -75,3 +80,15 @@ Host checks: `sh tests/run_duo_video_geometry_tests.sh`,
   including 58pt minimum timestamp widths; simulator visual inspection; pause;
   native-HID scrub from 0:22 to 0:04; flat-unfold restores native layout/colors
   while remaining paused; refolding restores the revised panel.
+
+### Duo settings / opt-in playback
+
+- PASS in Device Hub: the new setting starts off; enabled state survives a
+  relaunch; disabling keeps partly folded video native; enabling restores the
+  tabletop layout in the same session; the page remains present on the cover
+  display. The test preference was returned to off.
+- The page groups Tabletop Video Controls, Landscape Feed Layout, and Subreddit
+  Panel Style. Existing feed/panel controls retain their keys and entrances.
+- Hub visibility, route registration, and the form are all gated on stable Duo
+  hardware capability, independent of posture. Non-Duo runtime UI inspection
+  remains unverified; no non-Duo route is registered.

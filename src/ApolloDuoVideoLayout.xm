@@ -13,6 +13,8 @@
 #import "ApolloDuoVideoGeometry.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloThemeRuntime.h"
+#import "ApolloState.h"
+#import "UserDefaultConstants.h"
 
 @interface SMScrollView : UIScrollView
 - (void)scaleToFit;
@@ -67,6 +69,7 @@
 static char kDuoVideoCoordinator, kDuoVideoOwner, kDuoVideoFrame;
 static void *kDuoVideoVisibility = &kDuoVideoVisibility;
 @class ApolloDuoVideoCoordinator;
+static NSHashTable<ApolloDuoVideoCoordinator *> *sDuoVideoCoordinators;
 
 // Views must not retain the coordinator (the viewer owns it).
 @interface ApolloDuoVideoOwner : NSObject
@@ -325,6 +328,14 @@ static void DuoVideoSetOwner(UIView *view, ApolloDuoVideoCoordinator *owner) {
 }
 - (void)update {
     if (self.applying) return;
+    if (!sDuoTabletopVideoEnabled) {
+        [self restore];
+        if (self.hinge) {
+            [self.viewer.viewIfLoaded removeInteraction:self.hinge];
+            self.hinge = nil;
+        }
+        return;
+    }
     UIViewController *viewer = self.viewer;
     UIView *view = viewer.viewIfLoaded;
     [self observeHinge];
@@ -460,6 +471,7 @@ static ApolloDuoVideoCoordinator *DuoVideoCoordinator(UIViewController *viewer, 
     if (!owner && create) {
         owner = [ApolloDuoVideoCoordinator new];
         owner.viewer = viewer;
+        [sDuoVideoCoordinators addObject:owner];
         objc_setAssociatedObject(viewer, &kDuoVideoCoordinator, owner, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     return owner;
@@ -604,6 +616,11 @@ static ApolloDuoVideoCoordinator *DuoVideoCoordinator(UIViewController *viewer, 
 
 %ctor {
     if (!ApolloDeviceIsDuo()) return;
+    sDuoVideoCoordinators = [NSHashTable weakObjectsHashTable];
+    [NSNotificationCenter.defaultCenter addObserverForName:ApolloDuoVideoLayoutDidChangeNotification
+        object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {
+            for (ApolloDuoVideoCoordinator *owner in sDuoVideoCoordinators.allObjects) [owner schedule];
+        }];
     %init;
     ApolloLog(@"[DuoVideo] tabletop video hooks installed");
 }
