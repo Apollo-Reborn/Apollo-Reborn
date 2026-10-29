@@ -2490,6 +2490,68 @@ static id ApolloInboxCompletionMarkingParentLookup(id completion) {
     } copy];
 }
 
+// Reused reply parents (issue #1573). Apollo refreshes the Inbox every 90 s while the app is open,
+// on screen or not, and every refresh repeats the parent lookup for the same replies. A parent's
+// title and subreddit don't change, but on an API-Key-Free (cookie) session each lookup spends one
+// of the few requests Reddit allows a minute: about 7 every 10 minutes while the inbox sits still.
+// So for those accounts the last answer for the same set of parents is handed back for up to 10
+// minutes, and a new reply (a new set) still asks Reddit. OAuth accounts have Reddit's full API
+// budget and keep the stock lookup.
+static const NSTimeInterval kApolloInboxParentsReuseTTL = 10.0 * 60.0;
+static const NSUInteger kApolloInboxParentsReuseMaxEntries = 8;
+static NSMutableDictionary<NSString *, NSArray *> *sApolloInboxParentsByKey;
+static NSMutableDictionary<NSString *, NSDate *> *sApolloInboxParentsAnsweredAt;
+
+static NSObject *ApolloInboxParentsLock(void) {
+    static NSObject *lock;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [NSObject new]; });
+    return lock;
+}
+
+// "<user>|<sorted fullnames>" for an API-Key-Free client's lookup, else nil. Apollo builds the
+// list from a Set, so its order changes from one refresh to the next.
+static NSString *ApolloInboxParentsReuseKey(id client, id fullNames) {
+    if (![fullNames isKindOfClass:[NSArray class]] || [(NSArray *)fullNames count] == 0) return nil;
+    id user = [client respondsToSelector:@selector(currentUser)]
+        ? ((id (*)(id, SEL))objc_msgSend)(client, @selector(currentUser)) : nil;
+    NSString *username = [user respondsToSelector:@selector(username)]
+        ? ((id (*)(id, SEL))objc_msgSend)(user, @selector(username)) : nil;
+    if (![username isKindOfClass:[NSString class]] || username.length == 0) return nil;
+    if (!ApolloWebSessionFor(username)) return nil;
+    for (id name in (NSArray *)fullNames) {
+        if (![name isKindOfClass:[NSString class]]) return nil;
+    }
+    NSArray *sorted = [(NSArray *)fullNames sortedArrayUsingSelector:@selector(compare:)];
+    return [NSString stringWithFormat:@"%@|%@", username.lowercaseString, [sorted componentsJoinedByString:@","]];
+}
+
+static NSArray *ApolloInboxParentsReusable(NSString *key, NSTimeInterval *outAge) {
+    if (!key) return nil;
+    @synchronized (ApolloInboxParentsLock()) {
+        NSDate *answeredAt = sApolloInboxParentsAnsweredAt[key];
+        NSTimeInterval age = answeredAt ? -answeredAt.timeIntervalSinceNow : DBL_MAX;
+        if (age > kApolloInboxParentsReuseTTL) return nil;
+        if (outAge) *outAge = age;
+        return sApolloInboxParentsByKey[key];
+    }
+}
+
+static void ApolloInboxParentsRemember(NSString *key, NSArray *things) {
+    if (!key || things.count == 0) return;
+    @synchronized (ApolloInboxParentsLock()) {
+        if (!sApolloInboxParentsByKey) sApolloInboxParentsByKey = [NSMutableDictionary dictionary];
+        if (!sApolloInboxParentsAnsweredAt) sApolloInboxParentsAnsweredAt = [NSMutableDictionary dictionary];
+        sApolloInboxParentsByKey[key] = [things copy];
+        sApolloInboxParentsAnsweredAt[key] = [NSDate date];
+        while (sApolloInboxParentsAnsweredAt.count > kApolloInboxParentsReuseMaxEntries) {
+            NSString *oldest = [sApolloInboxParentsAnsweredAt keysSortedByValueUsingSelector:@selector(compare:)].firstObject;
+            [sApolloInboxParentsAnsweredAt removeObjectForKey:oldest];
+            [sApolloInboxParentsByKey removeObjectForKey:oldest];
+        }
+    }
+}
+
 %hook RDKClient
 // NOTE: `category` is an enum (NSInteger), NOT an object — declaring it `id` makes ARC retain
 // the integer value as a pointer (EXC_BAD_ACCESS at 0x2). It MUST be a scalar type.
@@ -2561,13 +2623,26 @@ static id ApolloInboxCompletionMarkingParentLookup(id completion) {
 }
 
 // The Inbox's reply-parent lookup (Inbox reply parents, above): a failure answers with an empty
-// list so the page still draws. Any other caller passes straight through.
+// list so the page still draws, and an API-Key-Free account reuses a recent answer for the same
+// parents (Reused reply parents, above). Any other caller passes straight through.
 - (id)thingsByFullNames:(id)fullNames completion:(id)completion {
     if (!completion || ![[NSThread currentThread].threadDictionary[kApolloInboxPageHandlingKey] boolValue]) return %orig;
     void (^lookupCompletion)(NSArray *, NSError *) = completion;
     NSUInteger requested = [fullNames isKindOfClass:[NSArray class]] ? [(NSArray *)fullNames count] : 0;
+    NSString *reuseKey = ApolloInboxParentsReuseKey(self, fullNames);
+    NSTimeInterval reusedAge = 0;
+    NSArray *reused = ApolloInboxParentsReusable(reuseKey, &reusedAge);
+    if (reused) {
+        ApolloLog(@"[InboxParents] Reused the %.0fs-old lookup of %lu reply parent(s) instead of asking Reddit again",
+                  reusedAge, (unsigned long)requested);
+        // Apollo ignores the returned task (sub_10019dde8), and it expects the answer after this
+        // call returns, like the network answer.
+        dispatch_async(dispatch_get_main_queue(), ^{ lookupCompletion(reused, nil); });
+        return nil;
+    }
     id wrapped = ^(NSArray *things, NSError *error) {
         if (!error && [things isKindOfClass:[NSArray class]]) {
+            ApolloInboxParentsRemember(reuseKey, things);
             lookupCompletion(things, nil);
             return;
         }

@@ -734,7 +734,7 @@ static NSString *ApolloLinkPreviewBrowserUserAgent(void) {
 + (NSString *)crossrefSummaryFromMessage:(NSDictionary *)message;
 + (void)fetchCrossrefPreviewForURL:(NSURL *)url completion:(ApolloLinkPreviewCompletion)completion;
 + (void)fetchRedditInfoPreviewForURL:(NSURL *)url completion:(ApolloLinkPreviewCompletion)completion;
-+ (void)fetchRedditInfoPreviewForExactURL:(NSURL *)url completion:(ApolloLinkPreviewCompletion)completion;
++ (void)fetchRedditInfoPreviewForExactURL:(NSURL *)url completion:(void (^)(ApolloLinkPreview *preview, BOOL unknownToReddit))completion;
 + (void)fetchHTMLPreviewForURL:(NSURL *)url completion:(ApolloLinkPreviewCompletion)completion;
 + (void)fetchHTMLPreviewForURL:(NSURL *)url allowRange:(BOOL)allowRange browserFallback:(BOOL)browserFallback completion:(ApolloLinkPreviewCompletion)completion;
 @end
@@ -759,6 +759,33 @@ static BOOL ApolloLinkPreviewMarkCachedRefetchAttempted(NSURL *url, NSString *re
         [attempted addObject:key];
         return YES;
     }
+}
+
+// URLs whose fetch already finished in this launch. A bot-wall or slug-title
+// card stored by this launch is the current pipeline's own answer, Reddit
+// lookup included, so a weak-cache refetch would only repeat the blocked page
+// fetch and the Reddit /api/info lookups. Every reuters/wsj link used to send
+// them all a second time, under a second after the first (issue #1573). The
+// heal is for entries cached by an earlier launch.
+static NSMutableSet<NSString *> *ApolloLinkPreviewFetchedThisLaunch(void) {
+    static NSMutableSet<NSString *> *fetched;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ fetched = [NSMutableSet set]; });
+    return fetched;
+}
+
+static void ApolloLinkPreviewNoteFetchedThisLaunch(NSURL *url) {
+    NSString *key = url.absoluteString;
+    if (key.length == 0) return;
+    NSMutableSet<NSString *> *fetched = ApolloLinkPreviewFetchedThisLaunch();
+    @synchronized (fetched) { [fetched addObject:key]; }
+}
+
+static BOOL ApolloLinkPreviewWasFetchedThisLaunch(NSURL *url) {
+    NSString *key = url.absoluteString;
+    if (key.length == 0) return NO;
+    NSMutableSet<NSString *> *fetched = ApolloLinkPreviewFetchedThisLaunch();
+    @synchronized (fetched) { return [fetched containsObject:key]; }
 }
 
 // The card for a Bluesky post the API says is gone — deleted, or on an
@@ -789,6 +816,7 @@ static BOOL ApolloBlueskyStatusMeansGone(NSError *error, NSInteger status) {
 
 + (NSString *)refetchReasonForCachedPreview:(ApolloLinkPreview *)preview url:(NSURL *)url {
     if (!preview) return nil;
+    if (ApolloLinkPreviewWasFetchedThisLaunch(url)) return nil;
     if (ApolloLinkPreviewIsCachedBotWall(preview)) return @"bot-wall";
     if (ApolloLinkPreviewIsWeakAcademicPreview(preview, url)) return @"weak-academic";
     BOOL weakGeneric = preview.imageIsFallbackIcon
@@ -910,6 +938,7 @@ static BOOL ApolloBlueskyStatusMeansGone(NSError *error, NSInteger status) {
 }
 
 + (void)finishURL:(NSURL *)url preview:(ApolloLinkPreview *)preview {
+    ApolloLinkPreviewNoteFetchedThisLaunch(url);
     if (!preview) {
         // Negatively cache the failure so the next layout resolves from cache
         // instead of refetching. Without this, a URL that always 404s (e.g. a
@@ -1472,16 +1501,25 @@ static NSURL *ApolloLinkPreviewWWWSiblingURL(NSURL *url) {
         return;
     }
     NSURL *sibling = ApolloLinkPreviewWWWSiblingURL(url);
-    [self fetchRedditInfoPreviewForExactURL:url completion:^(ApolloLinkPreview *preview) {
-        if (preview || !sibling) {
+    [self fetchRedditInfoPreviewForExactURL:url completion:^(ApolloLinkPreview *preview, BOOL unknownToReddit) {
+        // The sibling only helps when Reddit has no submission of the exact
+        // URL. When it has some but none carries a preview, Reddit's scraper
+        // already met this site's wall; when the lookup failed (a 429, a
+        // blocked session), the sibling would fail the same way. Either way it
+        // would only spend another Reddit request (issue #1573).
+        if (preview || !sibling || !unknownToReddit) {
             completion(preview);
             return;
         }
-        [self fetchRedditInfoPreviewForExactURL:sibling completion:completion];
+        [self fetchRedditInfoPreviewForExactURL:sibling completion:^(ApolloLinkPreview *siblingPreview, __unused BOOL siblingUnknown) {
+            completion(siblingPreview);
+        }];
     }];
 }
 
-+ (void)fetchRedditInfoPreviewForExactURL:(NSURL *)url completion:(ApolloLinkPreviewCompletion)completion {
+// unknownToReddit is YES only when the lookup succeeded and Reddit has no
+// submission of this exact URL.
++ (void)fetchRedditInfoPreviewForExactURL:(NSURL *)url completion:(void (^)(ApolloLinkPreview *preview, BOOL unknownToReddit))completion {
     // Form-strict escaping: the URL goes in a query VALUE, so its own '&', '=',
     // '?' and '+' must all be percent-encoded (URLQueryAllowedCharacterSet
     // would leave them bare and truncate the lookup at the first '&').
@@ -1494,7 +1532,7 @@ static NSURL *ApolloLinkPreviewWWWSiblingURL(NSURL *url) {
     });
     NSString *escaped = [url.absoluteString stringByAddingPercentEncodingWithAllowedCharacters:valueAllowed];
     if (escaped.length == 0) {
-        completion(nil);
+        completion(nil, NO);
         return;
     }
 
@@ -1508,7 +1546,7 @@ static NSURL *ApolloLinkPreviewWWWSiblingURL(NSURL *url) {
         if (hold > 0) {
             ApolloLog(@"[LinkPreviews] Skipping the Reddit info lookup host=%@ while Reddit rate-limits the session (%.0fs)",
                       ApolloLinkPreviewHost(url), hold);
-            completion(nil);
+            completion(nil, NO);
             return;
         }
     }
@@ -1525,7 +1563,7 @@ static NSURL *ApolloLinkPreviewWWWSiblingURL(NSURL *url) {
         if (error || !data || httpResponse.statusCode < 200 || httpResponse.statusCode >= 300) {
             ApolloLogError(@"[LinkPreviews] Reddit info lookup failed host=%@ status=%ld err=%@",
                       ApolloLinkPreviewHost(url), (long)httpResponse.statusCode, error.localizedDescription);
-            completion(nil);
+            completion(nil, NO);
             return;
         }
 
@@ -1545,7 +1583,7 @@ static NSURL *ApolloLinkPreviewWWWSiblingURL(NSURL *url) {
         if (!bestPost) {
             ApolloLog(@"[LinkPreviews] Reddit info lookup: no submission with preview host=%@ children=%lu",
                       ApolloLinkPreviewHost(url), (unsigned long)children.count);
-            completion(nil);
+            completion(nil, children != nil && children.count == 0);
             return;
         }
 
@@ -1559,12 +1597,12 @@ static NSURL *ApolloLinkPreviewWWWSiblingURL(NSURL *url) {
         }
         preview.fetchedAt = [NSDate date];
         if (preview.imageURL.absoluteString.length == 0) {
-            completion(nil);
+            completion(nil, NO);
             return;
         }
         ApolloLog(@"[LinkPreviews] Reddit info harvested preview host=%@ image=%.0fx%.0f",
                   ApolloLinkPreviewHost(url), preview.imageSize.width, preview.imageSize.height);
-        completion(preview);
+        completion(preview, NO);
     }] resume];
 }
 
