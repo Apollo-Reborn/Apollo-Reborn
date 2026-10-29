@@ -3302,8 +3302,11 @@ static void ApolloSubredditSettleBlockedTableToTop(UITableView *tableView) {
         ApolloSubredditSettleBlockedTableToTop((UITableView *)self);
         return;
     }
+    // The single per-frame refresh (PostsViewController's scrollViewDidScroll:
+    // no longer repeats it); skip it when the offset is unchanged.
+    BOOL unchanged = CGPointEqualToPoint(contentOffset, self.contentOffset);
     %orig;
-    if (sShowSubredditHeaders && [self isKindOfClass:[UITableView class]]) {
+    if (!unchanged && sShowSubredditHeaders && [self isKindOfClass:[UITableView class]]) {
         ApolloSubredditUpdateAmbientForManagedTable((UITableView *)self);
     }
 }
@@ -3356,11 +3359,6 @@ static void ApolloSubredditSettleBlockedTableToTop(UITableView *tableView) {
     ApolloSubredditBindNavigationOwner((UIViewController *)self);
     ApolloSubredditWatchFeedTable((UIViewController *)self);
     ApolloSubredditScheduleInstallIfNeeded((UIViewController *)self);
-}
-
-- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
-    %orig;
-    ApolloSubredditUpdateAmbientScroll((UIViewController *)self, scrollView);
 }
 
 - (void)viewWillAppear:(BOOL)animated {

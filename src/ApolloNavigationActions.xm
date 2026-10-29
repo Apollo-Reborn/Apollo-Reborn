@@ -899,7 +899,7 @@ static void ApolloActionsRestoreProfileSelection(UITableViewCell *cell) {
 }
 
 static UIColor *ApolloActionsProfileCellNativeColor(UITableViewCell *cell) {
-    SEL nodeSelector = NSSelectorFromString(@"node");
+    SEL nodeSelector = @selector(node);
     id node = [cell respondsToSelector:nodeSelector]
         ? ((id (*)(id, SEL))objc_msgSend)(cell, nodeSelector) : nil;
     if ([node respondsToSelector:@selector(backgroundColor)]) {
@@ -916,11 +916,11 @@ static UIColor *ApolloActionsProfileCellNativeColor(UITableViewCell *cell) {
 static void ApolloActionsClipProfileSelection(UITableViewCell *cell) {
     UIView *selection = cell.selectedBackgroundView;
     if (!selection) return;
-    SEL nodeSelector = NSSelectorFromString(@"node");
+    SEL nodeSelector = @selector(node);
     id node = [cell respondsToSelector:nodeSelector]
         ? ((id (*)(id, SEL))objc_msgSend)(cell, nodeSelector) : nil;
     if (!IsLiquidGlass() || !ApolloActionsHasTrailingTabRail()
-        || ![node isKindOfClass:NSClassFromString(@"Apollo.ProfileFeatureCellNode")]
+        || ![node isKindOfClass:ApolloClassProfileFeatureCellNode]
         || CGRectGetWidth(cell.bounds) - CGRectGetWidth(cell.contentView.bounds) < 1.0) {
         ApolloActionsRestoreProfileSelection(cell);
         return;
@@ -2155,6 +2155,9 @@ static void ApolloActionsUpdateBackGlass(UIView *button, UIBarButtonItem *item) 
 }
 - (void)scrollViewDidScroll:(id)scrollView {
     %orig(scrollView);
+    // Only a trailing rail needs per-frame clipping; the rail-gone restore
+    // already runs from viewDidLayoutSubviews, so skip the cell walk otherwise.
+    if (!ApolloActionsHasTrailingTabRail()) return;
     ApolloActionsClearDuoProfileTrailingCells((UIViewController *)self);
 }
 - (void)redditAccountChangedWithNotification:(id)notification {

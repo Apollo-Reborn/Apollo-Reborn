@@ -1828,8 +1828,30 @@ UIViewController *ApolloMainTabBarControllerForScene(UIWindowScene *originatingS
     return ApolloTabBarControllerIvarOn(application.delegate);
 }
 
+// Nearly every Duo/Liquid Glass gate asks for the tab controller, many of them
+// per cell or per scroll frame, and the full lookup copies connectedScenes and
+// walks windows. Cache it weakly on the main thread; any scene activation or
+// key-window change drops the cache, and a controller that left its window is
+// never returned.
+static __weak UIViewController *sApolloCachedMainTabBarController;
+
 UIViewController *ApolloMainTabBarController(void) {
-    return ApolloMainTabBarControllerForScene(nil);
+    if (!NSThread.isMainThread) return ApolloMainTabBarControllerForScene(nil);
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+        for (NSNotificationName name in @[UISceneDidActivateNotification, UISceneWillDeactivateNotification,
+                                          UISceneDidDisconnectNotification, UIWindowDidBecomeKeyNotification]) {
+            [center addObserverForName:name object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
+                sApolloCachedMainTabBarController = nil;
+            }];
+        }
+    });
+    UIViewController *cached = sApolloCachedMainTabBarController;
+    if (cached && cached.viewIfLoaded.window) return cached;
+    cached = ApolloMainTabBarControllerForScene(nil);
+    sApolloCachedMainTabBarController = cached;
+    return cached;
 }
 
 // ApolloCommon is included by nearly every file, so it must not import the pane

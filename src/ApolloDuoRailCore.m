@@ -19,8 +19,29 @@
 static char kApolloDuoRailModeKey;
 static char kApolloDuoAdaptiveBarsKey;
 static char kApolloDuoRailSavedIndicatorInsetsKey;
+static char kApolloDuoRailJumpButtonKey;
 
-static BOOL ApolloDuoRailDualDisplays(void) {
+// Cheap per-sync gate for ApolloDuoRailAlignFeedScrollIndicator, which runs in
+// every Texture table's layoutSubviews. NO only when the tab bar is not a tall
+// narrow bar in a window (looser than the indicator's own window-space test).
+// Starts YES so nothing is skipped before the first sync.
+static BOOL sApolloDuoRailMaybeVisible = YES;
+
+// Weak holder so a cached jump button never outlives its view.
+@interface ApolloDuoRailWeakView : NSObject
+@property (nonatomic, weak) UIView *view;
+@end
+@implementation ApolloDuoRailWeakView
+@end
+
+// Cached dual-display answer: the FloatingActionButton frame/center hooks reach
+// this on every scroll frame, and the uncached walk allocates arrays + NSValues.
+// Invalidated on screen/scene connect and disconnect. Main thread only; off
+// main it is computed uncached.
+static BOOL sApolloDuoRailDualCacheValid;
+static BOOL sApolloDuoRailDualCache;
+
+static BOOL ApolloDuoRailComputeDualDisplays(void) {
     NSMutableArray<NSValue *> *sizes = [NSMutableArray array];
     for (UIScreen *screen in [UIScreen screens]) {
         // AirPlay / cable mirroring adds another, usually larger screen on
@@ -43,6 +64,29 @@ static BOOL ApolloDuoRailDualDisplays(void) {
     CGSize a = sizes[0].CGSizeValue;
     CGSize b = sizes[1].CGSizeValue;
     return ApolloDisplayScreensAreDual(a.width, a.height, b.width, b.height);
+}
+
+static BOOL ApolloDuoRailDualDisplays(void) {
+    if (!NSThread.isMainThread) return ApolloDuoRailComputeDualDisplays();
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        void (^invalidate)(NSNotification *) = ^(__unused NSNotification *note) {
+            sApolloDuoRailDualCacheValid = NO;
+        };
+        for (NSNotificationName name in @[UIScreenDidConnectNotification,
+                                          UIScreenDidDisconnectNotification,
+                                          UISceneDidActivateNotification,
+                                          UISceneDidDisconnectNotification]) {
+            [[NSNotificationCenter defaultCenter] addObserverForName:name object:nil
+                                                               queue:[NSOperationQueue mainQueue]
+                                                          usingBlock:invalidate];
+        }
+    });
+    if (!sApolloDuoRailDualCacheValid) {
+        sApolloDuoRailDualCache = ApolloDuoRailComputeDualDisplays();
+        sApolloDuoRailDualCacheValid = YES;
+    }
+    return sApolloDuoRailDualCache;
 }
 
 static int ApolloDuoRailModeForTabs(UITabBarController *tabs) {
@@ -235,14 +279,18 @@ static UIView *ApolloDuoCoverFindJumpButton(UIViewController *comments) {
     id buttonObject = ivar ? object_getIvar(comments, ivar) : nil;
     UIView *button = [buttonObject isKindOfClass:[UIView class]] ? buttonObject : nil;
     if ([button isKindOfClass:[UIView class]]) return button;
-    SEL viewSelector = NSSelectorFromString(@"view");
-    if ([buttonObject respondsToSelector:viewSelector]) {
-        id nodeView = ((id (*)(id, SEL))objc_msgSend)(buttonObject, viewSelector);
+    if ([buttonObject respondsToSelector:@selector(view)]) {
+        id nodeView = ((id (*)(id, SEL))objc_msgSend)(buttonObject, @selector(view));
         if ([nodeView isKindOfClass:[UIView class]]) return nodeView;
     }
 
     UIView *root = comments.view;
     if (!root) return nil;
+    // Reuse the button an earlier search found for this controller while it is
+    // still alive and attached; the BFS below is the expensive fallback.
+    ApolloDuoRailWeakView *cached = objc_getAssociatedObject(comments, &kApolloDuoRailJumpButtonKey);
+    UIView *cachedButton = cached.view;
+    if (cachedButton.window && [cachedButton isDescendantOfView:root]) return cachedButton;
     CGFloat rootW = CGRectGetWidth(root.bounds);
     CGFloat rootH = CGRectGetHeight(root.bounds);
     UIView *best = nil;
@@ -269,14 +317,21 @@ static UIView *ApolloDuoCoverFindJumpButton(UIViewController *comments) {
             best = view;
         }
     }
+    if (best) {
+        ApolloDuoRailWeakView *box = [ApolloDuoRailWeakView new];
+        box.view = best;
+        objc_setAssociatedObject(comments, &kApolloDuoRailJumpButtonKey, box,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     return best;
 }
 
 void ApolloDuoCoverAdjustJumpButton(UIViewController *comments) {
-    if (!comments || !ApolloDuoCoverClassLooksLikeComments(comments.class)) return;
+    if (!comments || !comments.isViewLoaded
+        || !ApolloDuoCoverClassLooksLikeComments(comments.class)) return;
     BOOL coverChrome = ApolloDuoCoverChromeIsActive();
     BOOL trailingRail = ApolloDuoRailHasVisibleSideBar();
-    if ((!coverChrome && !trailingRail) || !comments.isViewLoaded) return;
+    if (!coverChrome && !trailingRail) return;
 
     UIView *button = ApolloDuoCoverFindJumpButton(comments);
     if (![button isKindOfClass:[UIView class]] || !button.superview) return;
@@ -357,6 +412,10 @@ void ApolloDuoRailAdjustHideReadButton(UIViewController *posts) {
 
 void ApolloDuoRailAlignFeedScrollIndicator(UIScrollView *scrollView) {
     if (!scrollView) return;
+    // Cheapest disqualifiers first. An inset we adjusted earlier must still be
+    // restored once the rail goes away, so only early-out with nothing saved.
+    if (!objc_getAssociatedObject(scrollView, &kApolloDuoRailSavedIndicatorInsetsKey)
+        && (!scrollView.window || !sApolloDuoRailMaybeVisible)) return;
     UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
     UITabBar *bar = [tabs isKindOfClass:[UITabBarController class]] ? tabs.tabBar : nil;
     BOOL trailingRail = NO;
@@ -464,6 +523,9 @@ void ApolloDuoRailSync(void) {
         ![objc_getAssociatedObject(tabs, &kApolloDuoAdaptiveBarsKey) boolValue]) {
         objc_setAssociatedObject(tabs, &kApolloDuoAdaptiveBarsKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
+    UITabBar *bar = tabs.tabBar;
+    sApolloDuoRailMaybeVisible = bar.window && !bar.hidden
+        && CGRectGetWidth(bar.bounds) < 100.0 && CGRectGetHeight(bar.bounds) > 200.0;
     ApolloScheduleDuoBarPolicyUpdate(tabs);
     if (mode != ApolloDuoModePhone) ApolloDuoRailApplyAccent(tabs);
 }

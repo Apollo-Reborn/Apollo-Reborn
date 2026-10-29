@@ -8,6 +8,7 @@
 #import "ApolloTextureDecls.h"
 #import "ApolloState.h"
 #import "ApolloCommon.h"
+#import "ApolloClasses.h"
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <math.h>
@@ -26,6 +27,8 @@ static char kApolloDuoMediaOwnerKey;
 static char kApolloDuoMediaTrackedCellsKey;
 static char kApolloDuoFeedGeometryKey;
 static NSHashTable<UITableView *> *sApolloDuoFeedTables;
+// Resolved once in %ctor (cold path), not per measurement.
+static Class sApolloDuoCommentsViewControllerClass;
 
 // Published once per geometry/settings change on the main thread. Texture
 // measures nodes on background threads, which must never read UIKit geometry.
@@ -35,6 +38,14 @@ static NSHashTable<UITableView *> *sApolloDuoFeedTables;
 @property (nonatomic) CGFloat centerOffset;
 @property (nonatomic) NSInteger layout;
 @property (nonatomic) BOOL comments;
+// Inputs the last ApolloDuoMediaUpdateViewport pass saw, so an unchanged
+// pass can return early. Written and read on the main thread only; Texture's
+// background layout never touches them.
+@property (nonatomic) BOOL ownerKnown;
+@property (nonatomic) CGSize windowSize;
+@property (nonatomic) BOOL unfolded;
+@property (nonatomic) BOOL unfoldedPortrait;
+@property (nonatomic) NSInteger feedMode;
 @end
 @implementation ApolloDuoFeedGeometry
 @end
@@ -148,19 +159,32 @@ static BOOL ApolloDuoMediaUpdateViewport(UITableView *table) {
     // UIKit detaches retained tables while moving navigation columns. A nil
     // window is not a switch to Original/phone layout: keep the last immutable
     // geometry until the table attaches to its destination and publishes it.
-    SEL selector = NSSelectorFromString(@"tableNode");
-    id node = [table respondsToSelector:selector]
-        ? ((id (*)(id, SEL))objc_msgSend)(table, selector) : nil;
+    id node = [table respondsToSelector:@selector(tableNode)]
+        ? ((id (*)(id, SEL))objc_msgSend)(table, @selector(tableNode)) : nil;
     if (!node) return NO;
+    UIWindow *window = table.window;
+    CGFloat width = CGRectGetWidth(table.bounds);
+    CGSize windowSize = window.bounds.size;
+    BOOL unfolded = ApolloDuoSplitIsUnfolded();
+    BOOL unfoldedPortrait = unfolded && ApolloDuoSplitIsUnfoldedPortrait();
+    NSInteger feedMode = sDuoLandscapeFeedLayout;
+    ApolloDuoFeedGeometry *previous = objc_getAssociatedObject(node, &kApolloDuoFeedGeometryKey);
+    // Every input matches the last pass. The centered (layout 2) offset also
+    // depends on pane/safe-area geometry outside this key, so it always
+    // recomputes; otherwise nothing could have changed.
+    if (previous && previous.ownerKnown && previous.layout != 2
+        && previous.unfolded == unfolded && previous.unfoldedPortrait == unfoldedPortrait
+        && previous.feedMode == feedMode && fabs(previous.width - width) <= 0.5
+        && fabs(previous.windowSize.width - windowSize.width) <= 0.5
+        && fabs(previous.windowSize.height - windowSize.height) <= 0.5) return NO;
     if (!sApolloDuoFeedTables) sApolloDuoFeedTables = [NSHashTable weakObjectsHashTable];
     [sApolloDuoFeedTables addObject:table];
     CGFloat height = 0.0;
     CGFloat centerOffset = 0.0;
     NSInteger layout = 0;
-    UIWindow *window = table.window;
     UIViewController *owner = ApolloDuoMediaTableController(table);
-    BOOL comments = [owner isKindOfClass:NSClassFromString(@"Apollo.CommentsViewController")];
-    if (window && ApolloDuoSplitIsUnfolded() && !ApolloDuoSplitIsUnfoldedPortrait()
+    BOOL comments = [owner isKindOfClass:sApolloDuoCommentsViewControllerClass];
+    if (window && unfolded && !unfoldedPortrait
         && CGRectGetWidth(window.bounds) > CGRectGetHeight(window.bounds)) {
         // The requested limit is the full display height, not the currently
         // unobscured table area. Do not subtract the navigation/search bar or
@@ -173,8 +197,6 @@ static BOOL ApolloDuoMediaUpdateViewport(UITableView *table) {
             centerOffset = ApolloDuoFeedCenterOffset(table, window, owner);
         }
     }
-    ApolloDuoFeedGeometry *previous = objc_getAssociatedObject(node, &kApolloDuoFeedGeometryKey);
-    CGFloat width = CGRectGetWidth(table.bounds);
     BOOL changed = !previous || fabs(previous.height - height) > 0.5
         || fabs(previous.width - width) > 0.5
         || fabs(previous.centerOffset - centerOffset) > 0.5 || previous.layout != layout
@@ -187,7 +209,14 @@ static BOOL ApolloDuoMediaUpdateViewport(UITableView *table) {
         geometry.layout = layout;
         geometry.comments = comments;
         objc_setAssociatedObject(node, &kApolloDuoFeedGeometryKey, geometry, OBJC_ASSOCIATION_RETAIN);
+        previous = geometry;
     }
+    // Remember this pass's inputs on whichever geometry is now current.
+    previous.ownerKnown = owner != nil;
+    previous.windowSize = windowSize;
+    previous.unfolded = unfolded;
+    previous.unfoldedPortrait = unfoldedPortrait;
+    previous.feedMode = feedMode;
     if (changed) ApolloDuoMediaRefreshAfterGeometryChange(table);
     return changed;
 }
@@ -350,8 +379,9 @@ static ApolloDuoFeedGeometry *ApolloDuoFeedPrepareCell(id cell, struct ApolloTex
                 objc_setAssociatedObject(tableNode, &kApolloDuoMediaTrackedCellsKey, tracked, OBJC_ASSOCIATION_RETAIN);
             }
             // Text-only rows still need invalidation when the live layout
-            // choice, column, or center offset changes.
-            [tracked addObject:cell];
+            // choice, column, or center offset changes. Remeasuring an
+            // already tracked cell skips the add.
+            if (![tracked containsObject:cell]) [tracked addObject:cell];
         }
     }
     if (range && geometry.layout == 2 && isfinite(range->max.width) && range->max.width > 0.0) {
@@ -552,18 +582,31 @@ static id ApolloDuoFeedLayoutSpec(id spec, CGFloat availableWidth, ApolloDuoFeed
 // full bounds, then this native fit shrinks even a square image by 84pt.
 // Correct the geometry read at its source. Keep native aspect-fit, zoom and
 // pan behavior; tall images should not be forcibly cropped to fill the width.
+static char kApolloDuoMediaFullscreenKey;
+
+static BOOL ApolloDuoMediaIsFullscreenImage(UIScrollView *scrollView) {
+    Class viewerClass = ApolloClassMediaViewerController;
+    if (!viewerClass) return NO;
+    // A zoom view's owner never changes once it is in a window (it can be
+    // detached from a controller before then), so cache the answer then.
+    NSNumber *cached = objc_getAssociatedObject(scrollView, &kApolloDuoMediaFullscreenKey);
+    if (cached) return cached.boolValue;
+    BOOL fullscreen = [(id)scrollView.delegate isKindOfClass:viewerClass];
+    for (UIResponder *next = scrollView.nextResponder; !fullscreen && next; next = next.nextResponder) {
+        fullscreen = [next isKindOfClass:viewerClass];
+    }
+    if (scrollView.window) {
+        objc_setAssociatedObject(scrollView, &kApolloDuoMediaFullscreenKey, @(fullscreen),
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return fullscreen;
+}
+
 %hook SMScrollView
 - (UIEdgeInsets)safeAreaInsets {
     UIEdgeInsets insets = %orig;
     if (ApolloDuoCurrentMode() == ApolloDuoModePhone) return insets;
-    Class viewerClass = NSClassFromString(@"_TtC6Apollo21MediaViewerController");
-    BOOL fullscreenImage = [(id)((UIScrollView *)self).delegate isKindOfClass:viewerClass];
-    if (!fullscreenImage) {
-        for (UIResponder *next = ((UIView *)self).nextResponder; next; next = next.nextResponder) {
-            if ([next isKindOfClass:viewerClass]) { fullscreenImage = YES; break; }
-        }
-    }
-    if (fullscreenImage) {
+    if (ApolloDuoMediaIsFullscreenImage((UIScrollView *)self)) {
         insets.left = 0.0;
         insets.right = 0.0;
     }
@@ -577,6 +620,7 @@ static id ApolloDuoFeedLayoutSpec(id spec, CGFloat availableWidth, ApolloDuoFeed
         return;
     }
     %init;
+    sApolloDuoCommentsViewControllerClass = objc_getClass("_TtC6Apollo22CommentsViewController");
     [[NSNotificationCenter defaultCenter] addObserverForName:@"ApolloDuoFeedLayoutDidChange"
         object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {
             for (UITableView *table in sApolloDuoFeedTables.allObjects) ApolloDuoMediaUpdateViewport(table);
