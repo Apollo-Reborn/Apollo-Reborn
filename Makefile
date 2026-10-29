@@ -478,6 +478,13 @@ ApolloReborn_LDFLAGS += -weak_framework Translation
 # release dylib weak-links it too; without the flag dyld would require the framework on
 # every older iOS and refuse to load the tweak.
 ApolloReborn_LDFLAGS += -weak_framework _Translation_SwiftUI
+# iOS 18 split SwiftUI's implementation out into SwiftUICore. Linking against the iOS 26
+# SDK records it as a hard dependency, so dyld aborts on iOS 15-17 with "Library not loaded:
+# SwiftUICore" before main() runs. The official release dylib references no SwiftUICore at
+# all; weak-link it here so the tweak still loads on those OSes.
+ifneq ($(wildcard $(SYSROOT)/System/Library/Frameworks/SwiftUICore.framework),)
+ApolloReborn_LDFLAGS += -weak_framework SwiftUICore
+endif
 ApolloReborn_CFLAGS = -fobjc-arc -Wno-error=unguarded-availability-new -Wno-error=deprecated-declarations -Wno-module-import-in-extern-c -I$(THEOS_PROJECT_DIR)/$(SRC_DIR) -I$(THEOS_PROJECT_DIR)/liquid-glass/generated -I$(THEOS_PROJECT_DIR)/$(THEME_GALLERY_DIR)/generated -I$(THEOS_PROJECT_DIR)/$(WHATS_NEW_DIR)/generated -I$(THEOS_PROJECT_DIR)/$(MODULES_DIR) -I$(THEOS_PROJECT_DIR)/$(SSZIPARCHIVE_DIR) -I$(THEOS_PROJECT_DIR)/$(SSZIPARCHIVE_DIR)/minizip -DHAVE_ARC4RANDOM_BUF -DHAVE_ICONV -DHAVE_INTTYPES_H -DHAVE_PKCRYPT -DHAVE_STDINT_H -DHAVE_WZAES -DHAVE_ZLIB -DZLIB_COMPAT
 
 # KSCrash include paths (public `include/` dirs plus module roots for private
