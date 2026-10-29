@@ -100,6 +100,7 @@ static void TestSideloaderURLs(void) {
           @"feather %@", feather);
 
     CHECK(ApolloUpdateSideloaderSourceURL(ApolloUpdateSideloaderFlareStore, source) == nil, @"flarestore takes the IPA, not the source");
+    CHECK(ApolloUpdateSideloaderSourceURL(ApolloUpdateSideloaderTrollStore, source) == nil, @"trollstore takes the IPA, not the source");
 
     // The source must round-trip out of the query intact.
     NSURLComponents *parsed = [NSURLComponents componentsWithURL:side resolvingAgainstBaseURL:NO];
@@ -116,6 +117,16 @@ static void TestInstallURLs(void) {
     CHECK([flare.absoluteString isEqualToString:[@"flarestore://downloadApp=" stringByAppendingString:ipa.absoluteString]], @"flarestore download %@", flare);
     CHECK(ApolloUpdateSideloaderInstallURL(ApolloUpdateSideloaderAltStore, ipa) == nil, @"altstore has no documented install link");
     CHECK(ApolloUpdateSideloaderInstallURL(ApolloUpdateSideloaderSideStore, ipa) == nil, @"sidestore has no documented install link");
+
+    NSURL *troll = ApolloUpdateSideloaderInstallURL(ApolloUpdateSideloaderTrollStore, ipa);
+    CHECK([troll.scheme isEqualToString:@"apple-magnifier"] && [troll.host isEqualToString:@"install"], @"trollstore %@", troll);
+    NSURLComponents *trollComponents = [NSURLComponents componentsWithURL:troll resolvingAgainstBaseURL:NO];
+    NSString *trollPayload = nil;
+    for (NSURLQueryItem *item in trollComponents.queryItems) if ([item.name isEqualToString:@"url"]) trollPayload = item.value;
+    CHECK([trollPayload isEqualToString:ipa.absoluteString], @"trollstore carries the IPA intact %@", trollPayload);
+    CHECK(ApolloUpdateSideloaderInstallURL(ApolloUpdateSideloaderTrollStore, [NSURL URLWithString:@"https://example.com/a.ipa?x=1&y=2"]) != nil
+          && [ApolloUpdateSideloaderInstallURL(ApolloUpdateSideloaderTrollStore, [NSURL URLWithString:@"https://example.com/a.ipa?x=1&y=2"]).query containsString:@"x"],
+          @"trollstore keeps the IPA's own query");
 }
 
 static void TestLaunchAndHandoffURLs(void) {
@@ -123,6 +134,7 @@ static void TestLaunchAndHandoffURLs(void) {
     CHECK([ApolloUpdateSideloaderLaunchURL(ApolloUpdateSideloaderSideStore).absoluteString isEqualToString:@"sidestore://"], @"sidestore launch");
     CHECK([ApolloUpdateSideloaderLaunchURL(ApolloUpdateSideloaderFeather).absoluteString isEqualToString:@"feather://"], @"feather launch");
     CHECK([ApolloUpdateSideloaderLaunchURL(ApolloUpdateSideloaderFlareStore).absoluteString isEqualToString:@"flarestore://"], @"flarestore launch");
+    CHECK([ApolloUpdateSideloaderLaunchURL(ApolloUpdateSideloaderTrollStore).absoluteString isEqualToString:@"apple-magnifier://"], @"trollstore launch");
 
     ApolloUpdateInfo *info = ApolloUpdateInfoFromManifest(SampleManifest(), @"standard");
     info.handoff = ApolloUpdateHandoffExact;
@@ -132,6 +144,9 @@ static void TestLaunchAndHandoffURLs(void) {
     CHECK([ApolloUpdateSideloaderHandoffURL(ApolloUpdateSideloaderSideStore, info).host isEqualToString:@"source"], @"exact sidestore adds the source");
     CHECK([ApolloUpdateSideloaderHandoffURL(ApolloUpdateSideloaderFeather, info).absoluteString isEqualToString:[@"feather://install/" stringByAppendingString:ipa]], @"exact feather installs the IPA");
     CHECK([ApolloUpdateSideloaderHandoffURL(ApolloUpdateSideloaderFlareStore, info).absoluteString isEqualToString:[@"flarestore://downloadApp=" stringByAppendingString:ipa]], @"exact flarestore downloads the IPA");
+    CHECK([ApolloUpdateSideloaderHandoffURL(ApolloUpdateSideloaderTrollStore, info).absoluteString
+          isEqualToString:ApolloUpdateSideloaderInstallURL(ApolloUpdateSideloaderTrollStore, info.downloadURL).absoluteString],
+          @"exact trollstore hands over the IPA install link");
 
     // Feather without an IPA link falls back to the source link; FlareStore has none, so it opens bare.
     info.downloadURL = nil;
@@ -141,7 +156,7 @@ static void TestLaunchAndHandoffURLs(void) {
     // An unknown variant must never carry a variant-specific payload, even if one were set.
     info = ApolloUpdateInfoFromManifest(SampleManifest(), @"standard");
     info.handoff = ApolloUpdateHandoffOpenApp;
-    for (ApolloUpdateSideloader s = ApolloUpdateSideloaderAltStore; s <= ApolloUpdateSideloaderFlareStore; s++) {
+    for (ApolloUpdateSideloader s = ApolloUpdateSideloaderAltStore; s <= ApolloUpdateSideloaderTrollStore; s++) {
         CHECK([ApolloUpdateSideloaderHandoffURL(s, info) isEqual:ApolloUpdateSideloaderLaunchURL(s)], @"open-app handoff is the bare launch for %ld", (long)s);
     }
     info.handoff = ApolloUpdateHandoffNone;

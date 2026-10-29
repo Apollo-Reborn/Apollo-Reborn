@@ -9,6 +9,13 @@
 #import "Version.h"
 #import <UIKit/UIKit.h>
 
+// Private LaunchServices API, declared here and resolved by name so the tweak doesn't link
+// another framework. Only used to notice TrollStore when the bundle marker can't be read.
+@interface LSApplicationWorkspace : NSObject
++ (instancetype)defaultWorkspace;
+- (BOOL)applicationIsInstalled:(NSString *)bundleIdentifier;
+@end
+
 static NSString *const kUpdateManifestURL =
     @"https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/release-manifest.json";
 static const NSTimeInterval kUpdateCheckInterval = 15 * 60;
@@ -91,6 +98,36 @@ static BOOL ApolloUpdateAutomaticChecksEnabled(void) {
 
 BOOL ApolloUpdateChecksAvailable(void) {
     return !ApolloUpdateIsJailbreakInstall();
+}
+
+BOOL ApolloUpdateTrollStoreAvailable(void) {
+    static BOOL available;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        // TrollStore marks every app it installs with a file next to the .app in the app's
+        // bundle container (TS_MARKER in RootHelper), and that marker is also how it decides
+        // an app may be replaced in place. Without it, apple-magnifier://install only opens
+        // Magnifier, so the chooser leaves the row out.
+        NSFileManager *fileManager = [NSFileManager defaultManager];
+        NSString *container = [NSBundle.mainBundle.bundlePath stringByDeletingLastPathComponent];
+        available = [fileManager fileExistsAtPath:[container stringByAppendingPathComponent:@"_TrollStore"]]
+                 || [fileManager fileExistsAtPath:[container stringByAppendingPathComponent:@"_TrollStoreLite"]];
+
+        // The sandbox may only expose the .app itself, and a TrollStore-capable device can run
+        // an app installed another way: fall back to asking LaunchServices whether it's there.
+        // Both the class and the selector are private, so check before messaging either.
+        if (!available) {
+            Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
+            id workspace = [workspaceClass respondsToSelector:@selector(defaultWorkspace)] ? [workspaceClass defaultWorkspace] : nil;
+            SEL isInstalled = @selector(applicationIsInstalled:);
+            if ([workspace respondsToSelector:isInstalled]) {
+                available = [workspace applicationIsInstalled:@"com.opa334.TrollStore"]
+                         || [workspace applicationIsInstalled:@"com.opa334.TrollStoreLite"];
+            }
+        }
+        ApolloLog(@"[update] trollstore=%d container=%@", available, container);
+    });
+    return available;
 }
 
 #pragma mark - Fetch

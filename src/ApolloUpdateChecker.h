@@ -1,7 +1,8 @@
 // In-app update check. A sideloaded app can't replace itself (iOS only runs code
 // signed by the user's own certificate, which lives in their sideloader), so this
 // finds the newest release in release-manifest.json and hands the user off to
-// AltStore / SideStore / Feather (or the IPA download) for the actual update.
+// AltStore / SideStore / Feather / FlareStore / TrollStore (or the IPA download)
+// for the actual update.
 
 #import <Foundation/Foundation.h>
 #import "ApolloUpdateManifest.h"
@@ -27,6 +28,11 @@ NSString *_Nullable ApolloUpdateStatusText(void);
 
 // NO for jailbroken .deb installs, which update through their package manager.
 BOOL ApolloUpdateChecksAvailable(void);
+
+// YES when the app runs under TrollStore (its install marker, else its bundle id): it can then
+// be handed the IPA through apple-magnifier://install?url=... and replaced in place. Checked once
+// per launch. Outside TrollStore that URL only opens Magnifier, so the chooser hides the row.
+BOOL ApolloUpdateTrollStoreAvailable(void);
 
 // Fetches the release notes for `info` (every release after the installed one, newest first)
 // from the variant's source JSON. `completion` runs on the main queue: nil when the fetch

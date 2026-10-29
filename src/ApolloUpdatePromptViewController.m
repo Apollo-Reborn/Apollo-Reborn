@@ -28,7 +28,7 @@ static UIFont *ApolloUpdateScaledFont(UIFont *font) {
     return [[UIFontMetrics defaultMetrics] scaledFontForFont:font];
 }
 
-// The four sideloader icons ship in the resource bundle (Resources/update-icon-*.png,
+// The sideloader icons ship in the resource bundle (Resources/update-icon-*.png,
 // 150px for a 50pt tile), so the chooser needs no network. nil falls back to a tile.
 static UIImage *ApolloUpdateSourceIcon(NSString *name) {
     NSString *path = ApolloBundledResourcePath(name, @"png");
@@ -740,18 +740,36 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
     _chooserRows.translatesAutoresizingMaskIntoConstraints = NO;
     [content addSubview:_chooserRows];
 
+    // Only under TrollStore: the IPA link replaces this app in place, and a device without it
+    // would just get Magnifier from the same URL (see ApolloUpdateTrollStoreAvailable). It goes
+    // first because it is the only row that finishes the update in place, keeping the data.
+    if (ApolloUpdateTrollStoreAvailable()) {
+        [self apollo_addSideloaderRow:ApolloUpdateSideloaderTrollStore name:@"TrollStore" icon:nil
+                              symbols:@[@"shippingbox.fill", @"archivebox.fill"]
+                                 tile:[UIColor colorWithRed:0.29 green:0.47 blue:0.98 alpha:1]
+                             subtitle:@"Install the update in place"
+                           identifier:@"update.trollstore"];
+    }
     [self apollo_addSideloaderRow:ApolloUpdateSideloaderAltStore name:@"AltStore" icon:@"update-icon-altstore"
                           symbols:@[@"diamond.fill", @"square.stack.3d.up.fill"]
-                             tile:[UIColor colorWithRed:0.13 green:0.65 blue:0.60 alpha:1] identifier:@"update.altstore"];
+                             tile:[UIColor colorWithRed:0.13 green:0.65 blue:0.60 alpha:1]
+                         subtitle:nil
+                       identifier:@"update.altstore"];
     [self apollo_addSideloaderRow:ApolloUpdateSideloaderSideStore name:@"SideStore" icon:@"update-icon-sidestore"
                           symbols:@[@"diamond.fill", @"square.stack.3d.up.fill"]
-                             tile:[UIColor colorWithRed:0.55 green:0.36 blue:0.96 alpha:1] identifier:@"update.sidestore"];
+                             tile:[UIColor colorWithRed:0.55 green:0.36 blue:0.96 alpha:1]
+                         subtitle:nil
+                       identifier:@"update.sidestore"];
     [self apollo_addSideloaderRow:ApolloUpdateSideloaderFeather name:@"Feather" icon:@"update-icon-feather"
                           symbols:@[@"bird.fill", @"leaf.fill"]
-                             tile:[UIColor colorWithRed:0.30 green:0.55 blue:0.98 alpha:1] identifier:@"update.feather"];
+                             tile:[UIColor colorWithRed:0.30 green:0.55 blue:0.98 alpha:1]
+                         subtitle:nil
+                       identifier:@"update.feather"];
     [self apollo_addSideloaderRow:ApolloUpdateSideloaderFlareStore name:@"FlareStore" icon:@"update-icon-flarestore"
                           symbols:@[@"flame.fill"]
-                             tile:[UIColor colorWithRed:0.98 green:0.45 blue:0.20 alpha:1] identifier:@"update.flarestore"];
+                             tile:[UIColor colorWithRed:0.98 green:0.45 blue:0.20 alpha:1]
+                         subtitle:nil
+                       identifier:@"update.flarestore"];
 
     // "Do it yourself": this build's own IPA when its variant is known, otherwise the release
     // page, where the user picks theirs.
@@ -825,15 +843,17 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
 }
 
 // One "Continue in <app>" row; what it opens is decided at tap time by ApolloUpdateSideloaderHandoffURL.
+// `subtitle` nil keeps the generic "Continue in <app>"; TrollStore passes its in-place wording.
 - (void)apollo_addSideloaderRow:(ApolloUpdateSideloader)sideloader
                            name:(NSString *)name
                            icon:(NSString *)iconName
                         symbols:(NSArray<NSString *> *)symbols
                            tile:(UIColor *)tile
+                       subtitle:(NSString *)subtitle
                      identifier:(NSString *)identifier {
     ApolloUpdateChoiceRow *row = [self apollo_addRowWithIcon:iconName symbols:symbols tile:tile
                                                        title:name
-                                                    subtitle:[@"Continue in " stringByAppendingString:name]
+                                                    subtitle:subtitle ?: [@"Continue in " stringByAppendingString:name]
                                                   identifier:identifier
                                                       action:@selector(apollo_sideloaderRowTapped:)];
     row.tag = sideloader;
@@ -1116,7 +1136,8 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
     NSURL *url = ApolloUpdateSideloaderHandoffURL(sideloader, _info);
     NSString *name = sideloader == ApolloUpdateSideloaderAltStore ? @"AltStore"
         : sideloader == ApolloUpdateSideloaderSideStore ? @"SideStore"
-        : sideloader == ApolloUpdateSideloaderFeather ? @"Feather" : @"FlareStore";
+        : sideloader == ApolloUpdateSideloaderFeather ? @"Feather"
+        : sideloader == ApolloUpdateSideloaderFlareStore ? @"FlareStore" : @"TrollStore";
     [self apollo_openURL:url appName:name];
 }
 
