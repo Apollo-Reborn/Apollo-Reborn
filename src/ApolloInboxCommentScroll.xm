@@ -38,10 +38,11 @@
 //     stays there instead of sliding up when a reply's media arrives later.
 //   - A poll loop is the backstop: it lands when no layout pass comes, detects the settle,
 //     and enforces the deadlines.
-// It never fights the user. A touch, drag or deceleration, a status-bar tap, the comment-jump
-// button, a Find in Comments search, any other animated scroll Apollo sends the table, or
-// leaving the thread ends it for good. It arms only on the thread's first appearance, so
-// coming back from a pushed profile or a cancelled swipe-back leaves your scroll position alone.
+// It never fights the user. A touch, drag or deceleration, a status-bar tap, reselecting the
+// thread's tab, the comment-jump button, a Find in Comments search, any other animated scroll
+// Apollo sends the table, or leaving the thread ends it for good. It arms only on the thread's
+// first appearance, so coming back from a pushed profile or a cancelled swipe-back leaves your
+// scroll position alone.
 //
 // Scope guard: only isolated threads (viewFullPostNode set or continuingThread). A normal
 // full-comments view is detected within a short grace window and left completely alone.
@@ -66,6 +67,9 @@
 @end
 
 @interface ASTableNode : NSObject
+@end
+
+@interface _TtC6Apollo13SceneDelegate : NSObject
 @end
 
 // MARK: - tunables
@@ -400,6 +404,9 @@ static void ICSArm(UIViewController *vc) {
 
 // Same for a status-bar / title tap (UIKit's scroll-to-top or the tweak's scroll-return jump)
 // and for starting a Find in Comments search, whose results scroll the list.
+// ApolloScrollToTop.xm hooks this selector too and returns NO without %orig when it starts its
+// own jump, so this module links after it (see the note above ApolloReborn_FILES in the Makefile)
+// to make this hook the outer one.
 - (BOOL)scrollViewShouldScrollToTop:(UIScrollView *)scrollView {
     if ((UIViewController *)self == sICSVC) ICSEnd((UIViewController *)self, @"status-bar tap", NO);
     return %orig;
@@ -408,6 +415,22 @@ static void ICSArm(UIViewController *vc) {
 - (void)textFieldDidBeginEditing:(UITextField *)textField {
     if ((UIViewController *)self == sICSVC) ICSEnd((UIViewController *)self, @"Find in Comments", NO);
     %orig;
+}
+
+%end
+
+// Reselecting the tab the thread is on: ApolloScrollToTop.xm runs its display-link jump to the
+// top there (or pops) and returns NO without %orig, and that jump writes contentOffset frame by
+// frame, which the hold can't tell from UIKit moving the list. End first; the link order above
+// keeps this hook outside ScrollToTop's.
+%hook _TtC6Apollo13SceneDelegate
+
+- (BOOL)tabBarController:(UITabBarController *)tabBarController shouldSelectViewController:(UIViewController *)viewController {
+    UIViewController *vc = sICSVC;
+    if (vc && viewController == tabBarController.selectedViewController && vc.tabBarController == tabBarController) {
+        ICSEnd(vc, @"tab reselected", NO);
+    }
+    return %orig;
 }
 
 %end

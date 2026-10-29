@@ -63,6 +63,10 @@ KSCRASH_FILES := \
 
 # ApolloFavoriteConfirm.xm must stay after ApolloSubredditIndexPolish.xm and
 # ApolloFollowingSection.xm so its favoriteSubredditButtonTapped: hook is outermost.
+# ApolloInboxCommentScroll.xm must stay after ApolloScrollToTop.xm so its
+# scrollViewShouldScrollToTop: and tab-reselect hooks are outermost: ScrollToTop
+# returns NO without %orig when it runs its own jump, which would skip ending
+# the landing hold.
 ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloClasses.m \
     $(SRC_DIR)/ApolloFoundationModels.swift \
@@ -200,7 +204,6 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloCommentsCollapse.xm \
     $(SRC_DIR)/ApolloCommentHeaderLayout.xm \
     $(SRC_DIR)/ApolloMaintainerTint.m \
-    $(SRC_DIR)/ApolloInboxCommentScroll.xm \
     $(SRC_DIR)/ApolloFindInComments.xm \
     $(SRC_DIR)/ApolloFindInCommentsGlass.xm \
     $(SRC_DIR)/ApolloStatsRowTouch.xm \
@@ -307,6 +310,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloYouTubeCaptions.xm \
     $(SRC_DIR)/ApolloPictureInPicture.xm \
     $(SRC_DIR)/ApolloScrollToTop.xm \
+    $(SRC_DIR)/ApolloInboxCommentScroll.xm \
     $(SRC_DIR)/ApolloFloatingTabs.xm \
     $(SRC_DIR)/ApolloFloatingTabsCrests.m \
     $(SRC_DIR)/ApolloMediaPreviewErrorFix.xm \
