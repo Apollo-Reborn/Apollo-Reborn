@@ -154,3 +154,104 @@ NSString *ApolloMediaDisplayURLFromMetadataEntry(NSString *assetID,
 
     return ApolloStringIsNonEmpty(url) ? url : nil;
 }
+
+// MARK: - Failed gallery items (#1587)
+
+// Placeholder size for rebuilt items: Reddit sends no dimensions with a failed
+// entry. The comments grid crops its tiles and the media viewer sizes each
+// photo from the downloaded image; the feed carousel, which sizes its card
+// from these, shows a square card with the photo letterboxed inside.
+static const NSInteger kApolloRepairedGalleryItemSide = 1080;
+
+static BOOL ApolloRedditMediaIDIsPlain(NSString *mediaID) {
+    if (!ApolloStringIsNonEmpty(mediaID) || mediaID.length > 64) return NO;
+    static NSCharacterSet *disallowed;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        disallowed = [[NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"] invertedSet];
+    });
+    return [mediaID rangeOfCharacterFromSet:disallowed].location == NSNotFound;
+}
+
+static NSString *ApolloRepairedGalleryMIMEType(NSString *extension) {
+    if ([extension isEqualToString:@"png"]) return @"image/png";
+    if ([extension isEqualToString:@"gif"]) return @"image/gif";
+    if ([extension isEqualToString:@"webp"]) return @"image/webp";
+    return @"image/jpeg";
+}
+
+// Reddit renders a gallery's thumbnail from its first photo, keeping that
+// photo's media ID and file extension in the path:
+// https://preview.redd.it/<media_id>.<ext>?width=140&...
+static NSString *ApolloGalleryThumbnailExtension(NSString *thumbnailURL, NSString **outMediaID) {
+    if (outMediaID) *outMediaID = nil;
+    if (!ApolloStringIsNonEmpty(thumbnailURL)) return nil;
+    NSURL *url = [NSURL URLWithString:thumbnailURL];
+    NSString *host = url.host.lowercaseString;
+    if (![host isEqualToString:@"preview.redd.it"] && ![host isEqualToString:@"i.redd.it"]) return nil;
+    NSString *name = url.path.lastPathComponent;
+    NSString *extension = name.pathExtension.lowercaseString;
+    if (![@[@"jpg", @"jpeg", @"png", @"gif", @"webp"] containsObject:extension]) return nil;
+    if (outMediaID) *outMediaID = name.stringByDeletingPathExtension;
+    return extension;
+}
+
+NSDictionary *ApolloRepairFailedRedditGalleryMetadata(NSDictionary *metadata, id galleryItems, NSString *thumbnailURL,
+                                                       NSDictionary<NSString *, NSString *> *knownExtensions) {
+    if (![metadata isKindOfClass:[NSDictionary class]] || metadata.count == 0) return nil;
+    // RDKLink.galleryData is gallery_data.items; raw post JSON has the
+    // gallery_data dictionary around it.
+    if ([galleryItems isKindOfClass:[NSDictionary class]]) galleryItems = ((NSDictionary *)galleryItems)[@"items"];
+    if (![galleryItems isKindOfClass:[NSArray class]] || [galleryItems count] == 0) return nil;
+
+    NSString *thumbnailMediaID = nil;
+    NSString *thumbnailExtension = ApolloGalleryThumbnailExtension(thumbnailURL, &thumbnailMediaID);
+    // The thumbnail's extension is exact for the first photo. Apollo's
+    // composer re-encodes every photo it posts as JPEG, and other API clients
+    // upload a gallery in one format, so it stands in for the rest too, unless
+    // it's a GIF. With no usable thumbnail (the first seconds after posting),
+    // fall back to the .jpeg Apollo Reborn names its uploads with.
+    NSString *defaultExtension = (thumbnailExtension && ![thumbnailExtension isEqualToString:@"gif"]) ? thumbnailExtension : @"jpeg";
+
+    NSMutableDictionary *repaired = nil;
+    for (id item in (NSArray *)galleryItems) {
+        if (![item isKindOfClass:[NSDictionary class]]) continue;
+        NSString *mediaID = ((NSDictionary *)item)[@"media_id"];
+        if (!ApolloRedditMediaIDIsPlain(mediaID)) continue;
+        NSDictionary *entry = [metadata[mediaID] isKindOfClass:[NSDictionary class]] ? metadata[mediaID] : nil;
+        NSString *knownExtension = [knownExtensions[mediaID] isKindOfClass:[NSString class]] ? knownExtensions[mediaID].lowercaseString : nil;
+        if (![@[@"jpg", @"jpeg", @"png", @"gif", @"webp"] containsObject:knownExtension ?: @""]) knownExtension = nil;
+        // Such a gallery reads "unprocessed" for its first ~2 seconds, which is
+        // when "Posted! Tap to view" opens it. Only photos this device just
+        // uploaded are taken out of that state early: anyone else's may still
+        // be on their way to "valid".
+        BOOL failed = [entry[@"status"] isEqual:@"failed"];
+        BOOL ownUnprocessed = knownExtension && [entry[@"status"] isEqual:@"unprocessed"];
+        if (!failed && !ownUnprocessed) continue;
+
+        NSString *extension = knownExtension ?: ([mediaID isEqualToString:thumbnailMediaID] ? thumbnailExtension : defaultExtension);
+        NSString *url = [NSString stringWithFormat:@"https://i.redd.it/%@.%@", mediaID, extension];
+        BOOL animated = [extension isEqualToString:@"gif"];
+        NSNumber *side = @(kApolloRepairedGalleryItemSide);
+        NSMutableDictionary *source = [@{@"u": url, @"x": side, @"y": side} mutableCopy];
+        if (animated) {
+            // Same shape ApolloFixRedditHostedGifMetadata gives a GIF: without
+            // an mp4, Apollo opens an animated item in a web view.
+            source[@"gif"] = url;
+            source[@"mp4"] = url;
+        }
+
+        if (!repaired) repaired = [metadata mutableCopy];
+        repaired[mediaID] = @{
+            @"status": @"valid",
+            @"e": animated ? @"AnimatedImage" : @"Image",
+            @"m": ApolloRepairedGalleryMIMEType(extension),
+            @"id": mediaID,
+            @"s": [source copy],
+            // The grid draws its tiles from `p` and shows nothing without one.
+            // Reddit's resized previews need a signature, so reuse the original.
+            @"p": @[@{@"u": url, @"x": side, @"y": side}],
+        };
+    }
+    return [repaired copy];
+}

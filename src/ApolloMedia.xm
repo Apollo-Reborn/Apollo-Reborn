@@ -13,6 +13,7 @@
 #import "ApolloState.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloMediaMetadata.h"
+#import "ApolloImageUploadHost.h"
 #import "ApolloTextureDecls.h"
 #import "ApolloMarkdownToolbarGif.h"
 #import "Tweak.h"
@@ -1140,12 +1141,71 @@ static NSString *ApolloRewriteNativeGiphyTokens(NSString *text, NSDictionary *me
 
 %end
 
+// MARK: - Failed gallery items (#1587)
+
+@interface RDKLink (ApolloGalleryRepair)
+- (id)galleryData;
+- (NSURL *)thumbnailURL;
+@end
+
+static const void *kApolloGalleryRepairCacheKey = &kApolloGalleryRepairCacheKey;
+
+// Galleries posted through Reddit's API come back with every photo "failed"
+// (see ApolloRepairFailedRedditGalleryMetadata). This runs on read rather than
+// in -setMediaMetadata: because the gallery order and thumbnail it needs are
+// separate Mantle properties that may not be set yet when the metadata is.
+// Everything reads through the getter: RDKLink.gallery, Save All, thumbnails.
+static NSDictionary *ApolloGalleryRepairedMetadata(RDKLink *link, NSDictionary *metadata) {
+    if (![metadata isKindOfClass:[NSDictionary class]] || metadata.count == 0) return metadata;
+    NSArray *items = [(id)link respondsToSelector:@selector(galleryData)] ? [link galleryData] : nil;
+    if (![items isKindOfClass:[NSArray class]] || items.count == 0) return metadata;
+
+    NSURL *thumbnailURL = [(id)link respondsToSelector:@selector(thumbnailURL)] ? [link thumbnailURL] : nil;
+    id thumbnail = [thumbnailURL isKindOfClass:[NSURL class]] ? thumbnailURL.absoluteString : nil;
+    // Cached per metadata instance and thumbnail: the getter runs on every
+    // layout pass. One array holds key and result, so a reader on another
+    // thread never pairs one call's key with another call's result.
+    NSArray *cached = objc_getAssociatedObject(link, kApolloGalleryRepairCacheKey);
+    if (cached.count == 3 && cached[0] == metadata && [cached[1] isEqual:thumbnail ?: NSNull.null]) {
+        return cached[2] == NSNull.null ? metadata : cached[2];
+    }
+
+    // Photos this device just uploaded, with the extension they went up with.
+    NSMutableDictionary<NSString *, NSString *> *ownExtensions = nil;
+    for (NSDictionary *item in items) {
+        NSString *mediaID = [item isKindOfClass:[NSDictionary class]] ? item[@"media_id"] : nil;
+        NSString *extension = [mediaID isKindOfClass:[NSString class]] ? ApolloRedditUploadedImageExtensionForAssetID(mediaID) : nil;
+        if (!extension) continue;
+        if (!ownExtensions) ownExtensions = [NSMutableDictionary dictionary];
+        ownExtensions[mediaID] = extension;
+    }
+    NSDictionary *repaired = ApolloRepairFailedRedditGalleryMetadata(metadata, items, thumbnail, ownExtensions);
+    // Atomic: Texture lays cells out off the main thread, and a nonatomic get
+    // can be handed an array another thread's set is releasing.
+    objc_setAssociatedObject(link, kApolloGalleryRepairCacheKey, @[metadata, thumbnail ?: NSNull.null, repaired ?: NSNull.null],
+                             OBJC_ASSOCIATION_RETAIN);
+    if (repaired) {
+        NSUInteger rebuilt = 0;
+        for (NSString *key in repaired) {
+            if (repaired[key] != metadata[key]) rebuilt++;
+        }
+        ApolloLog(@"[GalleryRepair] Rebuilt %lu of %lu gallery photos from i.redd.it (own uploads=%lu, thumbnail ext=%@)",
+                  (unsigned long)rebuilt, (unsigned long)items.count, (unsigned long)ownExtensions.count,
+                  thumbnailURL.path.pathExtension.length > 0 ? thumbnailURL.path.pathExtension : @"(none)");
+    }
+    return repaired ?: metadata;
+}
+
 %hook RDKLink
 
 - (void)setMediaMetadata:(NSDictionary *)mediaMetadata {
     NSDictionary *fixed = ApolloFixMediaMetadata(mediaMetadata);
     %orig(fixed);
     ApolloInlineImageRegisterMediaMetadata(fixed);
+}
+
+- (NSDictionary *)mediaMetadata {
+    return ApolloGalleryRepairedMetadata(self, %orig);
 }
 
 - (NSString *)selfText {
@@ -1201,6 +1261,7 @@ static void ApolloHideUploadLabel(id titleNode) {
 %ctor {
     %init;
     ApolloLog(@"[ShareMediaTmp] download cleanup hook installed");
+    ApolloLog(@"[GalleryRepair] RDKLink mediaMetadata hook installed (failed gallery photos rebuilt from i.redd.it)");
     ApolloLog(@"[MediaPagerGuard] swipe-end hook installed");
     Class titleClass = objc_getClass("_TtC6Apollo13PostTitleNode");
     Class URLClass = objc_getClass("_TtC6Apollo16PostTitleURLNode");

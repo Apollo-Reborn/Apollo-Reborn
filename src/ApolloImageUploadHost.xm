@@ -420,6 +420,13 @@ static NSDictionary *ApolloRedditUploadInfoForAssetID(NSString *assetID) {
     }
 }
 
+NSString *ApolloRedditUploadedImageExtensionForAssetID(NSString *assetID) {
+    NSDictionary *info = ApolloRedditUploadInfoForAssetID(assetID);
+    if (![info[@"mediaKind"] isEqual:@"image"]) return nil;
+    NSString *extension = info[@"extension"];
+    return [extension isKindOfClass:[NSString class]] && extension.length > 0 ? extension : nil;
+}
+
 static void ApolloRecordRedditUploadedVideoPosterInfo(NSString *assetID, NSURL *posterURL, NSString *posterAssetID) {
     if (assetID.length == 0 || posterURL.absoluteString.length == 0) return;
 

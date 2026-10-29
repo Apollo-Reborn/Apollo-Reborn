@@ -27,5 +27,6 @@ xcrun --sdk macosx clang++ -fobjc-arc -fblocks -Wall -Werror \
     -framework Foundation -framework CoreGraphics \
     -I "$test_build_dir" -I "$test_repo_root/src" \
     "$test_repo_root/tests/gallery_startup_tests.mm" \
+    "$test_repo_root/src/ApolloMediaMetadata.m" \
     -o "$test_build_dir/gallery_startup_tests"
 "$test_build_dir/gallery_startup_tests"
