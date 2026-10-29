@@ -8209,7 +8209,7 @@ static void ApolloApplyGlobeMergeForNavItem(UINavigationItem *navItem) {
             }
             if (ApolloStandaloneItemHostsGlobe(standalone, globe)) standalone.customView = nil;
             objc_setAssociatedObject(navItem, kApolloGlobeStandaloneItemKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            ApolloLog(@"[Translation] Globe: offered in the Duo rail's More on '%@'", navItem.title ?: @"(untitled)");
+            ApolloLog(@"[Translation] Globe: offered in the Duo rail's More (title length %lu)", (unsigned long)navItem.title.length);
         }
         return;
     }
@@ -8236,7 +8236,7 @@ static void ApolloApplyGlobeMergeForNavItem(UINavigationItem *navItem) {
             }]];
             objc_setAssociatedObject(standalone, kApolloGlobeRailItemKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             objc_setAssociatedObject(navItem, kApolloGlobeStandaloneItemKey, standalone, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            ApolloLog(@"[Translation] Globe: hosting as a native Duo rail item on '%@'", navItem.title ?: @"(untitled)");
+            ApolloLog(@"[Translation] Globe: hosting as a native Duo rail item (title length %lu)", (unsigned long)navItem.title.length);
         }
         standalone.image = [globe imageForState:UIControlStateNormal];
         standalone.accessibilityLabel = globe.accessibilityLabel;

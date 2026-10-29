@@ -1163,21 +1163,37 @@ static char kActionsDuoStripCountKey;
 // remembered fold (the globe often arrives a moment after the first build).
 static char kActionsDuoUseFoldMemoryKey;
 
-// The rail's top edge at the last check, -1 before the first.
-static CGFloat sDuoRailTop = -1.0;
+// Keep each settled arrangement's top across fold resets. The mode separates
+// the cover from the inner display; dimensions separate portrait, landscape
+// and resized windows. Never borrow the outgoing pose's top for a new pose.
+static NSMutableDictionary<NSString *, NSNumber *> *sDuoRailTops;
+static NSString *ApolloActionsDuoPoseKey(void) {
+    CGSize size = ((UIViewController *)ApolloMainTabBarController()).view.bounds.size;
+    return [NSString stringWithFormat:@"%d %.0fx%.0f", ApolloDuoCurrentMode(), size.width, size.height];
+}
+
+static CGFloat ApolloActionsDuoRememberedTop(void) {
+    NSNumber *top = sDuoRailTops[ApolloActionsDuoPoseKey()];
+    return top ? top.doubleValue : -1.0;
+}
+
+static void ApolloActionsDuoRememberTop(CGFloat top) {
+    if (!sDuoRailTops) sDuoRailTops = [NSMutableDictionary dictionary];
+    sDuoRailTops[ApolloActionsDuoPoseKey()] = @(top);
+}
 // Fold levels that settled, by rail situation (see ApolloActionsDuoFitKey), so
 // a new page in the same situation starts folded instead of showing UIKit's
 // overflow for a moment and then folding.
 static NSMutableDictionary<NSString *, NSNumber *> *sDuoFoldMemory;
 
 static NSString *ApolloActionsDuoFitKey(UINavigationItem *item, NSUInteger stripCount, NSUInteger otherCount) {
-    if (sDuoRailTop < 0.0 || !stripCount) return nil;
+    CGFloat top = ApolloActionsDuoRememberedTop();
+    if (top < 0.0 || !stripCount) return nil;
     UIViewController *controller = [objc_getAssociatedObject(item, &kActionsControllerKey) controller];
     UINavigationController *navigation = controller.navigationController;
     BOOL back = navigation && navigation.viewControllers.firstObject != controller && !item.hidesBackButton;
-    CGSize size = ((UIViewController *)ApolloMainTabBarController()).view.bounds.size;
-    return [NSString stringWithFormat:@"%.0fx%.0f top %.0f back %d strip %lu other %lu", size.width, size.height,
-            sDuoRailTop, back, (unsigned long)stripCount, (unsigned long)otherCount];
+    return [NSString stringWithFormat:@"%@ top %.0f back %d strip %lu other %lu", ApolloActionsDuoPoseKey(),
+            top, back, (unsigned long)stripCount, (unsigned long)otherCount];
 }
 
 static NSUInteger ApolloActionsDuoFoldLevel(UINavigationItem *item) {
@@ -1525,6 +1541,17 @@ static void ApolloActionsRepublishRail(UINavigationItem *item) {
     ApolloTranslationRefreshNavigationItemGlobe(item);
 }
 
+// A tab does not inherit a child's push/pop coordinator. Inspect every
+// candidate rail owner before scanning transient buttons from either page.
+static BOOL ApolloActionsDuoRailIsTransitioning(UIViewController *tabs, NSArray<UINavigationItem *> *items) {
+    if (tabs.transitionCoordinator) return YES;
+    for (UINavigationItem *item in items) {
+        UIViewController *controller = [objc_getAssociatedObject(item, &kActionsControllerKey) controller];
+        if (controller.transitionCoordinator || controller.navigationController.transitionCoordinator) return YES;
+    }
+    return NO;
+}
+
 static void ApolloActionsCheckDuoRailOverflow(void) {
     if (!ApolloActionsHasTrailingTabRail()) return;
     UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
@@ -1553,14 +1580,17 @@ static void ApolloActionsCheckDuoRailOverflow(void) {
         sLastOverflow = overflow;
         sStableSince = now;
     }
-    if (now - sStableSince < 0.35 || tabs.transitionCoordinator) {
+    BOOL transitioning = ApolloActionsDuoRailIsTransitioning(tabs, items);
+    // Require a fresh settle after a push/pop, including a cancelled swipe.
+    if (transitioning) sStableSince = now;
+    if (now - sStableSince < 0.35 || transitioning) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             ApolloNavigationActionsDuoRailLayoutChanged();
         });
         return;
     }
 
-    sDuoRailTop = top;
+    ApolloActionsDuoRememberTop(top);
     BOOL changed = NO;
     for (UINavigationItem *item in ApolloActionsDuoRailOwners(items, railIdentifiers, otherIdentifiers, overflow)) {
         NSUInteger count = ApolloActionsDuoRailOtherCount(item);
@@ -1640,8 +1670,10 @@ void ApolloNavigationActionsDuoRailResetFolds(void) {
         ApolloActionsSetDuoOverflowFold(item, nil, nil, nil);
         objc_setAssociatedObject(item, &kActionsDuoUseFoldMemoryKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    // The rail's geometry changes completely; measure it afresh.
-    sDuoRailTop = -1.0;
+    // Reuse the destination pose's settled fit during the rebuild. Unknown
+    // poses still start unmeasured; the settled scan refreshes changed space.
+    ApolloLog(@"[NavigationActions] Duo rail reset: pose %@ remembered top %.0f",
+              ApolloActionsDuoPoseKey(), ApolloActionsDuoRememberedTop());
     ApolloActionsRebuildRailsForController((UIViewController *)ApolloMainTabBarController());
 }
 
@@ -1774,7 +1806,7 @@ static NSArray<UIBarButtonItem *> *ApolloActionsDuoNativeItems(UINavigationItem 
         NSUInteger remembered = key ? [sDuoFoldMemory[key] unsignedIntegerValue] : 0;
         if (remembered) {
             foldLevel = remembered;
-            ApolloActionsSetDuoOverflowFold(item, @(foldLevel), @(sDuoRailTop), @(ApolloActionsDuoRailOtherCount(item)));
+            ApolloActionsSetDuoOverflowFold(item, @(foldLevel), @(ApolloActionsDuoRememberedTop()), @(ApolloActionsDuoRailOtherCount(item)));
             ApolloLog(@"[NavigationActions] Duo rail: folding %lu from memory as items changed (%@)",
                       (unsigned long)foldLevel, key);
         }
@@ -1839,7 +1871,7 @@ static NSArray<UIBarButtonItem *> *ApolloActionsDuoNativeItems(UINavigationItem 
             NSUInteger remembered = key ? [sDuoFoldMemory[key] unsignedIntegerValue] : 0;
             if (remembered) {
                 foldLevel = MIN(remembered, order.count);
-                ApolloActionsSetDuoOverflowFold(item, @(foldLevel), @(sDuoRailTop),
+                ApolloActionsSetDuoOverflowFold(item, @(foldLevel), @(ApolloActionsDuoRememberedTop()),
                                                 @(ApolloActionsDuoRailOtherCount(item)));
                 ApolloLog(@"[NavigationActions] Duo rail: starting %lu folded from memory (%@)",
                           (unsigned long)foldLevel, key);
@@ -2698,25 +2730,6 @@ static void ApolloActionsUpdateBackGlass(UIView *button, UIBarButtonItem *item) 
 
 %group ApolloNavigationActionsBackGlassHooks
 %hook _UIButtonBarButton
-- (void)_configureFromBarItem:(UIBarButtonItem *)item appearanceDelegate:(id)delegate isBackButton:(BOOL)back useBreadcrumbStyle:(BOOL)breadcrumb {
-    UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
-    BOOL isolate = back && IsLiquidGlass() && sCollapseNavigationActions &&
-        ApolloActionsHasTrailingTabRail() && !tabs.presentedViewController;
-    BOOL managed = [objc_getAssociatedObject(item, &kActionsDuoBackItemKey) boolValue];
-    // Mark UIKit's generated Back item, rather than supplying a replacement
-    // navigation item (which would lose its native title/history behavior).
-    if (@available(iOS 26.0, *)) {
-        if (isolate && (managed || !item.hidesSharedBackground)) {
-            objc_setAssociatedObject(item, &kActionsDuoBackItemKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            if (!item.hidesSharedBackground) item.hidesSharedBackground = YES;
-        } else if (managed) {
-            objc_setAssociatedObject(item, &kActionsDuoBackItemKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            item.hidesSharedBackground = NO;
-        }
-    }
-    %orig(item, delegate, back, breadcrumb);
-    ApolloActionsUpdateBackGlass((UIView *)self, item);
-}
 - (void)willMoveToWindow:(UIWindow *)window {
     %orig(window);
     // UIKit finishes installing its chevron/mask after initial configuration.
@@ -3024,17 +3037,32 @@ static void ApolloActionsUpdateBackGlass(UIView *button, UIBarButtonItem *item) 
 
 %group ApolloNavigationActionsRailItemHooks
 %hook _UIButtonBarButton
-- (void)_configureFromBarItem:(UIBarButtonItem *)item
-           appearanceDelegate:(id)delegate
-                 isBackButton:(BOOL)isBackButton
-            useBreadcrumbStyle:(BOOL)useBreadcrumbStyle {
-    %orig;
+- (void)_configureFromBarItem:(UIBarButtonItem *)item appearanceDelegate:(id)delegate isBackButton:(BOOL)back useBreadcrumbStyle:(BOOL)breadcrumb {
+    BOOL decorate = NO;
+    if (@available(iOS 27.1, *)) decorate = IsLiquidGlass();
+    UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
+    BOOL isolate = decorate && back && IsLiquidGlass() && sCollapseNavigationActions &&
+        ApolloActionsHasTrailingTabRail() && !tabs.presentedViewController;
+    BOOL managed = [objc_getAssociatedObject(item, &kActionsDuoBackItemKey) boolValue];
+    // Mark UIKit's generated Back item, rather than supplying a replacement
+    // navigation item (which would lose its native title/history behavior).
+    if (@available(iOS 26.0, *)) {
+        if (isolate && (managed || !item.hidesSharedBackground)) {
+            objc_setAssociatedObject(item, &kActionsDuoBackItemKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            if (!item.hidesSharedBackground) item.hidesSharedBackground = YES;
+        } else if (managed) {
+            objc_setAssociatedObject(item, &kActionsDuoBackItemKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            item.hidesSharedBackground = NO;
+        }
+    }
+    %orig(item, delegate, back, breadcrumb);
     ApolloActionsBarItemBox *box = objc_getAssociatedObject(self, &kActionsBarButtonItemKey);
     if (!box) {
         box = [ApolloActionsBarItemBox new];
         objc_setAssociatedObject(self, &kActionsBarButtonItemKey, box, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     box.item = [item isKindOfClass:UIBarButtonItem.class] ? item : nil;
+    if (decorate) ApolloActionsUpdateBackGlass((UIView *)self, item);
 }
 %end
 %end
@@ -3048,13 +3076,17 @@ static void ApolloActionsUpdateBackGlass(UIView *button, UIBarButtonItem *item) 
         if (IsLiquidGlass()) {
             %init(ApolloNavigationActionsChromeHooks);
         }
-        if (ApolloClassUIButtonBarButton
-            && class_getInstanceMethod(ApolloClassUIButtonBarButton,
-                                       @selector(_configureFromBarItem:appearanceDelegate:isBackButton:useBreadcrumbStyle:))) {
-            %init(ApolloNavigationActionsRailItemHooks);
+        if (ApolloDeviceIsDuo()) {
+            if (ApolloClassUIButtonBarButton
+                && class_getInstanceMethod(ApolloClassUIButtonBarButton,
+                                           @selector(_configureFromBarItem:appearanceDelegate:isBackButton:useBreadcrumbStyle:))) {
+                %init(ApolloNavigationActionsRailItemHooks);
+            }
+            ApolloActionsRegisterFoldedRows();
+            ApolloActionsObserveDuoModeChanges();
+        } else {
+            ApolloLog(@"[NavigationActions] not an iPhone Duo; rail item tracking, folded rows and mode observer NOT installed");
         }
-        ApolloActionsRegisterFoldedRows();
-        ApolloActionsObserveDuoModeChanges();
         ApolloLog(@"[NavigationActions] Page-owned native strip hooks installed");
     }
 }
