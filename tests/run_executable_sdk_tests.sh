@@ -11,12 +11,10 @@ import sys
 
 source = Path(sys.argv[1]).read_text()
 begin = source.index('static const char *ApolloNativeExecutableImageName(void)')
-end = source.index('// Both the selected Apollo variant', begin)
+end = source.index('static NSInteger ApolloLogicalDeviceDisplayCount', begin)
 build_dir = Path(sys.argv[2])
 (build_dir / 'ExecutableSDKSelection.inc').write_text(source[begin:end])
-begin = source.index('static BOOL ApolloLiquidGlassDisabledForLaunch(')
-end = source.index('static NSDictionary *ApolloLiquidGlassInfoDictionary(', begin)
-(build_dir / 'LiquidGlassRuntimeSelection.inc').write_text(source[begin:end])
+
 PY
 
 xcrun --sdk macosx clang -fobjc-arc -fblocks -Wall -Wextra -Werror \

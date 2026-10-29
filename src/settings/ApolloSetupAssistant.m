@@ -49,7 +49,6 @@ BOOL ApolloSetupAssistantBlocksLaunchPrompts(void) {
 @interface ApolloSetupDraft : NSObject
 @property (nonatomic, copy) NSString *presetIdentifier;
 @property (nonatomic) ApolloSetupAppearance appearance;
-@property (nonatomic) BOOL glass;
 @property (nonatomic) BOOL installCount;
 @property (nonatomic) BOOL crashCapture;
 @property (nonatomic) BOOL firstRun;
@@ -152,7 +151,6 @@ static void ApolloSetupPaintSymbol(NSString *symbol, CGRect rect, UIColor *color
     if (appearance && self.draft.appearance == ApolloSetupAppearanceUnchanged) {
         light = self.systemStyle == UIUserInterfaceStyleLight;
     }
-    BOOL glass = appearance && (ApolloLiquidGlassCanToggle() ? self.draft.glass : IsLiquidGlass());
     UIColor *surface = light ? [UIColor colorWithWhite:0.96 alpha:1] : [UIColor colorWithWhite:0.095 alpha:1];
     UIColor *ink = light ? [UIColor colorWithWhite:0.12 alpha:1] : UIColor.whiteColor;
     UIColor *muted = light ? [UIColor colorWithWhite:0.4 alpha:1] : [UIColor colorWithWhite:0.55 alpha:1];
@@ -167,7 +165,7 @@ static void ApolloSetupPaintSymbol(NSString *symbol, CGRect rect, UIColor *color
     [[UIColor colorWithWhite:0 alpha:1] setFill];
     [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(-25, -115, 50, 12) cornerRadius:6] fill];
 
-    if (glass) {
+    {
         [[accent colorWithAlphaComponent:light ? 0.08 : 0.16] setFill];
         [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(-81, -92, 162, 27) cornerRadius:13.5] fill];
     }
@@ -223,8 +221,8 @@ static void ApolloSetupPaintSymbol(NSString *symbol, CGRect rect, UIColor *color
         ApolloSetupPaintText(enhanced ? @"↗  A favourite trail" : @"example.com/trail", CGRectMake(x, 91, 143, 16), 9, UIFontWeightMedium, enhanced ? accent : muted);
     } else {
         CGRect tabs = CGRectMake(-76, 90, 152, 26);
-        [[(glass ? accent : muted) colorWithAlphaComponent:glass ? 0.12 : 0.07] setFill];
-        [[UIBezierPath bezierPathWithRoundedRect:tabs cornerRadius:glass ? 13 : 3] fill];
+        [[accent colorWithAlphaComponent:0.12] setFill];
+        [[UIBezierPath bezierPathWithRoundedRect:tabs cornerRadius:13] fill];
         NSArray *symbols = @[@"house.fill", @"envelope", @"gearshape"];
         for (NSUInteger i = 0; i < symbols.count; i++) {
             ApolloSetupPaintSymbol(symbols[i], CGRectMake(-56 + (CGFloat)i * 48, 97, 13, 13), i == 0 ? accent : muted);
@@ -360,7 +358,7 @@ static void ApolloSetupPaintSymbol(NSString *symbol, CGRect rect, UIColor *color
     NSArray *titles = @[@"Welcome to\nApollo Reborn", @"Choose your Apollo", @"Make it yours", @"You’re all set"];
     NSArray *subtitles = @[@"A familiar favourite. A fresh start.\nLet’s make Apollo feel like you.",
         @"Start with the experience that feels right.\nEvery setting is yours to change later.",
-        @"Classic charm or a little more glass.\nChoose the look you love.",
+        @"Light, dark or in tune with your device.\nChoose the look you love.",
         @"Your choices are ready.\nThere’s always more to discover in Settings."];
     ApolloSetupArtwork *artwork = [ApolloSetupArtwork new];
     artwork.backgroundColor = UIColor.clearColor;
@@ -409,12 +407,6 @@ static void ApolloSetupPaintSymbol(NSString *symbol, CGRect rect, UIColor *color
         }
         [stack addArrangedSubview:[self button:@"What’s included?" action:@selector(showPresetDetails)]];
     } else if (self.index == 2) {
-        if (ApolloLiquidGlassCanToggle()) {
-            [stack addArrangedSubview:[self choices:@[
-                [self choice:@"Classic" selected:!host.draft.glass action:^{ weakHost.draft.glass = NO; [weakHost refreshPage]; }],
-                [self choice:@"Liquid Glass" selected:host.draft.glass action:^{ weakHost.draft.glass = YES; [weakHost refreshPage]; }],
-            ]]];
-        }
         NSMutableArray *choices = [NSMutableArray array];
         NSArray *modes = @[@"Current", @"System", @"Light", @"Dark"];
         for (NSInteger i = host.draft.firstRun ? 1 : 0; i < (NSInteger)modes.count; i++) {
@@ -425,14 +417,12 @@ static void ApolloSetupPaintSymbol(NSString *symbol, CGRect rect, UIColor *color
             }]];
         }
         [stack addArrangedSubview:[self choices:choices]];
-        [stack addArrangedSubview:ApolloSetupLabel(ApolloLiquidGlassCanToggle()
-            ? @"Interface changes apply when you reopen Apollo."
-            : @"This build uses its installed interface style.", 13, UIFontWeightRegular, YES)];
+        [stack addArrangedSubview:ApolloSetupLabel(@"Appearance changes apply when you reopen Apollo.", 13, UIFontWeightRegular, YES)];
     } else {
         ApolloSetupPreset *preset = [ApolloSetupPreset presetWithIdentifier:host.draft.presetIdentifier];
         NSArray *modes = @[@"Current appearance", @"System appearance", @"Light appearance", @"Dark appearance"];
-        NSString *summary = [NSString stringWithFormat:@"%@  ·  %@%@", preset.title ?: @"Keep My Settings",
-            modes[host.draft.appearance + 1], ApolloLiquidGlassCanToggle() ? host.draft.glass ? @"\nLiquid Glass" : @"\nClassic interface" : @""];
+        NSString *summary = [NSString stringWithFormat:@"%@  ·  %@", preset.title ?: @"Keep My Settings",
+            modes[host.draft.appearance + 1]];
         [stack addArrangedSubview:ApolloSetupLabel(summary, 15, UIFontWeightMedium, NO)];
         [stack addArrangedSubview:[self button:@"Privacy & Diagnostics" action:@selector(showPrivacy)]];
         [stack addArrangedSubview:[self button:@"Set Up Automatic Backups" action:@selector(showBackups)]];
@@ -475,7 +465,6 @@ static void ApolloSetupPaintSymbol(NSString *symbol, CGRect rect, UIColor *color
         _draft.firstRun = [defaults integerForKey:UDKeySetupAssistantState] == ApolloSetupStatePending;
         _draft.presetIdentifier = _draft.firstRun ? @"balanced" : nil;
         _draft.appearance = _draft.firstRun ? ApolloSetupAppearanceSystem : ApolloSetupAppearanceUnchanged;
-        _draft.glass = [defaults boolForKey:UDKeyLiquidGlassEnabled];
         _draft.installCount = !ApolloUsageHeartbeatIsDisabled();
         _draft.crashCapture = [defaults boolForKey:UDKeyCrashCaptureEnabled];
         self.hidesBottomBarWhenPushed = YES;
@@ -704,10 +693,6 @@ static void ApolloSetupPaintSymbol(NSString *symbol, CGRect rect, UIColor *color
     BOOL restart = ApolloSetupWriteValues(defaults, preset.values ?: @{});
     restart |= ApolloSetupWriteValues(defaults, ApolloSetupMainAppearanceValues(self.draft.appearance));
     restart |= ApolloSetupWriteValues(group, ApolloSetupGroupAppearanceValues(self.draft.appearance));
-    if (ApolloLiquidGlassCanToggle()) {
-        restart |= self.draft.glass != sLiquidGlassEnabled;
-        [defaults setBool:self.draft.glass forKey:UDKeyLiquidGlassEnabled];
-    }
     restart |= self.draft.crashCapture != [defaults boolForKey:UDKeyCrashCaptureEnabled];
     [defaults setBool:self.draft.crashCapture forKey:UDKeyCrashCaptureEnabled];
     ApolloSetUsageHeartbeatDisabled(!self.draft.installCount);

@@ -1,23 +1,17 @@
 export ARCHS = arm64
 export libFLEX_ARCHS = arm64
 
-# SDK 26.0 preserves the supported iOS 14 device deployment floor. Merely
-# pinning SDK 27.1 by name does not bypass its iOS 15 minimum deployment target.
-# Alternate SDK pins are developer builds and require an explicit iOS 15+ floor.
+# Releases after 4.0.x require iOS 26 and always use Liquid Glass. Keep the
+# reproducible SDK pin; a newer SDK may be selected for local development.
 # Simulator callers pass TARGET explicitly and bypass this device configuration.
 APOLLO_DEVICE_SDK ?= 26.0
 _APOLLO_XCODE_DEVELOPER := $(or $(DEVELOPER_DIR),$(shell xcode-select -p 2>/dev/null))
 
 ifeq ($(filter command line,$(origin TARGET)),)
-  ifneq ($(APOLLO_DEVICE_SDK),26.0)
-    ifeq ($(origin APOLLO_DEVICE_DEPLOY),undefined)
-      $(error An alternate APOLLO_DEVICE_SDK requires an explicit compatible APOLLO_DEVICE_DEPLOY; SDK 27.1 requires 15.0 or newer)
-    endif
-    ifneq ($(shell printf '%s\n' '$(APOLLO_DEVICE_DEPLOY)' | awk -F. '{ print ($$1 + 0 >= 15) }'),1)
-      $(error Alternate device SDK builds require APOLLO_DEVICE_DEPLOY=15.0 or newer; use SDK 26.0 for iOS 14 support)
-    endif
+  APOLLO_DEVICE_DEPLOY ?= 26.0
+  ifneq ($(shell printf '%s\n' '$(APOLLO_DEVICE_DEPLOY)' | awk -F. '{ print ($$1 + 0 >= 26) }'),1)
+    $(error Apollo Reborn requires APOLLO_DEVICE_DEPLOY=26.0 or newer; use 4.0.x for older iOS)
   endif
-  APOLLO_DEVICE_DEPLOY ?= 14.0
   TARGET := iphone:clang:$(APOLLO_DEVICE_SDK):$(APOLLO_DEVICE_DEPLOY)
   $(info [ApolloReborn] Device Theos SDK pin $(APOLLO_DEVICE_SDK) (TARGET=$(TARGET)))
 endif

@@ -21,6 +21,7 @@ typedef NS_ENUM(NSInteger, ApolloUpdateHandoff) {
 // The newest published release, resolved for the installed build variant.
 @interface ApolloUpdateInfo : NSObject
 @property (nonatomic, copy) NSString *version;                    // "3.9.0"
+@property (nonatomic, copy, nullable) NSString *minimumOSVersion;
 @property (nonatomic, strong, nullable) NSURL *releaseURL;        // release notes page
 // nil unless the installed build is a known release variant.
 @property (nonatomic, strong, nullable) NSURL *sourceURL;         // that variant's AltStore-style source
@@ -85,6 +86,8 @@ NSComparisonResult ApolloUpdateCompareVersions(NSString *a, NSString *b);
 // standard variant). Non-https URLs are dropped.
 ApolloUpdateInfo *_Nullable ApolloUpdateInfoFromManifest(id _Nullable manifest,
                                                          NSString *_Nullable variantKey);
+// Check every result, including restored/304 cache entries, before offering it.
+BOOL ApolloUpdateInfoSupportsOSVersion(ApolloUpdateInfo *info, NSString *OSVersion);
 
 // The URL that asks `sideloader` to add the given AltStore-style source. nil for FlareStore,
 // which is handed the IPA instead.

@@ -326,7 +326,7 @@ CGFloat ApolloPinnedPreviewSectionCornerRadius(UITableView *table) {
             if (radius > 0) return (CGFloat)radius;
         }
     }
-    return IsLiquidGlass() ? 26.0 : 10.0;
+    return 26.0;
 }
 
 // MARK: - Table view (the layout pass)

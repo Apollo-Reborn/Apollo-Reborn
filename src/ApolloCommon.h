@@ -115,10 +115,8 @@ NSURLSessionDataTask *ApolloStartBoundedDataRequest(
     dispatch_queue_t completionQueue,
     ApolloBoundedDataCompletion completion);
 
-// Active appearance, fixed until the process restarts.
+// Glass runtime capability, including Apollo's executable when hosted by another app.
 BOOL IsLiquidGlass(void);
-// Build/runtime capability, independent of the selected appearance.
-BOOL ApolloLiquidGlassCanToggle(void);
 // Hardware capability, decided once before any %ctor: YES only on a device
 // with more than one built-in logical display (iPhone Duo, iOS 27+). Duo-only
 // hook groups install only when this is YES, so regular phones never run them.

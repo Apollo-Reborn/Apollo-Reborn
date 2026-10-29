@@ -75,6 +75,8 @@ static NSURL *ApolloUpdateHTTPSURL(id value) {
 
 ApolloUpdateInfo *ApolloUpdateInfoFromManifest(id manifest, NSString *variantKey) {
     if (![manifest isKindOfClass:NSDictionary.class]) return nil;
+    id schema = manifest[@"schemaVersion"];
+    if (schema && ![schema isEqual:@2]) return nil;
     NSDictionary *release = [manifest[@"release"] isKindOfClass:NSDictionary.class] ? manifest[@"release"] : nil;
     NSString *version = ApolloUpdateString(release[@"tweakVersion"]);
     if (!version || [version rangeOfCharacterFromSet:NSCharacterSet.decimalDigitCharacterSet].location == NSNotFound) {
@@ -84,16 +86,32 @@ ApolloUpdateInfo *ApolloUpdateInfoFromManifest(id manifest, NSString *variantKey
     ApolloUpdateInfo *info = [ApolloUpdateInfo new];
     info.version = version;
     info.releaseURL = ApolloUpdateHTTPSURL(release[@"url"]);
+    NSString *minimumOS = ApolloUpdateString(release[@"minimumOSVersion"]);
+    if (schema || release[@"minimumOSVersion"]) {
+        NSRegularExpression *OSPattern = [NSRegularExpression regularExpressionWithPattern:@"^[0-9]+(?:\\.[0-9]+){0,2}$" options:0 error:NULL];
+        if (!minimumOS || [OSPattern numberOfMatchesInString:minimumOS options:0
+                                                    range:NSMakeRange(0, minimumOS.length)] != 1) return nil;
+    }
+    info.minimumOSVersion = minimumOS;
 
     NSDictionary *variants = [manifest[@"variants"] isKindOfClass:NSDictionary.class] ? manifest[@"variants"] : nil;
     NSDictionary *variant = variantKey && [variants[variantKey] isKindOfClass:NSDictionary.class] ? variants[variantKey] : nil;
+    // A retired known variant must never inherit the current global version.
+    if (schema && variantKey && !variant) return nil;
     info.sourceURL = ApolloUpdateHTTPSURL(variant[@"sourceURL"]);
     info.downloadURL = ApolloUpdateHTTPSURL(variant[@"directDownloadURL"]);
     // The notes are identical across variants, so a build that doesn't know its own variant
     // still reads them from the standard source.
     NSDictionary *standard = [variants[@"standard"] isKindOfClass:NSDictionary.class] ? variants[@"standard"] : nil;
-    info.notesSourceURL = info.sourceURL ?: ApolloUpdateHTTPSURL(standard[@"sourceURL"]);
+    NSDictionary *glass = [variants[@"glass"] isKindOfClass:NSDictionary.class] ? variants[@"glass"] : nil;
+    NSDictionary *notesVariant = schema ? glass : standard;
+    info.notesSourceURL = info.sourceURL ?: ApolloUpdateHTTPSURL(notesVariant[@"sourceURL"]);
     return info;
+}
+
+BOOL ApolloUpdateInfoSupportsOSVersion(ApolloUpdateInfo *info, NSString *OSVersion) {
+    return !info.minimumOSVersion ||
+        ApolloUpdateCompareVersions(OSVersion, info.minimumOSVersion) != NSOrderedAscending;
 }
 
 NSURL *ApolloUpdateSideloaderSourceURL(ApolloUpdateSideloader sideloader, NSURL *sourceURL) {

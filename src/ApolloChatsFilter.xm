@@ -321,27 +321,18 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
 
 // Keep Chat beside the existing notifications instead of presenting it as a
 // large promotional card. This deliberately behaves like a two-tab switcher.
-// On Liquid Glass builds it embeds a real UISegmentedControl so it gets the
-// native glass thumb, morphing, and accessibility for free (tinted with the
-// theme accent); everywhere else it stays hand-drawn with ordinary UIKit so
-// it follows every Apollo theme rather than inheriting the stock blue
-// segmented-control appearance. Both variants expose the same external API,
-// so ApolloSetInboxChatHubVisible / ApolloInstallInboxModeSwitcher never care
-// which one is live.
+// A native UISegmentedControl supplies the Glass thumb, interaction and
+// accessibility while retaining Apollo's theme accent.
 @interface ApolloInboxModeSwitcherView : UIControl
-@property (nonatomic, strong) UISegmentedControl *segmentedControl;   // Liquid Glass builds only
+@property (nonatomic, strong) UISegmentedControl *segmentedControl;
 // Last theme colors actually applied to the segmented control. Re-applying
 // selectedSegmentTintColor / title attributes rebuilds the segments, which
 // cancels an in-flight Liquid Glass thumb morph — so appearance writes only
 // happen when a color really changed (status refreshes arrive every few
 // seconds and would otherwise stomp every user tap's animation).
-@property (nonatomic, strong) UIColor *lastAppliedAccent;             // Liquid Glass builds only
-@property (nonatomic, strong) UIColor *lastAppliedText;               // Liquid Glass builds only
-@property (nonatomic, strong) UIColor *lastAppliedSelectedText;       // Liquid Glass builds only
-@property (nonatomic, strong) UIView *containerView;                  // custom (non-LG) drawing
-@property (nonatomic, strong) UIView *selectionView;
-@property (nonatomic, strong) UIButton *notificationsButton;
-@property (nonatomic, strong) UIButton *chatButton;
+@property (nonatomic, strong) UIColor *lastAppliedAccent;
+@property (nonatomic, strong) UIColor *lastAppliedText;
+@property (nonatomic, strong) UIColor *lastAppliedSelectedText;
 @property (nonatomic, strong) UILabel *chatUnreadBadge;
 @property (nonatomic, assign) ApolloInboxMode selectedMode;
 @property (nonatomic, assign) CGRect lastSegmentedFrame;
@@ -355,62 +346,17 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
     self = [super initWithFrame:frame];
     if (!self) return nil;
 
-    if (IsLiquidGlass()) {
-        self.segmentedControl = [[UISegmentedControl alloc]
-            initWithItems:@[@"Notifications", @"Chat"]];
-        self.segmentedControl.selectedSegmentIndex = 0;
-        [self.segmentedControl addTarget:self
-                                  action:@selector(apollo_segmentChanged:)
-                        forControlEvents:UIControlEventValueChanged];
-        [self addSubview:self.segmentedControl];
+    self.segmentedControl = [[UISegmentedControl alloc]
+        initWithItems:@[@"Notifications", @"Chat"]];
+    self.segmentedControl.selectedSegmentIndex = 0;
+    [self.segmentedControl addTarget:self
+                              action:@selector(apollo_segmentChanged:)
+                    forControlEvents:UIControlEventValueChanged];
+    [self addSubview:self.segmentedControl];
 
-        // Same numeric unread pill as the custom variant, overlaid on the
-        // Chat segment (UISegmentedControl has no badge API, and digging into
-        // its private segment subviews would be brittle).
-        self.chatUnreadBadge = [UILabel new];
-        self.chatUnreadBadge.userInteractionEnabled = NO;
-        self.chatUnreadBadge.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightBold];
-        self.chatUnreadBadge.textAlignment = NSTextAlignmentCenter;
-        self.chatUnreadBadge.layer.cornerRadius = 9.0;
-        self.chatUnreadBadge.clipsToBounds = YES;
-        self.chatUnreadBadge.hidden = YES;
-        // The count is spoken via the control's accessibilityValue; the pill
-        // itself must not appear as a second VoiceOver element.
-        self.chatUnreadBadge.isAccessibilityElement = NO;
-        [self addSubview:self.chatUnreadBadge];
-
-        _selectedMode = ApolloInboxModeNotifications;
-        return self;
-    }
-
-    self.containerView = [UIView new];
-    self.containerView.userInteractionEnabled = YES;
-    self.containerView.layer.cornerRadius = 12.0;
-    self.containerView.layer.borderWidth = 0.5;
-    self.containerView.clipsToBounds = YES;
-    [self addSubview:self.containerView];
-
-    self.selectionView = [UIView new];
-    self.selectionView.userInteractionEnabled = NO;
-    self.selectionView.layer.cornerRadius = 9.0;
-    [self.containerView addSubview:self.selectionView];
-
-    self.notificationsButton = [UIButton buttonWithType:UIButtonTypeCustom];
-    [self.notificationsButton setTitle:@"Notifications" forState:UIControlStateNormal];
-    self.notificationsButton.titleLabel.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold];
-    self.notificationsButton.accessibilityLabel = @"Notifications";
-    [self.notificationsButton addTarget:self action:@selector(apollo_buttonTapped:) forControlEvents:UIControlEventTouchUpInside];
-    [self.containerView addSubview:self.notificationsButton];
-
-    self.chatButton = [UIButton buttonWithType:UIButtonTypeCustom];
-    [self.chatButton setTitle:@"Chat" forState:UIControlStateNormal];
-    self.chatButton.titleLabel.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold];
-    self.chatButton.accessibilityLabel = @"Chat";
-    [self.chatButton addTarget:self action:@selector(apollo_buttonTapped:) forControlEvents:UIControlEventTouchUpInside];
-    [self.containerView addSubview:self.chatButton];
-
-    // Numeric unread pill beside the "Chat" title (the background poller
-    // supplies exact counts, so a bare dot undersells the state).
+    // A numeric unread pill overlaid on the
+    // Chat segment (UISegmentedControl has no badge API, and digging into
+    // its private segment subviews would be brittle).
     self.chatUnreadBadge = [UILabel new];
     self.chatUnreadBadge.userInteractionEnabled = NO;
     self.chatUnreadBadge.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightBold];
@@ -418,10 +364,10 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
     self.chatUnreadBadge.layer.cornerRadius = 9.0;
     self.chatUnreadBadge.clipsToBounds = YES;
     self.chatUnreadBadge.hidden = YES;
-    // The count is spoken via chatButton.accessibilityValue; the pill itself
-    // must not appear as a second VoiceOver element.
+    // The count is spoken via the control's accessibilityValue; the pill
+    // itself must not appear as a second VoiceOver element.
     self.chatUnreadBadge.isAccessibilityElement = NO;
-    [self.containerView addSubview:self.chatUnreadBadge];
+    [self addSubview:self.chatUnreadBadge];
 
     _selectedMode = ApolloInboxModeNotifications;
     return self;
@@ -456,50 +402,29 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
         badgeWidth = MAX(18.0, ceil(textSize.width) + 10.0);
     }
 
-    if (self.segmentedControl) {
-        // Native control at its intrinsic Liquid Glass height, centered in
-        // the same 60pt strip the custom variant fills.
-        CGFloat controlHeight = self.segmentedControl.intrinsicContentSize.height;
-        if (controlHeight <= 0) controlHeight = 32.0;
-        controlHeight = MIN(controlHeight, CGRectGetHeight(self.bounds) - 12.0);
-        CGRect controlFrame = CGRectMake(CGRectGetMinX(contentBounds) + 12.0,
-                                         floor((CGRectGetHeight(self.bounds) - controlHeight) / 2.0),
-                                         MAX(0.0, CGRectGetWidth(contentBounds) - 24.0), controlHeight);
-        self.segmentedControl.frame = controlFrame;
-        if (!CGRectEqualToRect(controlFrame, self.lastSegmentedFrame)) {
-            // A width change while the control is offscreen (Inbox moving into
-            // the Duo detail column) leaves the glass thumb and segment labels
-            // at the old geometry: a label-less pill a third of its half wide.
-            // Lay the control out again at its new size right away.
-            self.lastSegmentedFrame = controlFrame;
-            [self.segmentedControl setNeedsLayout];
-            [self.segmentedControl layoutIfNeeded];
-        }
-        // Overlay the pill beside the "Chat" title (right segment's midpoint,
-        // same +20pt offset as the custom variant).
-        CGFloat chatSegmentMidX = CGRectGetMinX(controlFrame) + controlFrame.size.width * 0.75;
-        self.chatUnreadBadge.frame = CGRectMake(chatSegmentMidX + 20.0,
-                                                CGRectGetMidY(controlFrame) - 9.0, badgeWidth, 18.0);
-        return;
+    // Native control at its intrinsic Liquid Glass height, centered in
+    // the 60pt switcher strip.
+    CGFloat controlHeight = self.segmentedControl.intrinsicContentSize.height;
+    if (controlHeight <= 0) controlHeight = 32.0;
+    controlHeight = MIN(controlHeight, CGRectGetHeight(self.bounds) - 12.0);
+    CGRect controlFrame = CGRectMake(CGRectGetMinX(contentBounds) + 12.0,
+                                     floor((CGRectGetHeight(self.bounds) - controlHeight) / 2.0),
+                                     MAX(0.0, CGRectGetWidth(contentBounds) - 24.0), controlHeight);
+    self.segmentedControl.frame = controlFrame;
+    if (!CGRectEqualToRect(controlFrame, self.lastSegmentedFrame)) {
+        // A width change while the control is offscreen (Inbox moving into
+        // the Duo detail column) leaves the glass thumb and segment labels
+        // at the old geometry: a label-less pill a third of its half wide.
+        // Lay the control out again at its new size right away.
+        self.lastSegmentedFrame = controlFrame;
+        [self.segmentedControl setNeedsLayout];
+        [self.segmentedControl layoutIfNeeded];
     }
-
-    self.containerView.frame = CGRectInset(contentBounds, 12.0, 8.0);
-    CGRect content = CGRectInset(self.containerView.bounds, 3.0, 3.0);
-    CGFloat halfWidth = floor(content.size.width / 2.0);
-    CGRect notificationsFrame = CGRectMake(content.origin.x, content.origin.y, halfWidth, content.size.height);
-    CGRect chatFrame = CGRectMake(CGRectGetMaxX(notificationsFrame), content.origin.y,
-                                  content.size.width - halfWidth, content.size.height);
-    self.notificationsButton.frame = notificationsFrame;
-    self.chatButton.frame = chatFrame;
-    self.selectionView.frame = self.selectedMode == ApolloInboxModeChat ? chatFrame : notificationsFrame;
-    self.chatUnreadBadge.frame = CGRectMake(CGRectGetMidX(chatFrame) + 20.0,
-                                            CGRectGetMidY(chatFrame) - 9.0, badgeWidth, 18.0);
-}
-
-- (void)apollo_buttonTapped:(UIButton *)sender {
-    ApolloInboxMode mode = sender == self.chatButton ? ApolloInboxModeChat : ApolloInboxModeNotifications;
-    [self apollo_setSelectedMode:mode animated:YES];
-    [self sendActionsForControlEvents:UIControlEventValueChanged];
+    // Overlay the pill beside the "Chat" title (right segment's midpoint,
+    // offset from the segment label).
+    CGFloat chatSegmentMidX = CGRectGetMinX(controlFrame) + controlFrame.size.width * 0.75;
+    self.chatUnreadBadge.frame = CGRectMake(chatSegmentMidX + 20.0,
+                                            CGRectGetMidY(controlFrame) - 9.0, badgeWidth, 18.0);
 }
 
 - (void)apollo_segmentChanged:(UISegmentedControl *)sender {
@@ -513,32 +438,17 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
 
 - (void)apollo_setSelectedMode:(ApolloInboxMode)mode animated:(BOOL)animated {
     _selectedMode = mode;
-    if (self.segmentedControl) {
-        // Programmatic index changes never re-fire apollo_segmentChanged:
-        // (UIKit only sends valueChanged for user interaction), so the two
-        // synced switcher instances cannot ping-pong. When the control is
-        // already on the target segment — the common case of the tapped
-        // instance being synced back by ApolloSetInboxChatHubVisible /
-        // ApolloInstallInboxModeSwitcher — leave it completely untouched:
-        // any write here snaps the tap's in-flight Liquid Glass thumb morph.
-        NSInteger targetIndex = mode == ApolloInboxModeChat ? 1 : 0;
-        if (self.segmentedControl.selectedSegmentIndex != targetIndex) {
-            self.segmentedControl.selectedSegmentIndex = targetIndex;
-        }
-        return;
+    // Programmatic index changes never re-fire apollo_segmentChanged:
+    // (UIKit only sends valueChanged for user interaction), so the two
+    // synced switcher instances cannot ping-pong. When the control is
+    // already on the target segment — the common case of the tapped
+    // instance being synced back by ApolloSetInboxChatHubVisible /
+    // ApolloInstallInboxModeSwitcher — leave it completely untouched:
+    // any write here snaps the tap's in-flight Liquid Glass thumb morph.
+    NSInteger targetIndex = mode == ApolloInboxModeChat ? 1 : 0;
+    if (self.segmentedControl.selectedSegmentIndex != targetIndex) {
+        self.segmentedControl.selectedSegmentIndex = targetIndex;
     }
-    void (^changes)(void) = ^{
-        [self setNeedsLayout];
-        if (CGRectGetWidth(self.bounds) > 24.0 && CGRectGetHeight(self.bounds) > 16.0) {
-            [self layoutIfNeeded];
-        }
-    };
-    if (animated && self.window) {
-        [UIView animateWithDuration:0.18 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:changes completion:nil];
-    } else {
-        changes();
-    }
-    [self apollo_refreshForTraits:self.traitCollection];
 }
 
 - (void)apollo_refreshForTraits:(UITraitCollection *)traits {
@@ -557,41 +467,25 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
     self.chatUnreadBadge.backgroundColor = UIColor.systemRedColor;
     self.chatUnreadBadge.textColor = UIColor.whiteColor;
 
-    if (self.segmentedControl) {
-        // Native Liquid Glass chrome; only the tint comes from the theme.
-        // Appearance writes rebuild the segments, so only perform them when a
-        // color genuinely changed (theme edit, light/dark flip) — never on the
-        // routine status refreshes that follow every tap and unread update.
-        UIColor *text = ApolloModernChatThemeColor(traits, @"text");
-        BOOL colorsChanged = ![self.lastAppliedAccent isEqual:accent] ||
-            ![self.lastAppliedText isEqual:text] ||
-            ![self.lastAppliedSelectedText isEqual:selectedText];
-        if (colorsChanged) {
-            self.lastAppliedAccent = accent;
-            self.lastAppliedText = text;
-            self.lastAppliedSelectedText = selectedText;
-            self.segmentedControl.selectedSegmentTintColor = accent;
-            [self.segmentedControl setTitleTextAttributes:@{NSForegroundColorAttributeName: text}
-                                                 forState:UIControlStateNormal];
-            [self.segmentedControl setTitleTextAttributes:@{NSForegroundColorAttributeName: selectedText}
-                                                 forState:UIControlStateSelected];
-        }
-        self.segmentedControl.accessibilityValue = unreadValue;
-        [self setNeedsLayout];
-        return;
+    // Native Liquid Glass chrome; only the tint comes from the theme.
+    // Appearance writes rebuild the segments, so only perform them when a
+    // color genuinely changed (theme edit, light/dark flip) — never on the
+    // routine status refreshes that follow every tap and unread update.
+    UIColor *text = ApolloModernChatThemeColor(traits, @"text");
+    BOOL colorsChanged = ![self.lastAppliedAccent isEqual:accent] ||
+        ![self.lastAppliedText isEqual:text] ||
+        ![self.lastAppliedSelectedText isEqual:selectedText];
+    if (colorsChanged) {
+        self.lastAppliedAccent = accent;
+        self.lastAppliedText = text;
+        self.lastAppliedSelectedText = selectedText;
+        self.segmentedControl.selectedSegmentTintColor = accent;
+        [self.segmentedControl setTitleTextAttributes:@{NSForegroundColorAttributeName: text}
+                                             forState:UIControlStateNormal];
+        [self.segmentedControl setTitleTextAttributes:@{NSForegroundColorAttributeName: selectedText}
+                                             forState:UIControlStateSelected];
     }
-
-    self.chatButton.accessibilityValue = unreadValue;
-    UIColor *raised = ApolloModernChatThemeColor(traits, @"tertiary");
-    UIColor *separator = ApolloModernChatThemeColor(traits, @"separator");
-    UIColor *secondaryText = ApolloModernChatThemeColor(traits, @"secondaryText");
-    self.containerView.backgroundColor = raised;
-    self.containerView.layer.borderColor = [separator resolvedColorWithTraitCollection:traits].CGColor;
-    self.selectionView.backgroundColor = accent;
-    [self.notificationsButton setTitleColor:self.selectedMode == ApolloInboxModeNotifications ? selectedText : secondaryText
-                                    forState:UIControlStateNormal];
-    [self.chatButton setTitleColor:self.selectedMode == ApolloInboxModeChat ? selectedText : secondaryText
-                          forState:UIControlStateNormal];
+    self.segmentedControl.accessibilityValue = unreadValue;
     [self setNeedsLayout];
 }
 

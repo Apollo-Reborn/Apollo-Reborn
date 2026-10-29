@@ -2,30 +2,6 @@
 //
 // Search-tab fixes and enhancements:
 //
-// ── #646: suggestions list rests flush against the search bar (legacy/non-Liquid-Glass) ──
-//
-// Apollo's -[SearchViewController viewDidLoad] hardcodes
-//   tableView.contentInset = UIEdgeInsetsMake(-35, 0, 0, 0)      (verified at 0x1002b3d84)
-// to swallow the grouped table's automatic first-section top margin. The Trending state
-// looks designed anyway because its first section carries the tall labelled
-// "TRENDING SUBREDDITS" header — but the search-suggestions state ("Posts with …",
-// subreddit autocomplete) has NO first-section header, so on the legacy (non-LG) chrome,
-// where that automatic margin is exactly 35pt, the first card rests pixel-flush against
-// the bar's hairline. Under Liquid Glass the same table geometry applies, but the floating
-// search pill's chrome carries its own transparent breathing room below the pill, so the
-// suggestions visibly rest ~19pt clear of it — that's why iOS 26 glass builds look correct
-// and only legacy chrome shows the bug (verified A/B in the simulator on both shells). The
-// same anchor mismatch is the "rows jump vertically" symptom when clearing/cancelling: the
-// table cross-fades between two contents whose first sections rest 35pt apart.
-//
-// Fix (legacy chrome only — Liquid Glass is already right and must not gain extra air):
-// while the search bar has text (suggestions/results showing), rest the first row a fixed
-// 16pt below the bar by deriving the inset from the table's *measured* first-row origin
-// (the empty self-sizing section-0 header, 35pt today) instead of trusting a constant:
-//   inset.top = 16 - firstRowTop     (16 - 35 = -19 as shipped)
-// When the text clears (keystroke delete, ⓧ, or Cancel), Apollo's own baseline inset is
-// restored before the shared Search landing is shown again.
-//
 // ── #647: "Random Subreddit" shuffle icon is visibly thinner than its neighbours ──
 //
 // The random-subreddit asset (24×19pt) is drawn with ~1.0-1.3pt strokes while the
@@ -107,11 +83,6 @@ extern void *ApolloSwiftCopyOptionalStringArray(const void *storage);
 
 // MARK: - #646 helpers
 
-// Visible padding between the search bar's bottom hairline and the first suggestions card.
-// Matches what the Liquid Glass variant already shows (~16pt) and the reporter's mock (~14pt).
-static const CGFloat kApolloSearchSuggestionsGap = 16.0;
-
-static const void *kApolloSearchBaselineInsetKey = &kApolloSearchBaselineInsetKey;
 static const void *kApolloSearchBaselineBounceKey = &kApolloSearchBaselineBounceKey;
 static const void *kApolloSearchRefreshControlKey = &kApolloSearchRefreshControlKey;
 static const void *kApolloSearchRefreshInFlightKey = &kApolloSearchRefreshInFlightKey;
@@ -301,58 +272,6 @@ static void ApolloSearchTabFinishModeTransition(
     [tableView insertRowsAtIndexPaths:@[
         [NSIndexPath indexPathForRow:1 inSection:3]
     ] withRowAnimation:UITableViewRowAnimationNone];
-}
-
-// Re-anchor the table's top inset for the current mode. `searching` == the bar has text
-// (Apollo shows suggestions/results); otherwise Apollo's own baseline inset is restored.
-static void ApolloSearchTabApplyTopInset(UIViewController *vc, UISearchBar *bar) {
-    UITableView *tv = ApolloSearchTabTableView(vc);
-    if (!tv) return;
-
-    // Capture Apollo's baseline (-35 as shipped) the first time through, before we have
-    // ever written to the inset, so restores always land on the app's own value.
-    NSNumber *baseline = objc_getAssociatedObject(vc, kApolloSearchBaselineInsetKey);
-    if (!baseline) {
-        baseline = @(tv.contentInset.top);
-        objc_setAssociatedObject(vc, kApolloSearchBaselineInsetKey, baseline,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-
-    CGFloat target = (CGFloat)baseline.doubleValue;
-    BOOL searching = bar.text.length > 0;
-    if (searching && !IsLiquidGlass() && tv.numberOfSections > 0) {
-        // The suggestions section carries an *empty* self-sizing header (Apollo's spacer),
-        // so the first visible content is row 0, resting at content-y == that header's
-        // height (35pt today). Measure it rather than assume, in case UIKit resizes it.
-        CGFloat firstRowTop = [tv numberOfRowsInSection:0] > 0
-            ? CGRectGetMinY([tv rectForRowAtIndexPath:[NSIndexPath indexPathForRow:0
-                                                                         inSection:0]])
-            : CGRectGetHeight([tv rectForHeaderInSection:0]);
-        CGFloat padded = kApolloSearchSuggestionsGap - firstRowTop;
-        // Never tighter than Apollo's own inset (paranoia against a weird readback).
-        if (padded > target) target = padded;
-    }
-
-    UIEdgeInsets inset = tv.contentInset;
-    if (fabs(inset.top - target) < 1.0) return;   // LG computes ≈ baseline → true no-op
-
-    // Was the table parked at its rest offset? (It always is during the type/clear/cancel
-    // transitions this hook runs on; only a mid-scroll change should keep the offset.)
-    BOOL parked = tv.contentOffset.y <= -(tv.adjustedContentInset.top - 0.5) &&
-                  !tv.isDragging && !tv.isDecelerating;
-
-    CGFloat oldTop = inset.top;
-    inset.top = target;
-    tv.contentInset = inset;
-
-    // Changing contentInset does not move contentOffset, so re-park at the new rest or the
-    // padding stays invisible until the next user scroll.
-    if (parked) {
-        [tv setContentOffset:CGPointMake(tv.contentOffset.x, -tv.adjustedContentInset.top)
-                    animated:NO];
-    }
-    ApolloLog(@"[SearchTabFixes] top inset %.1f → %.1f (searching=%d, parked=%d)",
-              oldTop, target, searching, parked);
 }
 
 // MARK: - #647 helpers
@@ -679,7 +598,6 @@ static void ApolloSearchTabScheduleLandingUpdate(UIViewController *vc) {
     ApolloSearchTabPrepareForModeTransition(self, nextDefaultState);
     %orig;
     ApolloSearchTabFinishModeTransition(self, nextDefaultState);
-    ApolloSearchTabApplyTopInset(self, bar);
     ApolloSearchTabUpdateRefreshAvailability(self);
     // Google mode: Apollo's own suggestions above still update (hidden under
     // the Google list), so switching back to Reddit shows current ones.
@@ -698,7 +616,6 @@ static void ApolloSearchTabScheduleLandingUpdate(UIViewController *vc) {
     ApolloSearchTabPrepareForModeTransition(self, YES);
     %orig;
     ApolloSearchTabFinishModeTransition(self, YES);
-    ApolloSearchTabApplyTopInset(self, bar);
     ApolloSearchTabUpdateRefreshAvailability(self);
     ApolloGoogleSearchTabDidCancel(self);
     ApolloSearchTabRefreshChangedTrending(self);

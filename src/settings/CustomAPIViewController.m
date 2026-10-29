@@ -261,10 +261,7 @@ static UIImage *ApolloAboutGitHubMark(UIImage *artwork) {
 
 static NSString *ApolloIPadPaneLayoutSettingDetail(void) {
     if (!ApolloPaneLayoutSupported()) {
-        // Standard builds can't switch glass on, so point at the right build.
-        return ApolloLiquidGlassCanToggle()
-            ? @"Requires Liquid Glass. Turn it on under Interface \u2192 Appearance, then reopen Apollo."
-            : @"Requires the Liquid Glass version of Apollo Reborn.";
+        return @"Requires a supported iPad layout environment.";
     }
     BOOL desired = [NSUserDefaults.standardUserDefaults boolForKey:UDKeyIPadPaneLayout];
     BOOL active = ApolloPaneLayoutActive();
@@ -2122,25 +2119,6 @@ typedef NS_ENUM(NSInteger, Tag) {
 
 // Interface group screen (ApolloInterfaceSettingsViewController) — appearance,
 // tab-bar controls, and global display/navigation options.
-- (ApolloSettingsSection *)buildInterfaceLiquidGlassSection {
-    __weak typeof(self) weakSelf = self;
-
-    ApolloSettingsRow *liquidGlass =
-        [ApolloSettingsRow switchRowWithID:@"interface.liquidGlassEnabled"
-                                     title:@"Liquid Glass"
-                                      isOn:^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyLiquidGlassEnabled]; }
-                                  onToggle:^(UISwitch *sender) { [weakSelf liquidGlassSwitchToggled:sender]; }];
-
-    ApolloSettingsSection *section =
-        [ApolloSettingsSection sectionWithTitle:@"Appearance"
-                                         footer:@"Turn off for the classic appearance. Requires a restart."
-                                           rows:@[ liquidGlass ]];
-    // This is a build capability, not the active appearance: keep the switch
-    // available after a relaunch into classic mode so glass can be re-enabled.
-    section.visible = ^BOOL { return ApolloLiquidGlassCanToggle(); };
-    return section;
-}
-
 - (ApolloSettingsSection *)buildInterfaceTabBarSection {
     __weak typeof(self) weakSelf = self;
 
@@ -4944,13 +4922,6 @@ static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-- (void)liquidGlassSwitchToggled:(UISwitch *)sender {
-    // The current launch keeps its original appearance and hook selection.
-    // Only startup consumes this preference; do not refresh row visibility.
-    [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyLiquidGlassEnabled];
-    [self apollo_presentRestartRequiredAlertAllowingLater:NO];
-}
-
 // Takes effect on next relaunch — see ApolloLiquidGlass.xm.
 - (void)tabBarSwipeNavigationSwitchToggled:(UISwitch *)sender {
     sTabBarSwipeNavigation = sender.isOn;
@@ -5518,7 +5489,6 @@ static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"Feed Shortcuts";
-    BOOL liquidGlass = IsLiquidGlass();
 
     UIView *previewHost = [UIView new];
     previewHost.translatesAutoresizingMaskIntoConstraints = NO;
@@ -5528,16 +5498,12 @@ static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
 
     UILabel *titleLabel = [UILabel new];
     titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    if (liquidGlass) {
-        titleLabel.text = @"Preview";
-        // Match the semibold inset-grouped section titles beneath the preview.
-        UIFont *titleFont = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
-        titleLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
-            scaledFontForFont:titleFont];
-    } else {
-        titleLabel.text = @"PREVIEW";
-        titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
-    }
+    titleLabel.text = @"Preview";
+    // Match the semibold inset-grouped section titles beneath the preview.
+    UIFont *titleFont = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
+    titleLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
+        scaledFontForFont:titleFont];
+
     titleLabel.adjustsFontForContentSizeCategory = YES;
     ApolloSettingsApplySectionHeaderTypography(titleLabel);
     titleLabel.isAccessibilityElement = YES;
@@ -5549,7 +5515,7 @@ static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
     previewCard.translatesAutoresizingMaskIntoConstraints = NO;
     previewCard.userInteractionEnabled = NO;
     previewCard.clipsToBounds = YES;
-    previewCard.layer.cornerRadius = liquidGlass ? 20.0 : 10.0;
+    previewCard.layer.cornerRadius = 20.0;
     previewCard.layer.cornerCurve = kCACornerCurveContinuous;
     self.previewCardView = previewCard;
     [previewHost addSubview:previewCard];
@@ -5855,7 +5821,6 @@ static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
 - (NSArray<ApolloSettingsSection *> *)buildForm {
     return @[ [self buildInterfaceTabBarSection],
               [self buildInterfaceDisplayNavigationSection],
-              [self buildInterfaceLiquidGlassSection],
               [self buildInterfaceMenusSection] ];
 }
 @end

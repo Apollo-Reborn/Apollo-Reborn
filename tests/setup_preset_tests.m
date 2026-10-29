@@ -43,7 +43,7 @@ int main(void) {
         NSSet *owned = [NSSet setWithArray:presets.firstObject.values.allKeys];
         NSSet *protected = [NSSet setWithArray:@[
             UDKeyRedditClientId, UDKeyRedditClientSecret, UDKeyPerAccountCredentials,
-            UDKeyLiquidGlassEnabled, UDKeyCrashCaptureEnabled, UDKeyDisableUsageHeartbeat,
+            @"LiquidGlassEnabled", UDKeyCrashCaptureEnabled, UDKeyDisableUsageHeartbeat,
             UDKeyEnableAISummaries, UDKeyEnableBulkTranslation, UDKeyShowDeletedComments,
             UDKeyWebJSONEnabled, UDKeyUseModernRedditChat, UDKeyUseModernRedditModmail,
             UDKeyUnmuteFeedVideos, UDKeyNSFWBlurOverride, UDKeyPerAccountFavoritesEnabled,

@@ -33,10 +33,7 @@ static NSString *const kApolloGalleryPinchIntroductionKey = @"ApolloGalleryPinch
     self.view.accessibilityViewIsModal = YES;
     self.view.accessibilityIdentifier = @"ApolloGalleryPinchIntroduction";
     // No backdrop recognizer: outside taps are consumed by this modal view.
-    UIVisualEffect *effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThickMaterial];
-    if (@available(iOS 26.0, *)) {
-        if (IsLiquidGlass()) effect = [UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];
-    }
+    UIVisualEffect *effect = [UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];
     UIVisualEffectView *card = [[UIVisualEffectView alloc] initWithEffect:effect];
     card.translatesAutoresizingMaskIntoConstraints = NO;
     card.layer.cornerRadius = 32.0;

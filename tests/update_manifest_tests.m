@@ -84,6 +84,39 @@ static void TestManifestParse(void) {
     CHECK(ApolloUpdateInfoFromManifest(@{@"release": @{@"tweakVersion": @3}}, nil) == nil, @"wrong-typed version");
 }
 
+static void TestCurrentManifest(void) {
+    NSMutableDictionary *manifest = [SampleManifest() mutableCopy];
+    manifest[@"schemaVersion"] = @2;
+    manifest[@"release"] = @{@"tweakVersion": @"4.1.0", @"minimumOSVersion": @"26.0"};
+    manifest[@"variants"] = @{
+        @"glass": @{@"sourceURL": @"https://example.com/apps_glass.json",
+                    @"directDownloadURL": @"https://example.com/Apollo-Reborn-4.1.0.ipa"},
+        @"noExtensionsGlass": @{@"sourceURL": @"https://example.com/apps_noext_glass.json",
+                    @"directDownloadURL": @"https://example.com/Apollo-Reborn-4.1.0-NOEXTENSIONS.ipa"},
+    };
+    ApolloUpdateInfo *info = ApolloUpdateInfoFromManifest(manifest, @"glass");
+    CHECK(info && [info.minimumOSVersion isEqual:@"26.0"], @"v2 parses its minimum OS");
+    CHECK(!ApolloUpdateInfoSupportsOSVersion(info, @"18.5"), @"older OS cannot receive current update");
+    CHECK(ApolloUpdateInfoSupportsOSVersion(info, @"26.0"), @"minimum OS is inclusive");
+    CHECK(ApolloUpdateInfoSupportsOSVersion(info, @"27.1"), @"newer OS can update");
+    CHECK([ApolloUpdateInfoFromManifest(manifest, @"noExtensionsGlass").downloadURL.lastPathComponent
+           hasSuffix:@"-NOEXTENSIONS.ipa"], @"extensions choice survives");
+    for (NSString *key in @[@"standard", @"noExtensions", @"glassIcons", @"noExtensionsGlassIcons"]) {
+        CHECK(ApolloUpdateInfoFromManifest(manifest, key) == nil, @"retired %@ never inherits global version", key);
+    }
+    info = ApolloUpdateInfoFromManifest(manifest, nil);
+    CHECK(info && !info.downloadURL && [info.notesSourceURL.lastPathComponent isEqual:@"apps_glass.json"],
+          @"unstamped builds keep safe handoff and can read Glass notes");
+    for (id minimum in @[@"", @"26.bad", @26, NSNull.null]) {
+        manifest[@"release"] = @{@"tweakVersion": @"4.1.0", @"minimumOSVersion": minimum};
+        CHECK(ApolloUpdateInfoFromManifest(manifest, @"glass") == nil, @"invalid minimum OS fails closed: %@", minimum);
+    }
+    manifest[@"release"] = @{@"tweakVersion": @"4.1.0"};
+    CHECK(ApolloUpdateInfoFromManifest(manifest, @"glass") == nil, @"v2 requires minimum OS");
+    manifest[@"schemaVersion"] = @3;
+    CHECK(ApolloUpdateInfoFromManifest(manifest, @"glass") == nil, @"unknown future schema fails closed");
+}
+
 static void TestSideloaderURLs(void) {
     NSURL *source = [NSURL URLWithString:@"https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/apps_noext.json"];
 
@@ -219,6 +252,7 @@ int main(void) {
         TestVersionCompare();
         TestVariantKeys();
         TestManifestParse();
+        TestCurrentManifest();
         TestSideloaderURLs();
         TestInstallURLs();
         TestLaunchAndHandoffURLs();
