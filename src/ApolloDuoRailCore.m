@@ -461,25 +461,39 @@ static void ApolloDuoRailApplyAccent(UITabBarController *tabs) {
     }
 }
 
-CGRect ApolloDuoActiveVerticalDivision(UIView *view) {
+static CGRect ApolloDuoActiveDivision(UIView *view, BOOL horizontal) {
     // Resolve the public iOS 27.1 API dynamically for the device build's iOS 26 SDK.
     if (@available(iOS 27.1, *)) {
         UIWindow *window = view.window;
-        Class kindClass = NSClassFromString(@"UIViewReservedRegionKind");
-        SEL query = NSSelectorFromString(@"reservedRegionsOfKind:");
-        if (!window || !kindClass || ![window respondsToSelector:query]) return CGRectNull;
-        id kind = ((id (*)(id, SEL))objc_msgSend)(kindClass, NSSelectorFromString(@"divisionRegionKind"));
+        Class kindClass = ApolloClassUIViewReservedRegionKind;
+        SEL query = @selector(reservedRegionsOfKind:);
+        if (!window || !kindClass || ![window respondsToSelector:query]
+            || ![kindClass respondsToSelector:@selector(divisionRegionKind)]) return CGRectNull;
+        id kind = ((id (*)(id, SEL))objc_msgSend)(kindClass, @selector(divisionRegionKind));
         NSArray *regions = ((id (*)(id, SEL, id))objc_msgSend)(window, query, kind);
         for (id region in regions) {
-            if (!((BOOL (*)(id, SEL))objc_msgSend)(region, NSSelectorFromString(@"isActive"))) continue;
-            CGRect frame = ((CGRect (*)(id, SEL))objc_msgSend)(region, NSSelectorFromString(@"frame"));
-            // A portrait/tabletop fold is horizontal; only the book arrangement
-            // splits content into side-by-side halves.
-            if (CGRectGetHeight(frame) <= CGRectGetWidth(frame)) continue;
+            if (![region respondsToSelector:@selector(isActive)] || ![region respondsToSelector:@selector(frame)]
+                || !((BOOL (*)(id, SEL))objc_msgSend)(region, @selector(isActive))) continue;
+            CGRect frame = ((CGRect (*)(id, SEL))objc_msgSend)(region, @selector(frame));
+            // Book and tabletop are separate consumers of the same system
+            // geometry; neither infers a division from a hinge angle.
+            if (!isfinite(frame.origin.x) || !isfinite(frame.origin.y)
+                || !isfinite(frame.size.width) || !isfinite(frame.size.height)
+                || frame.size.width < 0 || frame.size.height < 0) continue;
+            if (horizontal ? CGRectGetWidth(frame) <= CGRectGetHeight(frame)
+                           : CGRectGetHeight(frame) <= CGRectGetWidth(frame)) continue;
             return [view convertRect:frame fromView:window];
         }
     }
     return CGRectNull;
+}
+
+CGRect ApolloDuoActiveVerticalDivision(UIView *view) {
+    return ApolloDuoActiveDivision(view, NO);
+}
+
+CGRect ApolloDuoActiveHorizontalDivision(UIView *view) {
+    return ApolloDuoActiveDivision(view, YES);
 }
 
 void ApolloDuoRailSync(void) {

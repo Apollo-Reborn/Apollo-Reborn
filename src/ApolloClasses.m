@@ -2,6 +2,8 @@
 #import <objc/runtime.h>
 #include <stdatomic.h>
 
+Class ApolloClassUIViewReservedRegionKind;
+
 Class ApolloClassASBackgroundLayoutSpec;
 Class ApolloClassASBatchContext;
 Class ApolloClassASButtonNode;
@@ -208,6 +210,7 @@ __attribute__((constructor)) static void ApolloClassesResolve(void) {
     ApolloClassPixelPalAddedSceneElementImageView = objc_getClass("_TtC6Apollo34PixelPalAddedSceneElementImageView");
     ApolloClassPixelPalOverlayViewController = objc_getClass("_TtC6Apollo29PixelPalOverlayViewController");
     ApolloClassPlayerLayerContainerView = objc_getClass("_TtC6Apollo24PlayerLayerContainerView");
+    ApolloClassUIViewReservedRegionKind = objc_getClass("UIViewReservedRegionKind");
     ApolloClassPollNode = objc_getClass("_TtC6Apollo8PollNode");
     ApolloClassPollOptionNode = objc_getClass("_TtC6Apollo14PollOptionNode");
     ApolloClassPollResultNode = objc_getClass("_TtC6Apollo14PollResultNode");

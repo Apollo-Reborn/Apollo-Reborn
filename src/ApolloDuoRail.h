@@ -26,6 +26,9 @@ BOOL ApolloDuoAllowsTabBarScrollHiding(void);
 /// reserved-region APIs, keeping hinge readings for live effects only.
 CGRect ApolloDuoActiveVerticalDivision(UIView *view);
 
+/// Active tabletop division in this view's coordinates; CGRectNull when flat.
+CGRect ApolloDuoActiveHorizontalDivision(UIView *view);
+
 /// Refresh the cached window mode without changing UIKit's tab bar.
 void ApolloDuoRailSync(void);
 
