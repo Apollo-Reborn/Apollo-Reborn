@@ -159,7 +159,9 @@ Extension-bearing Apollo IPAs also include **Open in Apollo (Manual Fallback)**.
 It does no automatic navigation or link rewriting and only has access to Reddit
 domains. If a Reddit page remains in Safari for 750 ms, it displays a real
 floating **Open in Apollo** link. This supplies a recovery path without racing
-the Companion extension. The fallback is included in the **standard** and
+the Companion extension. If that link comes back to Safari instead of opening
+Link Companion, the button switches to opening Apollo directly, and iOS asks
+before switching apps. The fallback is included in the **standard** and
 **Liquid Glass** IPA variants.
 
 Those IPAs also retain the former automatic implementation as **Open in Apollo
@@ -175,7 +177,8 @@ manual fallback is passive and is safe to leave enabled with either choice.
 > automatic extension. Apollo itself can keep any sideloaded bundle ID and
 > signing team; it does not need an Associated Domains entitlement. Without the
 > companion, the Universal Link used by Companion and Manual Fallback safely
-> returns to Reddit instead of looping. Legacy does not use that Universal Link.
+> returns to Reddit instead of looping, and the Manual Fallback button then
+> opens Apollo directly. Legacy does not use that Universal Link.
 
 Supported link families include canonical post/comment/subreddit/profile/wiki
 URLs on `reddit.com`, `www`, `old`, `new`, `np`, `m`, and language subdomains;

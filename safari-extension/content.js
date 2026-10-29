@@ -10,6 +10,12 @@
 // Safari long enough for the companion handoff not to have happened, it adds a
 // real user-tappable Universal Link. It never stops the page, changes location,
 // rewrites another link, synthesizes a click, or performs a network request.
+//
+// If that Universal Link already came back to Safari (Link Companion missing,
+// or iOS set to open open.apolloreborn.app in Safari), the Worker returns the
+// page with its fallback marker. Offering the same link again would only
+// reload the page, so from then on the button targets Apollo's own scheme and
+// iOS asks before switching apps. It is still a plain user-tapped link.
 (function () {
     "use strict";
 
@@ -23,6 +29,20 @@
     var promptHost = null;
     var promptLink = null;
 
+    // Latched for this document: Reddit's SPA can drop the marker from the
+    // address bar while hydrating or on in-page navigation, and the Universal
+    // Link is known not to reach Link Companion on this device either way.
+    var universalLinkBounced = false;
+
+    function promptURL() {
+        var href = window.location.href;
+        if (linkUtils.hasFallbackMarker(href)) {
+            universalLinkBounced = true;
+            href = linkUtils.withoutFallbackMarker(href);
+        }
+        return universalLinkBounced ? linkUtils.toApolloURL(href) : linkUtils.toOpenerURL(href);
+    }
+
     function removePrompt() {
         if (promptHost && promptHost.parentNode) {
             promptHost.parentNode.removeChild(promptHost);
@@ -34,8 +54,8 @@
     function renderPrompt() {
         promptTimer = null;
 
-        var openerURL = linkUtils.toOpenerURL(window.location.href);
-        if (!openerURL || !document.documentElement) {
+        var targetURL = promptURL();
+        if (!targetURL || !document.documentElement) {
             removePrompt();
             return;
         }
@@ -53,7 +73,7 @@
             document.documentElement.appendChild(promptHost);
         }
 
-        promptLink.href = openerURL;
+        promptLink.href = targetURL;
     }
 
     function schedulePrompt() {

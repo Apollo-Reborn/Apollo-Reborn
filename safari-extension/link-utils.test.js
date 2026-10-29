@@ -81,3 +81,26 @@ test("rejects roots, unsafe schemes, lookalikes, credentials, and fallback loops
         assert.equal(links.toApolloURL(value), null);
     }
 });
+
+test("strips only the Worker fallback marker", () => {
+    const bounced = "https://www.reddit.com/r/apolloapp/comments/13rhvfe/title/?context=3&apollo_reborn_no_open=1#reply";
+    assert.equal(links.hasFallbackMarker(bounced), true);
+    assert.equal(links.hasFallbackMarker("https://reddit.com/r/apolloapp"), false);
+    assert.equal(links.hasFallbackMarker("not a url"), false);
+    assert.equal(
+        links.withoutFallbackMarker(bounced),
+        "https://www.reddit.com/r/apolloapp/comments/13rhvfe/title/?context=3#reply"
+    );
+    assert.equal(links.withoutFallbackMarker("not a url"), null);
+});
+
+test("a stripped fallback URL still goes through the full Reddit validation", () => {
+    for (const value of [
+        "https://reddit.com/?apollo_reborn_no_open=1",
+        "https://reddit.com.attacker.example/r/apolloapp?apollo_reborn_no_open=1",
+        "https://user@reddit.com/r/apolloapp?apollo_reborn_no_open=1",
+        "https://i.redd.it/image.jpg?apollo_reborn_no_open=1"
+    ]) {
+        assert.equal(links.toApolloURL(links.withoutFallbackMarker(value)), null);
+    }
+});

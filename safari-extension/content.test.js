@@ -104,9 +104,50 @@ test("never navigates and waits before displaying the manual link", () => {
     assert.equal(link.href, links.toOpenerURL(href));
 });
 
-test("does not show a button for a Worker fallback URL", () => {
+test("opens Apollo directly after the Worker bounced the Universal Link back", () => {
     const execution = runContentScript(
-        "https://reddit.com/r/apolloapp?apollo_reborn_no_open=1"
+        "https://reddit.com/r/apolloapp/comments/13rhvfe/title/?context=3&apollo_reborn_no_open=1"
+    );
+    execution.timers[0].callback();
+    assert.equal(execution.appended.length, 1);
+
+    const link = execution.appended[0].children[0];
+    assert.equal(link.textContent, "Open in Apollo");
+    assert.equal(link.href, "apollo://reddit.com/r/apolloapp/comments/13rhvfe/title/?context=3");
+});
+
+test("keeps the direct Apollo link after Reddit drops the marker or navigates", () => {
+    const execution = runContentScript(
+        "https://www.reddit.com/r/apolloapp/comments/13rhvfe/title/?apollo_reborn_no_open=1"
+    );
+    execution.timers[0].callback();
+
+    // Reddit's client router rewrites the address without the Worker marker.
+    execution.window.location.href = "https://www.reddit.com/r/apolloapp/comments/13rhvfe/title/";
+    execution.mutate();
+    const link = execution.appended[0].children[0];
+    assert.equal(link.href, "apollo://reddit.com/r/apolloapp/comments/13rhvfe/title/");
+
+    // In-page navigation to another post keeps skipping the bounced link.
+    execution.window.location.href = "https://www.reddit.com/r/apple/comments/1abcdef/other/";
+    execution.mutate();
+    assert.equal(link.href, "apollo://reddit.com/r/apple/comments/1abcdef/other/");
+    assert.equal(execution.appended.length, 1);
+});
+
+test("never offers the Universal Link again on a bounced page", () => {
+    const execution = runContentScript(
+        "https://redd.it/13rhvfe?apollo_reborn_no_open=1"
+    );
+    execution.timers[0].callback();
+    const link = execution.appended[0].children[0];
+    assert.equal(link.href, "apollo://reddit.com/comments/13rhvfe");
+    assert.doesNotMatch(link.href, /open\.apolloreborn\.app|apollo_reborn_no_open/);
+});
+
+test("does not show a button for a bounced Reddit root", () => {
+    const execution = runContentScript(
+        "https://www.reddit.com/?apollo_reborn_no_open=1"
     );
     execution.timers[0].callback();
     assert.equal(execution.appended.length, 0);
