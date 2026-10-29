@@ -72,8 +72,11 @@ id ApolloWebJSONFixupModeratorsResponseObject(NSURLResponse *response, id respon
 // error is already present (native completions inspect the object first).
 // A listing that comes back with no object and no error, or with an HTTP status
 // of 400 or more and no error, also becomes nil + an error: RedditKit reports
-// neither, and a feed would take it as its last page (#1420). Valid dictionary
-// responses, existing errors, writes and array-rooted endpoints pass through.
+// neither, and a feed would take it as its last page (#1420). A post-and-comments
+// read (/comments/<id>) whose result isn't an array also becomes nil + an error:
+// RedditKit indexes a dictionary there as the array and crashes (#1531).
+// Valid dictionary responses, existing errors, writes and other array-rooted
+// endpoints pass through.
 id ApolloWebJSONGuardListingTaskResponse(NSString *method, NSString *path,
                                         NSHTTPURLResponse *response, id responseObject,
                                         NSError **error);

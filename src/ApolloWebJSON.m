@@ -1960,10 +1960,26 @@ static BOOL ApolloWebJSONPathExpectsListingDictionary(NSString *path) {
     return YES;
 }
 
+// A post with its comments: /comments/<id>[/...] or /r/<sub>/comments/<id>[/...]
+// (RedditKit's linkAndComments and linkAndContext reads). Reddit answers these
+// with an array of two listings. /comments and /r/<sub>/comments with no id are
+// recent-comment listings (dictionaries), so they don't count.
+static BOOL ApolloWebJSONPathIsCommentThread(NSString *path) {
+    NSString *p = path;
+    if ([p hasSuffix:@".json"]) p = [p substringToIndex:p.length - 5];
+    if (![p hasPrefix:@"/"]) return NO;
+    NSArray<NSString *> *seg = [[p substringFromIndex:1] componentsSeparatedByString:@"/"];
+    if (seg.count >= 2 && [seg[0] isEqualToString:@"comments"]) return seg[1].length > 0;
+    if (seg.count >= 4 && [seg[0] isEqualToString:@"r"] && [seg[2] isEqualToString:@"comments"]) return seg[3].length > 0;
+    return NO;
+}
+
 id ApolloWebJSONGuardListingTaskResponse(NSString *method, NSString *path,
                                         NSHTTPURLResponse *response, id responseObject,
                                         NSError **error) {
     BOOL nonDictionary = responseObject && ![responseObject isKindOfClass:[NSDictionary class]];
+    // A dictionary is still the wrong shape for a comment thread (#1531).
+    BOOL nonArray = responseObject && ![responseObject isKindOfClass:[NSArray class]];
     // A refusal RedditKit doesn't report (#1420). RDKResponseSerializer answers
     // anything that isn't application/json with no object AND no error (Reddit's
     // HTML 429 and 403 block pages, an empty 429, an HTML 5xx), and RedditKit
@@ -1973,12 +1989,35 @@ id ApolloWebJSONGuardListingTaskResponse(NSString *method, NSString *path,
     // www.reddit.com all the time; oauth.reddit.com answers in JSON.
     NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]] ? response.statusCode : 0;
     BOOL unreportedFailure = !(error && *error) && (responseObject == nil || status >= 400);
-    if (!nonDictionary && !unreportedFailure) return responseObject;
+    if (!nonDictionary && !nonArray && !unreportedFailure) return responseObject;
     if (!method || [method caseInsensitiveCompare:@"GET"] != NSOrderedSame) return responseObject;
     // RDKClient supplies relative paths (with or without a leading slash).
     if (![path isKindOfClass:[NSString class]] || path.length == 0) return responseObject;
     NSString *requestPath = [[path componentsSeparatedByString:@"?"] firstObject];
     if (![requestPath hasPrefix:@"/"]) requestPath = [@"/" stringByAppendingString:requestPath];
+
+    if (ApolloWebJSONPathIsCommentThread(requestPath)) {
+        if (!nonArray) return responseObject;
+        // RedditKit's post-and-comments completion checks only `count >= 2`
+        // before reading root[0] and root[1] on a background queue, so any JSON
+        // dictionary with two keys that RedditKit doesn't map to an error
+        // crashes the app there (-[__NSDictionaryI objectAtIndexedSubscript:]).
+        // A 429's {"message", "error"} is one: RedditKit maps no error for 429
+        // (#1531). Report a failed load instead; Apollo shows its usual
+        // comments error and the next pull to refresh asks again.
+        ApolloLog(@"[WebJSON] Rejected non-array comments response (class=%@, HTTP=%ld)",
+                  NSStringFromClass([responseObject class]), (long)status);
+        if (error && !*error) {
+            *error = [NSError errorWithDomain:@"ApolloReborn.WebJSON.Response"
+                                         code:1531
+                                     userInfo:@{ NSLocalizedDescriptionKey: status == 429
+                                                 ? @"Reddit is limiting requests right now. Try again in a minute."
+                                                 : @"Reddit sent an unexpected response. Pull to refresh to try again." }];
+        }
+        return nil;
+    }
+
+    if (!nonDictionary && !unreportedFailure) return responseObject;
     if (!ApolloWebJSONPathExpectsListingDictionary(requestPath)) return responseObject;
 
     if (!nonDictionary) {
