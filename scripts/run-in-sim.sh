@@ -20,7 +20,7 @@
 #   scripts/run-in-sim.sh --logs          # stream the app's ApolloLog output after launch
 #   scripts/run-in-sim.sh --drive         # after launch, run an idb UI smoke test (tree + screenshot)
 #   scripts/run-in-sim.sh --dark          # boot the simulator in dark mode (--light forces light)
-#   scripts/run-in-sim.sh --glass         # apply the iOS 26 Liquid Glass patch (--no-glass disables)
+#   scripts/run-in-sim.sh --glass         # apply the Liquid Glass patch (enabled by default)
 #   BUNDLE_ID=com.you.Build scripts/run-in-sim.sh
 #                                         # run under a custom bundle id (rebrands the app + appex
 #                                         # so it matches your installed device build)
@@ -41,8 +41,8 @@
 # Env overrides:
 #   BASE_IPA (./apollo-base.ipa)  BUNDLE_ID (com.christianselig.Apollo)
 #   SIM_NAME (Apollo-Sim)  SIM_DEVICE_TYPE (iPhone 16 Pro)  SIM_RUNTIME (newest iOS)
-#   DEPLOY_MIN (15.0)  WORK_DIR (./.sim)  IDB (idb on PATH)
-#   BACKUP_ZIP (--backup)  APPEARANCE (light|dark, --dark/--light)  GLASS (0|1, --glass)
+#   DEPLOY_MIN (26.0)  WORK_DIR (./.sim)  IDB (idb on PATH)
+#   BACKUP_ZIP (--backup)  APPEARANCE (light|dark, --dark/--light)  Glass is always enabled
 #
 set -euo pipefail
 cd "$(dirname "$0")/.."   # repo root
@@ -52,14 +52,14 @@ BUNDLE_ID="${BUNDLE_ID:-com.christianselig.Apollo}"
 SIM_NAME="${SIM_NAME:-Apollo-Sim}"
 SIM_DEVICE_TYPE="${SIM_DEVICE_TYPE:-iPhone 16 Pro}"
 SIM_RUNTIME="${SIM_RUNTIME:-}"
-DEPLOY_MIN="${DEPLOY_MIN:-15.0}"
+DEPLOY_MIN="${DEPLOY_MIN:-26.0}"
 WORK_DIR="${WORK_DIR:-./.sim}"
 IDB="${IDB:-idb}"
 DEFAULT_BUNDLE_ID="com.christianselig.Apollo"
 APP_GROUP_SUITE="group.com.christianselig.apollo"   # tweak hardcodes this regardless of bundle id
 BACKUP_ZIP="${BACKUP_ZIP:-}"
 APPEARANCE="${APPEARANCE:-}"
-GLASS="${GLASS:-0}"
+GLASS=1
 
 DO_BUILD=1; FRESH_APP=0; DO_LOGS=0; DO_DRIVE=0
 while [[ $# -gt 0 ]]; do
@@ -71,7 +71,7 @@ while [[ $# -gt 0 ]]; do
         --dark)       APPEARANCE=dark ;;
         --light)      APPEARANCE=light ;;
         --glass)      GLASS=1 ;;
-        --no-glass)   GLASS=0 ;;
+        --no-glass)   echo "Classic appearance ended on 4.0.x; current builds require Liquid Glass." >&2; exit 2 ;;
         --backup)     BACKUP_ZIP="${2:-}"; shift ;;
         --backup=*)   BACKUP_ZIP="${1#*=}" ;;
         -h|--help)    grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;

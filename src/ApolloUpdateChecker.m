@@ -10,7 +10,7 @@
 #import <UIKit/UIKit.h>
 
 static NSString *const kUpdateManifestURL =
-    @"https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/release-manifest.json";
+    @"https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/release-manifest-v2.json";
 static const NSTimeInterval kUpdateCheckInterval = 15 * 60;
 static const NSTimeInterval kUpdateFailureRetryInterval = 5 * 60;
 static const NSTimeInterval kUpdateReminderInterval = 24 * 60 * 60;
@@ -174,6 +174,14 @@ void ApolloUpdateFetchReleaseNotes(ApolloUpdateInfo *info, void (^completion)(NS
 }
 
 static void ApolloUpdateApplyResult(ApolloUpdateInfo *latest) {
+    NSOperatingSystemVersion OS = NSProcessInfo.processInfo.operatingSystemVersion;
+    NSString *version = [NSString stringWithFormat:@"%ld.%ld.%ld", (long)OS.majorVersion,
+        (long)OS.minorVersion, (long)OS.patchVersion];
+    if (!ApolloUpdateInfoSupportsOSVersion(latest, version)) {
+        sAvailableUpdate = nil;
+        sUpToDate = YES;
+        return;
+    }
     BOOL newer = ApolloUpdateCompareVersions(ApolloUpdateInstalledVersion(), latest.version) == NSOrderedAscending;
     sAvailableUpdate = newer ? latest : nil;
     sUpToDate = !newer;

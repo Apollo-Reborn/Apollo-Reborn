@@ -443,30 +443,17 @@ static UIImage *ApolloGalleryChromeSymbol(NSString *name) {
 }
 @end
 
-// Builds a capsule around `content`. On Liquid Glass builds the backing is a
-// real UIGlassEffect, so the viewer's controls match the rest of the iOS 26 app
-// instead of reading as flat pre-26 pills; older builds keep translucent black,
-// which is what stays legible over an arbitrary photo.
-static ApolloGalleryChromePillView *ApolloGalleryChromePill(UIView *content, CGFloat legacyAlpha) {
+// Use the system Glass material for non-button overlays as well.
+static ApolloGalleryChromePillView *ApolloGalleryChromePill(UIView *content) {
     ApolloGalleryChromePillView *pill = [[ApolloGalleryChromePillView alloc] initWithFrame:CGRectZero];
     pill.clipsToBounds = YES;
-
-    Class glassClass = ApolloClassUIGlassEffect;
-    if (IsLiquidGlass() && glassClass) {
-        pill.backgroundColor = UIColor.clearColor;
-        id effect = [[glassClass alloc] init];
-        // Interactive glass is what gives Apple's controls their press
-        // response; without it the capsule is inert decoration.
-        if ([effect respondsToSelector:@selector(setInteractive:)]) {
-            ((void (*)(id, SEL, BOOL))objc_msgSend)(effect, @selector(setInteractive:), YES);
-        }
-        UIVisualEffectView *glass = [[UIVisualEffectView alloc] initWithEffect:(UIVisualEffect *)effect];
-        glass.userInteractionEnabled = NO;
-        [pill addSubview:glass];
-        pill.materialView = glass;
-    } else {
-        pill.backgroundColor = [UIColor colorWithWhite:0.0 alpha:legacyAlpha];
-    }
+    pill.backgroundColor = UIColor.clearColor;
+    UIGlassEffect *effect = [UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];
+    effect.interactive = YES;
+    UIVisualEffectView *glass = [[UIVisualEffectView alloc] initWithEffect:effect];
+    glass.userInteractionEnabled = NO;
+    [pill addSubview:glass];
+    pill.materialView = glass;
 
     content.backgroundColor = UIColor.clearColor;
     [pill addSubview:content];
@@ -481,34 +468,17 @@ static ApolloGalleryChromePillView *ApolloGalleryChromePill(UIView *content, CGF
 // That's what gets Apple's metrics — UIKit sizes the glass around the glyph, so
 // the symbol is padded and optically centred instead of us guessing — and it's
 // also what lets a button-attached UIMenu play the iOS 26 morph, since the
-// button itself becomes the morph source. Elsewhere we fall back to the
-// hand-rolled pill.
+// button itself becomes the morph source.
 //
-// Returns the button; `outHost` is what -apollo_layoutChrome should position
-// (the button itself on glass, its pill otherwise).
+// UIKit owns the capsule background and interaction in the supported Glass UI.
 static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIView *__strong *outHost) {
-    if (IsLiquidGlass()) {
-        if (@available(iOS 26.0, *)) {
-            UIButtonConfiguration *configuration = [UIButtonConfiguration glassButtonConfiguration];
-            configuration.image = symbol;
-            configuration.title = title;
-            configuration.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-            UIButton *button = [UIButton buttonWithConfiguration:configuration primaryAction:nil];
-            button.tintColor = UIColor.whiteColor;
-            if (outHost) *outHost = button;
-            return button;
-        }
-    }
-
-    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    UIButtonConfiguration *configuration = [UIButtonConfiguration glassButtonConfiguration];
+    configuration.image = symbol;
+    configuration.title = title;
+    configuration.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+    UIButton *button = [UIButton buttonWithConfiguration:configuration primaryAction:nil];
     button.tintColor = UIColor.whiteColor;
-    if (symbol) [button setImage:symbol forState:UIControlStateNormal];
-    if (title) {
-        [button setTitle:title forState:UIControlStateNormal];
-        button.titleLabel.font = [UIFont systemFontOfSize:16.0 weight:UIFontWeightSemibold];
-    }
-    ApolloGalleryChromePillView *pill = ApolloGalleryChromePill(button, 0.55);
-    if (outHost) *outHost = pill;
+    if (outHost) *outHost = button;
     return button;
 }
 
@@ -850,7 +820,7 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
     self.counterLabel.textColor = UIColor.whiteColor;
     self.counterLabel.font = [UIFont monospacedDigitSystemFontOfSize:14.0 weight:UIFontWeightSemibold];
     self.counterLabel.textAlignment = NSTextAlignmentCenter;
-    self.counterPill = ApolloGalleryChromePill(self.counterLabel, 0.55);
+    self.counterPill = ApolloGalleryChromePill(self.counterLabel);
     [self.view addSubview:self.counterPill];
 
     self.shareButton = ApolloGalleryChromeButton(ApolloGalleryChromeSymbol(@"square.and.arrow.up"), nil, &_shareHost);
@@ -875,20 +845,14 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
     self.infoPanel.layer.cornerRadius = 14.0;
     self.infoPanel.layer.cornerCurve = kCACornerCurveContinuous;
     self.infoPanel.clipsToBounds = YES;
-    {
-        Class glassClass = ApolloClassUIGlassEffect;
-        if (IsLiquidGlass() && glassClass) {
-            self.infoPanel.backgroundColor = UIColor.clearColor;
-            UIVisualEffectView *glass = [[UIVisualEffectView alloc] initWithEffect:[[glassClass alloc] init]];
-            glass.userInteractionEnabled = NO;
-            glass.frame = self.infoPanel.bounds;
-            glass.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-            [self.infoPanel addSubview:glass];
-            self.infoPanelMaterial = glass;
-        } else {
-            self.infoPanel.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.55];
-        }
-    }
+    self.infoPanel.backgroundColor = UIColor.clearColor;
+    UIVisualEffectView *infoMaterial = [[UIVisualEffectView alloc] initWithEffect:
+        [UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular]];
+    infoMaterial.userInteractionEnabled = NO;
+    infoMaterial.frame = self.infoPanel.bounds;
+    infoMaterial.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [self.infoPanel addSubview:infoMaterial];
+    self.infoPanelMaterial = infoMaterial;
     [self.view addSubview:self.infoPanel];
 
     // (material added above sits at index 0, behind these labels)
@@ -925,7 +889,7 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
     self.statusLabel.textColor = UIColor.whiteColor;
     self.statusLabel.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightSemibold];
     self.statusLabel.textAlignment = NSTextAlignmentCenter;
-    self.statusPill = ApolloGalleryChromePill(self.statusLabel, 0.55);
+    self.statusPill = ApolloGalleryChromePill(self.statusLabel);
     self.statusPill.alpha = 0.0;
     [self.view addSubview:self.statusPill];
 
@@ -933,7 +897,7 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
     self.toastLabel.textColor = UIColor.whiteColor;
     self.toastLabel.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightSemibold];
     self.toastLabel.textAlignment = NSTextAlignmentCenter;
-    self.toastPill = ApolloGalleryChromePill(self.toastLabel, 0.7);
+    self.toastPill = ApolloGalleryChromePill(self.toastLabel);
     self.toastPill.alpha = 0.0;
     [self.view addSubview:self.toastPill];
 
@@ -1113,7 +1077,7 @@ static UIInterfaceOrientation ApolloGalleryInterfaceOrientationForDevice(UIDevic
                forControlEvents:(UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel)];
     [self.videoBarContentView addSubview:self.videoSlider];
 
-    self.videoBarPill = ApolloGalleryChromePill(self.videoBarContentView, 0.55);
+    self.videoBarPill = ApolloGalleryChromePill(self.videoBarContentView);
     self.videoBarPill.hidden = YES;
     [self.view addSubview:self.videoBarPill];
 }

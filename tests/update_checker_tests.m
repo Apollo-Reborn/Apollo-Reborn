@@ -260,11 +260,19 @@ static BOOL ApolloSetupAssistantBlocksLaunchPrompts(void) { return sSetupBlocksL
 #undef dispatch_time
 #undef dispatch_after
 
+static NSString *sMinimumOS;
+
 static NSDictionary *Manifest(NSString *version) {
-    return @{
+    NSMutableDictionary *manifest = [@{
         @"release": @{@"tweakVersion": version, @"url": @"https://example.com/release"},
         @"variants": @{@"standard": @{@"sourceURL": @"https://example.com/apps.json", @"directDownloadURL": @"https://example.com/Apollo.ipa"}},
-    };
+    } mutableCopy];
+    if (sMinimumOS) {
+        NSMutableDictionary *release = [manifest[@"release"] mutableCopy];
+        release[@"minimumOSVersion"] = sMinimumOS;
+        manifest[@"release"] = release;
+    }
+    return manifest;
 }
 
 static void Complete(NSString *version) {
@@ -526,6 +534,24 @@ static void TestLaterOffline(void) {
     CHECK([sDefaults objectForKey:UDKeyUpdateLastFailure] != nil, @"showing a known update does not bypass failure backoff");
 }
 
+static void TestMinimumOS(void) {
+    sMinimumOS = @"999.0"; // greater than the test host as well as supported devices
+    NSURL *url = [NSURL URLWithString:kUpdateManifestURL];
+    NSData *data = [NSJSONSerialization dataWithJSONObject:Manifest(@"3.9.1") options:0 error:NULL];
+    NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:url statusCode:200
+        HTTPVersion:@"HTTP/1.1" headerFields:@{@"ETag": @"saved-future-release"}];
+    ApolloUpdateManifestCache *previous = [[ApolloUpdateManifestCache alloc] init];
+    CHECK([previous infoForResponse:response data:data request:[NSURLRequest requestWithURL:url]
+        variantKey:@"standard"] != nil, @"prime future-OS cached release");
+    [sDefaults setObject:[NSDate dateWithTimeIntervalSince1970:sNow - 60] forKey:UDKeyUpdateLastCheck];
+    ApolloUpdateCheckIfNeeded();
+    Advance(0);
+    CHECK(sSheets.count == 0 && sAvailableUpdate == nil, @"restored cache cannot offer incompatible update");
+    Advance(840);
+    Complete(@"3.9.2");
+    CHECK(sSheets.count == 0 && sAvailableUpdate == nil, @"network response cannot offer incompatible update");
+}
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         if (argc != 2) return 2;
@@ -551,6 +577,7 @@ int main(int argc, const char *argv[]) {
             @"failure-backoff": ^{ TestFailureBackoff(); }, @"manual-share": ^{ TestManualSharing(); },
             @"manual-joins-auto": ^{ TestManualJoinsAutomatic(); }, @"manual-inactive": ^{ TestManualInactive(); },
             @"setup-deferred": ^{ TestSetupDeferredPrompt(); },
+            @"minimum-os": ^{ TestMinimumOS(); },
             @"prompt-deferred": ^{ TestDeferredPrompt(); }, @"inactive": ^{ TestInactive(); },
             @"opt-out": ^{ TestOptOut(); }, @"skip": ^{ TestSkip(); }, @"cached-relaunch": ^{ TestCachedRelaunch(); },
             @"later": ^{ TestLater(); }, @"later-relaunch": ^{ TestLaterRelaunch(); }, @"later-newer": ^{ TestLaterNewer(); },

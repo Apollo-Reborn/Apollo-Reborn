@@ -77,7 +77,6 @@ static const CGFloat kCommentBlurInsetX  = 3.0;   // side margins (small, so the
 static const CGFloat kCommentBlurInsetY  = 4.0;   // top/bottom margins
 static const CGFloat kCommentBlurCorner  = 14.0;  // corner radius
 static const CGFloat kCommentDoneNudgeX  = 14.0;  // Done button → right (off the rounded corner, more centered)
-static const CGFloat kCommentThemeTintAlpha      = 0.72; // non-glass: near-solid themed surface
 static const CGFloat kCommentThemeTintAlphaGlass = 0.50; // glass: let the foggy material + content ghost through
 static const void *kCommentBlurKey = &kCommentBlurKey;
 static const void *kCommentTintKey = &kCommentTintKey;
@@ -145,9 +144,8 @@ static void ensureCommentBlurBacking(UIView *bar) {
     // the tint zero-sized (and the bar grey) until some later relayout.
     tint.frame = blur.bounds;
     UIColor *card = ApolloThemeCardBackgroundColor() ?: UIColor.secondarySystemBackgroundColor;
-    // Glass gets a lighter wash so the frost keeps its foggy translucency behind
-    // Done / the chevrons; non-glass stays closer to a solid themed surface.
-    CGFloat tintAlpha = IsLiquidGlass() ? kCommentThemeTintAlphaGlass : kCommentThemeTintAlpha;
+    // A light wash keeps the frost translucent behind Done and the chevrons.
+    CGFloat tintAlpha = kCommentThemeTintAlphaGlass;
     tint.backgroundColor = [card colorWithAlphaComponent:tintAlpha];
     // The docked bar is a real UIKit bar: its _UIBarBackground (full-width, extends
     // below the bar toward the keyboard) stacks ABOVE our backing and paints the
@@ -254,9 +252,9 @@ static CGFloat ApolloFeedSearchInPlaceRestTop(void) {
 }
 
 // The active rest for whichever mode is on; the inset floor and the offset clamp both use it. In-place
-// mode is Liquid Glass only, so non-LG (and LG nav-hide) always use the docked-toolbar rest.
+// mode uses its own rest; nav-hide uses the docked-toolbar rest.
 static CGFloat ApolloFeedSearchActiveRestTop(void) {
-    return (sKeepSearchBarInPlace && IsLiquidGlass()) ? ApolloFeedSearchInPlaceRestTop()
+    return sKeepSearchBarInPlace ? ApolloFeedSearchInPlaceRestTop()
                                                       : ApolloFeedSearchRestTop();
 }
 

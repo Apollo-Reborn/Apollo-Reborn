@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Require **iOS 26 or later** for future releases, with **Apollo Reborn** and **Apollo Reborn No Extensions** as the two current builds; both include Liquid Glass and alternate icons.
+- Retire **classic appearance**, icons-only builds and standalone jailbreak packages after **4.0.x**, while keeping the final legacy releases available for older iOS and classic users.
+
+
 ## [v4.0.0] - 2026-10-25
 
 ### Features

@@ -150,14 +150,6 @@ static NSString *ApolloTabBarStoredTitle(UITabBarItem *item) {
     return ApolloTabBarUnwrapNullableValue(objc_getAssociatedObject(item, &kApolloTabBarOriginalTitleKey));
 }
 
-static UIEdgeInsets ApolloTabBarIconOnlyInsets(UIEdgeInsets originalInsets) {
-    if (IsLiquidGlass()) return originalInsets;
-    return UIEdgeInsetsMake(originalInsets.top + 6.0,
-                            originalInsets.left,
-                            originalInsets.bottom - 6.0,
-                            originalInsets.right);
-}
-
 static void ApolloTabBarPreserveAccessibilityName(UITabBarItem *item, NSString *title) {
     if (!item || title.length == 0 || item.accessibilityLabel.length > 0) return;
 
@@ -200,14 +192,10 @@ static void ApolloTabBarApplyIconOnlyToItem(UITabBarItem *item) {
 
     ApolloTabBarCaptureTitleStateIfNeeded(item);
     NSString *storedTitle = ApolloTabBarStoredTitle(item);
-    NSValue *storedInsets = objc_getAssociatedObject(item, &kApolloTabBarOriginalImageInsetsKey);
     ApolloTabBarPreserveAccessibilityName(item, storedTitle);
 
     sApolloTabBarTitlesMutating = YES;
     item.title = nil;
-    if (storedInsets && !IsLiquidGlass()) {
-        item.imageInsets = ApolloTabBarIconOnlyInsets(storedInsets.UIEdgeInsetsValue);
-    }
     sApolloTabBarTitlesMutating = NO;
 }
 
@@ -296,7 +284,7 @@ static void ApolloTabBarRefreshVisibleBars(NSString *reason) {
     ApolloTabBarCaptureTitleStateIfNeeded(self);
     objc_setAssociatedObject(self, &kApolloTabBarOriginalImageInsetsKey,
                              [NSValue valueWithUIEdgeInsets:imageInsets], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    %orig(ApolloTabBarIconOnlyInsets(imageInsets));
+    %orig(imageInsets);
 }
 
 %end

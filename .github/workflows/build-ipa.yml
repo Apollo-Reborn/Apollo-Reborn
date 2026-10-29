@@ -2,7 +2,7 @@ name: Build IPA
 
 # Build a sideload-ready Apollo IPA on GitHub Actions. Optionally injects the
 # tweak (inject_tweak / no_extensions) and applies patch.sh patches
-# (liquid_glass, liquid_glass_icons, url_schemes, remove_code_signature).
+# (always Liquid Glass, plus url_schemes and remove_code_signature).
 # Extension-bearing builds always get the manual + legacy Safari overlays
 # (patch.sh --fix-safari-extension).
 #
@@ -24,16 +24,6 @@ on:
         default: true
       no_extensions:
         description: 'Strip app extensions during injection (requires inject_tweak)'
-        required: false
-        type: boolean
-        default: false
-      liquid_glass:
-        description: 'Liquid Glass: full iOS 26 UI redesign + icon pack'
-        required: false
-        type: boolean
-        default: true
-      liquid_glass_icons:
-        description: 'Liquid Glass: icon pack only (keeps classic UI). Mutually exclusive with above option.'
         required: false
         type: boolean
         default: false
@@ -77,10 +67,6 @@ jobs:
 
       - name: Validate inputs
         run: |
-          if [ "${{ github.event.inputs.liquid_glass }}" == "true" ] && [ "${{ github.event.inputs.liquid_glass_icons }}" == "true" ]; then
-            echo "Error: 'liquid_glass' and 'liquid_glass_icons' are mutually exclusive."
-            exit 1
-          fi
           if [ "${{ github.event.inputs.no_extensions }}" == "true" ] && [ "${{ github.event.inputs.inject_tweak }}" != "true" ]; then
             echo "Error: 'no_extensions' only applies when 'inject_tweak' is enabled."
             exit 1
@@ -210,12 +196,6 @@ jobs:
           if [ "${{ github.event.inputs.no_extensions }}" == "true" ]; then
             SUFFIX="${SUFFIX}-NoExt"
           fi
-          if [ "${{ github.event.inputs.liquid_glass }}" == "true" ]; then
-            SUFFIX="${SUFFIX}-LiquidGlass"
-          fi
-          if [ "${{ github.event.inputs.liquid_glass_icons }}" == "true" ]; then
-            SUFFIX="${SUFFIX}-LiquidGlassIcons"
-          fi
           if [ -n "${{ github.event.inputs.url_schemes }}" ] && [ "${{ github.event.inputs.url_schemes }}" != "dystopia,redreader" ]; then
             SUFFIX="${SUFFIX}-URLSchemes"
           fi
@@ -227,16 +207,8 @@ jobs:
         id: patch
         run: |
           OUTPUT_IPA="${{ steps.outname.outputs.output_ipa }}"
-          NEEDS_PATCH="false"
-          CMD_ARGS="Apollo.ipa -o ${OUTPUT_IPA}"
-          if [ "${{ github.event.inputs.liquid_glass }}" == "true" ]; then
-            CMD_ARGS="${CMD_ARGS} --liquid-glass"
-            NEEDS_PATCH="true"
-          fi
-          if [ "${{ github.event.inputs.liquid_glass_icons }}" == "true" ]; then
-            CMD_ARGS="${CMD_ARGS} --liquid-glass-icons"
-            NEEDS_PATCH="true"
-          fi
+          NEEDS_PATCH="true"
+          CMD_ARGS="Apollo.ipa -o ${OUTPUT_IPA} --liquid-glass"
           if [ -n "${{ github.event.inputs.url_schemes }}" ]; then
             CMD_ARGS="${CMD_ARGS} --url-schemes '${{ github.event.inputs.url_schemes }}'"
             NEEDS_PATCH="true"

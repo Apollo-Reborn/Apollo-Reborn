@@ -32,15 +32,13 @@ trap cleanup EXIT
 # Generic IPA patching script (DOES NOT inject the tweak)
 # Supports:
 # - Liquid Glass patch for iOS 26 (credit: @ryannair05)
-# - Liquid Glass icons only (icon catalog + plist metadata, no iOS 26 UI chrome)
 # - Custom URL schemes injection
 
 # --- Argument Parsing ---
 INPUT_IPA=""
 OUTPUT_IPA="Apollo-Patched.ipa"
 REMOVE_CODE_SIGNATURE="false"
-LIQUID_GLASS="false"
-LIQUID_GLASS_ICONS_ONLY="false"
+LIQUID_GLASS="true"
 URL_SCHEMES=""
 OUTPUT_IPA_PATH=""
 FIX_SAFARI_EXTENSION="false"
@@ -57,16 +55,11 @@ print_usage() {
     echo "  --fix-safari-extension        Install the manual + legacy Safari extensions"
     echo "  --fix-openin-extension        Repair the bundled 'Open in Apollo' share-sheet action"
     echo "                                (needs the openin-extension dylib; run 'make package' first)"
-    echo "  --liquid-glass-icons          Bundle the Liquid Glass icon catalog only,"
-    echo "                                without the iOS 26 UI chrome (no vtool"
-    echo "                                build-version bump). Cannot be combined"
-    echo "                                with --liquid-glass."
     echo "  --url-schemes <schemes>       Comma-separated list of URL schemes to add"
     echo "                                (e.g., 'custom,test,myapp')"
     echo ""
     echo "Examples:"
     echo "  $0 Apollo.ipa --liquid-glass"
-    echo "  $0 Apollo.ipa --liquid-glass-icons"
     echo "  $0 Apollo.ipa --url-schemes 'custom,test'"
     echo "  $0 Apollo.ipa --liquid-glass --url-schemes 'custom' -o MyApp.ipa"
 }
@@ -94,8 +87,8 @@ while [[ "$#" -gt 0 ]]; do
             shift
             ;;
         --liquid-glass-icons)
-            LIQUID_GLASS_ICONS_ONLY="true"
-            shift
+            echo "Icons-only builds ended on 4.0.x; current builds always include Liquid Glass." >&2
+            exit 2
             ;;
         --url-schemes)
             URL_SCHEMES="$2"
@@ -123,14 +116,6 @@ if [ -z "$INPUT_IPA" ]; then
     exit 1
 fi
 
-# --liquid-glass and --liquid-glass-icons are mutually exclusive: the former
-# bumps LC_BUILD_VERSION to sdk 27.1 (iOS 26 UI runtime + Duo full-bleed), which is
-# the exact behavior the icons-only build is meant to avoid.
-if [ "${LIQUID_GLASS}" == "true" ] && [ "${LIQUID_GLASS_ICONS_ONLY}" == "true" ]; then
-    echo "Error: --liquid-glass and --liquid-glass-icons are mutually exclusive."
-    exit 1
-fi
-
 if [ ! -f "$INPUT_IPA" ]; then
     echo "Error: Input IPA file not found: $INPUT_IPA"
     exit 1
@@ -143,7 +128,6 @@ echo "Remove code signature: ${REMOVE_CODE_SIGNATURE}"
 echo "Liquid Glass patch: ${LIQUID_GLASS}"
 echo "Fix Safari extension: ${FIX_SAFARI_EXTENSION}"
 echo "Fix Open-in-Apollo action: ${FIX_OPENIN_EXTENSION}"
-echo "Liquid Glass icons only: ${LIQUID_GLASS_ICONS_ONLY}"
 echo "URL schemes: ${URL_SCHEMES:-none}"
 
 if [[ "${OUTPUT_IPA}" = /* ]]; then
@@ -194,12 +178,6 @@ if [ "${LIQUID_GLASS}" == "true" ]; then
         brew install vtool
     fi
     patch_liquid_glass_binary_in_app "$APP_BUNDLE"
-    patch_liquid_glass_assets_in_app "$APP_BUNDLE"
-fi
-
-# 2a-icons. Liquid Glass icons-only (assets only, no SDK bump)
-if [ "${LIQUID_GLASS_ICONS_ONLY}" == "true" ]; then
-    echo "Applying Liquid Glass icons-only patch (no iOS 26 UI chrome)..."
     patch_liquid_glass_assets_in_app "$APP_BUNDLE"
 fi
 

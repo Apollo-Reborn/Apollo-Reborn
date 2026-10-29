@@ -16,12 +16,22 @@ Pre-built IPAs and AltStore Classic/SideStore/Feather sources are now available 
 
 ### Which build should I install?
 
-The download page offers **Standard / GLASS** builds (with Apollo's app extensions plus the Apollo-Reborn widgets) and **No Extensions** builds. They are the same app — the difference is how much it costs to sideload:
+**Releases after 4.0.x require iOS 26 or later.** Both current builds use Liquid
+Glass and include the alternate icon catalog:
 
-- **Standard / GLASS** bundle ~6 app extensions, so a sideload registers about **7 App IDs** (one per extension plus the app). A **free Apple ID** can register only **10 App IDs per 7 days**, so a clean single install fits — but it's easy to exceed by installing under more than one bundle ID, reinstalling within the same week, or sideloading other extension-bearing apps. If an install fails with an App ID error, install a **No Extensions** build or wait for older App IDs to expire. A **paid** Apple Developer account has a much higher cap. ([AltStore explains the limit](https://faq.altstore.io/altstore-classic/app-ids).)
-- **No Extensions** strips all app extensions (including widgets), so it only needs **1 App ID** — the reliable choice on a free Apple ID that's running low.
+- **Apollo Reborn** includes widgets and Apollo's working app extensions.
+- **Apollo Reborn No Extensions** removes all app extensions, including widgets,
+  to reduce App ID usage when sideloading.
 
-> This is separate from whether an installed extension actually *launches* on iOS 26, which depends on your installer — see the caveat in [Opening links in Apollo](#opening-links-in-apollo).
+Classic appearance, icons-only builds, older iOS and standalone jailbreak
+packages end on **4.0.x**. Use the final 4.0.x release from the
+[release archive](https://github.com/Apollo-Reborn/Apollo-Reborn/releases) to keep
+those experiences. Existing Glass source URLs remain valid; the current build
+choice is whether to include extensions.
+
+Extension availability still depends on your installer; see
+[Opening links in Apollo](#opening-links-in-apollo). Maintainers should read the
+[rollout checklist](docs/ios26-sunset-rollout.md) before the first current release.
 
 ## Don't have an API key?
 

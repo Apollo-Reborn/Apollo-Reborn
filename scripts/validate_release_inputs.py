@@ -83,6 +83,8 @@ def main() -> int:
         # The changelog and release tag track the semantic tweak version, not the
         # dpkg packaging revision carried in control (e.g. "2.14.0-33" -> "2.14.0").
         release_version = marketing_version(read_control_version())
+        if tuple(map(int, release_version.split("."))) < (4, 1, 0):
+            raise ValueError("this branch requires a 4.1+ release; ship final 4.0.x from the maintenance branch")
         build_version = read_build_version()
         validate_changelog(release_version)
         tag = validate_tag_available(apollo_version, release_version)

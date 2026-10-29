@@ -2,7 +2,7 @@
 # patch_liquid_glass_binary_in_app <app_bundle>
 #
 # Applies the iOS 26 Liquid Glass BINARY patches to the main app executable:
-#   * vtool build-version bump (ios 15.0 / sdk 27.1) — flips IsLiquidGlass() on
+#   * vtool build-version bump (ios 26.0 / sdk 27.1) — flips IsLiquidGlass() on
 #     (SDK major >= 19) and advertises iOS 27.1 so iPhone Duo stops
 #     letterboxing the guest in a phone-sized column. SDK 19.0 was enough
 #     for Liquid Glass; Duo's full-bleed canvas requires 27.1.
@@ -25,8 +25,8 @@ patch_liquid_glass_binary_in_app() {
         return 1
     fi
 
-    echo "vtool: bumping build version to ios 15.0 / sdk 27.1..."
-    vtool -set-build-version ios 15.0 27.1 -replace -output "$executable_path" "$executable_path"
+    echo "vtool: bumping build version to ios 26.0 / sdk 27.1..."
+    vtool -set-build-version ios 26.0 27.1 -replace -output "$executable_path" "$executable_path"
 
     echo "Checking for duplicate @executable_path/Frameworks LC_RPATH entries..."
     local rpath_count
@@ -36,6 +36,11 @@ patch_liquid_glass_binary_in_app() {
         echo "  Removing duplicate..."
         install_name_tool -delete_rpath "@executable_path/Frameworks" "$executable_path"
     fi
+
+    # The install-time plist requirement must agree with dyld's deployment floor.
+    plutil -replace MinimumOSVersion -string "26.0" "$plist"
+    # A previously patched input must not retain an old classic-design opt-out.
+    plutil -remove UIDesignRequiresCompatibility "$plist" 2>/dev/null || true
 
     # vtool / install_name_tool invalidate the existing signature.
     rm -rf "$app_bundle/_CodeSignature"

@@ -351,9 +351,6 @@ static NSString *const ApolloIPadTabBarBottomChangedNotification = @"ApolloIPadT
 static NSString *const UDKeyTrueBlackKeyboardMode = @"TrueBlackKeyboardMode";
 // Settings icons: 0 = System, 1 = Light (default), 2 = Dark.
 static NSString *const UDKeySettingsIconAppearance = @"SettingsIconAppearance";
-// Glass builds only. Default ON. Applied once before UIKit/Logos startup;
-// changing it requires relaunch and never mutates the active appearance.
-static NSString *const UDKeyLiquidGlassEnabled = @"LiquidGlassEnabled";
 // Liquid Glass only. When ON, tab-bar swipe navigates back/forward instead of
 // dragging to switch tabs (an either/or; needs a relaunch to apply). Opt-in;
 // default OFF via registerDefaults. See ApolloLiquidGlass.xm.

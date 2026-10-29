@@ -421,8 +421,7 @@ static UIImage *ApolloProfileTintedSymbol(NSString *name, CGFloat pointSize, UIC
     return self;
 }
 
-// Native glass owns its rim, lighting, and shadow. Legacy dark builds retain
-// thin material; legacy light builds use the theme's flat grouped-card fill.
+// Native glass owns the card's rim, lighting and shadow.
 - (void)apollo_applyCardStyle {
     if (self.plainAppearance) {
         self.effectView.effect = nil;
@@ -431,39 +430,13 @@ static UIImage *ApolloProfileTintedSymbol(NSString *name, CGFloat pointSize, UIC
         self.layer.shadowOpacity = 0;
         return;
     }
-    BOOL dark = self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark;
-    UIVisualEffect *glass = nil;
-    if (@available(iOS 26.0, *)) {
-        if (IsLiquidGlass()) {
-            // Clear glass keeps UIKit's refraction and highlights without
-            // regular glass's gray material fill. No custom tint or shading.
-            UIGlassEffect *effect = [UIGlassEffect effectWithStyle:UIGlassEffectStyleClear];
-            effect.interactive = YES;
-            glass = effect;
-        }
-    }
-    if (glass) {
-        self.effectView.effect = glass;
-        self.effectView.backgroundColor = UIColor.clearColor;
-        self.effectView.layer.borderWidth = 0.0;
-        self.effectView.layer.borderColor = nil;
-        self.layer.shadowOpacity = 0.0;
-    } else if (dark) {
-        self.effectView.effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial];
-        self.effectView.backgroundColor = [UIColor clearColor];
-        // Faint white rim — reads as a glass edge on dark. The hard separator
-        // stroke it replaces looked like an empty outlined box on the pale melt.
-        self.effectView.layer.borderWidth = 1.0;
-        self.effectView.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.12].CGColor;
-        // Lift the shadow in dark mode where a black shadow reads weakly.
-        self.layer.shadowOpacity = dark ? 0.28 : 0.12;
-    } else {
-        self.effectView.effect = nil;
-        UIColor *bg = ApolloThemeCardBackgroundColor() ?: [UIColor secondarySystemGroupedBackgroundColor];
-        self.effectView.backgroundColor = [bg resolvedColorWithTraitCollection:self.traitCollection];
-        self.effectView.layer.borderWidth = 0.0;
-        self.layer.shadowOpacity = 0.08;
-    }
+    UIGlassEffect *effect = [UIGlassEffect effectWithStyle:UIGlassEffectStyleClear];
+    effect.interactive = YES;
+    self.effectView.effect = effect;
+    self.effectView.backgroundColor = UIColor.clearColor;
+    self.effectView.layer.borderWidth = 0.0;
+    self.effectView.layer.borderColor = nil;
+    self.layer.shadowOpacity = 0.0;
 }
 
 - (void)setValue:(NSString *)value caption:(NSString *)caption {

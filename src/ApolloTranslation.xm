@@ -7911,8 +7911,7 @@ static UIView *ApolloStandaloneGlobeView(UIButton *globe) {
     return host;
 }
 //
-// Merge into Apollo's mod/sort/more row on both builds. Standard builds retain
-// native padding and never collapse; item-setter hooks reapply after rebuilds.
+// Merge into Apollo's mod/sort/more row; item-setter hooks reapply after rebuilds.
 
 // Find Apollo's combined trailing button container for this nav item: a
 // custom-view UIView that holds at least one UIButton OTHER than our globe.
@@ -8053,12 +8052,10 @@ static void ApolloMergeGlobeIntoContainer(UIButton *globe, UIView *container) {
     // the no-globe normalization below applies — by starting the globe
     // slot at the difference. Falls back to bare symmetric insets if
     // either glyph can't be measured.
-    // Preserve standard-build insets; only glass needs capsule-edge padding.
-    BOOL liquidGlass = IsLiquidGlass();
-    CGFloat globeX = liquidGlass ? trailInset : leadingX;
+    CGFloat globeX = trailInset;
     globe.frame = CGRectMake(0.0, 0.0, gw, h);  // size it so glyph pads resolve
     CGFloat gGlyphL = 0.0, gGlyphR = 0.0, lastGlyphL = 0.0, lastGlyphR = 0.0;
-    if (liquidGlass && lastBtn &&
+    if (lastBtn &&
         ApolloButtonGlyphPads(globe, &gGlyphL, &gGlyphR) &&
         ApolloButtonGlyphPads(lastBtn, &lastGlyphL, &lastGlyphR)) {
         CGFloat glyphAware = trailInset + lastGlyphR - gGlyphL;
@@ -8107,13 +8104,7 @@ static void ApolloApplyGlobeMergeForNavItem(UINavigationItem *navItem) {
         ApolloApplyGlobeMergeForNavItem(weakItem);
     })) return;
     // Liquid Glass uses the same neutral chrome in standalone and merged slots.
-    // Classic builds keep their accent and translated-state tint.
-    id target = globe.allTargets.anyObject;
-    UIViewController *controller = [target isKindOfClass:UIViewController.class] ? target : nil;
-    BOOL visibleTranslationApplied = [objc_getAssociatedObject(controller, kApolloVisibleTranslationAppliedKey) boolValue];
-    globe.tintColor = IsLiquidGlass() ? ApolloNavigationChromeColor()
-        : (visibleTranslationApplied ? UIColor.systemGreenColor
-            : (ApolloThemeAccentColor() ?: controller.viewIfLoaded.tintColor ?: UIColor.systemBlueColor));
+    globe.tintColor = ApolloNavigationChromeColor();
     UIBarButtonItem *standalone = objc_getAssociatedObject(navItem, kApolloGlobeStandaloneItemKey);
 
     // The Duo rail already mirrors the merged globe as a native item. Leave it

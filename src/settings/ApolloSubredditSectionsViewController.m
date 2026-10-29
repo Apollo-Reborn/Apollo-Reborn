@@ -1165,7 +1165,6 @@ static BOOL ApolloSubredditSectionsPreviewPinnedPreference(void) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"Subreddit List Sections";
-    BOOL liquidGlass = IsLiquidGlass();
 
     ApolloSubredditSectionsPreviewHostView *previewHost = [ApolloSubredditSectionsPreviewHostView new];
     previewHost.translatesAutoresizingMaskIntoConstraints = NO;
@@ -1174,16 +1173,12 @@ static BOOL ApolloSubredditSectionsPreviewPinnedPreference(void) {
 
     UILabel *titleLabel = [UILabel new];
     titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    if (liquidGlass) {
-        titleLabel.text = @"Preview";
-        // Match the semibold inset-grouped section titles beneath the preview.
-        UIFont *titleFont = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
-        titleLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
-            scaledFontForFont:titleFont];
-    } else {
-        titleLabel.text = @"PREVIEW";
-        titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
-    }
+    titleLabel.text = @"Preview";
+    // Match the semibold inset-grouped section titles beneath the preview.
+    UIFont *titleFont = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
+    titleLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
+        scaledFontForFont:titleFont];
+
     titleLabel.adjustsFontForContentSizeCategory = YES;
     ApolloSettingsApplySectionHeaderTypography(titleLabel);
     titleLabel.isAccessibilityElement = YES;
@@ -1225,7 +1220,7 @@ static BOOL ApolloSubredditSectionsPreviewPinnedPreference(void) {
     previewCard.translatesAutoresizingMaskIntoConstraints = NO;
     previewCard.userInteractionEnabled = NO;
     previewCard.clipsToBounds = YES;
-    previewCard.layer.cornerRadius = liquidGlass ? 20.0 : 10.0;
+    previewCard.layer.cornerRadius = 20.0;
     previewCard.layer.cornerCurve = kCACornerCurveContinuous;
     self.previewCardView = previewCard;
     [previewHost addSubview:previewCard];

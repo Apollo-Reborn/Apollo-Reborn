@@ -12,18 +12,12 @@ git submodule update --init --recursive
 make package
 ```
 
-**Required SDK.** Device `make package` defaults to `iphone:clang:26.0:14.0`, preserving iOS 14 support even when newer SDKs are installed. CI selects Xcode 26.0.1, which includes this SDK. On a Mac with newer Xcode, install a genuine 26.0 SDK under Theos:
-
-```bash
-cp -R "/Applications/Xcode_26.x.x.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk" \
-      "$THEOS/sdks/iPhoneOS26.0.sdk"
-```
-
-Prefer extracting your own Apple-issued SDK. If unavailable, check [theos/sdks](https://github.com/theos/sdks), then [xybp888/iOS-SDKs](https://github.com/xybp888/iOS-SDKs), for the required version. Verify `SDKSettings.json` → `Version`; renaming an older SDK does not upgrade it. Theos matches the folder name `iPhoneOS<version>.sdk`. A downloaded Simulator runtime is not a device SDK.
-
-A developer-only newer-SDK build requires an explicit compatible deployment target, for example `make package APOLLO_DEVICE_SDK=27.1 APOLLO_DEVICE_DEPLOY=15.0`. SDK 27.1 requires iOS 15 or newer; this artifact does **not** support iOS 14. The Makefile rejects alternate SDK pins without an explicit iOS 15-or-newer floor; check the selected SDK for any higher minimum. Keep the default 26.0/14.0 combination for releases.
-
-Explicit command-line `TARGET` remains authoritative. The simulator script supplies `TARGET=simulator:clang:latest:15.0`, independent of device defaults. See [AGENTS.md](AGENTS.md) for the SDK rationale.
+**SDK and deployment floor.** Current development targets iOS 26 or later and
+always uses Liquid Glass. Device builds pin SDK 26.0 for reproducibility; install
+`iPhoneOS26.0.sdk` under `$THEOS/sdks` if it is not available in the selected Xcode.
+A newer local SDK can be selected with `APOLLO_DEVICE_SDK`. The simulator uses
+its current SDK with deployment target 26.0. Classic appearance and older iOS
+are maintained only in the archived 4.0.x line.
 
 ## Testing in the iOS Simulator
 
@@ -35,7 +29,7 @@ scripts/run-in-sim.sh --no-build   # relaunch without rebuilding (e.g. after kil
 scripts/run-in-sim.sh --logs       # also stream the tweak's ApolloLog output after launch
 scripts/run-in-sim.sh --fresh-app  # re-prepare the app after dropping in a new apollo-base.ipa
 scripts/run-in-sim.sh --dark       # boot the simulator in dark mode (--light forces light)
-scripts/run-in-sim.sh --glass      # apply the iOS 26 Liquid Glass patch (--no-glass disables)
+scripts/run-in-sim.sh --glass      # Liquid Glass is enabled by default
 scripts/run-in-sim.sh --backup B.zip  # preload a settings backup (API keys + account)
 ```
 
@@ -43,7 +37,10 @@ Requirements: Xcode with an iOS Simulator runtime installed, and the same `apoll
 
 How it works, briefly: Apollo's App Store binary is built for device iOS, so the script rewrites each Mach-O's platform tag to iOS-Simulator and re-signs it ad-hoc (the arm64 code is identical on an Apple Silicon Mac). The tweak itself is built against the simulator SDK with Logos's *internal* generator — pure ObjC-runtime swizzling with no CydiaSubstrate dependency — and with `APOLLO_SIM_BUILD=1`, which skips the device-only FFmpegKit libraries. It's then injected with `DYLD_INSERT_LIBRARIES`.
 
-**Liquid Glass.** By default the simulator shows the standard (pre-iOS-26) Apollo UI, because the base IPA is linked against an older SDK. Pass `--glass` to apply the Liquid Glass patch (guest `LC_BUILD_VERSION` sdk **27.1** — iOS 26 chrome plus iPhone Duo full-bleed). It reuses `patch.sh --liquid-glass`. A cached `.sim` shell at sdk 19.0 will be regenerated. Toggling `--glass` / `--no-glass` re-prepares the app.
+**Liquid Glass.** It is always enabled, using the same binary and icon patches
+as releases. `--glass` remains an accepted convenience flag; `--no-glass` fails
+with an explanation pointing to 4.0.x. The script re-prepares an old cached
+classic shell automatically. Use an unmodified decrypted base IPA.
 
 **Custom bundle id.** If your installed device build is rebranded, run the simulator under the same id so behavior matches: `BUNDLE_ID=com.example.MyBuild scripts/run-in-sim.sh`. The script rebrands the cached app (app + every extension) to that id and caches it; switching ids triggers one re-prepare. You can also override `SIM_DEVICE_TYPE`, `SIM_RUNTIME`, and `SIM_NAME`.
 

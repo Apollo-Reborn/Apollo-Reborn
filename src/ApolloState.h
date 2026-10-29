@@ -231,15 +231,6 @@ extern BOOL sTabBarSwipeNavigation;
 // (UDKeyIPadPaneLayout). Read once at %ctor — installation happens at scene
 // connect, so changing it needs a relaunch. See src/ipad/ApolloPaneLayout.h.
 extern BOOL sIPadPaneLayout;
-#ifdef __cplusplus
-extern "C" {
-#endif
-// Launch-only choice, read by ApolloCommon +load before any Logos constructor.
-// Settings write UDKeyLiquidGlassEnabled only; never change this live.
-extern BOOL sLiquidGlassEnabled;
-#ifdef __cplusplus
-}
-#endif
 // When ON, neutralizes Apollo's feed/subreddit search takeover (nav-hide + fade + toolbar
 // dock/grow); the field stays put and results populate the feed in place. Liquid Glass only;
 // mutually exclusive with the default nav-hide mode. See ApolloSearchInPlace.xm.

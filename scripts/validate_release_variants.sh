@@ -2,12 +2,10 @@
 set -euo pipefail
 
 OUT_DIR=""
-VALIDATE_GLASS_ICONS=1
 
 usage() {
-    echo "Usage: $0 [--no-glass-icons] <dist/out>"
+    echo "Usage: $0 <dist/out>"
     echo ""
-    echo "  --no-glass-icons   do not expect the two GLASSICONS variants (PR test builds)"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -15,10 +13,6 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             usage
             exit 0
-            ;;
-        --no-glass-icons)
-            VALIDATE_GLASS_ICONS=0
-            shift
             ;;
         -*)
             echo "Error: unknown option: $1" >&2
@@ -223,43 +217,16 @@ require_promotion_enabled() {
 STANDARD_IPA="$(find_variant)"
 BASE="${STANDARD_IPA%.ipa}"
 NOEXT_IPA="${BASE}-NOEXTENSIONS.ipa"
-GLASS_IPA="${BASE}-GLASS.ipa"
-NOEXT_GLASS_IPA="${BASE}-GLASS-NOEXTENSIONS.ipa"
-GLASS_ICONS_IPA="${BASE}-GLASSICONS.ipa"
-NOEXT_GLASS_ICONS_IPA="${BASE}-GLASSICONS-NOEXTENSIONS.ipa"
-
-require_file "$NOEXT_IPA" "No Extensions"
-require_file "$GLASS_IPA" "GLASS"
-require_file "$NOEXT_GLASS_IPA" "GLASS No Extensions"
-
-require_widget_variant "$STANDARD_IPA" "standard"
-require_widget_variant "$GLASS_IPA" "GLASS"
-
-require_safari_extensions "$STANDARD_IPA" "standard"
-require_safari_extensions "$GLASS_IPA" "GLASS"
-
-require_no_extensions_variant "$NOEXT_IPA" "No Extensions"
-require_no_extensions_variant "$NOEXT_GLASS_IPA" "GLASS No Extensions"
-
-require_promotion_enabled "$STANDARD_IPA" "standard"
-require_promotion_enabled "$NOEXT_IPA" "No Extensions"
-require_promotion_enabled "$GLASS_IPA" "GLASS"
-require_promotion_enabled "$NOEXT_GLASS_IPA" "GLASS No Extensions"
-
-VALIDATED=("$STANDARD_IPA" "$NOEXT_IPA" "$GLASS_IPA" "$NOEXT_GLASS_IPA")
-
-if [[ $VALIDATE_GLASS_ICONS -eq 1 ]]; then
-    require_file "$GLASS_ICONS_IPA" "GLASS Icons"
-    require_file "$NOEXT_GLASS_ICONS_IPA" "GLASS Icons No Extensions"
-    require_widget_variant "$GLASS_ICONS_IPA" "GLASS Icons"
-    require_safari_extensions "$GLASS_ICONS_IPA" "GLASS Icons"
-    require_no_extensions_variant "$NOEXT_GLASS_ICONS_IPA" "GLASS Icons No Extensions"
-    require_promotion_enabled "$GLASS_ICONS_IPA" "GLASS Icons"
-    require_promotion_enabled "$NOEXT_GLASS_ICONS_IPA" "GLASS Icons No Extensions"
-    VALIDATED+=("$GLASS_ICONS_IPA" "$NOEXT_GLASS_ICONS_IPA")
+require_file "$NOEXT_IPA" "Apollo Reborn No Extensions"
+if [[ "$(find "$OUT_DIR" -maxdepth 1 -name '*.ipa' -type f | wc -l | tr -d ' ')" != "2" ]]; then
+    echo "Error: expected exactly two supported IPA assets; remove stale outputs." >&2
+    exit 1
 fi
-
-echo "IPA variant validation passed:"
-for ipa in "${VALIDATED[@]}"; do
-    printf '  %s\n' "$(basename "$ipa")"
+require_widget_variant "$STANDARD_IPA" "Apollo Reborn"
+require_safari_extensions "$STANDARD_IPA" "Apollo Reborn"
+require_no_extensions_variant "$NOEXT_IPA" "Apollo Reborn No Extensions"
+for ipa in "$STANDARD_IPA" "$NOEXT_IPA"; do
+    require_promotion_enabled "$ipa" "$(basename "$ipa")"
 done
+python3 "$(dirname "$0")/validate_current_ipas.py" "$STANDARD_IPA" "$NOEXT_IPA"
+echo "IPA variant validation passed: Apollo Reborn and Apollo Reborn No Extensions"

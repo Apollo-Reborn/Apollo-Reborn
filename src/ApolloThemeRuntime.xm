@@ -2,7 +2,6 @@
 #import "ApolloThemeStore.h"
 #import "ApolloThemeCompiler.h"
 #import "ApolloThemeGalleryCatalog.h"
-#import "ApolloClassicBarTheme.h"
 #import "ApolloCommon.h"
 #import "ApolloState.h"
 #import "ApolloSwiftRuntime.h"
@@ -164,7 +163,7 @@ static void ApplyThemeSearchFieldBackground(UISearchBar *searchBar) {
         pill = [[UIView alloc] initWithFrame:field.bounds];
         pill.userInteractionEnabled = NO;
         pill.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        pill.layer.cornerRadius = IsLiquidGlass() ? 18.0 : 10.0;
+        pill.layer.cornerRadius = 18.0;
         pill.layer.cornerCurve = kCACornerCurveContinuous;
         objc_setAssociatedObject(field, kApolloThemeSearchPillKey, pill, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
@@ -855,9 +854,7 @@ static BOOL ApolloUsesLegacyModeratorColor(CGFloat r, CGFloat g, CGFloat b, uint
 }
 
 static UIColor *NavigationTitlePrimaryColor(void) {
-    if (IsLiquidGlass()) return ApolloNavigationChromeColor();
-    return ApolloThemeCurrentSnapshot()->enabled
-        ? ApolloThemeRuntimeColor(ApolloThemeTokenLabel) : UIColor.labelColor;
+    return ApolloNavigationChromeColor();
 }
 
 static NSAttributedString *NavigationTitleAttributedText(NSAttributedString *source,
@@ -2235,44 +2232,6 @@ static ASImageNodeTintColorModificationBlockFn ASImageNodeTintColorModificationB
 
 %end
 
-// Classic (non-glass) bar chrome (#787). Apollo fills UINavigationBar and
-// UITabBar from the donor's tertiaryBG constant (stock Outrun #C1C8D9 light /
-// #041129 dark), while ApolloSearchToolbar already uses the donor's bar
-// constant (#C5CAD9 / #031229). The donor remap turns those into Raised and
-// Bars respectively. The editor defines Bars as navigation bars, tab-bar
-// backing, and other app chrome, so replace only an opaque, already-remapped
-// Raised fill at the nav/tab appearance sinks. Exact token matching preserves
-// unrelated colours; stock themes, disabled custom themes, transparent fills,
-// generic toolbar appearances, and Liquid Glass all pass through unchanged.
-static UIColor *ApolloThemeClassicBarFill(UIColor *color) {
-    if (!color) return color;
-    const ApolloThemeRuntimeSnapshot *snapshot = ApolloThemeCurrentSnapshot();
-    CGFloat r = 0, g = 0, b = 0, a = 1;
-    BOOL liquidGlass = IsLiquidGlass();
-    BOOL hasComponents = snapshot->enabled && !liquidGlass && ColorComponents(color, &r, &g, &b, &a);
-    uint32_t rgb = hasComponents ? ApolloThemeRGBKeyFromComponents(r, g, b) : 0;
-    if (!ApolloClassicBarShouldRouteRaisedToBars(
-            snapshot->enabled, liquidGlass, hasComponents, a, rgb,
-            snapshot->tokens[ApolloThemeModeLight][ApolloThemeTokenTertiaryBackground],
-            snapshot->tokens[ApolloThemeModeDark][ApolloThemeTokenTertiaryBackground])) return color;
-
-    return ApolloThemeRuntimeColor(ApolloThemeTokenBarBackground) ?: color;
-}
-
-%hook UIBarAppearance
-
-- (void)setBackgroundColor:(UIColor *)color {
-    // UINavigationBar and UITabBar only. UIToolbar and other appearance
-    // subclasses keep the colour Apollo assigned them.
-    if ([self isKindOfClass:[UINavigationBarAppearance class]] ||
-        [self isKindOfClass:[UITabBarAppearance class]]) {
-        color = ApolloThemeClassicBarFill(color);
-    }
-    %orig(color);
-}
-
-%end
-
 %hook UITabBar
 - (void)didMoveToWindow {
     %orig;
@@ -2288,9 +2247,6 @@ static UIColor *ApolloThemeClassicBarFill(UIColor *color) {
     %orig(color);
 }
 
-- (void)setBarTintColor:(UIColor *)color {
-    %orig(ApolloThemeClassicBarFill(color));
-}
 %end
 
 %hook UINavigationItem

@@ -632,17 +632,6 @@ static uint32_t GetLinkedSDKVersion(void) {
     return ApolloSDKVersionFromMachO(header, length);
 }
 
-// Both the selected Apollo variant and the running OS must support glass.
-// Keep eligibility separate from the launch choice: the settings switch must
-// remain reachable after selecting classic mode, and every glass-specific
-// hook must see one immutable choice for the entire process lifetime.
-static BOOL sLiquidGlassBuildAvailable;
-static BOOL sLiquidGlassCanToggle;
-static NSBundle *sLiquidGlassAppBundle;
-static NSDictionary *(*sLiquidGlassOriginalInfoDictionary)(id, SEL);
-static id (*sLiquidGlassOriginalInfoValue)(id, SEL, NSString *);
-static NSString *const kApolloDesignCompatibilityKey = @"UIDesignRequiresCompatibility";
-
 static NSInteger ApolloLogicalDeviceDisplayCount(void) {
     // Duo requires iOS 27.1. On iOS 26 and earlier there is no foldable
     // display. Scene/window geometry is unavailable during +load and a closed
@@ -683,147 +672,17 @@ BOOL ApolloDeviceIsDuo(void) {
     return ApolloLogicalDeviceDisplayCount() > 1;
 }
 
-static BOOL ApolloLiquidGlassDisabledForLaunch(__unused id object, __unused SEL selector) {
-    return NO;
-}
-
-static Method ApolloLiquidGlassRuntimeSelectionMethod(void) {
-    // UIKit's Solarium feature is the Liquid Glass design gate. Its cached
-    // getters call this method once at launch on iOS 26/27. Unlike changing
-    // dyld's SDK answers, overriding this gate does not change unrelated SDK
-    // compatibility decisions or Duo's executable stamp. Validate the ABI
-    // before replacing it, and never install it in a host such as LiveContainer.
-    Class features = objc_lookUpClass("_UIKitFeatures");
-    Method method = class_getClassMethod(features,
-        sel_registerName("uncachedSolariumEnabledForCurrentDeviceIdiom"));
-    if (!method || method_getNumberOfArguments(method) != 2) return NULL;
-    char resultType[8] = {0};
-    method_getReturnType(method, resultType, sizeof(resultType));
-    return strcmp(resultType, @encode(BOOL)) == 0 ? method : NULL;
-}
-
-static BOOL ApolloLiquidGlassTryDisableRuntimeDesign(Method designMethod, BOOL (*designEnabled)(void)) {
-    if (!designMethod || !designEnabled) return NO;
-    IMP original = method_setImplementation(designMethod, (IMP)ApolloLiquidGlassDisabledForLaunch);
-    // UIKit may already have cached its design before our +load. Restore the
-    // original method when verification fails so the caller can retain Glass.
-    if (designEnabled()) {
-        method_setImplementation(designMethod, original);
-        return NO;
-    }
-    return YES;
-}
-
-static NSDictionary *ApolloLiquidGlassInfoDictionary(NSBundle *bundle, SEL selector) {
-    NSDictionary *original = sLiquidGlassOriginalInfoDictionary(bundle, selector);
-    if (bundle != sLiquidGlassAppBundle) return original;
-
-    // Never edit the signed Info.plist or the shared Foundation dictionary.
-    // Preserve every other key (including icon metadata and the build variant).
-    NSMutableDictionary *info = [original mutableCopy];
-    info[kApolloDesignCompatibilityKey] = @(!sLiquidGlassEnabled);
-    return info;
-}
-
-static id ApolloLiquidGlassInfoValue(NSBundle *bundle, SEL selector, NSString *key) {
-    if (bundle == sLiquidGlassAppBundle && [key isEqualToString:kApolloDesignCompatibilityKey]) {
-        return @(!sLiquidGlassEnabled);
-    }
-    return sLiquidGlassOriginalInfoValue(bundle, selector, key);
-}
-
-static void ApolloInitializeLiquidGlassMode(void) {
+// All supported releases use Glass. Keep a truthful capability check for hosted
+// apps (for example LiveContainer), whose SDK/design can differ from Apollo's.
+// Old LiquidGlassEnabled preferences, including restored backups, are ignored.
+BOOL IsLiquidGlass(void) {
+    static BOOL available;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        BOOL glassRuntime = NO;
-        if (@available(iOS 26.0, *)) {
-            glassRuntime = objc_lookUpClass("UIGlassEffect") != Nil;
-        }
-        uint32_t sdkVersion = GetLinkedSDKVersion();
-        sLiquidGlassBuildAvailable = ApolloSDKEnablesLiquidGlass(sdkVersion, glassRuntime);
-
-        // This setting is exceptional: read it before Logos constructors, not
-        // in Tweak.xm's later defaults load. Several constructors gate their
-        // hook installation on IsLiquidGlass(). Register the default here as
-        // well so fresh installs and backups predating the key keep glass on.
-        NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-        [defaults registerDefaults:@{ UDKeyLiquidGlassEnabled: @YES }];
-        BOOL requestedGlass = [defaults boolForKey:UDKeyLiquidGlassEnabled];
-
-        // Scope the override to Apollo's main bundle. A host such as
-        // LiveContainer can expose its own main bundle or initialize UIKit
-        // before loading the guest. A guest can even substitute mainBundle, so
-        // also require a standalone executable. Leave hosted apps unchanged.
-        NSBundle *mainBundle = NSBundle.mainBundle;
-        const char *imageName = ApolloNativeExecutableImageName();
-        NSString *nativePath = imageName ? [NSString stringWithUTF8String:imageName] : nil;
-        BOOL mainBundleIsApollo = nativePath.length &&
-            [mainBundle.executablePath.stringByResolvingSymlinksInPath
-                isEqualToString:nativePath.stringByResolvingSymlinksInPath];
-        Method infoMethod = class_getInstanceMethod(NSBundle.class, @selector(infoDictionary));
-        Method valueMethod = class_getInstanceMethod(NSBundle.class, @selector(objectForInfoDictionaryKey:));
-        const struct mach_header *nativeHeader = ApolloNativeImageHeader();
-        BOOL standalone = nativeHeader && nativeHeader->filetype == MH_EXECUTE;
-        NSInteger runtimeMajor = NSProcessInfo.processInfo.operatingSystemVersion.majorVersion;
-        NSInteger logicalDisplays = glassRuntime ? ApolloLogicalDeviceDisplayCount() : 0;
-        BOOL bundleCompatibility = ApolloSDKSupportsLiquidGlassCompatibility(sdkVersion, glassRuntime);
-        BOOL runtimeCompatibility = ApolloSDKSupportsLiquidGlassRuntimeSelection(sdkVersion,
-            glassRuntime, runtimeMajor, logicalDisplays);
-        Method designMethod = runtimeCompatibility ? ApolloLiquidGlassRuntimeSelectionMethod() : NULL;
-        BOOL (*designEnabled)(void) = runtimeCompatibility ? dlsym(RTLD_DEFAULT, "_UISolariumEnabled") : NULL;
-        sLiquidGlassCanToggle = logicalDisplays <= 1 &&
-            (bundleCompatibility || (designMethod && designEnabled)) &&
-            standalone && mainBundleIsApollo && infoMethod && valueMethod;
-        sLiquidGlassEnabled = !sLiquidGlassCanToggle || requestedGlass;
-
-        if (sLiquidGlassCanToggle && runtimeCompatibility && !requestedGlass) {
-            // If UIKit cached its design before our +load, restore its method
-            // and keep our own hooks in Glass mode too. Never leave mixed
-            // Standard/Glass chrome or claim an unavailable switch succeeded.
-            if (!ApolloLiquidGlassTryDisableRuntimeDesign(designMethod, designEnabled)) {
-                sLiquidGlassCanToggle = NO;
-                sLiquidGlassEnabled = YES;
-                ApolloLog(@"[LiquidGlassMode] UIKit design already cached; keeping Glass active");
-            }
-        }
-
-        if (sLiquidGlassCanToggle) {
-            // Cache the bundle BEFORE swizzling: asking for mainBundle inside
-            // the hooks can recurse through Foundation's metadata lookup.
-            sLiquidGlassAppBundle = mainBundle;
-            sLiquidGlassOriginalInfoDictionary = (void *)method_getImplementation(infoMethod);
-            sLiquidGlassOriginalInfoValue = (void *)method_getImplementation(valueMethod);
-            method_setImplementation(infoMethod, (IMP)ApolloLiquidGlassInfoDictionary);
-            method_setImplementation(valueMethod, (IMP)ApolloLiquidGlassInfoValue);
-        }
-        ApolloLog(@"[LiquidGlassMode] SDK=0x%08X runtime=%d displays=%ld switchAvailable=%d requested=%d active=%d",
-                  sdkVersion, glassRuntime, (long)logicalDisplays, sLiquidGlassCanToggle, requestedGlass,
-                  sLiquidGlassBuildAvailable && sLiquidGlassEnabled);
+        available = ApolloSDKEnablesLiquidGlass(GetLinkedSDKVersion(),
+            objc_lookUpClass("UIGlassEffect") != Nil);
     });
-}
-
-// ObjC +load runs before this dylib's C/C++ constructors, including every
-// Logos %ctor. UIKit also caches its design choice, so waiting for application
-// launch or settings initialization would leave a mixture of old/new chrome.
-@interface ApolloLiquidGlassModeBootstrap : NSObject
-@end
-
-@implementation ApolloLiquidGlassModeBootstrap
-+ (void)load {
-    @autoreleasepool {
-        ApolloInitializeLiquidGlassMode();
-    }
-}
-@end
-
-BOOL IsLiquidGlass(void) {
-    ApolloInitializeLiquidGlassMode();
-    return sLiquidGlassBuildAvailable && sLiquidGlassEnabled;
-}
-
-BOOL ApolloLiquidGlassCanToggle(void) {
-    ApolloInitializeLiquidGlassMode();
-    return sLiquidGlassCanToggle;
+    return available;
 }
 
 // Route a URL through Apollo's own URL handler, bypassing iOS URL dispatch.
