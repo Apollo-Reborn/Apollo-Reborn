@@ -1299,6 +1299,14 @@ static void ApolloWebJSONNoteAccountWrite(NSString *user) {
     }
 }
 
+NSUInteger ApolloWebJSONAccountWriteCount(NSString *username) {
+    NSString *user = username.lowercaseString;
+    if (user.length == 0) return 0;
+    @synchronized (ApolloWebJSONSharedReadLock()) {
+        return sAccountWriteCounts[user].unsignedIntegerValue;
+    }
+}
+
 ApolloWebJSONTaskCompletion ApolloWebJSONShareAccountRead(NSString *username, NSString *method, NSString *path,
                                                          id parameters, ApolloWebJSONTaskCompletion completion) {
     NSString *user = username.lowercaseString;

@@ -26,6 +26,7 @@
 #import "ApolloUserProfileCache.h"
 #import "ApolloSubredditInfoCache.h"
 #import "ApolloSubredditCustomIconCache.h"
+#import "ApolloWebJSON.h"
 #import "ApolloWebSessionStore.h"
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -2495,12 +2496,14 @@ static id ApolloInboxCompletionMarkingParentLookup(id completion) {
 // title and subreddit don't change, but on an API-Key-Free (cookie) session each lookup spends one
 // of the few requests Reddit allows a minute: about 7 every 10 minutes while the inbox sits still.
 // So for those accounts the last answer for the same set of parents is handed back for up to 10
-// minutes, and a new reply (a new set) still asks Reddit. OAuth accounts have Reddit's full API
-// budget and keep the stock lookup.
+// minutes, until the account writes anything (an edited or deleted comment can be a parent; the
+// same write count ApolloWebJSON's shared reads start over on). A new reply (a new set) still asks
+// Reddit. OAuth accounts have Reddit's full API budget and keep the stock lookup.
 static const NSTimeInterval kApolloInboxParentsReuseTTL = 10.0 * 60.0;
 static const NSUInteger kApolloInboxParentsReuseMaxEntries = 8;
 static NSMutableDictionary<NSString *, NSArray *> *sApolloInboxParentsByKey;
 static NSMutableDictionary<NSString *, NSDate *> *sApolloInboxParentsAnsweredAt;
+static NSMutableDictionary<NSString *, NSNumber *> *sApolloInboxParentsWriteCount;
 
 static NSObject *ApolloInboxParentsLock(void) {
     static NSObject *lock;
@@ -2509,45 +2512,62 @@ static NSObject *ApolloInboxParentsLock(void) {
     return lock;
 }
 
-// "<user>|<sorted fullnames>" for an API-Key-Free client's lookup, else nil. Apollo builds the
-// list from a Set, so its order changes from one refresh to the next.
-static NSString *ApolloInboxParentsReuseKey(id client, id fullNames) {
-    if (![fullNames isKindOfClass:[NSArray class]] || [(NSArray *)fullNames count] == 0) return nil;
+// The client's account username when it is an API-Key-Free account, else nil.
+static NSString *ApolloInboxParentsKeylessUsername(id client) {
     id user = [client respondsToSelector:@selector(currentUser)]
         ? ((id (*)(id, SEL))objc_msgSend)(client, @selector(currentUser)) : nil;
     NSString *username = [user respondsToSelector:@selector(username)]
         ? ((id (*)(id, SEL))objc_msgSend)(user, @selector(username)) : nil;
     if (![username isKindOfClass:[NSString class]] || username.length == 0) return nil;
-    if (!ApolloWebSessionFor(username)) return nil;
+    return ApolloWebSessionFor(username) ? username.lowercaseString : nil;
+}
+
+// "<user>|<sorted fullnames>" for an API-Key-Free client's lookup, else nil. Apollo builds the
+// list from a Set, so its order changes from one refresh to the next.
+static NSString *ApolloInboxParentsReuseKey(id client, id fullNames) {
+    if (![fullNames isKindOfClass:[NSArray class]] || [(NSArray *)fullNames count] == 0) return nil;
+    NSString *username = ApolloInboxParentsKeylessUsername(client);
+    if (!username) return nil;
     for (id name in (NSArray *)fullNames) {
         if (![name isKindOfClass:[NSString class]]) return nil;
     }
     NSArray *sorted = [(NSArray *)fullNames sortedArrayUsingSelector:@selector(compare:)];
-    return [NSString stringWithFormat:@"%@|%@", username.lowercaseString, [sorted componentsJoinedByString:@","]];
+    return [NSString stringWithFormat:@"%@|%@", username, [sorted componentsJoinedByString:@","]];
+}
+
+static NSString *ApolloInboxParentsKeyUsername(NSString *key) {
+    return [key componentsSeparatedByString:@"|"].firstObject;
 }
 
 static NSArray *ApolloInboxParentsReusable(NSString *key, NSTimeInterval *outAge) {
     if (!key) return nil;
+    NSUInteger writes = ApolloWebJSONAccountWriteCount(ApolloInboxParentsKeyUsername(key));
     @synchronized (ApolloInboxParentsLock()) {
         NSDate *answeredAt = sApolloInboxParentsAnsweredAt[key];
         NSTimeInterval age = answeredAt ? -answeredAt.timeIntervalSinceNow : DBL_MAX;
         if (age > kApolloInboxParentsReuseTTL) return nil;
+        if (sApolloInboxParentsWriteCount[key].unsignedIntegerValue != writes) return nil;
         if (outAge) *outAge = age;
         return sApolloInboxParentsByKey[key];
     }
 }
 
-static void ApolloInboxParentsRemember(NSString *key, NSArray *things) {
+// `writesAtSend` is the account's write count when the lookup went out. An answer that raced a
+// write may predate it, and keeping it under that older count means it's never reused.
+static void ApolloInboxParentsRemember(NSString *key, NSArray *things, NSUInteger writesAtSend) {
     if (!key || things.count == 0) return;
     @synchronized (ApolloInboxParentsLock()) {
         if (!sApolloInboxParentsByKey) sApolloInboxParentsByKey = [NSMutableDictionary dictionary];
         if (!sApolloInboxParentsAnsweredAt) sApolloInboxParentsAnsweredAt = [NSMutableDictionary dictionary];
+        if (!sApolloInboxParentsWriteCount) sApolloInboxParentsWriteCount = [NSMutableDictionary dictionary];
         sApolloInboxParentsByKey[key] = [things copy];
         sApolloInboxParentsAnsweredAt[key] = [NSDate date];
+        sApolloInboxParentsWriteCount[key] = @(writesAtSend);
         while (sApolloInboxParentsAnsweredAt.count > kApolloInboxParentsReuseMaxEntries) {
             NSString *oldest = [sApolloInboxParentsAnsweredAt keysSortedByValueUsingSelector:@selector(compare:)].firstObject;
             [sApolloInboxParentsAnsweredAt removeObjectForKey:oldest];
             [sApolloInboxParentsByKey removeObjectForKey:oldest];
+            [sApolloInboxParentsWriteCount removeObjectForKey:oldest];
         }
     }
 }
@@ -2632,6 +2652,7 @@ static void ApolloInboxParentsRemember(NSString *key, NSArray *things) {
     NSString *reuseKey = ApolloInboxParentsReuseKey(self, fullNames);
     NSTimeInterval reusedAge = 0;
     NSArray *reused = ApolloInboxParentsReusable(reuseKey, &reusedAge);
+    NSUInteger writesAtSend = reuseKey ? ApolloWebJSONAccountWriteCount(ApolloInboxParentsKeyUsername(reuseKey)) : 0;
     if (reused) {
         ApolloLog(@"[InboxParents] Reused the %.0fs-old lookup of %lu reply parent(s) instead of asking Reddit again",
                   reusedAge, (unsigned long)requested);
@@ -2642,7 +2663,7 @@ static void ApolloInboxParentsRemember(NSString *key, NSArray *things) {
     }
     id wrapped = ^(NSArray *things, NSError *error) {
         if (!error && [things isKindOfClass:[NSArray class]]) {
-            ApolloInboxParentsRemember(reuseKey, things);
+            ApolloInboxParentsRemember(reuseKey, things, writesAtSend);
             lookupCompletion(things, nil);
             return;
         }

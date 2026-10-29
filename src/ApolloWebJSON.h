@@ -349,6 +349,11 @@ ApolloWebJSONTaskCompletion ApolloWebJSONShareAccountRead(NSString *username, NS
 // resumed, so cancelling it can't cancel the request another caller waits on.
 NSURLSessionDataTask *ApolloWebJSONSharedReadPlaceholderTask(void);
 
+// How many times a write from this web-session account has been sent or
+// answered this launch (the count the sharing above starts over on). An answer
+// kept for longer elsewhere is stale once it moves. Any thread.
+NSUInteger ApolloWebJSONAccountWriteCount(NSString *username);
+
 // Verify the requesting web account independently of public HTTP successes.
 void ApolloWebJSONCheckAccountSession(NSString *username);
 void ApolloWebJSONNoteMalformedAccountResponse(NSString *username, NSString *path);
