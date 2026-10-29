@@ -204,6 +204,7 @@ extern NSInteger sDuoLandscapeFeedLayout;
 extern BOOL sDuoSubredditPanelGlassEnabled;
 // Modern sheet or Apollo's Classic popup for the subreddit quick-switcher.
 extern BOOL sSubredditSwitcherSheetEnabled;
+extern BOOL sDuoTabletopVideoEnabled; // opt-in, default NO
 BOOL ApolloSupportsNativeTabBarScrollBehavior(void);
 #ifdef __cplusplus
 }
