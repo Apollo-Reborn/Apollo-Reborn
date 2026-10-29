@@ -1,5 +1,5 @@
-// ApolloWhatsNewHalloween — one-off Halloween look for the 3.9.0 What's New
-// sheet (Count Helios icon, pumpkin-orange accent, bats). See
+// ApolloWhatsNewHalloween — Halloween look for the 3.9.0 and 4.0.1 What's New
+// sheets (Count Helios icon, pumpkin-orange accent, bats). See
 // ApolloWhatsNewHalloween.h for when it applies and how to remove it.
 //
 // Each bat is three nested layers:
@@ -24,7 +24,10 @@
 
 #import "ApolloCommon.h"
 
-static NSString *const kApolloWhatsNewHalloweenVersion = @"3.9.0";
+// The Halloween releases (October 2026).
+static NSArray<NSString *> *ApolloWhatsNewHalloweenVersions(void) {
+    return @[ @"3.9.0", @"4.0.1" ];
+}
 
 static const NSUInteger kApolloBatCount = 9;
 // Wing angle above horizontal, in radians, at the top and bottom of a stroke.
@@ -32,7 +35,7 @@ static const CGFloat kApolloBatWingUp = 0.75;
 static const CGFloat kApolloBatWingDown = -0.30;
 
 BOOL ApolloWhatsNewHalloweenWantedForVersion(NSString *version) {
-    return [version isEqualToString:kApolloWhatsNewHalloweenVersion];
+    return [ApolloWhatsNewHalloweenVersions() containsObject:version];
 }
 
 static UIImage *ApolloWhatsNewHalloweenBundledIcon(NSString *name) {

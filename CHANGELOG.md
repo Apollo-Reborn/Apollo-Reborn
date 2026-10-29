@@ -4,6 +4,44 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v4.0.1] - 2026-MM-??
+
+### Performance
+
+- Send fewer Reddit requests on **API-Key-Free** accounts by not repeating link preview lookups for sites that block previews and by briefly reusing the Inbox's reply lookups, so ordinary reading reaches Reddit's rate limit later (#1579: @icpryde)
+  - New replies, and anything you post or edit, still refresh right away
+
+### Fixes
+
+- Fix **multi-photo posts** showing a reddit.com link and 0 photos since Reddit began marking their photos as failed, so the gallery, feed carousel, media viewer, Save All and Gallery View show them again (#1589: @icpryde)
+  - Covers galleries posted from Apollo with Reddit as the Media Upload Host and from other apps; they show as square cards in the feed
+- Fix **API-Key-Free search** showing "Error searching" or "Error loading subreddits" for post search, searching within a subreddit or multireddit, and subreddit search (#1557: @DeltAndy123)
+- Fix **All Posts (r/all)** showing "Couldn't load posts" on **API-Key-Free** accounts, for every sort and with Exclude Subscriptions (#1570: @icpryde)
+- Open the feed you chose to start on again at launch by turning **Restore Reading Session** off by default; it moves to Posts & Feeds → Feed (#1511: @IllIIllIllIllII)
+  - A choice you changed yourself in 4.0.0 is kept, so turn it back on there if you relied on the 4.0.0 default
+- Fix a crash when opening a **post or comment link** while Reddit is rate-limiting requests, most often right after returning to Apollo; the usual "Error loading comments" banner shows instead (#1572: @icpryde)
+- Fix the **home screen icon** turning into iOS's generic grid after installing or updating Apollo with an alternate icon selected (#1554: @icpryde)
+  - Apollo re-applies your icon once on the first launch after the update, so iOS shows its "You have changed the icon" alert; tapping the selected icon again under App Icon also redraws it
+- Open a tapped **Inbox reply** or comment link directly on that comment, without the post flashing, gliding and snapping into place, and keep your place when returning from a pushed page (#1584: @icpryde)
+- Show the **Unrecoverable** label on deleted comments the archive can't restore, instead of a thin, cut-off red strip with only the age showing (#1578: @icpryde)
+- Load **Live Interactive Posts** for accounts set to old Reddit, instead of spinning on "Loading interactive post…", and make the ✕ and ••• buttons work in an interactive post's expanded view (#1553: @icpryde)
+  - Report from the ••• menu opens and closes properly, and feed cards return to their compact size after closing
+- Keep **sign-in**, **Badge Book** trophies and **API-Key-Free** backup reads working for accounts Old Reddit turns away (#1553: @icpryde)
+  - The API-Key-Free sign-in sheet no longer offers Switch to Old Reddit
+- Open a just-posted **video post** with its video playing from the "Posted! Tap to view." banner, instead of a still image (#1413: @icpryde)
+  - The banner now waits until Reddit finishes processing the video, so it can appear a few seconds later; applies to videos uploaded with **Media Upload Host** set to Reddit
+- Stop the **media post composer** jumping when you pick a flair or photo with a title that wraps onto two or more lines (#1571: @icpryde)
+- Open the **subreddit switcher** with the keyboard down, so your favorites stay visible until you tap the search field (#1564: @IllIIllIllIllII)
+- Bring back the **Search tab**'s search bar and tab bar on a downward flick after **Hide Bars on Scroll** hid them on the classic (non-Liquid Glass) look, instead of leaving them hidden until Apollo restarts (#1575: @icpryde)
+- Stop quick **Posts tab** taps on Liquid Glass opening a post or username behind the tab bar while going back a page; repeated taps keep stepping back right away (#1512: @IllIIllIllIllII)
+- Let a swipe over **Community Highlights** go Back once the carousel is at its first highlight, and Forward at its last when there is a page to go forward to, instead of only bouncing (#1577: @icpryde, @nnastasi)
+- Make **Open in Apollo (Manual Fallback)** open Apollo directly when Link Companion isn't installed, instead of reloading the page and hiding its button (#1574: @icpryde)
+  - iOS asks before switching to Apollo; the fix comes with the IPAs that include the Safari extensions
+- Polish the unfolded **iPhone Duo** split view: Gallery View uses the whole screen instead of sitting partly behind the feed column or sidebar, and the YouTube loading screen covers the whole split instead of one column (#1496, #1516: @nnastasi)
+  - The comment jump button stays inside the comments pane for every Jump Button Position, and off the fold when partially folded (#1490: @nnastasi)
+- Fix **iPad Layout (Beta)** crashing Apollo Reborn settings when Liquid Glass is off, and fix the Subreddits list, feed rows, pane titles, selection outlines and sign-in notice being squeezed, clipped or hidden under the sidebar (#1504: @DeltAndy123)
+  - iPad Layout now needs iPadOS 26 or later with Liquid Glass on; message threads always show their reply bar, and the Account tab's Saved, Hidden & Deleted, Recently Read and Friends rows highlight and take keyboard focus one at a time
+
 ## [v4.0.0] - 2026-10-25
 
 ### Features
@@ -1154,6 +1192,7 @@ There are currently a few limitations:
 ## [v1.0.0] - 2023-10-13
 - Initial release
 
+[v4.0.1]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_4.0.0...v1.15.11_4.0.1
 [v4.0.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.9.0...v1.15.11_4.0.0
 [v3.9.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.8.5...v1.15.11_3.9.0
 [v3.8.5]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.8.0...v1.15.11_3.8.5
