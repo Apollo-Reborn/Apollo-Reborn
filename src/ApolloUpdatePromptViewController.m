@@ -230,6 +230,10 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
     BOOL _hasAnimatedIn;
     BOOL _showingChooser;
     BOOL _transitioning;
+
+    // The summary's detent: medium before iOS 16, else a custom one sized to fit.
+    NSString *_summaryDetentIdentifier;
+    CGFloat _summaryDetentWidth;   // sheet width the custom detent was last sized for
 }
 
 - (instancetype)initWithInfo:(ApolloUpdateInfo *)info
@@ -245,16 +249,27 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
 }
 
 // A half-height sheet that the release notes and the chooser expand to full height, set up
-// like the account switcher's: form sheet, medium + large detents, grabber, and scrolling
+// like the account switcher's: form sheet, summary + large detents, grabber, and scrolling
 // that expands the sheet at the edge. Before iOS 15 there are no detents, so it is the old
 // full-height page sheet.
 - (void)presentOverViewController:(UIViewController *)presenter {
     if (@available(iOS 15.0, *)) {
         self.modalPresentationStyle = UIModalPresentationFormSheet;
         UISheetPresentationController *sheet = self.sheetPresentationController;
-        sheet.detents = @[UISheetPresentationControllerDetent.mediumDetent,
-                          UISheetPresentationControllerDetent.largeDetent];
-        sheet.selectedDetentIdentifier = UISheetPresentationControllerDetentIdentifierMedium;
+        UISheetPresentationControllerDetent *summary = UISheetPresentationControllerDetent.mediumDetent;
+        _summaryDetentIdentifier = UISheetPresentationControllerDetentIdentifierMedium;
+        if (@available(iOS 16.0, *)) {
+            __weak __typeof(self) weakSelf = self;
+            _summaryDetentIdentifier = @"apollo.update.summary";
+            summary = [UISheetPresentationControllerDetent customDetentWithIdentifier:_summaryDetentIdentifier
+                                                                             resolver:^CGFloat(id<UISheetPresentationControllerDetentResolutionContext> context) {
+                __strong __typeof(weakSelf) strongSelf = weakSelf;
+                return strongSelf ? [strongSelf apollo_summaryDetentHeightWithMaximum:context.maximumDetentValue]
+                                  : floor(context.maximumDetentValue / 2);
+            }];
+        }
+        sheet.detents = @[summary, UISheetPresentationControllerDetent.largeDetent];
+        sheet.selectedDetentIdentifier = _summaryDetentIdentifier;
         sheet.prefersGrabberVisible = YES;
         sheet.prefersScrollingExpandsWhenScrolledToEdge = YES;
         // Not a declared conformance: the protocol is iOS 15+ and the floor is 14.
@@ -930,6 +945,50 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
     if ([self.traitCollection hasDifferentColorAppearanceComparedToTraitCollection:previous]) {
         [self apollo_updateAccentColors];
     }
+    if (![self.traitCollection.preferredContentSizeCategory isEqualToString:previous.preferredContentSizeCategory]) {
+        [self apollo_invalidateSummaryDetent];
+    }
+}
+
+#pragma mark Summary detent
+
+// Half height like the stock medium detent, taller when the summary needs more (a short
+// screen such as iPhone Duo's, or large Dynamic Type), up to full height. The detent value
+// excludes the bottom safe area, which the actions bar's bottom is pinned to.
+- (CGFloat)apollo_summaryDetentHeightWithMaximum:(CGFloat)maximum {
+    CGFloat half = floor(maximum / 2);
+    CGFloat width = CGRectGetWidth(self.view.bounds);
+    if (width <= 0 || !_promptHeader) return half;
+    _summaryDetentWidth = width;
+    CGFloat header = [_promptHeader systemLayoutSizeFittingSize:CGSizeMake(width - 56, 0)
+                                  withHorizontalFittingPriority:UILayoutPriorityRequired
+                                        verticalFittingPriority:UILayoutPriorityFittingSizeLevel].height;
+    CGFloat actions = [_promptActions systemLayoutSizeFittingSize:CGSizeMake(width - 40, 0)
+                                    withHorizontalFittingPriority:UILayoutPriorityRequired
+                                          verticalFittingPriority:UILayoutPriorityFittingSizeLevel].height;
+    // Header insets (28 + 12) and actions bar insets (12 + 8), as constrained above.
+    CGFloat needed = ceil(self.view.safeAreaInsets.top + 28 + header + 12 + 12 + actions + 8);
+    return MIN(maximum, MAX(half, needed));
+}
+
+- (void)apollo_invalidateSummaryDetent {
+    if (@available(iOS 16.0, *)) {
+        UISheetPresentationController *sheet = self.sheetPresentationController;
+        if (!sheet) return;
+        [sheet animateChanges:^{ [sheet invalidateDetents]; }];
+    }
+}
+
+// Rotation and folding change the sheet width, and with it how the header wraps.
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    CGFloat width = CGRectGetWidth(self.view.bounds);
+    if (width > 0 && width != _summaryDetentWidth) {
+        _summaryDetentWidth = width;
+        // Next turn of the run loop, outside this layout pass.
+        __weak __typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf apollo_invalidateSummaryDetent]; });
+    }
 }
 
 #pragma mark Page transition
@@ -1053,7 +1112,7 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
         UISheetPresentationController *sheet = self.sheetPresentationController;
         if (!sheet) return;
         UISheetPresentationControllerDetentIdentifier target = large ? UISheetPresentationControllerDetentIdentifierLarge
-                                                                      : UISheetPresentationControllerDetentIdentifierMedium;
+                                                                      : _summaryDetentIdentifier;
         if ([sheet.selectedDetentIdentifier isEqual:target]) return;
         [sheet animateChanges:^{ sheet.selectedDetentIdentifier = target; }];
     }
