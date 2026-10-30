@@ -89,7 +89,6 @@ NSArray<NSDictionary<NSString *, NSString *> *> *ApolloTranslationLanguageOption
     [super viewDidLoad];
 
     self.title = @"Translation";
-    self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
 
 #if APOLLO_HAS_APPLE_TRANSLATE
     // Prime Apple's supported-language set so the Target Language picker can filter
