@@ -7,6 +7,10 @@ BOOL ApolloDuoHasBackSwipe(UINavigationController *navigation);
 /// forward swipe. Feed galleries, which make ancestor pans wait for their
 /// own drag, leave this one out.
 BOOL ApolloDuoIsPaneBackPan(UIGestureRecognizer *gesture);
+/// Whether the pane Back pan took its current touch at touch-down for Back
+/// (`forward` NO, a rightward move) or for the forward swipe (`forward` YES,
+/// leftward). NO for any other gesture, or with no touch down.
+BOOL ApolloDuoPaneBackPanAdmits(UIGestureRecognizer *gesture, BOOL forward);
 /// Any Duo pane gesture: the pane Back, its highlight guard, or the drag
 /// claim. Row content that makes ancestor gestures wait for its own press
 /// (the info-row loupe) leaves these out.

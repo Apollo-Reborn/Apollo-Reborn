@@ -903,11 +903,18 @@ static NSString *const kApolloDuoPaneBackName = @"ApolloReborn.Duo.PaneBack";
 // Feed galleries make ancestor pans wait for their own drag but exempt this
 // one: its touch admission already leaves a carousel that can scroll its
 // drag, and takes the edge strip. Community Highlights keeps it waiting and
-// releases it at the first highlight (ahlShouldYieldToNavigation).
+// releases it at the first highlight for Back and at the last for the
+// forward swipe (ahlShouldYieldToNavigation, via ApolloDuoPaneBackPanAdmits).
 BOOL ApolloDuoIsPaneBackPan(UIGestureRecognizer *gesture) {
     return [gesture.name isEqualToString:kApolloDuoPaneBackName]
         && [gesture.delegate isKindOfClass:ApolloDuoBackSwipe.class]
         && gesture == ((ApolloDuoBackSwipe *)gesture.delegate).pan;
+}
+
+BOOL ApolloDuoPaneBackPanAdmits(UIGestureRecognizer *gesture, BOOL forward) {
+    if (!ApolloDuoIsPaneBackPan(gesture)) return NO;
+    ApolloDuoPaneBackPan *pan = (ApolloDuoPaneBackPan *)gesture;
+    return pan.tracksTouch && (forward ? pan.forwardAdmitted : pan.backAdmitted);
 }
 
 BOOL ApolloDuoIsPaneGesture(UIGestureRecognizer *gesture) {

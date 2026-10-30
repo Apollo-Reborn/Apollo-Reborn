@@ -59,7 +59,8 @@ PY
 # Feed galleries make ancestor pans wait for their own drag. The Duo pane
 # Back is a pan too, and must stay exempt in the gallery's wiring loop.
 # (Community Highlights makes it wait on purpose and hands it the swipe at the
-# first highlight; run_highlights_carousel_gesture_policy_tests.sh checks that.)
+# first highlight, or the forward swipe at the last;
+# run_highlights_carousel_gesture_policy_tests.sh checks that.)
 for exemption in 'ApolloFeedGalleryCarousel.xm:1'; do
     file=${exemption%%:*}; expected=${exemption##*:}
     found=$(grep -c 'ApolloDuoIsPaneBackPan(' "$swipe_root/src/$file" || true)

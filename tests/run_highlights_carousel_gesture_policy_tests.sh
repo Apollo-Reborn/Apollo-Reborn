@@ -16,7 +16,8 @@ xcrun --sdk macosx clang -std=c11 -Wall -Wextra -Werror \
 # pane Back swipe waiting on its pan.
 source="$test_root/src/ApolloSubredditHighlights.xm"
 for symbol in 'ApolloHLNavigationPanRuleAllows(' 'ApolloHLCarouselAtStart(' 'ApolloHLCarouselAtEnd(' \
-    'isEqualToString:kApolloHLDuoPaneBackName]'; do
+    'isEqualToString:kApolloHLDuoPaneBackName]' 'ApolloDuoPaneBackPanAdmits(recognizer, forward)' \
+    'ahlDuoPaneSwipeTracksTouchForward:YES]'; do
     if ! grep -Fq "$symbol" "$source"; then
         echo "highlights carousel no longer uses $symbol" >&2
         exit 1

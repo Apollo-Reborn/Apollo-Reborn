@@ -1753,6 +1753,8 @@ int main(void) {
             [fwdPan reset];
             Check([fwdOwner gestureRecognizer:fwdPan shouldReceiveTouch:fwdTouch], @"begin: the strip touch is admitted");
             [fwdPan touchesBegan:[NSSet setWithObject:fwdTouch] withEvent:[UIEvent new]];
+            Check(ApolloDuoPaneBackPanAdmits(fwdPan, YES) && !ApolloDuoPaneBackPanAdmits(fwdPan, NO),
+                  @"begin: Community Highlights reads the strip touch as the forward swipe's alone");
             fwdPan.location = CGPointMake(1256, 302); fwdPan.velocity = CGPointMake(-300, 20);
             Check([fwdOwner gestureRecognizerShouldBegin:fwdPan] && fwdOwner.forward,
                   @"begin: a clearly leftward move from the strip is the forward swipe");
@@ -1774,9 +1776,15 @@ int main(void) {
             Check([fwdOwner gestureRecognizer:fwdPan shouldReceiveTouch:fwdTouch] && fwdPan.backAdmitted && !fwdPan.forwardAdmitted,
                   @"begin: the leading strip is Back's");
             [fwdPan touchesBegan:[NSSet setWithObject:fwdTouch] withEvent:[UIEvent new]];
+            Check(ApolloDuoPaneBackPanAdmits(fwdPan, NO) && !ApolloDuoPaneBackPanAdmits(fwdPan, YES),
+                  @"begin: Community Highlights reads the leading strip touch as Back's alone");
             fwdPan.location = CGPointMake(-4, 302); fwdPan.velocity = CGPointMake(-300, 20);
             Check(![fwdOwner gestureRecognizerShouldBegin:fwdPan], @"begin: a leftward move from Back's strip is the row's");
             [fwdPan reset];
+            UIPanGestureRecognizer *fwdImpostor = [UIPanGestureRecognizer new]; fwdImpostor.name = @"ApolloReborn.Duo.PaneBack";
+            Check(!ApolloDuoPaneBackPanAdmits(fwdPan, NO) && !ApolloDuoPaneBackPanAdmits(fwdPan, YES)
+                  && !ApolloDuoPaneBackPanAdmits(fwdImpostor, YES) && !ApolloDuoPaneBackPanAdmits(fwdOwner.highlightGuard, NO),
+                  @"begin: with no touch down, or for another gesture, the pane Back admits neither way");
 
             // Release: the mirrored commit rule, acting once through the split.
             UIScrollView *fwdTable = [UIScrollView new]; fwdTable.superview = fwdFeed.view; fwdTable.scrollEnabled = YES;
