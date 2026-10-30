@@ -3,6 +3,7 @@
 #import "ApolloCommon.h"
 #import "ApolloClasses.h"
 #import "ApolloSwiftRuntime.h"
+#import "ApolloState.h"
 #import "ApolloSubredditSwitcherSheet.h"
 #import "ApolloThemeRuntime.h"
 #import "settings/ApolloSettingsTableViewController.h"
@@ -11,6 +12,11 @@
 @interface _TtC6Apollo7JumpBar : UIControl
 - (void)searchTextFieldChanged:(UITextField *)field;
 - (BOOL)textFieldShouldReturn:(UITextField *)field;
+@end
+
+// ApolloNavigationController's "Go to Jump Bar" key command.
+@interface UINavigationController (ApolloJumpBarCommand)
+- (void)goToJumpBar;
 @end
 
 static const CGFloat ApolloSubredditSearchBarHeight = 56.0;
@@ -318,6 +324,8 @@ static BOOL ApolloPresentSubredditSheetForFeed(UIViewController *owner, UIViewCo
 }
 
 static BOOL ApolloPresentSubredditSheet(_TtC6Apollo7JumpBar *jump) {
+    // Classic: fall through to Apollo's own inline popup.
+    if (!sSubredditSwitcherSheetEnabled) return NO;
     UIViewController *owner = ApolloReadSwiftWeakObjectIvar(jump, "delegate");
     if (![owner isKindOfClass:ApolloClassPostsViewController]) return NO;
     if (owner.presentedViewController || owner.navigationController.presentedViewController) return YES;
@@ -348,6 +356,16 @@ BOOL ApolloPresentPostsTabSubredditSheet(UIWindow *sourceWindow) {
     }
     if (!feed) return NO;
     tabs.selectedViewController = navigation;
+    if (!sSubredditSwitcherSheetEnabled) {
+        // Classic: open Apollo's inline popup through its own Go to Jump Bar
+        // key command. The popup lives in the feed's title, so the feed has
+        // to be on top first.
+        if (![navigation respondsToSelector:@selector(goToJumpBar)]) return NO;
+        if (navigation.topViewController != feed) [navigation popToViewController:feed animated:NO];
+        [navigation goToJumpBar];
+        ApolloLog(@"[SubredditSheet] classic: opened native jump bar from Posts tab");
+        return YES;
+    }
     return ApolloPresentSubredditSheetForFeed(feed, navigation.topViewController);
 }
 
