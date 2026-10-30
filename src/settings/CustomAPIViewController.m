@@ -1393,7 +1393,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             return [[ApolloDuoSettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
         }];
     duo.visible = ^BOOL { return ApolloDuoDeviceDetected(); };
-    duo.iconSystemName = @"rectangle.split.1x2";
+    duo.iconSystemName = @"iphone.duo";
     duo.iconTileColor = UIColor.systemIndigoColor;
     ApolloSettingsRow *linkPreviews = [self buildLinkPreviewsRow];
     ApolloSettingsRow *polls = [self buildPollsRow];
