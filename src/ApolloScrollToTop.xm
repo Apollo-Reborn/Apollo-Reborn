@@ -6,8 +6,10 @@
 #import "ApolloAutoHideTabBar.h"
 #import "ApolloTopBarScrollPresentation.h"
 #import "ApolloScrollToTop.h"
-#import "ApolloSearchNativeBar.h"
+#import "ApolloDuoRail.h"
 #import "ApolloDuoSplitView.h"
+#import "ApolloScrollToTopPolicy.h"
+#import "ApolloSearchNativeBar.h"
 #import "ApolloState.h"
 
 // Apollo's status-bar proxy calls ASTableViewController rather than scrolling
@@ -84,10 +86,14 @@ static NSString *ApolloReturnItemID(id node) {
 @property (nonatomic, strong) UIButton *button;
 @property (nonatomic, strong) UIButton *retiringButton;
 @property (nonatomic, strong) UITapGestureRecognizer *navigationTap;
+@property (nonatomic, strong) UITapGestureRecognizer *topEdgeTap;
+@property (nonatomic) CFTimeInterval topEdgeTouchStartedAt;
+@property (nonatomic) CFTimeInterval lastNativeStatusBarTap;
 - (void)clear;
 - (void)clearAnimated:(BOOL)animated;
 - (void)retireButtonAnimated:(BOOL)animated;
 - (void)returnToPosition;
+- (void)handleStatusBarScrollRequest;
 @end
 
 @implementation ApolloScrollReturn
@@ -409,7 +415,57 @@ static NSString *ApolloReturnItemID(id node) {
 - (void)navigationTapped:(UITapGestureRecognizer *)tap {
     if (tap.state == UIGestureRecognizerStateEnded) [self returnToPosition];
 }
+- (void)handleStatusBarScrollRequest {
+    UIViewController *owner = self.owner;
+    UIScrollView *scroll = self.scrollView;
+    if (!scroll || !owner.view.window || owner.navigationController.topViewController != owner) return;
+    // A second title/status-bar tap remains an undo. Posts-tab re-selection
+    // shares the jump implementation below, but keeps its navigation semantics.
+    if (self.hasPosition) {
+        [self returnToPosition];
+        return;
+    }
+    if (scroll.contentOffset.y <= -scroll.adjustedContentInset.top + 1) {
+        ApolloTopBarSetScrollToTopActive(owner.navigationController, YES);
+        if (owner.navigationController.navigationBarHidden) {
+            [owner.navigationController setNavigationBarHidden:NO animated:!UIAccessibilityIsReduceMotionEnabled()];
+        }
+        ApolloTabBarRevealAfterScrollToTop(owner.tabBarController);
+        ApolloTopBarSetScrollToTopActive(owner.navigationController, NO);
+        return;
+    }
+    [self scrollToTopSavingPosition];
+}
+- (void)topEdgeTapped:(UITapGestureRecognizer *)tap {
+    if (tap.state != UIGestureRecognizerStateEnded) return;
+    // The normal status-bar path still runs when UIKit recognizes the tap. It
+    // owns the request so second-tap Return semantics stay exactly the same.
+    // Fall back one turn later only if native dispatch did not arrive; either
+    // way this recognizer cancels the row touch which leaked through #1538.
+    CFTimeInterval touchStartedAt = self.topEdgeTouchStartedAt;
+    __weak ApolloScrollReturn *weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ApolloScrollReturn *state = weakSelf;
+        if (!state || state.lastNativeStatusBarTap >= touchStartedAt) return;
+        [state handleStatusBarScrollRequest];
+        ApolloLog(@"[ScrollReturn] Used top-edge fallback after native header minimization");
+    });
+}
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldReceiveTouch:(UITouch *)touch {
+    if (gesture == self.topEdgeTap) {
+        UIViewController *owner = self.owner;
+        UIWindow *window = self.scrollView.window;
+        BOOL visible = owner.viewIfLoaded.window == window &&
+            owner.navigationController.topViewController == owner;
+        CGFloat statusBarHeight = window.windowScene.statusBarManager.statusBarFrame.size.height;
+        statusBarHeight = MAX(statusBarHeight, window.safeAreaInsets.top);
+        CGPoint point = [touch locationInView:window];
+        BOOL shield = ApolloScrollToTopNeedsContentTapShield(
+            ApolloDuoUsesAdaptiveBars(), sHideTopBarOnScroll, visible,
+            point.y, statusBarHeight);
+        if (shield) self.topEdgeTouchStartedAt = CACurrentMediaTime();
+        return shield;
+    }
     // The navigation-bar tap is part of the Return Button affordance.
     if (!sScrollReturnButton) return NO;
     if (!self.hasPosition || self.owner.navigationController.topViewController != self.owner) return NO;
@@ -421,7 +477,9 @@ static NSString *ApolloReturnItemID(id node) {
 }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture
         shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
-    return YES;
+    // A top-edge tap must cancel the feed row underneath it. A drag makes the
+    // tap recognizer fail naturally, leaving the table's pan untouched.
+    return gesture != self.topEdgeTap && other != self.topEdgeTap;
 }
 - (void)showButton {
     if (!sScrollReturnButton || self.returnItem) return;
@@ -518,6 +576,7 @@ static NSString *ApolloReturnItemID(id node) {
     [self stopTopJump];
     [self.retiringButton removeFromSuperview];
     [self.scrollView.panGestureRecognizer removeTarget:self action:@selector(dragged:)];
+    [self.topEdgeTap.view removeGestureRecognizer:self.topEdgeTap];
     [self.navigationTap.view removeGestureRecognizer:self.navigationTap];
 }
 @end
@@ -554,9 +613,15 @@ static ApolloScrollReturn *ApolloScrollReturnStateForScrollView(UIViewController
     }
     if (state.scrollView != scroll) {
         [state.scrollView.panGestureRecognizer removeTarget:state action:@selector(dragged:)];
+        [state.topEdgeTap.view removeGestureRecognizer:state.topEdgeTap];
         [state clearAnimated:NO];
         state.scrollView = scroll;
         [scroll.panGestureRecognizer addTarget:state action:@selector(dragged:)];
+        state.topEdgeTap = [[UITapGestureRecognizer alloc] initWithTarget:state
+            action:@selector(topEdgeTapped:)];
+        state.topEdgeTap.delegate = state;
+        state.topEdgeTap.cancelsTouchesInView = YES;
+        [scroll addGestureRecognizer:state.topEdgeTap];
     }
     UINavigationBar *bar = owner.navigationController.navigationBar;
     if (state.navigationTap.view != bar) {
@@ -608,22 +673,8 @@ static ApolloScrollReturn *ApolloScrollReturnState(UIViewController *owner) {
     ApolloScrollReturn *state = ApolloScrollReturnState(owner);
     UIScrollView *scroll = state.scrollView;
     if (!scroll || !owner.view.window || owner.navigationController.topViewController != owner) return %orig;
-    // A second title/status-bar tap remains an undo. Posts-tab re-selection
-    // shares the jump implementation below, but keeps its navigation semantics.
-    if (state.hasPosition) {
-        [state returnToPosition];
-        return NO;
-    }
-    if (scroll.contentOffset.y <= -scroll.adjustedContentInset.top + 1) {
-        ApolloTopBarSetScrollToTopActive(owner.navigationController, YES);
-        if (owner.navigationController.navigationBarHidden) {
-            [owner.navigationController setNavigationBarHidden:NO animated:!UIAccessibilityIsReduceMotionEnabled()];
-        }
-        ApolloTabBarRevealAfterScrollToTop(owner.tabBarController);
-        ApolloTopBarSetScrollToTopActive(owner.navigationController, NO);
-        return NO;
-    }
-    [state scrollToTopSavingPosition];
+    state.lastNativeStatusBarTap = CACurrentMediaTime();
+    [state handleStatusBarScrollRequest];
     return NO;
 }
 %end
