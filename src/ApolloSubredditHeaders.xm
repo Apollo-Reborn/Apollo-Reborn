@@ -2455,6 +2455,10 @@ static UIView *ApolloSubredditFindSearchFieldForViewController(UIViewController 
 }
 
 static void ApolloSubredditStyleSearchBar(UIViewController *viewController) {
+    // Only Liquid Glass floats the field over the banner. On the standard
+    // build it sits on the opaque bar, where banner-sampled white text was
+    // unreadable, so keep Apollo's own styling.
+    if (!IsLiquidGlass()) return;
     UIView *field = ApolloSubredditFindSearchFieldForViewController(viewController);
     if (!field) return;
     if (!objc_getAssociatedObject(field, kApolloSubredditSearchOriginalBackgroundKey)) {

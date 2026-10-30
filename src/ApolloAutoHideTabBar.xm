@@ -2395,6 +2395,13 @@ static void ApolloRestoreBarsForNavigationTransition(UINavigationController *nav
     // hidesBottomBarWhenPushed, not our Liquid Glass scroll presentation.
     if (!ApolloSupportsNativeTabBarScrollBehavior()) {
         ApolloTopBarRestoreNavigationController(navigationController);
+        // Like Liquid Glass, any push/pop brings scroll-hidden bars back. The hidden flag lives on the
+        // nav controller, so it otherwise carried into the next page (reopened subreddit: no nav bar,
+        // banner strip above the search field). The hook above mirrors this onto the tab bar.
+        if (navigationController.hidesBarsOnSwipe && navigationController.isNavigationBarHidden) {
+            ApolloLog(@"[AutoHideTabBarFix] %@: revealing scroll-hidden nav bar", reason);
+            [navigationController setNavigationBarHidden:NO animated:YES];
+        }
         return;
     }
     UITabBarController *tbc = ApolloLocateTabBarController(navigationController);

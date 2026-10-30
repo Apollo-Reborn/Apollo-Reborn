@@ -217,6 +217,9 @@ static BOOL sFeedSearchScrolledByUser = NO;  // armed once the user drags → st
 static NSUInteger sFeedSearchDismissGen = 0; // bumps each dismiss / focus / disappear; the release timer ignores stale gens
 static __weak UIView *sFeedSearchField    = nil; // captured searchTextField
 static CGFloat sFeedSearchStandaloneRestInset = 0.0; // feed's resting top inset (Headers OFF), captured while NOT searching
+// Non-glass: the feed's top inset before the field focused. Apollo's Cancel restores a hardcoded 133pt,
+// which leaves the field 17pt under the iOS 26 nav bar (rest is 150pt); the dismiss pins hold this instead.
+static CGFloat sFeedSearchClassicRestInset = 0.0;
 
 // Stable content-top rest for the feed search table: the docked toolbar's window-space bottom (where the
 // first results row sits). Falls back to window safe-area top + 45 until the toolbar is docked.
@@ -607,6 +610,13 @@ static void recenterCancelButton(void) {
 %hook _TtC6Apollo21ASTableViewController
 
 - (void)textFieldDidBeginEditing:(id)textField {
+    // Capture before %orig shrinks the inset; skip re-focus mid-dismiss, which would read the 133pt restore.
+    if (!IsLiquidGlass() && !sFeedSearchActive && !sFeedSearchDismissing &&
+        !MSHookIvar<BOOL>(self, "searchBarShouldStickToKeyboard")) {
+        UIView *restTable = ApolloNodeView(ApolloObjectIvar(self, "tableNode"));
+        sFeedSearchClassicRestInset = [restTable isKindOfClass:[UIScrollView class]]
+            ? ((UIScrollView *)restTable).contentInset.top : 0.0;
+    }
     %orig;
 
     // searchBarShouldStickToKeyboard == YES is the comments in-thread search (different layout):
@@ -865,6 +875,12 @@ static void recenterCancelButton(void) {
             // (some letters push it up, some don't); the user wants it to always stay, results below it.
             // Hold the resting inset; releases only on dismiss (which has its own restore).
             if (inset.top < sFeedSearchStandaloneRestInset) inset.top = sFeedSearchStandaloneRestInset;
+        } else if (sFeedSearchDismissing && managed && !IsLiquidGlass() &&
+                   inset.top < sFeedSearchClassicRestInset) {
+            // Non-glass Cancel: hold the pre-search rest, not Apollo's 133pt.
+            ApolloLog(@"[SearchInPlace] classic dismiss: inset %.1f -> resting %.1f",
+                      inset.top, sFeedSearchClassicRestInset);
+            inset.top = sFeedSearchClassicRestInset;
         }
     }
     %orig(inset);
@@ -902,6 +918,10 @@ static void recenterCancelButton(void) {
         ApolloFeedSearchManagedHeader((UIScrollView *)self)) {
         UIScrollView *sv = (UIScrollView *)self;
         CGFloat rest = -ApolloFeedSearchActiveRestTop();
+        // Non-glass Cancel: the toolbar still reads docked here; park at the pre-search rest instead.
+        if (sFeedSearchDismissing && !IsLiquidGlass() && sFeedSearchClassicRestInset > 1.0) {
+            rest = -sFeedSearchClassicRestInset;
+        }
         BOOL userScrolling = sv.isDragging || sv.isDecelerating;
         BOOL hasQuery = (ApolloFeedSearchQueryText().length > 0);
         CGFloat target = ApolloFeedSearchDesiredOffsetY(sv); // rest (empty) or surfaced (query)
