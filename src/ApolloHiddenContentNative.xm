@@ -2,6 +2,7 @@
 #import <objc/message.h>
 #import <dlfcn.h>
 #import <os/lock.h>
+#import <stdatomic.h>
 
 #import "ApolloHiddenContentNative.h"
 #import "ApolloCommon.h"
@@ -53,9 +54,18 @@ static char kApolloHiddenListStateKey;
 @property (nonatomic, copy) ApolloHiddenListingCompletion pendingFirstPage;
 // The list's first page request (its initial load) has come in.
 @property (nonatomic) BOOL requestedFirstPage;
+// Counted in sApolloHiddenOpenLists.
+@property (nonatomic) BOOL counted;
 @end
 
+// Lists alive right now. The app-wide text node hooks below do nothing while
+// it is 0, i.e. whenever Hidden & Deleted isn't open.
+static _Atomic(NSUInteger) sApolloHiddenOpenLists;
+
 @implementation ApolloHiddenNativeList
+- (void)dealloc {
+    if (_counted) atomic_fetch_sub_explicit(&sApolloHiddenOpenLists, 1, memory_order_relaxed);
+}
 @end
 
 // Placeholder -> list state, for the RDKClient hooks.
@@ -131,10 +141,10 @@ static UIViewController *ApolloHiddenMakeCommentsList(NSString *placeholder) {
 
 // MARK: Models
 
-static id ApolloHiddenModelForItem(ApolloHiddenNativeList *state, ApolloHiddenContentItem *item) {
-    id model = state.models[item.fullName];
-    if (model) return model;
+// A new RDKLink / RDKComment built from the item's Reddit JSON.
+static id ApolloHiddenBuildModel(ApolloHiddenContentItem *item) {
     if (!item.redditData || !ApolloClassRDKObjectBuilder) return nil;
+    id model = nil;
     NSDictionary *json = @{
         @"kind": item.kind == ApolloHiddenContentKindPost ? @"t3" : @"t1",
         @"data": item.redditData,
@@ -146,8 +156,14 @@ static id ApolloHiddenModelForItem(ApolloHiddenNativeList *state, ApolloHiddenCo
         model = nil;
     }
     Class expected = item.kind == ApolloHiddenContentKindPost ? ApolloClassRDKLink : ApolloClassRDKComment;
-    if (![model isKindOfClass:expected]) return nil;
-    state.models[item.fullName] = model;
+    return [model isKindOfClass:expected] ? model : nil;
+}
+
+static id ApolloHiddenModelForItem(ApolloHiddenNativeList *state, ApolloHiddenContentItem *item) {
+    id model = state.models[item.fullName];
+    if (model) return model;
+    model = ApolloHiddenBuildModel(item);
+    if (model) state.models[item.fullName] = model;
     return model;
 }
 
@@ -293,6 +309,8 @@ UIViewController *ApolloHiddenContentMakeNativeList(ApolloHiddenContentKind kind
         : ApolloHiddenMakeCommentsList(state.placeholder);
     if (!list) return nil;
     state.list = list;
+    state.counted = YES;
+    atomic_fetch_add_explicit(&sApolloHiddenOpenLists, 1, memory_order_relaxed);
     objc_setAssociatedObject(list, &kApolloHiddenListStateKey, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     // The adapter's row-factory and row-count hooks find the list through it.
     id adapter = ApolloObjectIvar(list, "listAdapter");
@@ -449,11 +467,20 @@ static NSAttributedString *ApolloHiddenTextWithPill(NSAttributedString *text, Ap
 }
 
 static void ApolloHiddenAddPill(id textNode, ApolloHiddenContentReason reason, BOOL leading) {
-    NSAttributedString *text = ApolloHiddenNodeText(textNode);
-    if (!text.length) return;
     objc_setAssociatedObject(textNode, &kApolloHiddenPillNodeKey, @((NSInteger)reason * 2 + (leading ? 1 : 0)), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    // The hook adds the pill.
-    ((void (*)(id, SEL, id))objc_msgSend)(textNode, @selector(setAttributedText:), text);
+    // The hook adds the pill: now if the node has its text, else when it gets it.
+    NSAttributedString *text = ApolloHiddenNodeText(textNode);
+    if (text.length) ((void (*)(id, SEL, id))objc_msgSend)(textNode, @selector(setAttributedText:), text);
+}
+
+// A post cell's title text node by ivar (the cell's titleNode, or the
+// PostTitleNode's own titleNode inside it), for a title not set yet.
+static id ApolloHiddenPostTitleTextNode(id cell) {
+    id titleNode = ApolloObjectIvar(cell, "titleNode");
+    if (!titleNode) return nil;
+    id inner = ApolloObjectIvar(titleNode, "titleNode");
+    if (inner) titleNode = inner;
+    return [titleNode respondsToSelector:@selector(setAttributedText:)] ? titleNode : nil;
 }
 
 static void ApolloHiddenDecorateNode(ApolloHiddenNativeList *state, id node) {
@@ -470,6 +497,10 @@ static void ApolloHiddenDecorateNode(ApolloHiddenNativeList *state, id node) {
         NSString *prefix = [title substringToIndex:MIN(title.length, (NSUInteger)24)];
         id titleNode = ApolloObjectIvar(node, "titleNode");
         textNode = ApolloHiddenFindTextNode(titleNode ?: node, ^BOOL(NSString *text) { return [text hasPrefix:prefix]; });
+        if (!textNode) {
+            textNode = ApolloHiddenPostTitleTextNode(node);
+            if (textNode) ApolloLog(@"[HiddenContent] %@ title not set yet on %@; pill follows when it is", fullName, NSStringFromClass([node class]));
+        }
     } else {
         id ageNode = ApolloObjectIvar(node, "ageNode");
         textNode = ApolloHiddenNodeText(ageNode).length ? ageNode : nil;
@@ -481,19 +512,46 @@ static void ApolloHiddenDecorateNode(ApolloHiddenNativeList *state, id node) {
     ApolloHiddenAddPill(textNode, item.reason, !isPost);
 }
 
+// Every text node in the app goes through these, Texture's background threads
+// included, so the open-list count keeps them to one load when the screen
+// isn't open. Both classes: Texture's ASTextNode2 experiment swaps instances
+// at alloc time.
+static NSAttributedString *ApolloHiddenPilledText(id node, NSAttributedString *text) {
+    if (atomic_load_explicit(&sApolloHiddenOpenLists, memory_order_relaxed) == 0 || !text.length) return nil;
+    NSNumber *pill = objc_getAssociatedObject(node, &kApolloHiddenPillNodeKey);
+    if (!pill) return nil;
+    NSInteger value = pill.integerValue;
+    return ApolloHiddenTextWithPill(text, (ApolloHiddenContentReason)(value / 2), (value & 1) != 0);
+}
+
 @interface ASTextNode : NSObject
 @end
 
 %hook ASTextNode
 
 - (void)setAttributedText:(NSAttributedString *)text {
-    NSNumber *pill = text.length ? objc_getAssociatedObject(self, &kApolloHiddenPillNodeKey) : nil;
-    if (!pill) {
-        %orig;
+    NSAttributedString *pilled = ApolloHiddenPilledText(self, text);
+    if (pilled) {
+        %orig(pilled);
         return;
     }
-    NSInteger value = pill.integerValue;
-    %orig(ApolloHiddenTextWithPill(text, (ApolloHiddenContentReason)(value / 2), (value & 1) != 0));
+    %orig;
+}
+
+%end
+
+@interface ASTextNode2 : NSObject
+@end
+
+%hook ASTextNode2
+
+- (void)setAttributedText:(NSAttributedString *)text {
+    NSAttributedString *pilled = ApolloHiddenPilledText(self, text);
+    if (pilled) {
+        %orig(pilled);
+        return;
+    }
+    %orig;
 }
 
 %end
@@ -538,6 +596,87 @@ static void ApolloHiddenDecorateNode(ApolloHiddenNativeList *state, id node) {
     ApolloHiddenEndSizeScope(began);
 }
 
+// Apollo's appearance and list notifications rebuild each open feed's rows from
+// the global Post Size. For the Posts list, its handlers run in the size scope
+// (as Recently Read's do).
+
+- (void)postCellAppearanceUpdatedWithNotification:(NSNotification *)notification {
+    ApolloHiddenNativeList *state = objc_getAssociatedObject(self, &kApolloHiddenListStateKey);
+    BOOL began = state ? ApolloHiddenBeginSizeScope(state) : NO;
+    %orig;
+    ApolloHiddenEndSizeScope(began);
+}
+
+- (void)postsShowSubredditIconsChangedWithNotification:(NSNotification *)notification {
+    ApolloHiddenNativeList *state = objc_getAssociatedObject(self, &kApolloHiddenListStateKey);
+    BOOL began = state ? ApolloHiddenBeginSizeScope(state) : NO;
+    %orig;
+    ApolloHiddenEndSizeScope(began);
+}
+
+- (void)reloadTableDataWithNotification:(NSNotification *)notification {
+    ApolloHiddenNativeList *state = objc_getAssociatedObject(self, &kApolloHiddenListStateKey);
+    BOOL began = state ? ApolloHiddenBeginSizeScope(state) : NO;
+    %orig;
+    ApolloHiddenEndSizeScope(began);
+}
+
+- (void)appFontChangedWithNotification:(NSNotification *)notification {
+    ApolloHiddenNativeList *state = objc_getAssociatedObject(self, &kApolloHiddenListStateKey);
+    BOOL began = state ? ApolloHiddenBeginSizeScope(state) : NO;
+    %orig;
+    ApolloHiddenEndSizeScope(began);
+}
+
+- (void)reloadPostsWithNotification:(NSNotification *)notification {
+    ApolloHiddenNativeList *state = objc_getAssociatedObject(self, &kApolloHiddenListStateKey);
+    BOOL began = state ? ApolloHiddenBeginSizeScope(state) : NO;
+    %orig;
+    ApolloHiddenEndSizeScope(began);
+}
+
+- (void)keywordFiltersChangedWithNotification:(NSNotification *)notification {
+    ApolloHiddenNativeList *state = objc_getAssociatedObject(self, &kApolloHiddenListStateKey);
+    BOOL began = state ? ApolloHiddenBeginSizeScope(state) : NO;
+    %orig;
+    ApolloHiddenEndSizeScope(began);
+}
+
+- (void)linkHiddenWithNotification:(NSNotification *)notification {
+    ApolloHiddenNativeList *state = objc_getAssociatedObject(self, &kApolloHiddenListStateKey);
+    BOOL began = state ? ApolloHiddenBeginSizeScope(state) : NO;
+    %orig;
+    ApolloHiddenEndSizeScope(began);
+}
+
+- (void)linkDeletedWithNotification:(NSNotification *)notification {
+    ApolloHiddenNativeList *state = objc_getAssociatedObject(self, &kApolloHiddenListStateKey);
+    BOOL began = state ? ApolloHiddenBeginSizeScope(state) : NO;
+    %orig;
+    ApolloHiddenEndSizeScope(began);
+}
+
+- (void)modelObjectUpdatedNotificationReceived:(NSNotification *)notification {
+    ApolloHiddenNativeList *state = objc_getAssociatedObject(self, &kApolloHiddenListStateKey);
+    BOOL began = state ? ApolloHiddenBeginSizeScope(state) : NO;
+    %orig;
+    ApolloHiddenEndSizeScope(began);
+}
+
+- (void)redditAccountChangedWithNotification:(NSNotification *)notification {
+    ApolloHiddenNativeList *state = objc_getAssociatedObject(self, &kApolloHiddenListStateKey);
+    BOOL began = state ? ApolloHiddenBeginSizeScope(state) : NO;
+    %orig;
+    ApolloHiddenEndSizeScope(began);
+}
+
+- (void)hideReadPostsButtonUpdatedWithNotification:(NSNotification *)notification {
+    ApolloHiddenNativeList *state = objc_getAssociatedObject(self, &kApolloHiddenListStateKey);
+    BOOL began = state ? ApolloHiddenBeginSizeScope(state) : NO;
+    %orig;
+    ApolloHiddenEndSizeScope(began);
+}
+
 %end
 
 %hook NSUserDefaults
@@ -554,10 +693,50 @@ static void ApolloHiddenDecorateNode(ApolloHiddenNativeList *state, id node) {
 // MARK: Threads keep the archived post
 //
 // A thread opened from these lists re-fetches its post live, and Reddit's live
-// copy of a removed post has its title rewritten ("[ Removed by moderator ]")
-// and its media dropped. The thread's first fetch comes back as
-// @{ @"link": RDKLink, ... }; for a post these lists hold, the archived model
-// takes the live one's place (with the live counts it already carries).
+// copy of a removed or deleted post has its title rewritten ("[ Removed by
+// moderator ]") and its media dropped. The thread's first fetch comes back as
+// @{ @"link": RDKLink, ... }; for a removed or deleted post these lists hold, an
+// archived model takes the live one's place. A Hidden post's live copy is
+// intact, so it stays as Reddit sends it.
+//
+// The archive froze the post's state when it was captured, so the state keys
+// (hidden, locked, flair, the viewer's vote and save, counts, ...) are copied
+// over from the live model, matched through RDKLink's Mantle key map.
+static BOOL ApolloHiddenIsLiveStateJSONKey(NSString *key) {
+    static NSSet<NSString *> *keys;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        keys = [NSSet setWithArray:@[@"hidden", @"locked", @"archived", @"over_18", @"spoiler", @"stickied",
+                                     @"saved", @"likes", @"score", @"ups", @"num_comments", @"upvote_ratio",
+                                     @"distinguished", @"contest_mode", @"quarantine"]];
+    });
+    return [keys containsObject:key] || [key hasPrefix:@"link_flair_"] || [key hasPrefix:@"author_flair_"];
+}
+
+static void ApolloHiddenCopyLiveState(id archived, id live) {
+    Class cls = [live class];
+    if (![cls respondsToSelector:@selector(JSONKeyPathsByPropertyKey)]) {
+        ApolloLog(@"[HiddenContent] %@ has no Mantle key map; thread keeps the archived state", NSStringFromClass(cls));
+        return;
+    }
+    NSDictionary *map = ((id (*)(id, SEL))objc_msgSend)(cls, @selector(JSONKeyPathsByPropertyKey));
+    if (![map isKindOfClass:NSDictionary.class]) return;
+    __block NSUInteger copied = 0;
+    [map enumerateKeysAndObjectsUsingBlock:^(id property, id path, BOOL *stop) {
+        if (![property isKindOfClass:NSString.class] || ![path isKindOfClass:NSString.class]) return;
+        // RedditKit maps a thing's fields under its "data" object ("data.hidden").
+        NSString *jsonKey = [path hasPrefix:@"data."] ? [path substringFromIndex:5] : path;
+        if (!ApolloHiddenIsLiveStateJSONKey(jsonKey)) return;
+        @try {
+            [archived setValue:[live valueForKey:property] forKey:property];
+            copied++;
+        } @catch (NSException *exception) {
+            ApolloLog(@"[HiddenContent] Couldn't copy live %@ onto the archived post: %@", property, exception.reason);
+        }
+    }];
+    ApolloLog(@"[HiddenContent] Copied %lu live state value(s) onto the archived post (of %lu mapped keys)", (unsigned long)copied, (unsigned long)map.count);
+}
+
 static id ApolloHiddenArchivedLinkForIdentifier(id identifier) {
     if (![identifier isKindOfClass:NSString.class] || ![NSThread isMainThread]) return nil;
     NSString *fullName = [(NSString *)identifier hasPrefix:@"t3_"] ? identifier : [@"t3_" stringByAppendingString:identifier];
@@ -567,7 +746,10 @@ static id ApolloHiddenArchivedLinkForIdentifier(id identifier) {
     for (ApolloHiddenNativeList *state in states) {
         if (state.kind != ApolloHiddenContentKindPost) continue;
         ApolloHiddenContentItem *item = state.itemsByFullName[fullName];
-        if (item) return ApolloHiddenModelForItem(state, item);
+        if (!item) continue;
+        if (item.reason == ApolloHiddenContentReasonHidden) return nil;
+        // Its own model, not the list row's: the live state goes onto it.
+        return ApolloHiddenBuildModel(item);
     }
     return nil;
 }
@@ -577,7 +759,9 @@ static id ApolloHiddenWrapThreadCompletion(id identifier, id completion) {
     if (!archived) return completion;
     void (^original)(id, id) = [completion copy];
     return [^(id result, id error) {
-        if ([result isKindOfClass:NSDictionary.class] && [((NSDictionary *)result)[@"link"] isKindOfClass:ApolloClassRDKLink]) {
+        id live = [result isKindOfClass:NSDictionary.class] ? ((NSDictionary *)result)[@"link"] : nil;
+        if ([live isKindOfClass:ApolloClassRDKLink]) {
+            ApolloHiddenCopyLiveState(archived, live);
             NSMutableDictionary *patched = [(NSDictionary *)result mutableCopy];
             patched[@"link"] = archived;
             ApolloLog(@"[HiddenContent] Thread for %@ keeps its archived post", identifier);

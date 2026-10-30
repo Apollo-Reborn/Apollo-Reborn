@@ -2,6 +2,7 @@
 #import "ApolloCommon.h"
 #import "ApolloImageUploadHost.h"
 #import "ApolloState.h"
+#import "ApolloAccountCredentials.h"
 
 // Soft cap on total items pulled per source so a prolific account can't turn
 // one tap into thousands of requests; truncation is logged, not silent.
@@ -501,14 +502,18 @@ static ApolloHiddenContentItem *ApolloHiddenContentItemFromArcticDict(NSDictiona
 // the account's own vote and save are layered on when the item still
 // resolves. The fields Apollo's cells read for context (name, parent title)
 // are filled in when the archive lacks them.
-static NSDictionary *ApolloHiddenContentRedditData(NSDictionary *archiveRaw, ApolloHiddenContentItem *item, NSDictionary * _Nullable liveData) {
-    NSMutableDictionary *data = [archiveRaw mutableCopy];
+static void ApolloHiddenContentLayerLiveData(NSMutableDictionary *data, NSDictionary * _Nullable liveData) {
     for (NSString *key in @[@"score", @"ups", @"num_comments", @"upvote_ratio", @"saved"]) {
         if ([liveData[key] isKindOfClass:NSNumber.class]) data[key] = liveData[key];
     }
     // `likes` is true/false for a vote and null for none; the archive's copy
     // is never the viewer's.
     if (liveData) data[@"likes"] = liveData[@"likes"] ?: NSNull.null;
+}
+
+static NSDictionary *ApolloHiddenContentRedditData(NSDictionary *archiveRaw, ApolloHiddenContentItem *item, NSDictionary * _Nullable liveData) {
+    NSMutableDictionary *data = [archiveRaw mutableCopy];
+    ApolloHiddenContentLayerLiveData(data, liveData);
     data[@"name"] = item.fullName;
     if (item.fullName.length > 3 && ![data[@"id"] isKindOfClass:NSString.class]) {
         data[@"id"] = [item.fullName substringFromIndex:3];
@@ -517,6 +522,30 @@ static NSDictionary *ApolloHiddenContentRedditData(NSDictionary *archiveRaw, Apo
         data[@"link_title"] = item.parentPostTitle;
     }
     return data;
+}
+
+// Cached rows keep the archive diff, but the viewer may have voted or saved
+// since: one batched /api/info pass brings those (and the counts) up to date.
+// A failed pass serves the rows as they were.
+static void ApolloHiddenContentRefreshViewerState(NSArray<ApolloHiddenContentItem *> *items, NSString * _Nullable bearerToken, dispatch_block_t completion) {
+    NSMutableArray<NSString *> *fullNames = [NSMutableArray arrayWithCapacity:items.count];
+    for (ApolloHiddenContentItem *item in items) {
+        if (item.fullName.length && item.redditData) [fullNames addObject:item.fullName];
+    }
+    if (bearerToken.length == 0 || fullNames.count == 0) {
+        completion();
+        return;
+    }
+    ApolloHiddenContentClassify(fullNames, bearerToken, nil, ^(NSDictionary<NSString *, NSDictionary *> *liveChildrenByFullName, NSSet<NSString *> *unresolvableFullNames) {
+        for (ApolloHiddenContentItem *item in items) {
+            NSDictionary *live = liveChildrenByFullName[item.fullName];
+            if (!live || !item.redditData) continue;
+            NSMutableDictionary *data = [item.redditData mutableCopy];
+            ApolloHiddenContentLayerLiveData(data, live);
+            item.redditData = data;
+        }
+        completion();
+    });
 }
 
 #pragma mark - Public entry point
@@ -529,18 +558,22 @@ void ApolloHiddenContentFetchWithProgress(NSString *username, ApolloHiddenConten
         return;
     }
 
-    NSString *cacheKey = [NSString stringWithFormat:@"%@:%ld", username.lowercaseString, (long)kind];
+    // Per viewing account too: rows carry the viewer's own votes and saves.
+    NSString *viewer = ApolloActiveAccountUsername().lowercaseString ?: @"";
+    NSString *cacheKey = [NSString stringWithFormat:@"%@:%ld:%@", username.lowercaseString, (long)kind, viewer];
+    NSString *bearerToken = ApolloLatestRedditBearerToken();
     if (!forceRefresh) {
         NSArray<ApolloHiddenContentItem *> *cached = ApolloHiddenContentCachedResult(cacheKey);
         if (cached) {
             ApolloLog(@"[HiddenContent] u/%@ (%@): serving %lu cached result(s)", username, ApolloHiddenContentArcticSearchPath(kind), (unsigned long)cached.count);
-            if (progress) progress(1, @"Ready");
-            completion(cached, nil);
+            ApolloHiddenContentRefreshViewerState(cached, bearerToken, ^{
+                if (progress) progress(1, @"Ready");
+                completion(cached, nil);
+            });
             return;
         }
     }
 
-    NSString *bearerToken = ApolloLatestRedditBearerToken();
     if (bearerToken.length == 0) {
         completion(nil, @"No active Reddit session detected yet. Browse a screen that talks to Reddit (e.g. your feed) and try again.");
         return;
