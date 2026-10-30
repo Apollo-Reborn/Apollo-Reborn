@@ -2925,6 +2925,24 @@ static void ApolloRevealBarsForScrollToTop(UIViewController *owner) {
     ApolloHoldCompletedTwoGestureReveal(tbc);
 }
 
+// iOS <26: once a hide-on-swipe cycle has run, UIKit reports the navigation controller's view as using
+// the minimum safe areas (54.67pt on Dynamic Island iPhones, the legacy status bar height) and keeps doing
+// so after the bar comes back. Every bar-position and page-inset path then reads that instead of the 61pt
+// safe area, so the revealed bar and every page under it sat ~6pt high until relaunch. Report the normal
+// safe areas again while the bar is visible; UIKit keeps its own answer while the bar is hidden.
+%hook UILayoutContainerView
+
+- (BOOL)_usesMinimumSafeAreas {
+    BOOL uses = %orig;
+    if (!uses || ApolloSupportsNativeTabBarScrollBehavior()) return uses;
+    UIResponder *owner = ((UIView *)self).nextResponder;
+    if (![owner isKindOfClass:[UINavigationController class]]) return uses;
+    UINavigationController *nav = (UINavigationController *)owner;
+    return (nav.hidesBarsOnSwipe && !nav.isNavigationBarHidden) ? NO : uses;
+}
+
+%end
+
 %ctor {
     %init;
     Class platterClass = NSClassFromString(@"UIKit._UITabBarPlatterView");
@@ -2986,3 +3004,4 @@ static void ApolloRevealBarsForScrollToTop(UIViewController *owner) {
         });
     }];
 }
+
