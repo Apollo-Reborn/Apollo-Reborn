@@ -108,8 +108,10 @@ static NSString *ApolloWhatsNewCurrentVersion(void);
     [self apollo_updateContinueTitleColor];
     [self.view addSubview:_continueButton];
     [NSLayoutConstraint activateConstraints:@[
-        [_continueButton.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:20],
-        [_continueButton.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-20],
+        // Full width like the header and rows; the Duo's side safe-area inset
+        // left the button off-center.
+        [_continueButton.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:20],
+        [_continueButton.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-20],
         [_continueButton.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-12],
         [_continueButton.heightAnchor constraintEqualToConstant:50],
     ]];
