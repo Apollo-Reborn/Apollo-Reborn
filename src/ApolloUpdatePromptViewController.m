@@ -382,19 +382,6 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
     return actions;
 }
 
-// Pinned to the bottom of the sheet (the chooser page).
-- (UIStackView *)apollo_actionsStackInPage:(UIView *)page buttons:(NSArray<UIView *> *)buttons {
-    UIStackView *actions = [self apollo_actionsStackWithButtons:buttons];
-    actions.translatesAutoresizingMaskIntoConstraints = NO;
-    [page addSubview:actions];
-    [NSLayoutConstraint activateConstraints:@[
-        [actions.leadingAnchor constraintEqualToAnchor:page.leadingAnchor constant:20],
-        [actions.trailingAnchor constraintEqualToAnchor:page.trailingAnchor constant:-20],
-        [actions.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-12],
-    ]];
-    return actions;
-}
-
 - (void)apollo_buildPromptPage {
     BOOL canUpdate = (_info.handoff != ApolloUpdateHandoffNone);
 
@@ -722,7 +709,10 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
 - (void)apollo_buildChooserPage {
     _chooserPage = [self apollo_pagePinnedToSheet];
 
-    UIStackView *chooserActions = [self apollo_actionsStackInPage:_chooserPage buttons:@[
+    // Cancel scrolls with the rows rather than being pinned over them: at the bottom of the
+    // sheet when everything fits, after the last row when a short sheet (iPhone Duo's closed
+    // screen) can't fit them all.
+    UIStackView *chooserActions = [self apollo_actionsStackWithButtons:@[
         [self apollo_textButtonWithTitle:@"Cancel"
                                     font:[UIFont systemFontOfSize:17]
                                    color:[UIColor secondaryLabelColor]
@@ -730,9 +720,11 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
                                   action:@selector(apollo_dismissTapped)
                               identifier:@"update.cancel"],
     ]];
+    chooserActions.translatesAutoresizingMaskIntoConstraints = NO;
 
     UIView *content = nil;
-    [self apollo_scrollViewInPage:_chooserPage bottomAnchor:chooserActions.topAnchor constant:-12 content:&content];
+    [self apollo_scrollViewInPage:_chooserPage bottomAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:0 content:&content];
+    [content addSubview:chooserActions];
 
     // Without the exact variant the rows only open the sideloader (see ApolloUpdateHandoffOpenApp),
     // so say where the update is actually found.
@@ -797,8 +789,11 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
         [_chooserRows.topAnchor constraintEqualToAnchor:_chooserHeader.bottomAnchor constant:32],
         [_chooserRows.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:16],
         [_chooserRows.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-16],
-        // <=, not ==: an equal pin would stretch the rows to fill a tall sheet.
-        [_chooserRows.bottomAnchor constraintLessThanOrEqualToAnchor:content.bottomAnchor constant:-24],
+        // >=, not ==: an equal gap would stretch the rows to fill a tall sheet.
+        [chooserActions.topAnchor constraintGreaterThanOrEqualToAnchor:_chooserRows.bottomAnchor constant:16],
+        [chooserActions.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:20],
+        [chooserActions.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-20],
+        [chooserActions.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-12],
     ]];
 
     // Back to wherever Update was tapped (the summary, or the release notes), same chevron as
