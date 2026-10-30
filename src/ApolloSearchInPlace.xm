@@ -9,8 +9,9 @@
 //     keep the nav bar + field where they rest and fill the feed with results below.
 //
 // The search-results offset stabilizer runs regardless of Liquid Glass (the jump exists on stock Apollo
-// too, including subreddit views with headers); the nav-bar hide, round-X cancel and in-place mode are
-// Liquid Glass only. Ivars are read with the shared ApolloObjectIvar (ApolloSwiftRuntime.h).
+// too, including subreddit views with headers); the nav-bar hide and round-X cancel are Liquid Glass
+// only. In-place mode is always on for the standard build and opt-in under Liquid Glass
+// (ApolloFeedSearchKeepsInPlace). Ivars are read with the shared ApolloObjectIvar (ApolloSwiftRuntime.h).
 
 #import <Foundation/Foundation.h>
 #import <QuartzCore/QuartzCore.h>
@@ -217,9 +218,6 @@ static BOOL sFeedSearchScrolledByUser = NO;  // armed once the user drags → st
 static NSUInteger sFeedSearchDismissGen = 0; // bumps each dismiss / focus / disappear; the release timer ignores stale gens
 static __weak UIView *sFeedSearchField    = nil; // captured searchTextField
 static CGFloat sFeedSearchStandaloneRestInset = 0.0; // feed's resting top inset (Headers OFF), captured while NOT searching
-// Non-glass: the feed's top inset before the field focused. Apollo's Cancel restores a hardcoded 133pt,
-// which leaves the field 17pt under the iOS 26 nav bar (rest is 150pt); the dismiss pins hold this instead.
-static CGFloat sFeedSearchClassicRestInset = 0.0;
 
 // Stable content-top rest for the feed search table: the docked toolbar's window-space bottom (where the
 // first results row sits). Falls back to window safe-area top + 45 until the toolbar is docked.
@@ -256,11 +254,15 @@ static CGFloat ApolloFeedSearchInPlaceRestTop(void) {
     return ApolloFeedSearchRestTop();
 }
 
-// The active rest for whichever mode is on; the inset floor and the offset clamp both use it. In-place
-// mode is Liquid Glass only, so non-LG (and LG nav-hide) always use the docked-toolbar rest.
+// In-place mode: the standard build always keeps the nav bar + field put while searching (Apollo's
+// slide-up takeover reads as a jump there); Liquid Glass keeps it behind the setting.
+static BOOL ApolloFeedSearchKeepsInPlace(void) {
+    return IsLiquidGlass() ? sKeepSearchBarInPlace : YES;
+}
+
+// The active rest for whichever mode is on; the inset floor and the offset clamp both use it.
 static CGFloat ApolloFeedSearchActiveRestTop(void) {
-    return (sKeepSearchBarInPlace && IsLiquidGlass()) ? ApolloFeedSearchInPlaceRestTop()
-                                                      : ApolloFeedSearchRestTop();
+    return ApolloFeedSearchKeepsInPlace() ? ApolloFeedSearchInPlaceRestTop() : ApolloFeedSearchRestTop();
 }
 
 // MARK: - Offset floor + clamp-fight breaker (non-glass Cancel stack overflow)
@@ -367,7 +369,7 @@ static BOOL ApolloFeedSearchManagedHeader(UIScrollView *sv) {
 
 static CGFloat ApolloFeedSearchDesiredOffsetY(UIScrollView *sv) {
     CGFloat rest = -ApolloFeedSearchActiveRestTop();
-    if (!sKeepSearchBarInPlace) return rest;          // OFF mode: original, no surfacing
+    if (!ApolloFeedSearchKeepsInPlace()) return rest; // OFF mode: original, no surfacing
     if (!ApolloFeedSearchManagedHeader(sv)) return rest; // no full header to clear → stock
     if (ApolloFeedSearchQueryText().length == 0) return rest;
     UIView *hdr = [(UITableView *)sv tableHeaderView];
@@ -602,21 +604,64 @@ static void recenterCancelButton(void) {
 
 %end
 
+// Offset stabilizer (runs regardless of Liquid Glass): arm the active flags and capture the feed
+// table + docked toolbar (the rest anchor) + field + nav bar so the inset/offset/in-place hooks engage.
+static void ApolloFeedSearchArm(UIViewController *owner) {
+    // Standard build arms in shouldBegin and again in didBegin: don't replay the Cancel intro.
+    BOOL fresh = IsLiquidGlass() || !(sFeedSearchActive && !sFeedSearchDismissing && sFeedSearchOwner == owner);
+    if (sFeedSearchOwner && sFeedSearchOwner != owner) ApolloFeedSearchRestoreHeader();
+    sFeedSearchOwner = owner;
+    sFeedSearchActive = YES;
+    sFeedSearchDismissing = NO;
+    sFeedSearchScrolledByUser = NO;
+    ++sFeedSearchDismissGen;  // a re-focus during a dismiss window cancels the pending release timer
+    id tableNode = ApolloObjectIvar(owner, "tableNode");
+    UIView *tv = ApolloNodeView(tableNode);
+    if ([tv isKindOfClass:ApolloClassASTableView]) sFeedSearchTable = (UIScrollView *)tv;
+    id upper = ApolloObjectIvar(owner, "upperToolbar");
+    if ([upper isKindOfClass:[UIView class]]) {
+        sFeedSearchToolbar = (UIView *)upper;
+        CGFloat h = CGRectGetHeight([(UIView *)upper bounds]);
+        if (h > 1.0) sRestToolbarHeight = h;
+    }
+    id field = ApolloObjectIvar(owner, "searchTextField");
+    if ([field isKindOfClass:[UIView class]]) sFeedSearchField = (UIView *)field;
+
+    sFeedSearchNavBar = owner.navigationController.navigationBar;
+    if (fresh) sCancelNeedsIntro = YES; // clean intro this session (round-X slide / standard-build fade)
+}
+
 @interface _TtC6Apollo21ASTableViewController : UIViewController
+- (BOOL)textFieldShouldBeginEditing:(id)textField;
 - (void)textFieldDidBeginEditing:(id)textField;
 - (void)dismissSearchBarButtonTappedWithSender:(id)sender;
 @end
 
 %hook _TtC6Apollo21ASTableViewController
 
-- (void)textFieldDidBeginEditing:(id)textField {
-    // Capture before %orig shrinks the inset; skip re-focus mid-dismiss, which would read the 133pt restore.
-    if (!IsLiquidGlass() && !sFeedSearchActive && !sFeedSearchDismissing &&
-        !MSHookIvar<BOOL>(self, "searchBarShouldStickToKeyboard")) {
-        UIView *restTable = ApolloNodeView(ApolloObjectIvar(self, "tableNode"));
-        sFeedSearchClassicRestInset = [restTable isKindOfClass:[UIScrollView class]]
-            ? ((UIScrollView *)restTable).contentInset.top : 0.0;
+// Standard build: Apollo starts its slide-up takeover (reparent the toolbar, shrink the inset) in here,
+// before didBegin. Arm the in-place pins first or the bar vanishes for ~10 frames before snapping back.
+- (BOOL)textFieldShouldBeginEditing:(id)textField {
+    BOOL armed = NO;
+    if (!IsLiquidGlass() && !sFeedSearchActive && !MSHookIvar<BOOL>(self, "searchBarShouldStickToKeyboard")) {
+        ApolloFeedSearchArm((UIViewController *)self);
+        armed = YES;
     }
+    BOOL result = %orig;
+    if (armed && !result) {
+        // Apollo also asks again after the field has focused; only a focus that never happened disarms.
+        UIViewController *owner = (UIViewController *)self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (sFeedSearchOwner == owner && !sFeedSearchDismissing && !sFeedSearchField.isFirstResponder) {
+                sFeedSearchActive = NO;
+                sFeedSearchOwner = nil;
+            }
+        });
+    }
+    return result;
+}
+
+- (void)textFieldDidBeginEditing:(id)textField {
     %orig;
 
     // searchBarShouldStickToKeyboard == YES is the comments in-thread search (different layout):
@@ -639,31 +684,8 @@ static void recenterCancelButton(void) {
     // never arm the legacy pins against it.
     if (ApolloNativeFeedSearchEnabled()) return;
 
-    // Offset stabilizer (runs regardless of Liquid Glass): arm the active flags and capture the feed
-    // table + docked toolbar (the rest anchor) + field so the ASTableView inset/offset hooks engage.
-    UIViewController *owner = (UIViewController *)self;
-    if (sFeedSearchOwner && sFeedSearchOwner != owner) ApolloFeedSearchRestoreHeader();
-    sFeedSearchOwner = owner;
-    sFeedSearchActive = YES;
-    sFeedSearchDismissing = NO;
-    sFeedSearchScrolledByUser = NO;
-    ++sFeedSearchDismissGen;  // a re-focus during a dismiss window cancels the pending release timer
-    id tableNode = ApolloObjectIvar(self, "tableNode");
-    UIView *tv = ApolloNodeView(tableNode);
-    if ([tv isKindOfClass:ApolloClassASTableView]) sFeedSearchTable = (UIScrollView *)tv;
-    id upper = ApolloObjectIvar(self, "upperToolbar");
-    if ([upper isKindOfClass:[UIView class]]) {
-        sFeedSearchToolbar = (UIView *)upper;
-        CGFloat h = CGRectGetHeight([(UIView *)upper bounds]);
-        if (h > 1.0) sRestToolbarHeight = h;
-    }
-    id field = ApolloObjectIvar(self, "searchTextField");
-    if ([field isKindOfClass:[UIView class]]) sFeedSearchField = (UIView *)field;
-
-    // Liquid Glass only: capture the nav bar (for the hide rewrite) and arm the round-X cancel button.
+    ApolloFeedSearchArm((UIViewController *)self);
     if (!IsLiquidGlass()) return;
-    sFeedSearchNavBar = [(UIViewController *)self navigationController].navigationBar;
-    sCancelNeedsIntro = YES; // clean slide-in this session
     id cancel = ApolloObjectIvar(self, "dismissSearchBarButton");
     if ([cancel isKindOfClass:[UIButton class]]) {
         sFeedSearchCancel = (UIButton *)cancel;
@@ -716,7 +738,7 @@ static void recenterCancelButton(void) {
     // geometry; since the nav bar never moved here, that reads as a "fly in from above". Keep our pins
     // live through the teardown (don't pre-clear), strip the implicit animations (in the toolbar hooks),
     // and release on a timer guarded by a generation counter against a re-focus.
-    if (IsLiquidGlass() && sKeepSearchBarInPlace) {
+    if (ApolloFeedSearchKeepsInPlace()) {
         sFeedSearchDismissing = YES;                  // pins stay armed via (active || dismissing)
         ApolloFeedSearchRestoreHeader();              // bring the chrome back as the search closes
         NSUInteger gen = ++sFeedSearchDismissGen;     // a newer dismiss / re-focus invalidates this timer
@@ -767,7 +789,7 @@ static void recenterCancelButton(void) {
     // contains both an ASTableView and a full-screen interceptingScrollView.
     // Apply to the complete subtree after Apollo has prepared the controller.
     ApolloApplyScrollEdgeEffectStyleToViewController((UIViewController *)self);
-    if (!IsLiquidGlass() || MSHookIvar<BOOL>(self, "searchBarShouldStickToKeyboard")) return;
+    if (!ApolloFeedSearchKeepsInPlace() || MSHookIvar<BOOL>(self, "searchBarShouldStickToKeyboard")) return;
     if (ApolloNativeFeedSearchEnabled()) return; // native bar owns glass feed search
     id field = ApolloObjectIvar(self, "searchTextField");
     NSString *txt = [field isKindOfClass:[UITextField class]] ? [(UITextField *)field text] : nil;
@@ -780,7 +802,7 @@ static void recenterCancelButton(void) {
     // (or the toolbar lands on top of it). Arm the whole in-place pin set here (capture refs + the active
     // flag) before the appear / re-focus, so the nav stays put and the toolbar docks below it from the
     // first pass. textFieldDidBeginEditing re-arms idempotently if/when the field actually focuses.
-    if (sKeepSearchBarInPlace && txt.length > 0) {
+    if (txt.length > 0) {
         sFeedSearchOwner = (UIViewController *)self;
         ++sFeedSearchDismissGen;
         sFeedSearchNavBar = [(UIViewController *)self navigationController].navigationBar;
@@ -809,14 +831,14 @@ static void recenterCancelButton(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(250 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
         ApolloApplyScrollEdgeEffectStyleToViewController(weakController);
     });
-    if (!IsLiquidGlass() || MSHookIvar<BOOL>(self, "searchBarShouldStickToKeyboard")) return;
+    if (!ApolloFeedSearchKeepsInPlace() || MSHookIvar<BOOL>(self, "searchBarShouldStickToKeyboard")) return;
     if (ApolloNativeFeedSearchEnabled()) return; // native bar owns glass feed search
     UINavigationBar *nb = [(UIViewController *)self navigationController].navigationBar;
 
     // Issue 2 safety net: if the nav bar slipped into the hidden state before our block armed, restore
     // it (in-place mode keeps it visible), and re-assert the toolbar so it sits below the nav instead of
     // docked on top of it. Only touch the bar/toolbar we captured for this feed.
-    if (sKeepSearchBarInPlace && nb && nb == sFeedSearchNavBar) {
+    if (nb && nb == sFeedSearchNavBar) {
         if (nb.transform.ty < -1.0) nb.transform = CGAffineTransformIdentity;
         if (nb.alpha < 1.0) nb.alpha = 1.0;
         // Route the toolbar back through the setFrame pin (now that the flags are armed) so it re-docks
@@ -858,7 +880,9 @@ static void recenterCancelButton(void) {
 
 - (void)setContentInset:(UIEdgeInsets)inset {
     if ((UIScrollView *)self == sFeedSearchTable) {
-        BOOL managed = ApolloFeedSearchManagedHeader((UIScrollView *)self);
+        // Standard build: the in-place toolbar sits under the nav bar on every feed, so every feed rests
+        // its content at that band, not only the full-header ones.
+        BOOL managed = ApolloFeedSearchManagedHeader((UIScrollView *)self) || !IsLiquidGlass();
         if (!sFeedSearchActive && !sFeedSearchDismissing) {
             // Remember the feed's resting top inset (standalone / Headers OFF) so we can hold the chrome in
             // place when the field is focused with no query yet.
@@ -875,12 +899,6 @@ static void recenterCancelButton(void) {
             // (some letters push it up, some don't); the user wants it to always stay, results below it.
             // Hold the resting inset; releases only on dismiss (which has its own restore).
             if (inset.top < sFeedSearchStandaloneRestInset) inset.top = sFeedSearchStandaloneRestInset;
-        } else if (sFeedSearchDismissing && managed && !IsLiquidGlass() &&
-                   inset.top < sFeedSearchClassicRestInset) {
-            // Non-glass Cancel: hold the pre-search rest, not Apollo's 133pt.
-            ApolloLog(@"[SearchInPlace] classic dismiss: inset %.1f -> resting %.1f",
-                      inset.top, sFeedSearchClassicRestInset);
-            inset.top = sFeedSearchClassicRestInset;
         }
     }
     %orig(inset);
@@ -893,7 +911,7 @@ static void recenterCancelButton(void) {
     // some queries. NOT during dismiss (which has its own restore). Released the instant the user drags
     // (so they can scroll down through the results), and re-armed when they settle back at the top.
     if ((UIScrollView *)self == sFeedSearchTable && sFeedSearchActive && !sFeedSearchDismissing &&
-        sFeedSearchStandaloneRestInset > 1.0 &&
+        sFeedSearchStandaloneRestInset > 1.0 && IsLiquidGlass() &&
         !ApolloFeedSearchManagedHeader((UIScrollView *)self)) {
         UIScrollView *sv2 = (UIScrollView *)self;
         CGFloat rest = -sFeedSearchStandaloneRestInset;
@@ -915,13 +933,9 @@ static void recenterCancelButton(void) {
     // surfaces results there natively, and the Highlights module re-attaches its carousel on dismiss.
     if ((UIScrollView *)self == sFeedSearchTable &&
         (sFeedSearchActive || sFeedSearchDismissing) &&
-        ApolloFeedSearchManagedHeader((UIScrollView *)self)) {
+        (ApolloFeedSearchManagedHeader((UIScrollView *)self) || !IsLiquidGlass())) {
         UIScrollView *sv = (UIScrollView *)self;
         CGFloat rest = -ApolloFeedSearchActiveRestTop();
-        // Non-glass Cancel: the toolbar still reads docked here; park at the pre-search rest instead.
-        if (sFeedSearchDismissing && !IsLiquidGlass() && sFeedSearchClassicRestInset > 1.0) {
-            rest = -sFeedSearchClassicRestInset;
-        }
         BOOL userScrolling = sv.isDragging || sv.isDecelerating;
         BOOL hasQuery = (ApolloFeedSearchQueryText().length > 0);
         CGFloat target = ApolloFeedSearchDesiredOffsetY(sv); // rest (empty) or surfaced (query)
@@ -1018,15 +1032,15 @@ static void recenterCancelButton(void) {
 %hook UINavigationBar
 
 - (void)setTransform:(CGAffineTransform)transform {
-    // Only the captured feed-search bar, only under Liquid Glass, only for an upward (hide) translate.
-    // Restores (identity / ty >= 0) and every other nav bar pass through.
-    if (!IsLiquidGlass() || self != sFeedSearchNavBar || transform.ty >= -1.0) {
+    // Only the captured feed-search bar, only for an upward (hide) translate. Restores (identity /
+    // ty >= 0) and every other nav bar pass through.
+    if (self != sFeedSearchNavBar || transform.ty >= -1.0) {
         %orig;
         return;
     }
 
     // In-place: block the slide entirely so the nav bar stays where it is.
-    if (sKeepSearchBarInPlace) {
+    if (ApolloFeedSearchKeepsInPlace()) {
         %orig(CGAffineTransformIdentity);
         return;
     }
@@ -1043,7 +1057,7 @@ static void recenterCancelButton(void) {
 // In-place: Apollo fades the captured bar to 0 alongside the slide; clamp it back to 1 so the title /
 // items stay visible. Gated to the captured bar; OFF mode wants the fade and passes through.
 - (void)setAlpha:(CGFloat)alpha {
-    if (IsLiquidGlass() && sKeepSearchBarInPlace && self == sFeedSearchNavBar && alpha < 1.0) {
+    if (ApolloFeedSearchKeepsInPlace() && self == sFeedSearchNavBar && alpha < 1.0) {
         %orig(1.0);
         return;
     }
@@ -1064,7 +1078,7 @@ static void recenterCancelButton(void) {
 %hook _TtC6Apollo19ApolloSearchToolbar
 
 - (void)setFrame:(CGRect)frame {
-    if (!IsLiquidGlass() || !sKeepSearchBarInPlace ||
+    if (!ApolloFeedSearchKeepsInPlace() ||
         (!sFeedSearchActive && !sFeedSearchDismissing) ||
         sFeedSearchScrolledByUser || (UIView *)self != sFeedSearchToolbar) {
         %orig;
@@ -1072,7 +1086,9 @@ static void recenterCancelButton(void) {
     }
     UIView *sup = [(UIView *)self superview];
     UINavigationBar *nb = sFeedSearchNavBar;
-    if (!sup || !nb || !nb.window) {
+    // Standard build, still hosted in the feed table (before Apollo reparents it): its frame there is
+    // already the resting band; converting the nav bottom through the table's offset lands it under the nav.
+    if (!sup || !nb || !nb.window || (!IsLiquidGlass() && [sup isKindOfClass:[UIScrollView class]])) {
         %orig;
         return;
     }
@@ -1104,16 +1120,47 @@ static void recenterCancelButton(void) {
         if (toolbarDocked(tbv)) { ensureCommentBlurBacking(tbv); nudgeCommentDoneButton(tbv); }
         else removeCommentBlurBacking(tbv);
     }
-    if (!IsLiquidGlass() || (UIView *)self != sFeedSearchToolbar ||
-        (!sFeedSearchActive && !sFeedSearchDismissing)) {
-        return;
+    if ((UIView *)self != sFeedSearchToolbar || (!sFeedSearchActive && !sFeedSearchDismissing)) return;
+    if (IsLiquidGlass()) {
+        recenterCancelButton(); // round-X styling + slide-in
+    } else if (ApolloFeedSearchKeepsInPlace()) {
+        // Apollo's searchDragFiller backs the docked toolbar up at the top of the screen; with the
+        // toolbar held under the nav bar it lands opaque over the subreddit banner instead.
+        UIView *filler = ApolloObjectIvar(sFeedSearchOwner, "searchDragFiller");
+        if ([filler isKindOfClass:[UIView class]] && !filler.hidden) filler.hidden = YES;
+        // Apollo's "Cancel" text button is laid out (and animated in diagonally) for the ~99pt docked
+        // toolbar. Center it on the field in the pinned 45pt band, drop the slide, fade it in once.
+        UIView *cancel = ApolloObjectIvar(sFeedSearchOwner, "dismissSearchBarButton");
+        UIView *field = sFeedSearchField;
+        if ([cancel isKindOfClass:[UIView class]] && cancel.superview == (UIView *)self && field) {
+            CGFloat midY = CGRectGetMidY(field.frame);
+            if (fabs(cancel.center.y - midY) > 0.5) {
+                [UIView performWithoutAnimation:^{ cancel.center = CGPointMake(cancel.center.x, midY); }];
+            }
+            CALayer *cl = cancel.layer;
+            [cl removeAnimationForKey:@"position"];
+            [cl removeAnimationForKey:@"bounds"];
+            if (sCancelNeedsIntro && sFeedSearchActive && !sFeedSearchDismissing) {
+                sCancelNeedsIntro = NO;
+                CABasicAnimation *fade = [CABasicAnimation animationWithKeyPath:@"opacity"];
+                fade.fromValue = @0.0;
+                fade.toValue = @1.0;
+                fade.duration = 0.2;
+                [cl addAnimation:fade forKey:@"sipCancelFade"];
+            }
+        }
     }
-    recenterCancelButton(); // round-X styling + slide-in
 
-    if (sKeepSearchBarInPlace && sFeedSearchDismissing) {
+    if (ApolloFeedSearchKeepsInPlace() && sFeedSearchDismissing) {
         CALayer *tl = [(UIView *)self layer];
         [tl removeAnimationForKey:@"position"];
         [tl removeAnimationForKey:@"bounds"];
+        UIView *cancel = IsLiquidGlass() ? nil : ApolloObjectIvar(sFeedSearchOwner, "dismissSearchBarButton");
+        if ([cancel isKindOfClass:[UIView class]]) {
+            // Standard build: keep Apollo's fade-out, drop its slide back to the docked geometry.
+            [cancel.layer removeAnimationForKey:@"position"];
+            [cancel.layer removeAnimationForKey:@"bounds"];
+        }
         UIView *field = sFeedSearchField;
         if (field) {
             CALayer *fl = field.layer;
@@ -1128,7 +1175,7 @@ static void recenterCancelButton(void) {
 // In-place: zero the captured toolbar's top safe-area inset so the field/button row stays in the 45pt band.
 - (UIEdgeInsets)safeAreaInsets {
     UIEdgeInsets insets = %orig;
-    if (IsLiquidGlass() && sKeepSearchBarInPlace &&
+    if (ApolloFeedSearchKeepsInPlace() &&
         (sFeedSearchActive || sFeedSearchDismissing) &&
         (UIView *)self == sFeedSearchToolbar) {
         insets.top = 0.0;
