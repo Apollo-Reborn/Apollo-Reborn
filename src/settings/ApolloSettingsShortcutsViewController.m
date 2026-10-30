@@ -81,6 +81,8 @@ UIImage *ApolloSettingsShortcutImage(NSString *identifier, UITraitCollection *tr
 
 @interface ApolloSettingsShortcutsViewController ()
 @property (nonatomic, strong) NSMutableArray<NSString *> *included;
+@property (nonatomic, weak) UIGestureRecognizer *suspendedBarHideGesture;
+@property (nonatomic) BOOL barHideGestureWasEnabled;
 // Section header/footer heights held across the add/remove rebuild (see
 // -holdSectionTitleHeightsInTableView:nextEnabledFooterText:).
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *heldTitleHeights;
@@ -109,8 +111,50 @@ UIImage *ApolloSettingsShortcutImage(NSString *identifier, UITraitCollection *tr
     [self reloadRowWithID:@"app-icon"];
 }
 
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    [self updateBarHideGestureForEditing];
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [self restoreBarHideGesture];
+    [super viewWillDisappear:animated];
+}
+
 - (void)dealloc {
+    [self restoreBarHideGesture];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)setEditing:(BOOL)editing animated:(BOOL)animated {
+    [super setEditing:editing animated:animated];
+    [self updateBarHideGestureForEditing];
+}
+
+- (void)restoreBarHideGesture {
+    UIGestureRecognizer *gesture = self.suspendedBarHideGesture;
+    if (!gesture) return;
+    gesture.enabled = self.barHideGestureWasEnabled;
+    self.suspendedBarHideGesture = nil;
+    ApolloLog(@"[SettingsShortcuts] restored bar-hide gesture enabled=%d", gesture.enabled);
+}
+
+- (void)updateBarHideGestureForEditing {
+    if (IsLiquidGlass() || !self.editing || !self.isViewLoaded || !self.view.window) {
+        [self restoreBarHideGesture];
+        return;
+    }
+    // In the classic navigation stack, the bar-hide pan accepts vertical
+    // drags on UIKit's reorder handles and cancels their touches. Suspend
+    // only that gesture while this editor is visible and editing; preserve
+    // its prior state for Done, navigation away, and a cancelled back swipe.
+    UIGestureRecognizer *gesture = self.navigationController.barHideOnSwipeGestureRecognizer;
+    if (!gesture || gesture == self.suspendedBarHideGesture) return;
+    [self restoreBarHideGesture];
+    self.suspendedBarHideGesture = gesture;
+    self.barHideGestureWasEnabled = gesture.enabled;
+    gesture.enabled = NO;
+    ApolloLog(@"[SettingsShortcuts] suspended bar-hide gesture for classic reordering");
 }
 
 - (void)updateEditButton {
