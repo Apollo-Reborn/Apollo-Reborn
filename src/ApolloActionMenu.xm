@@ -695,7 +695,7 @@ static UITableViewCell *ApolloActionMenuCaptureDonorSnapshot(UITableViewCell *re
 // that action: a leading Moderator row is green, and must not turn unrelated
 // injected actions green as well.
 static void ApolloActionMenuConfigureRowCell(ApolloActionMenuRowCell *cell, NSString *title,
-                                             UIImage *image, UITableViewCell *donor, BOOL destructive) {
+                                             UIImage *image, UITableViewCell *donor, ApolloActionMenuSpec *spec) {
     UIFont *titleFont = nil;
     NSTextAlignment alignment = NSTextAlignmentLeft;
     CGRect titleFrame = CGRectZero;
@@ -715,7 +715,9 @@ static void ApolloActionMenuConfigureRowCell(ApolloActionMenuRowCell *cell, NSSt
         }
     }
 
-    UIColor *tint = destructive ? UIColor.systemRedColor : (ApolloThemeAccentColor() ?: UIColor.labelColor);
+    UIColor *tint = spec.legacyDestructive ? UIColor.systemRedColor
+        : spec.legacyModerator ? ApolloModeratorColor()
+        : (ApolloThemeAccentColor() ?: UIColor.labelColor);
 
     cell.apolloTitleLabel.text = title;
     cell.apolloTitleLabel.textColor = tint;
@@ -1182,7 +1184,7 @@ static void ApolloActionMenuInstallWillSelect(void) {
 
     ApolloActionMenuRowCell *cell = [[ApolloActionMenuRowCell alloc] initWithStyle:UITableViewCellStyleDefault
                                                                     reuseIdentifier:spec.identifier];
-    ApolloActionMenuConfigureRowCell(cell, title, image, donor, spec.legacyDestructive);
+    ApolloActionMenuConfigureRowCell(cell, title, image, donor, spec);
     return cell;
 }
 
