@@ -1201,7 +1201,7 @@ typedef NS_ENUM(NSInteger, Tag) {
                                          push:(UIViewController * (^)(void))makeVC {
     __weak typeof(self) weakSelf = self;
     NSString *reuseID = [@"Cell_Hub_" stringByAppendingString:rowID];
-    return [ApolloSettingsRow customRowWithID:rowID
+    ApolloSettingsRow *navigationRow = [ApolloSettingsRow customRowWithID:rowID
                                          cell:^UITableViewCell *(UITableView *tableView, __unused ApolloSettingsRow *row) {
         UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:reuseID];
         if (!cell) {
@@ -1228,6 +1228,17 @@ typedef NS_ENUM(NSInteger, Tag) {
             [weakSelf presentViewController:navigation animated:YES completion:nil];
         }
     }];
+    if (!IsLiquidGlass() && !subtitle) {
+        // UIKit self-sizes these multiline-label navigation cells to 52pt
+        // even when their title fits one line. Match classic native rows,
+        // measuring the title so larger text can still grow instead of clip.
+        __weak ApolloSettingsRow *weakRow = navigationRow;
+        navigationRow.height = ^CGFloat {
+            return ApolloSettingsClassicRowHeight(weakSelf.tableView, title, nil,
+                                                  weakRow.iconSystemName != nil, 24.0);
+        };
+    }
+    return navigationRow;
 }
 
 // Compact disclosure row for settings hubs where the current value belongs on

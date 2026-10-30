@@ -47,6 +47,27 @@ UIFont *ApolloSettingsFont(UIFontTextStyle style, UITraitCollection *traits) {
               compatibleWithTraitCollection:ApolloSettingsTextTraits(traits)];
 }
 
+CGFloat ApolloSettingsClassicRowHeight(UITableView *table, NSString *title, NSString *detail,
+                                      BOOL hasIcon, CGFloat accessoryWidth) {
+    UIFont *font = ApolloSettingsFont(UIFontTextStyleBody, table.traitCollection);
+    // Inset-grouped cells are narrower than the table. Use a displayed cell
+    // when available, otherwise the table's section margins (also on iPad).
+    CGFloat width = CGRectGetWidth(table.visibleCells.firstObject.bounds);
+    if (width <= 0) {
+        width = CGRectGetWidth(table.bounds) - table.layoutMargins.left - table.layoutMargins.right;
+    }
+    width -= 32.0 + accessoryWidth + (hasIcon ? 45.0 : 0.0);
+    if (detail.length) {
+        CGFloat detailWidth = ceil([detail sizeWithAttributes:@{NSFontAttributeName: font}].width);
+        width -= MIN(detailWidth + 16.0, MAX(0.0, width - 80.0));
+    }
+    CGFloat textHeight = [title boundingRectWithSize:CGSizeMake(MAX(1.0, width), CGFLOAT_MAX)
+                                           options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+                                        attributes:@{NSFontAttributeName: font}
+                                           context:nil].size.height;
+    return MAX(44.0, ceil(MAX(font.lineHeight, textHeight)) + 22.0);
+}
+
 static UIFont *ApolloSettingsSectionHeaderFont(UITraitCollection *traits) {
     return [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
         scaledFontForFont:[UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold]
