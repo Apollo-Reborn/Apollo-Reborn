@@ -2016,7 +2016,25 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
                     dispatch_get_main_queue(), ^{ [weakController scheduleTargetRefresh]; });
             }
         }
-        if (controller.completedTransition != transition) return NO;
+        if (controller.completedTransition != transition) {
+            // A presentation-owned control is reused across pages, so UIKit
+            // supplies no size for it: it would keep the outgoing title's
+            // fitted width ("Po… Co…" after a narrow profile title) for the
+            // whole push. Give the segmented title its own width now; the
+            // completion refresh still fits it against the settled edges.
+            if (segmentedTitle && ApolloNavigationTitlePresentationOwnsControl(titleControl)) {
+                // Never wider than the bar leaves between a standard 44pt
+                // button on each side (narrow phones, large text).
+                CGFloat available = CGRectGetWidth(bar.bounds) - 2.0 * (44.0 + 2.0 * kApolloTitleButtonSpacing);
+                CGFloat naturalWidth = MIN([controller naturalContentWidth], MAX(0, available));
+                if (naturalWidth > 1.0 && controller.fittedWidthConstraint &&
+                    fabs(controller.fittedWidthConstraint.constant - naturalWidth) > 0.5) {
+                    controller.fittedWidthConstraint.constant = naturalWidth;
+                    [bar setNeedsLayout];
+                }
+            }
+            return NO;
+        }
     }
 
     // Preserve upstream's interruptible-transition guard for native titles.

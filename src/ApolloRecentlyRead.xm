@@ -4,7 +4,6 @@
 #import <os/lock.h>
 #import <math.h>
 #import <limits.h>
-#import <dlfcn.h>
 
 #import "ApolloCommon.h"
 #import "ApolloPostReadState.h"
@@ -17,6 +16,7 @@
 #import "ApolloSwiftRuntime.h"
 #import "ApolloActionMenu.h"
 #import "ApolloNativeActionMenus.h"
+#import "ApolloUpvotedPostsFeed.h"
 #import "ApolloTextureDecls.h"
 #import "ApolloAccountCredentials.h"
 
@@ -297,17 +297,12 @@ void ApolloFlushReadPostIDsToDefaults(void) {
 // Upvoted list for a sentinel user: that list loads every page, the first from
 // viewDidLoad and the rest from ASDK batch fetches off the main thread, through
 // -[RDKClient upvotedLinksForUser:pagination:completion:] with the username it
-// was built with. The hook below answers those calls with the read history.
-//
-// PostsType is a 33-byte Swift enum: payload in bytes 0-31, case tag at byte 32
-// (subreddit 0, multireddit 1, upvoted 2, downvoted 3, submissions 4, random 5,
-// home/hidden 6). Apollo passes it indirectly to PostsViewController's
-// designated initializer, with the allocated object as Swift self (x20).
+// was built with (ApolloUpvotedPostsFeed.h). The hook below answers those calls
+// with the read history.
 
-// '~' never appears in a Reddit username, and at 13 bytes the name is an inline
-// Swift small string, so the enum holds no reference to retain or release.
+// '~' never appears in a Reddit username, and at 13 bytes the name fits the
+// feed's inline Swift string.
 static NSString *const kRecentlyReadFeedUser = @"~recentlyread";
-static const uint8_t kPostsTypeUpvotedTag = 2;
 static const NSUInteger kRecentlyReadDefaultPageSize = 25;
 static const NSUInteger kRecentlyReadMaxPageSize = 100;
 // Pages fully hidden by the NSFW filter are skipped, at most this many in a row.
@@ -476,53 +471,8 @@ static void ApolloRecentlyReadServe(RDKClient *client, RDKPagination *pagination
     ApolloRecentlyReadFetchPage(client, order, start, pageSize, 0, completion);
 }
 
-// PostsViewController's Swift designated initializer in Apollo 1.15.11. Its
-// ObjC entry points trap, so it is found from initWithCoder:'s thunk and both
-// are verified; any other binary fails closed.
-typedef void *__attribute__((swiftcall)) (*ApolloPostsViewControllerInit)(
-    const void *postsType, void *self __attribute__((swift_context)));
-
-static ApolloPostsViewControllerInit ApolloPostsViewControllerInitEntry(void) {
-    static ApolloPostsViewControllerInit entry;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        Method coder = class_getInstanceMethod(ApolloClassPostsViewController, @selector(initWithCoder:));
-        const uint8_t *coderIMP = coder ? (const uint8_t *)method_getImplementation(coder) : NULL;
-        Dl_info binary;
-        if (!coderIMP || !dladdr(coderIMP, &binary) || !binary.dli_fbase ||
-            coderIMP - (const uint8_t *)binary.dli_fbase != 0x596f0c) {
-            ApolloLog(@"[RecentlyRead] PostsViewController initializer not found (unsupported Apollo binary)");
-            return;
-        }
-        const uint8_t *candidate = coderIMP - 0x15f4;
-        const uint32_t expected[] = {0xd10503ff, 0xa90e6ffc, 0xa90f67fa, 0xa9105ff8, 0xa91157f6,
-                                     0xa9124ff4, 0xa9137bfd, 0x9104c3fd, 0xaa0003fb};
-        if (memcmp(candidate, expected, sizeof(expected)) != 0) {
-            ApolloLog(@"[RecentlyRead] PostsViewController initializer prologue mismatch");
-            return;
-        }
-        entry = (ApolloPostsViewControllerInit)candidate;
-    });
-    return entry;
-}
-
 static UIViewController *ApolloRecentlyReadMakeFeed(void) {
-    ApolloPostsViewControllerInit init = ApolloPostsViewControllerInitEntry();
-    Class feedClass = ApolloClassPostsViewController;
-    if (!init || !feedClass) return nil;
-
-    // .upvoted(username:): the small string's bytes inline, its length in the
-    // top byte with the ASCII/small flags (0xE0), then the tag.
-    const char *user = kRecentlyReadFeedUser.UTF8String;
-    size_t length = strlen(user);
-    if (length > 15) return nil;
-    uint8_t postsType[40] __attribute__((aligned(16))) = {0};
-    memcpy(postsType, user, length);
-    postsType[15] = (uint8_t)(0xE0 | length);
-    postsType[32] = kPostsTypeUpvotedTag;
-
-    void *allocated = (__bridge_retained void *)[feedClass alloc];
-    UIViewController *feed = CFBridgingRelease(init(postsType, allocated));
+    UIViewController *feed = ApolloMakeUpvotedPostsFeed(kRecentlyReadFeedUser);
     if (feed) objc_setAssociatedObject(feed, &kRecentlyReadFeedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return feed;
 }
@@ -541,77 +491,17 @@ static char kRecentlyReadListAdapterKey;
 static char kRecentlyReadHideReadButtonKey;
 static NSString *const kRecentlyReadTitle = @"Recently Read";
 
-// Apollo's own feed-menu icon for the size a tap switches to.
-static UIImage *ApolloRecentlyReadSizeImage(BOOL compact) {
-    NSString *name = compact ? @"option-large-thumbnails"
-        : ([[NSUserDefaults standardUserDefaults] boolForKey:@"CompactModeLeftThumbnails"]
-               ? @"option-compact-thumbnails-left" : @"option-compact-thumbnails-right");
-    UIImage *image = [UIImage imageNamed:name];
-    if (!image) image = [UIImage systemImageNamed:compact ? @"rectangle.grid.1x2" : @"list.bullet"];
-    return [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-}
-
-// ListAdapter's Swift row rebuild in Apollo 1.15.11 (self only, in x20). Apollo's
-// own Compact/Large menu action calls it after saving the size, then reloads
-// the table; that is what makes existing rows take the new size. Verified by
-// prologue; any other binary fails closed (the caller falls back to a reload).
-typedef void __attribute__((swiftcall)) (*ApolloListAdapterRebuild)(void *self __attribute__((swift_context)));
-
-static ApolloListAdapterRebuild ApolloListAdapterRebuildEntry(void) {
-    static ApolloListAdapterRebuild entry;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        // The adapter's ObjC thunks are hooked, so anchor on PostsViewController's
-        // initWithCoder: thunk, which also pins the binary.
-        Dl_info binary;
-        Method coder = class_getInstanceMethod(ApolloClassPostsViewController, @selector(initWithCoder:));
-        const uint8_t *coderIMP = coder ? (const uint8_t *)method_getImplementation(coder) : NULL;
-        if (!coderIMP || !dladdr(coderIMP, &binary) || !binary.dli_fbase ||
-            coderIMP - (const uint8_t *)binary.dli_fbase != 0x596f0c) return;
-        const uint8_t *candidate = (const uint8_t *)binary.dli_fbase + 0x172b28;
-        const uint32_t expected[] = {0xa9ba6ffc, 0xa90167fa, 0xa9025ff8, 0xa90357f6, 0xa9044ff4,
-                                     0xa9057bfd, 0x910143fd, 0xd106c3ff, 0x910003f3};
-        if (memcmp(candidate, expected, sizeof(expected)) != 0) {
-            ApolloLog(@"[RecentlyRead] ListAdapter rebuild prologue mismatch");
-            return;
-        }
-        entry = (ApolloListAdapterRebuild)candidate;
-    });
-    return entry;
-}
-
 // Redraw the loaded posts in the current size without refetching, the way
 // Apollo's own menu action does.
 static void ApolloRecentlyReadRedraw(UIViewController *feed) {
-    id listAdapter = ApolloObjectIvar(feed, "listAdapter");
-    id tableNode = listAdapter ? (ApolloObjectIvar(listAdapter, "tableNode") ?: ApolloReadSwiftWeakObjectIvar(listAdapter, "tableNode")) : nil;
-    ApolloListAdapterRebuild rebuild = ApolloListAdapterRebuildEntry();
-    if (!rebuild || ![tableNode respondsToSelector:@selector(reloadData)]) {
+    BOOL redrawn = ApolloPostsFeedRedrawInPlace(feed, ^(dispatch_block_t rebuild) {
+        BOOL began = ApolloRecentlyReadBeginSizeScope();
+        rebuild();
+        ApolloRecentlyReadEndSizeScope(began);
+    });
+    if (!redrawn) {
         ApolloLog(@"[RecentlyRead] Can't redraw in place; reloading instead");
         ApolloRecentlyReadReload(feed);
-        return;
-    }
-    // Rows change height, so keep the top visible post in place, not the offset.
-    // The first row whose middle is below the (translucent) bars is the one in view.
-    NSIndexPath *anchor = nil;
-    UITableView *tableView = [tableNode respondsToSelector:@selector(view)] ? ApolloSendObject(tableNode, @selector(view)) : nil;
-    if ([tableView isKindOfClass:[UITableView class]]) {
-        CGFloat visibleTop = tableView.contentOffset.y + tableView.adjustedContentInset.top;
-        for (NSIndexPath *indexPath in [tableView.indexPathsForVisibleRows sortedArrayUsingSelector:@selector(compare:)]) {
-            if (CGRectGetMidY([tableView rectForRowAtIndexPath:indexPath]) > visibleTop) {
-                anchor = indexPath;
-                break;
-            }
-        }
-    }
-    BOOL began = ApolloRecentlyReadBeginSizeScope();
-    rebuild((__bridge void *)listAdapter);
-    [tableNode reloadData];
-    ApolloRecentlyReadEndSizeScope(began);
-    SEL scroll = @selector(scrollToRowAtIndexPath:atScrollPosition:animated:);
-    if (anchor && anchor.row > 0 && [tableNode respondsToSelector:scroll]) {
-        ((void (*)(id, SEL, NSIndexPath *, UITableViewScrollPosition, BOOL))objc_msgSend)(
-            tableNode, scroll, anchor, UITableViewScrollPositionTop, NO);
     }
 }
 
@@ -635,7 +525,7 @@ static NSHashTable<UIViewController *> *ApolloRecentlyReadOpenFeeds(void) {
     __weak __typeof__(self) weakSelf = self;
     BOOL compact = ApolloRecentlyReadUsesCompactPosts();
     UIAction *size = [UIAction actionWithTitle:compact ? @"Large Thumbnails" : @"Compact Posts"
-                                         image:ApolloRecentlyReadSizeImage(compact)
+                                         image:ApolloPostsFeedSizeImage(compact)
                                     identifier:nil
                                        handler:^(__unused UIAction *action) { [weakSelf toggleSize]; }];
     UIAction *clear = [UIAction actionWithTitle:@"Clear Read History"

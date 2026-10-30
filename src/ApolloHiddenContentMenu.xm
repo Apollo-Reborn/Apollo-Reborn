@@ -232,7 +232,7 @@ static char ApolloHiddenIconKey;
         UINavigationController *navigationController = (UINavigationController *)viewController;
         UIViewController *topViewController = navigationController.topViewController;
         if ([topViewController isKindOfClass:ApolloHiddenContentViewController.class]) {
-            UITableView *tableView = ((ApolloHiddenContentViewController *)topViewController).tableView;
+            UIScrollView *tableView = ((ApolloHiddenContentViewController *)topViewController).scrollView;
             CGFloat topOffset = -tableView.adjustedContentInset.top;
             BOOL isAtTop = fabs(tableView.contentOffset.y - topOffset) < 1.0;
             if (isAtTop) {
