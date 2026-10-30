@@ -413,6 +413,9 @@ static NSString *const UDKeyInfoRowOverlayMode = @"InfoRowOverlayMode";   // %/t
 static NSString *const UDKeyInfoRowTapTranslation = @"InfoRowTapTranslation";
 static NSString *const UDKeyThreeStateVoting = @"ThreeStateVoting";
 static NSString *const UDKeyLiveCommentsFollow = @"LiveCommentsFollow";
+// Existing floating comment jump button: 0 = native parent threads (default),
+// 1 = comments added since the previous visit. Shared by General and More.
+static NSString *const UDKeyCommentNavigationMode = @"CommentNavigationMode";
 // Per-POST comment sort memory (issue #555). When ON, changing a post's comment sort
 // is remembered for that post (capped LRU mapping below) and restored when its
 // comments are reopened; every other post keeps Apollo's native chain (suggested

@@ -220,6 +220,11 @@ void ApolloActionMenuCaptureContextForController(id controller) {
     objc_setAssociatedObject(controller, &kApolloActionMenuControllerContextKey, context, OBJC_ASSOCIATION_COPY_NONATOMIC);
 }
 
+NSString *ApolloActionMenuContextForController(id controller) {
+    ApolloActionMenuCaptureContextForController(controller);
+    return objc_getAssociatedObject(controller, &kApolloActionMenuControllerContextKey);
+}
+
 // The Moderator row of a ••• sheet opens that object's moderator sheet once
 // the ••• sheet has dismissed — too late for the tap hooks' synchronous arm —
 // so the row's handlers (the glass action, the legacy willSelect) arm it
@@ -420,6 +425,9 @@ static BOOL ApolloActionMenuApplyNativeLayout(id controller, ApolloActionMenuCon
 // opened from one of the customisable entry points.
 @property (nonatomic, copy) ApolloActionMenuContext context;
 @property (nonatomic, assign) NSInteger nativeRowCount; // -1 until numberOfRows(section 0) has run
+// Explicit legacy-only replacement retains Apollo's actions as cell/layout
+// donors but routes every visible row through specs, starting at row zero.
+@property (nonatomic, assign) BOOL replacesNativeRows;
 // A standalone (never dequeued, never added to any table) snapshot cell
 // carrying row 0's captured text/font/color/frame, rebuilt every time row 0
 // naturally renders. NOT a live cell — see ApolloActionMenuCaptureDonorSnapshot
@@ -436,6 +444,74 @@ static BOOL ApolloActionMenuApplyNativeLayout(id controller, ApolloActionMenuCon
 
 static const void *kApolloActionMenuSlotStateKey = &kApolloActionMenuSlotStateKey;
 static char kApolloActionMenuDirectActionKey;
+
+// Drop native actions past `keep` (replacement rows reuse the first ones as
+// cell donors) so Apollo sizes the sheet for the rows actually shown. A sheet
+// with many native rows is height-capped and scrolls, so subtracting rows
+// from its frame afterwards would push it off screen. Same ownership and
+// String-release rules as ApolloActionMenuApplyNativeLayout.
+static int64_t ApolloActionMenuTruncateNativeActions(id controller, int64_t keep) {
+    void *buffer = ApolloReadRawIvar(controller, "actions");
+    int64_t count = ApolloSwiftArrayCount(buffer);
+    if (count <= keep || keep <= 0 || count > 512) return count;
+    typedef bool (*UniqueFn)(void *);
+    typedef void (*ReleaseFn)(void *);
+    static UniqueFn isUnique;
+    static ReleaseFn releaseBridge;
+    static dispatch_once_t runtimeOnce;
+    dispatch_once(&runtimeOnce, ^{
+        isUnique = (UniqueFn)dlsym(RTLD_DEFAULT, "swift_isUniquelyReferenced_nonNull_native");
+        releaseBridge = (ReleaseFn)dlsym(RTLD_DEFAULT, "swift_bridgeObjectRelease");
+    });
+    if (!isUnique || !releaseBridge || !isUnique(buffer)) {
+        ApolloLog(@"[ActionMenu] Replacement left %lld native actions: storage is shared or Swift runtime is unavailable", count);
+        return count;
+    }
+    uint8_t *elements = (uint8_t *)buffer + kApolloActionMenuNativeElementsOffset;
+    for (int64_t i = keep; i < count; i++) {
+        uint8_t *removed = elements + (NSUInteger)i * kApolloActionMenuNativeElementStride;
+        releaseBridge(*(void **)(removed + 0x10)); // title String's bridge word
+        releaseBridge(*(void **)(removed + 0x20)); // optional subtitle (nil is safe)
+    }
+    memset(elements + (NSUInteger)keep * kApolloActionMenuNativeElementStride, 0,
+           (NSUInteger)(count - keep) * kApolloActionMenuNativeElementStride);
+    *(int64_t *)((uint8_t *)buffer + 0x10) = keep;
+    return keep;
+}
+
+BOOL ApolloActionMenuSetLegacyReplacementRows(id actionController, NSArray<ApolloActionMenuSpec *> *rows) {
+    if (IsLiquidGlass() || ![actionController isKindOfClass:ApolloClassActionController] ||
+        rows.count == 0 || rows.count > 512) return NO;
+    UIViewController *controller = actionController;
+    if (controller.presentingViewController || controller.viewIfLoaded.window) return NO;
+
+    // Keep the leading backing actions: Apollo still uses them to construct
+    // and size the sheet, and their cells are restyled as the replacement
+    // rows. Reject text-only sheets, whose native cells have no icon column.
+    int64_t nativeCount = ApolloSwiftArrayCount(ApolloReadRawIvar(actionController, "actions"));
+    int64_t textCount = ApolloSwiftArrayCount(ApolloReadRawIvar(actionController, "textActions"));
+    if (nativeCount <= 0 || nativeCount > 512 || textCount > 0) return NO;
+    for (ApolloActionMenuSpec *row in rows) {
+        if (![row isKindOfClass:[ApolloActionMenuSpec class]] || !row.identifier.length ||
+            !row.title || !row.perform) return NO;
+    }
+
+    nativeCount = ApolloActionMenuTruncateNativeActions(actionController, (int64_t)rows.count);
+
+    ApolloActionMenuSlotState *state = [ApolloActionMenuSlotState new];
+    state.specs = rows;
+    state.replacesNativeRows = YES;
+    // The presentation controller can ask for geometry before the table asks
+    // for its count. Seed it from the untouched backing array for that pass.
+    state.nativeRowCount = (NSInteger)nativeCount;
+    objc_setAssociatedObject(actionController, kApolloActionMenuSlotStateKey, state,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    UITableView *table = ApolloReadObjectIvar(controller, "tableView");
+    if (controller.isViewLoaded && [table isKindOfClass:[UITableView class]]) [table reloadData];
+    ApolloLog(@"[ActionMenu] Replaced %lld legacy rows with %lu specs: %@", nativeCount,
+              (unsigned long)rows.count, [rows valueForKey:@"identifier"]);
+    return YES;
+}
 
 // Apollo's own actionsDescription Swift string for the sheet, falling back to
 // probing titleForHeaderInSection: the way ApolloPublicStickyAsSubreddit used to
@@ -740,6 +816,45 @@ static void ApolloActionMenuConfigureRowCell(ApolloActionMenuRowCell *cell, NSSt
     [cell setNeedsLayout];
 }
 
+// Replacement rows reuse the native cell at the SAME index. Returning the cell
+// Apollo dequeued preserves UIKit's dequeue contract and all of Apollo's row
+// geometry and touch feedback. Keep its normal layout responsible for sizing
+// the new image; no frame writes or new layout hooks are necessary here.
+static void ApolloActionMenuConfigureNativeReplacementCell(UITableViewCell *cell,
+                                                           NSString *title, UIImage *image,
+                                                           BOOL checked, UITableViewCell *donor) {
+    UILabel *label = ApolloReadObjectIvar(cell, "actionTitleLabel");
+    UIImageView *icon = ApolloReadObjectIvar(cell, "iconImageView");
+    UILabel *donorLabel = (UILabel *)ApolloActionMenuFirstSubviewOfClass(donor, [UILabel class], YES);
+    UIColor *tint = donorLabel.textColor ?: ApolloThemeAccentColor() ?: UIColor.labelColor;
+    if ([label isKindOfClass:[UILabel class]]) {
+        label.text = title;
+        label.textColor = tint;
+        if (donorLabel.font) label.font = donorLabel.font;
+    }
+    if ([icon isKindOfClass:[UIImageView class]]) {
+        icon.image = image;
+        icon.tintColor = tint;
+    }
+    UILabel *subtitle = ApolloReadObjectIvar(cell, "actionSubtitleLabel");
+    if ([subtitle isKindOfClass:[UILabel class]]) {
+        subtitle.text = nil;
+        subtitle.hidden = YES;
+    }
+    for (NSString *name in @[@"disclosureIndicator", @"checkmark"]) {
+        UIView *accessory = ApolloReadObjectIvar(cell, name.UTF8String);
+        if (![accessory isKindOfClass:[UIView class]]) continue;
+        BOOL show = checked && [name isEqualToString:@"checkmark"];
+        accessory.hidden = !show;
+        if (show) accessory.tintColor = tint;
+    }
+    cell.accessoryType = UITableViewCellAccessoryNone;
+    cell.accessibilityLabel = title;
+    cell.accessibilityTraits = checked ? (cell.accessibilityTraits | UIAccessibilityTraitSelected)
+                                       : (cell.accessibilityTraits & ~UIAccessibilityTraitSelected);
+    [cell setNeedsLayout];
+}
+
 NSString *ApolloActionMenuDonorLabelText(UITableViewCell *donor) {
     if (![donor isKindOfClass:[UITableViewCell class]]) return nil;
     UILabel *label = (UILabel *)ApolloActionMenuFirstSubviewOfClass(donor, [UILabel class], YES);
@@ -1033,8 +1148,9 @@ static ApolloActionMenuSpec *ApolloActionMenuSpecAtIndexPath(id controller, NSIn
     if (!indexPath || indexPath.section != 0) return nil;
     ApolloActionMenuSlotState *state = ApolloActionMenuSlotsForController(controller, nil);
     NSInteger nativeCount = state.nativeRowCount;
-    if (state.specs.count == 0 || nativeCount < 0 || indexPath.row < nativeCount) return nil;
-    NSInteger slotIndex = indexPath.row - nativeCount;
+    NSInteger firstSpecRow = state.replacesNativeRows ? 0 : nativeCount;
+    if (state.specs.count == 0 || firstSpecRow < 0 || indexPath.row < firstSpecRow) return nil;
+    NSInteger slotIndex = indexPath.row - firstSpecRow;
     if (slotIndex < 0 || (NSUInteger)slotIndex >= state.specs.count) return nil;
     return state.specs[(NSUInteger)slotIndex];
 }
@@ -1147,6 +1263,7 @@ static void ApolloActionMenuInstallWillSelect(void) {
     NSInteger nativeCount = %orig;
     if (section != 0) return nativeCount;
     state.nativeRowCount = nativeCount;
+    if (state.replacesNativeRows) return (NSInteger)state.specs.count;
     if (state.specs.count == 0) return nativeCount;
     return nativeCount + (NSInteger)state.specs.count;
 }
@@ -1154,8 +1271,9 @@ static void ApolloActionMenuInstallWillSelect(void) {
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     ApolloActionMenuSlotState *state = ApolloActionMenuSlotsForController(self, nil);
     NSInteger nativeCount = state.nativeRowCount;
+    NSInteger firstSpecRow = state.replacesNativeRows ? 0 : nativeCount;
 
-    if (state.specs.count == 0 || indexPath.section != 0 || nativeCount < 0 || indexPath.row < nativeCount) {
+    if (state.specs.count == 0 || indexPath.section != 0 || firstSpecRow < 0 || indexPath.row < firstSpecRow) {
         UITableViewCell *cell = %orig;
         // Opportunistically snapshot row 0's real rendered style/text — the ONLY
         // safe way to get a donor for the injected rows below. This must run on
@@ -1170,10 +1288,23 @@ static void ApolloActionMenuInstallWillSelect(void) {
         return cell;
     }
 
-    NSInteger slotIndex = indexPath.row - nativeCount;
+    NSInteger slotIndex = indexPath.row - firstSpecRow;
     if (slotIndex < 0 || (NSUInteger)slotIndex >= state.specs.count) return %orig; // fail-soft, shouldn't happen
 
     ApolloActionMenuSpec *spec = state.specs[(NSUInteger)slotIndex];
+    // Ask Apollo only for the exact native index UIKit is currently building.
+    // Never fetch a row-zero donor while building a different row, and never
+    // discard a dequeued native cell in favor of a newly allocated one.
+    if (state.replacesNativeRows && indexPath.row < nativeCount) {
+        UITableViewCell *cell = %orig;
+        if (indexPath.row == 0) state.donorSnapshot = ApolloActionMenuCaptureDonorSnapshot(cell);
+        UITableViewCell *donor = state.donorSnapshot;
+        NSString *title = spec.title ? spec.title(self, donor) : @"";
+        UIImage *image = spec.image ? spec.image(self, donor) : nil;
+        BOOL checked = spec.checked ? spec.checked(self) : NO;
+        ApolloActionMenuConfigureNativeReplacementCell(cell, title, image, checked, donor);
+        return cell;
+    }
     // nil until row 0 has naturally rendered at least once (e.g. a restored
     // scroll position skipping straight past it) — every consumer already
     // falls back gracefully on a nil donor.
@@ -1200,6 +1331,12 @@ static void ApolloActionMenuInstallWillSelect(void) {
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
     ApolloActionMenuSlotState *state = ApolloActionMenuSlotsForController(self, nil);
     NSInteger nativeCount = state.nativeRowCount;
+    if (state.replacesNativeRows && indexPath.section == 0) {
+        // Profile actions have ordinary native heights. Preserve Apollo's
+        // same-index row metrics wherever there is a corresponding donor.
+        if (indexPath.row < nativeCount) return %orig;
+        return %orig(tableView, [NSIndexPath indexPathForRow:0 inSection:0]);
+    }
 
     if (state.specs.count == 0 || indexPath.section != 0 || nativeCount < 0 || indexPath.row < nativeCount) {
         return %orig;
@@ -1241,7 +1378,9 @@ static void ApolloActionMenuInstallWillSelect(void) {
     CGFloat rowHeight = ApolloActionMenuNativeRowHeight(presented);
     if (rowHeight <= 0.0) return frame;
 
-    CGFloat growth = rowHeight * (CGFloat)state.specs.count;
+    NSInteger addedRows = (NSInteger)state.specs.count -
+        (state.replacesNativeRows ? MAX(0, state.nativeRowCount) : 0);
+    CGFloat growth = rowHeight * (CGFloat)addedRows;
     frame.origin.y -= growth;
     frame.size.height += growth;
     return frame;

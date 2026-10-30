@@ -3762,6 +3762,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyInfoRowTapTranslation: @YES,
                                     UDKeyThreeStateVoting: @NO,
                                     UDKeyLiveCommentsFollow: @YES,
+                                    UDKeyCommentNavigationMode: @0,
                                     UDKeyPerPostCommentSort: @NO,
                                     UDKeyEnableBulkTranslation: @NO,
                                     UDKeyAutoTranslateOnAppear: @YES,
@@ -4089,6 +4090,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     sInfoRowTapTranslation = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyInfoRowTapTranslation];
     sThreeStateVoting = [standardDefaults boolForKey:UDKeyThreeStateVoting];
     sLiveCommentsFollow = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyLiveCommentsFollow];
+    sCommentNavigationMode = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyCommentNavigationMode] == 1 ? 1 : 0;
     sPerPostCommentSort = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyPerPostCommentSort];
     // Both sort memories on = stale state from an older build or a restored backup;
     // they are mutually exclusive (see ApolloPerPostCommentSort.xm) and per-post wins.

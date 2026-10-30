@@ -26,7 +26,7 @@
 // sits outside ours — Translomatic's does, and it crashed on "Keep in Floating
 // Tab" (#1071). Don't add a didSelect-only tap path for an injected row.
 //
-// Additive only: this owns injecting/replacing rows, not hiding native ones.
+// Registry specs are additive: this owns injecting rows, not hiding native ones.
 // A feature that needs to remove a native row (e.g. ApolloTranslation.xm's
 // bulk-translate row removal) mutates Apollo's raw Swift `actions` buffer
 // directly, in native index space, before presentation — that's a disjoint
@@ -128,11 +128,26 @@ typedef NS_ENUM(NSInteger, ApolloActionMenuPlacement) {
 // path has no equivalent escape hatch — the shared row cell covers it).
 @property (nonatomic, copy, nullable) void (^buildElement)(id actionController, NSMutableArray<UIMenuElement *> *children);
 
+// Legacy replacement rows only (ApolloActionMenuSetLegacyReplacementRows): YES
+// shows Apollo's own checkmark on the row, for sheets that pick one value.
+@property (nonatomic, copy, nullable) BOOL (^checked)(id actionController);
+
 @end
 
 // Register a spec. Call from a feature's %ctor, after %init.
 __BEGIN_DECLS
 void ApolloActionMenuRegister(ApolloActionMenuSpec *spec);
+
+// Replace all visible rows of one freshly built legacy ActionController while
+// retaining Apollo's actual sheet, native cells, animation and Cancel button.
+// Call before presentation; returns NO if the controller is already presented,
+// has no ordinary native actions, or this is a Liquid Glass build. A table
+// loaded during native construction is reloaded with the replacement rows.
+// Rows stay in the supplied order. `matches` and glass placement are ignored;
+// identifier, title and perform are required, and legacyDismissesSheet applies.
+// Native actions past the replacement count are dropped from this instance's
+// own Swift actions so Apollo sizes the sheet; no other menu is affected.
+BOOL ApolloActionMenuSetLegacyReplacementRows(id actionController, NSArray<ApolloActionMenuSpec *> *rows);
 
 // Customised ••• menus (Settings → Interface → Action Menus; the model lives in
 // ApolloActionMenuLayout.h). Resolves which menu context the sheet was opened
@@ -144,6 +159,9 @@ void ApolloActionMenuRegister(ApolloActionMenuSpec *spec);
 // Capture the current tap on this exact controller before UIKit defers a
 // legacy presentation. Called by the existing native-menu presentation owner.
 void ApolloActionMenuCaptureContextForController(id actionController);
+// The exact captured tap context for a controller. Feature specs can constrain
+// themselves to one menu without another tap hook or title heuristics.
+NSString *_Nullable ApolloActionMenuContextForController(id actionController);
 // From the handlers of a ••• sheet's Moderator row: arm the moderator context
 // that row opens (post's or comment's) for the sheet about to follow.
 void ApolloActionMenuArmModeratorFollowUp(id actionController);
