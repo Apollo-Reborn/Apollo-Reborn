@@ -7,6 +7,10 @@ from pathlib import Path
 INPUT_KEYS = ["accent", "background", "card", "raised", "bars", "text", "mutedText", "separator"]
 MODES = ["light", "dark"]
 HEX_RE = re.compile(r"^[0-9A-Fa-f]{6}$")
+# Gallery themes ship advanced text overrides verbatim. If these two semantic
+# roles are closer than this, read and unread post titles have no practical
+# visual distinction even though the underlying read state is correct.
+MIN_TEXT_ROLE_CONTRAST = 1.12
 
 
 def fail(path, message):
@@ -26,6 +30,23 @@ def c_string(value):
         else:
             parts.append(f"\\{byte:03o}")
     return '"' + "".join(parts) + '"'
+
+
+def relative_luminance(hex_value):
+    channels = [int(hex_value[index:index + 2], 16) / 255.0 for index in (0, 2, 4)]
+    linear = [
+        channel / 12.92 if channel <= 0.04045
+        else ((channel + 0.055) / 1.055) ** 2.4
+        for channel in channels
+    ]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def contrast_ratio(first, second):
+    lighter, darker = sorted(
+        (relative_luminance(first), relative_luminance(second)), reverse=True
+    )
+    return (lighter + 0.05) / (darker + 0.05)
 
 
 def load_theme(path):
@@ -58,6 +79,13 @@ def load_theme(path):
             if not isinstance(value, str) or not HEX_RE.match(value):
                 fail(path, f"input.{mode}.{key} must be exactly 6 hex digits")
             mode_obj[key] = value.upper()
+        text_role_contrast = contrast_ratio(mode_obj["text"], mode_obj["mutedText"])
+        if text_role_contrast < MIN_TEXT_ROLE_CONTRAST:
+            fail(
+                path,
+                f"input.{mode}.mutedText is visually indistinguishable from text "
+                f"({text_role_contrast:.3f}:1; minimum {MIN_TEXT_ROLE_CONTRAST:.2f}:1)",
+            )
 
     return {
         "slug": slug,
