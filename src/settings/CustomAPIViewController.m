@@ -1438,6 +1438,15 @@ typedef NS_ENUM(NSInteger, Tag) {
     backup.configure = ^(UITableViewCell *cell) {
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     };
+    if (!IsLiquidGlass()) {
+        // This configure block only adds a chevron; it does not need the
+        // automatic sizing reserved for custom cell layouts in the form.
+        __weak ApolloSettingsRow *weakBackup = backup;
+        backup.height = ^CGFloat {
+            return ApolloSettingsClassicRowHeight(weakSelf.tableView, @"Backup Settings", nil,
+                                                  weakBackup.iconSystemName != nil, 24.0);
+        };
+    }
 
     ApolloSettingsRow *restore =
         [ApolloSettingsRow buttonRowWithID:@"data.restore"
