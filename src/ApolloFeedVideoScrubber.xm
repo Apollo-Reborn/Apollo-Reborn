@@ -24,8 +24,8 @@
 //   • Touch the strip and slide — no hold required: a UIGestureRecognizer
 //     subclass observes the touch the instant it lands (the scroll view's
 //     touch delay only holds back VIEW delivery, never recognizers) and the
-//     playback position follows the finger's absolute position on the bar
-//     (finger at 1/3 of the width ≈ 1/3 of the video).
+//     playback position follows the finger's movement relative to the playhead
+//     where the drag began. Grabbing anywhere on the strip never jumps first.
 //   • Direction classifies the touch, deterministically: horizontal
 //     dominance scrubs (any speed), vertical dominance fails to the feed
 //     scroll. The bar owns horizontal gestures outright; swipe back/forward
@@ -54,6 +54,7 @@
 // the cell, and it is retained by the node through an associated object.
 
 #import "ApolloCommon.h"
+#import "ApolloFeedVideoScrubMath.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloState.h"          // sFeedVideoScrubber
 #import "UserDefaultConstants.h"
@@ -255,6 +256,8 @@ static NSTimeInterval ScrubbableDuration(AVPlayer *player) {
 @property (nonatomic, assign) BOOL pausedForScrub;           // touch-scoped
 @property (nonatomic, weak) UIScrollView *lockedScrollView;  // touch-scoped
 @property (nonatomic, assign) BOOL scrubbing;                // gesture Began..Ended
+@property (nonatomic, assign) CGFloat scrubStartFraction;    // playhead at touch start
+@property (nonatomic, assign) CGFloat scrubTouchStartX;      // gesture's first point
 @property (nonatomic, assign) CGFloat startX;
 @property (nonatomic, assign) CFTimeInterval touchStartedAt;
 @property (nonatomic, assign) BOOL movedTooFarForTap;
@@ -475,9 +478,11 @@ static char kFeedScrubStripKey;
 #pragma mark Scrub gesture
 
 - (CGFloat)fractionForLocationX:(CGFloat)x {
-    CGFloat width = self.bounds.size.width;
-    if (width <= 0) return 0;
-    return MAX(0.0, MIN(1.0, x / width));
+    return (CGFloat)ApolloFeedVideoScrubTargetFraction(
+        self.scrubStartFraction,
+        self.scrubTouchStartX,
+        x,
+        self.bounds.size.width);
 }
 
 // Recognizer touch-down: the strip owns holds, so the time-based hold
@@ -506,6 +511,10 @@ static char kFeedScrubStripKey;
 
             self.scrubbing = YES;
             self.hasPendingSeek = NO;
+            NSTimeInterval current = CMTimeGetSeconds(self.player.currentTime);
+            self.scrubStartFraction = (CGFloat)ApolloFeedVideoScrubStartingFraction(
+                current, self.duration);
+            self.scrubTouchStartX = gesture.startPoint.x;
             UIView *nativeStrip = ApolloObjectIvar(self.richMediaNode, "videoGIFProgressView");
             self.nativeStripView = [nativeStrip isKindOfClass:[UIView class]] ? nativeStrip : nil;
 
@@ -517,8 +526,8 @@ static char kFeedScrubStripKey;
                 arrayByAddingObjectsFromArray:SuspendNavigationPans(self)];
 
             CGFloat fraction = [self fractionForLocationX:[gesture locationInView:self].x];
-            ApolloLog(@"[FeedScrubber] scrub engaged at %.0f%% (duration=%.1fs)",
-                      fraction * 100.0, self.duration);
+            ApolloLog(@"[FeedScrubber] scrub engaged from %.0f%% toward %.0f%% (duration=%.1fs)",
+                      self.scrubStartFraction * 100.0, fraction * 100.0, self.duration);
 
             // Lock the list so vertical finger drift can't bob it under the
             // drag (stats-row loupe pattern; restored on every exit path)...
@@ -579,6 +588,8 @@ static char kFeedScrubStripKey;
     [self unlockScrollView];
     [self resumeIfPausedForScrub];
     self.player = nil;
+    self.scrubStartFraction = 0;
+    self.scrubTouchStartX = 0;
 }
 
 - (void)unlockScrollView {
