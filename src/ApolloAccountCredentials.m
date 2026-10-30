@@ -511,6 +511,15 @@ void ApolloAccountCredentialsBeginInteractiveSignIn(id credential) {
               activeEntry.clientId.length > 0 ? ApolloLogFingerprint(activeEntry.clientId) : @"<default>");
 }
 
+// Same choice as ApolloAccountCredentialsBeginInteractiveSignIn: the default
+// key, else the active account's own. With neither, the sign-in's snapshot
+// key is empty.
+BOOL ApolloAccountCredentialsNewSignInHasAPIKey(void) {
+    if (sRedditClientId.length > 0) return YES;
+    NSString *active = ApolloActiveAccountUsername();
+    return active.length > 0 && ApolloAccountCredentialsFor(active).clientId.length > 0;
+}
+
 ApolloAccountCredentialEntry *ApolloInteractiveSignInCredentialsFor(id credential) {
     if (!credential) return nil;
     id snapshot = objc_getAssociatedObject(credential, kApolloInteractiveSignInCredentialsKey);
