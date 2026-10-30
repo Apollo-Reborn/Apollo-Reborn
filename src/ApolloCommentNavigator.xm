@@ -77,9 +77,16 @@
 @property (nonatomic) NSUInteger generation;
 @property (nonatomic) BOOL pending;
 @property (nonatomic, strong) ApolloCommentNavigationSearch *search;
+// Reply groups whose load failed or came back partial (429, network error,
+// keyless morechildren) this visit. Skipped so a tap never retries them.
+@property (nonatomic, strong) NSHashTable *failedMore;
 @end
 @implementation ApolloCommentNavigationVisit
 @end
+
+// Each placeholder is a Reddit request plus avatar lookups; keep one tap well
+// inside the rate limits and let the next tap carry on.
+static const NSUInteger kCNMaxReplyLoadsPerTap = 3;
 
 @interface ApolloCommentNavigationTarget : NSObject
 @property (nonatomic, copy) NSString *identifier;
@@ -246,7 +253,8 @@ static BOOL CNExpandableReplies(ASCellNode *cell, RDKMoreComments *more) {
     return more.children.count > 0 || more.availableLocally;
 }
 
-static NSArray<ApolloCommentNavigationTarget *> *CNTargets(ASTableNode *node, NSDate *baseline, BOOL includeMore) {
+static NSArray<ApolloCommentNavigationTarget *> *CNTargets(ASTableNode *node, NSDate *baseline, BOOL includeMore,
+                                                          NSHashTable *skipMore) {
     UITableView *table = node.view;
     NSMutableArray *targets = [NSMutableArray array];
     NSString *username = ApolloActiveAccountUsername();
@@ -257,7 +265,7 @@ static NSArray<ApolloCommentNavigationTarget *> *CNTargets(ASTableNode *node, NS
             NSIndexPath *path = [NSIndexPath indexPathForRow:row inSection:section];
             ASCellNode *cell = [node nodeForRowAtIndexPath:path];
             RDKMoreComments *more = includeMore && moreClass && [cell isKindOfClass:moreClass] ? ApolloObjectIvar(cell, "moreComments") : nil;
-            if (more && !CNExpandableReplies(cell, more)) continue;
+            if (more && (!CNExpandableReplies(cell, more) || [skipMore containsObject:more])) continue;
             RDKComment *comment = ApolloClassCommentCellNode && [cell isKindOfClass:ApolloClassCommentCellNode] ? ApolloObjectIvar(cell, "comment") : nil;
             if (!more && (![comment isKindOfClass:ApolloClassRDKComment] ||
                 !ApolloCommentNavigationIsNew(comment.createdUTC, baseline, comment.author, username))) continue;
@@ -318,7 +326,7 @@ static void CNVerifyLanding(UIViewController *controller, NSUInteger generation,
             return;
         }
         ApolloCommentNavigationTarget *target;
-        for (ApolloCommentNavigationTarget *candidate in CNTargets(node, visit.baseline, NO)) {
+        for (ApolloCommentNavigationTarget *candidate in CNTargets(node, visit.baseline, NO, nil)) {
             if ([candidate.identifier isEqualToString:visit.lastCommentID]) { target = candidate; break; }
         }
         if (!target) { visit.pending = NO; return; }
@@ -335,8 +343,12 @@ static void CNVerifyLanding(UIViewController *controller, NSUInteger generation,
 
 static void CNContinueSearch(UIViewController *controller, NSUInteger generation);
 
+// A load is done when the placeholder row goes away (replies inserted) or when
+// its spinner stops with the row still there (failed or partial response).
+// The latter is skipped for the rest of the visit and the search moves on.
 static void CNWaitForReplies(UIViewController *controller, NSUInteger generation,
-                             ApolloCommentNavigationTarget *target, NSTimeInterval deadline) {
+                             ApolloCommentNavigationTarget *target, BOOL sawLoading,
+                             NSTimeInterval started) {
     __weak UIViewController *weakController = controller;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UIViewController *host = weakController;
@@ -345,6 +357,8 @@ static void CNWaitForReplies(UIViewController *controller, NSUInteger generation
         ASTableNode *node = CNTableNode(host);
         UITableView *table = node.view;
         if (!table) { CNCancel(host); return; }
+        NSTimeInterval elapsed = NSDate.timeIntervalSinceReferenceDate - started;
+        BOOL loading = sawLoading;
         if (!table.hasUncommittedUpdates) {
             NSIndexPath *path = [node indexPathForNode:target.node];
             BOOL found = path && [node nodeForRowAtIndexPath:path] == target.node &&
@@ -356,13 +370,23 @@ static void CNWaitForReplies(UIViewController *controller, NSUInteger generation
                 CNContinueSearch(host, generation);
                 return;
             }
+            BOOL nowLoading = ApolloReadBoolIvar(target.node, "isLoading", NO);
+            loading = loading || nowLoading;
+            // No spinner after a second means the tap never started a request.
+            if (!nowLoading && (loading || elapsed >= 1.0)) {
+                if (!visit.failedMore) visit.failedMore = [NSHashTable weakObjectsHashTable];
+                if (target.more) [visit.failedMore addObject:target.more];
+                ApolloLog(@"[CommentNavigator] Reply group did not load; skipping it this visit");
+                CNContinueSearch(host, generation);
+                return;
+            }
         }
-        if (NSDate.timeIntervalSinceReferenceDate >= deadline) {
+        if (elapsed >= 20.0) {
             CNCancel(host);
             ApolloShowToastWithStyle(@"Couldn't finish loading replies", @"Tap the replies to retry, then use the jump button again.", ApolloToastStyleInfo, nil);
             return;
         }
-        CNWaitForReplies(host, generation, target, deadline);
+        CNWaitForReplies(host, generation, target, loading, started);
     });
 }
 
@@ -387,7 +411,7 @@ static void CNContinueSearch(UIViewController *controller, NSUInteger generation
             }
         }
     }
-    NSArray<ApolloCommentNavigationTarget *> *targets = CNTargets(node, visit.baseline, YES);
+    NSArray<ApolloCommentNavigationTarget *> *targets = CNTargets(node, visit.baseline, YES, visit.failedMore);
     if (!targets.count) {
         CNCancel(controller);
         ApolloShowToastWithStyle(@"No new comments found", nil, ApolloToastStyleInfo, nil);
@@ -417,8 +441,11 @@ static void CNContinueSearch(UIViewController *controller, NSUInteger generation
         // network requests, spinners, insertion, and errors. Never synthesize a
         // Reddit request or alter its Swift comment tree ourselves.
         id<UITableViewDelegate> delegate = table.delegate;
-        if (search.loads >= 64 || ![delegate respondsToSelector:@selector(tableView:didSelectRowAtIndexPath:)]) {
+        if (search.loads >= kCNMaxReplyLoadsPerTap || ![delegate respondsToSelector:@selector(tableView:didSelectRowAtIndexPath:)]) {
             CNCancel(controller);
+            // Leave the next placeholder at the reading anchor, so the next
+            // tap starts from it and nothing between is skipped.
+            [table setContentOffset:CGPointMake(table.contentOffset.x, CNOffset(table, target.path)) animated:NO];
             ApolloShowToastWithStyle(@"More replies to search", @"Tap the jump button again to continue.", ApolloToastStyleInfo, nil);
             return;
         }
@@ -456,7 +483,7 @@ static void CNContinueSearch(UIViewController *controller, NSUInteger generation
             search.selectingMore = NO;
         }
         ApolloLog(@"[CommentNavigator] Expanding reply group %lu", (unsigned long)search.loads);
-        CNWaitForReplies(controller, generation, target, NSDate.timeIntervalSinceReferenceDate + 20.0);
+        CNWaitForReplies(controller, generation, target, NO, NSDate.timeIntervalSinceReferenceDate);
         return;
     }
     visit.search = nil;
@@ -620,6 +647,8 @@ static void CNJump(UIViewController *controller, NSInteger direction) {
 // inserts and waits for them; explicit taps/scrolling cancel it separately.
 // Other tables are untouched.
 static void CNCancelForTable(UITableView *table) {
+    // Threads mode never navigates, so the app-wide table hooks stay free.
+    if (ApolloCommentNavigatorMode() != ApolloCommentNavigationModeNewComments) return;
     for (UIViewController *controller in sCNControllers.allObjects) {
         ApolloCommentNavigationVisit *visit = objc_getAssociatedObject(controller, &kCNVisitKey);
         if (!visit.pending && !visit.lastCommentID) continue;
@@ -638,15 +667,29 @@ static void CNCancelForTable(UITableView *table) {
 }
 %end
 
-// Explicit row taps supersede automatic navigation, including taps that
-// collapse/expand a comment while a reply request is still in flight.
-%hook _TtC6Apollo11ListAdapter
-- (void)tableView:(UITableView *)table didSelectRowAtIndexPath:(NSIndexPath *)path {
+// Explicit row taps and drags supersede automatic navigation, including taps
+// that collapse/expand a comment while a reply request is still in flight.
+// ListAdapter is Texture's table delegate here: taps arrive as tableNode:
+// selections, and drags must cancel because the search scrolls the table to
+// each placeholder while it waits.
+static void CNCancelSearchForTable(UIView *table, BOOL allowExpansion) {
+    if (ApolloCommentNavigatorMode() != ApolloCommentNavigationModeNewComments) return;
     for (UIViewController *controller in sCNControllers.allObjects) {
         ApolloCommentNavigationVisit *visit = objc_getAssociatedObject(controller, &kCNVisitKey);
-        if (visit.search && !visit.search.selectingMore && CNTableNode(controller).view == table) CNCancel(controller);
+        if (!visit.search || (allowExpansion && visit.search.selectingMore)) continue;
+        if (CNTableNode(controller).view == table) CNCancel(controller);
     }
-    %orig(table, path);
+}
+
+%hook _TtC6Apollo11ListAdapter
+- (void)tableNode:(ASTableNode *)tableNode didSelectRowAtIndexPath:(NSIndexPath *)path {
+    CNCancelSearchForTable(tableNode.view, YES);
+    %orig(tableNode, path);
+}
+
+- (void)scrollViewWillBeginDragging:(UIScrollView *)scrollView {
+    CNCancelSearchForTable(scrollView, NO);
+    %orig(scrollView);
 }
 %end
 
