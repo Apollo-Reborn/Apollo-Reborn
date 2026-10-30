@@ -15,6 +15,7 @@
 
 #import <Foundation/Foundation.h>
 #import <QuartzCore/QuartzCore.h>
+#import <objc/message.h>
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
@@ -604,6 +605,40 @@ static void recenterCancelButton(void) {
 
 %end
 
+// Standard build: Apollo's searchDragFiller backs the docked toolbar at the top of the screen. With the
+// toolbar held under the nav bar it would land opaque over the subreddit banner, and hiding it after
+// Apollo shows it still flashes for a frame on device. Isa-swizzle it (once) onto a subclass whose
+// setHidden: keeps it hidden while a feed search is active or dismissing.
+static NSString *const kApolloSearchFillerPrefix = @"ApolloRebornSearchFiller_";
+
+static void ApolloSearchFillerSetHidden(id self, SEL _cmd, BOOL hidden) {
+    if (sFeedSearchActive || sFeedSearchDismissing) hidden = YES;
+    Class cls = object_getClass(self);
+    while (cls && ![NSStringFromClass(cls) hasPrefix:kApolloSearchFillerPrefix]) cls = class_getSuperclass(cls);
+    struct objc_super sup = { self, class_getSuperclass(cls ?: object_getClass(self)) };
+    ((void (*)(struct objc_super *, SEL, BOOL))objc_msgSendSuper)(&sup, _cmd, hidden);
+}
+
+static void ApolloFeedSearchPinFillerHidden(UIViewController *owner) {
+    UIView *filler = ApolloObjectIvar(owner, "searchDragFiller");
+    if (![filler isKindOfClass:[UIView class]]) return;
+    Class base = object_getClass(filler);
+    if (![NSStringFromClass(base) hasPrefix:kApolloSearchFillerPrefix]) {
+        NSString *name = [kApolloSearchFillerPrefix stringByAppendingString:NSStringFromClass(base)];
+        Class pinned = objc_getClass(name.UTF8String);
+        if (!pinned) {
+            pinned = objc_allocateClassPair(base, name.UTF8String, 0);
+            if (!pinned) return;
+            Method m = class_getInstanceMethod(base, @selector(setHidden:));
+            class_addMethod(pinned, @selector(setHidden:), (IMP)ApolloSearchFillerSetHidden, method_getTypeEncoding(m));
+            objc_registerClassPair(pinned);
+        }
+        object_setClass(filler, pinned);
+        ApolloLog(@"[SearchInPlace] pinned searchDragFiller hidden during search (%@)", NSStringFromClass(base));
+    }
+    filler.hidden = YES;
+}
+
 // Offset stabilizer (runs regardless of Liquid Glass): arm the active flags and capture the feed
 // table + docked toolbar (the rest anchor) + field + nav bar so the inset/offset/in-place hooks engage.
 static void ApolloFeedSearchArm(UIViewController *owner) {
@@ -629,6 +664,7 @@ static void ApolloFeedSearchArm(UIViewController *owner) {
 
     sFeedSearchNavBar = owner.navigationController.navigationBar;
     if (fresh) sCancelNeedsIntro = YES; // clean intro this session (round-X slide / standard-build fade)
+    if (!IsLiquidGlass()) ApolloFeedSearchPinFillerHidden(owner);
 }
 
 @interface _TtC6Apollo21ASTableViewController : UIViewController
@@ -1106,6 +1142,21 @@ static void ApolloFeedSearchArm(UIViewController *owner) {
     %orig(pinned);
 }
 
+// Standard build: Apollo reparents the toolbar from the feed table into the page view when the field
+// focuses, and the toolbar keeps its table-space frame (y -45, off the top of the page) until Apollo's
+// next frame write. On device that left the bar missing for ~4 frames. Pin it the moment it moves.
+- (void)didMoveToSuperview {
+    %orig;
+    UIView *toolbar = (UIView *)self;
+    UIView *sup = toolbar.superview;
+    if (IsLiquidGlass() || toolbar != sFeedSearchToolbar || (!sFeedSearchActive && !sFeedSearchDismissing) ||
+        !sup || [sup isKindOfClass:[UIScrollView class]]) return;
+    CGRect before = toolbar.frame;
+    [UIView performWithoutAnimation:^{ [toolbar setFrame:toolbar.frame]; }];
+    ApolloLog(@"[SearchInPlace] toolbar reparented to %@: %@ -> %@", NSStringFromClass(sup.class),
+              NSStringFromCGRect(before), NSStringFromCGRect(toolbar.frame));
+}
+
 // Each layout pass while searching (both modes): keep the round-X styled/placed and run its slide-in.
 // In-place during dismiss, also strip Apollo's teardown animations off the toolbar + field so nothing
 // flies in from the docked-top geometry.
@@ -1124,10 +1175,6 @@ static void ApolloFeedSearchArm(UIViewController *owner) {
     if (IsLiquidGlass()) {
         recenterCancelButton(); // round-X styling + slide-in
     } else if (ApolloFeedSearchKeepsInPlace()) {
-        // Apollo's searchDragFiller backs the docked toolbar up at the top of the screen; with the
-        // toolbar held under the nav bar it lands opaque over the subreddit banner instead.
-        UIView *filler = ApolloObjectIvar(sFeedSearchOwner, "searchDragFiller");
-        if ([filler isKindOfClass:[UIView class]] && !filler.hidden) filler.hidden = YES;
         // Apollo's "Cancel" text button is laid out (and animated in diagonally) for the ~99pt docked
         // toolbar. Center it on the field in the pinned 45pt band, drop the slide, fade it in once.
         UIView *cancel = ApolloObjectIvar(sFeedSearchOwner, "dismissSearchBarButton");
