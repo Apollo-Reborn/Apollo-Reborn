@@ -33,6 +33,7 @@ All notable changes to this project will be documented in this file.
   - The banner now waits until Reddit finishes processing the video, so it can appear a few seconds later; applies to videos uploaded with **Media Upload Host** set to Reddit
 - Stop the **media post composer** jumping when you pick a flair or photo with a title that wraps onto two or more lines (#1571: @icpryde)
 - Open the **subreddit switcher** with the keyboard down, so your favorites stay visible until you tap the search field (#1564: @IllIIllIllIllII)
+- Stop the rows Apollo Reborn adds to the classic (non-Liquid Glass) post **••• menu** turning green on subreddits you moderate; they follow your theme again, and **Remove from Recently Read** is red (#1566: @IllIIllIllIllII)
 - Bring back the **Search tab**'s search bar and tab bar on a downward flick after **Hide Bars on Scroll** hid them on the classic (non-Liquid Glass) look, instead of leaving them hidden until Apollo restarts (#1575: @icpryde)
 - Stop quick **Posts tab** taps on Liquid Glass opening a post or username behind the tab bar while going back a page; repeated taps keep stepping back right away (#1512: @IllIIllIllIllII)
 - Let a swipe over **Community Highlights** go Back once the carousel is at its first highlight, and Forward at its last when there is a page to go forward to, instead of only bouncing (#1577: @icpryde, @nnastasi)
