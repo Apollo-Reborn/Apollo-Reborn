@@ -3203,6 +3203,9 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
                 ApolloLog(@"[RecentlyRead] Rerouted unauthenticated info.json to oauth.reddit.com");
             }
         }
+#if APOLLO_SIM_BUILD
+        ApolloWebJSONSimBlockOAuthRead(mutableRequest);
+#endif
 
         [self setValue:mutableRequest forKey:@"_originalRequest"];
         [self setValue:mutableRequest forKey:@"_currentRequest"];

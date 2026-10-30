@@ -511,6 +511,28 @@ void ApolloWebJSONSimSetBlockedRoutes(NSUInteger routeMask) {
     ApolloLog(@"[WebJSON] (sim) Routes forced to get the block page: %@",
               names.count ? [names componentsJoinedByString:@", "] : @"none");
 }
+
+// "oauthblock on|off": an API-key account's /api/info and /api/morechildren
+// reads at their usual path go to oauth.reddit.com without its token, which
+// oauth answers with its real block page (checked 2026-10-30), as it does some
+// API keys' tokens (ApolloOAuthReadPathAfterResponse). The /.json resend keeps
+// the account's own token.
+static _Atomic BOOL sApolloWebJSONSimOAuthBlock = NO;
+
+void ApolloWebJSONSimSetOAuthBlockedReads(BOOL on) {
+    atomic_store(&sApolloWebJSONSimOAuthBlock, on);
+    ApolloLog(@"[WebJSON] (sim) API-key /api/info and /api/morechildren sent to get oauth's block page: %@", on ? @"on" : @"off");
+}
+
+void ApolloWebJSONSimBlockOAuthRead(NSMutableURLRequest *request) {
+    if (!atomic_load(&sApolloWebJSONSimOAuthBlock)) return;
+    NSURL *url = request.URL;
+    if (![url.host.lowercaseString isEqualToString:@"oauth.reddit.com"]) return;
+    NSString *method = request.HTTPMethod ?: @"GET";
+    if (!ApolloOAuthReadIsRetryable(method, url.path ?: @"/")) return;
+    [request setValue:nil forHTTPHeaderField:@"Authorization"];
+    ApolloLog(@"[WebJSON] (sim) oauthblock: %@ %@ sent without its token", method, url.path);
+}
 #endif
 
 // Once per method, endpoint and route per launch, so a report's log shows which

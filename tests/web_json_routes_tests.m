@@ -715,6 +715,68 @@ static void TestAllListings(void) {
           rejections.count == 2, @"GET /r/all is a key, its filter forms aren't (got %@, rejected %@)", table, rejections);
 }
 
+// API-key accounts (#1608, #1615): oauth.reddit.com's block page on /api/info
+// or /api/morechildren sends the read again in its /.json form, which the
+// endpoint keeps for the launch; a refused /.json form puts it back.
+static void TestOAuthReads(void) {
+    ApolloOAuthReadReset();
+    NSHTTPURLResponse *block = ResponseAt(@"https://oauth.reddit.com/api/morechildren.json", 403, @"text/html");
+    NSHTTPURLResponse *ok = ResponseAt(@"https://oauth.reddit.com/api/morechildren.json", 200, @"application/json; charset=UTF-8");
+    BOOL refused = YES;
+
+    CHECK([ApolloOAuthReadPathToSend(@"POST", @"api/morechildren.json") isEqualToString:@"api/morechildren.json"],
+          @"usual path until refused");
+    CHECK(ApolloOAuthReadPathAfterResponse(@"POST", @"api/morechildren.json", ok, &refused) == nil && !refused,
+          @"an answer isn't retried");
+    CHECK(ApolloOAuthReadPathAfterResponse(@"POST", @"api/morechildren.json",
+                                           ResponseAt(@"https://oauth.reddit.com/api/morechildren.json", 403,
+                                                      @"application/json; charset=UTF-8"), &refused) == nil && !refused,
+          @"a JSON 403 is a content error, not the block page");
+    CHECK(ApolloOAuthReadPathAfterResponse(@"POST", @"api/morechildren.json",
+                                           ResponseAt(@"https://www.reddit.com/api/morechildren.json", 403, @"text/html"),
+                                           &refused) == nil && !refused,
+          @"www's block page is the keyless routes' business");
+    CHECK([ApolloOAuthReadPathToSend(@"POST", @"api/morechildren.json") isEqualToString:@"api/morechildren.json"],
+          @"still the usual path");
+
+    NSString *retry = ApolloOAuthReadPathAfterResponse(@"POST", @"api/morechildren.json", block, &refused);
+    CHECK([retry isEqualToString:@"api/morechildren/.json"] && refused, @"refused POST retries as /.json, got %@", retry);
+    CHECK([ApolloOAuthReadPathToSend(@"POST", @"api/morechildren.json") isEqualToString:@"api/morechildren/.json"],
+          @"then sent as /.json");
+    CHECK([ApolloOAuthReadPathToSend(@"GET", @"/api/morechildren?link_id=t3_a") isEqualToString:@"/api/morechildren/.json?link_id=t3_a"],
+          @"GET too, absolute path and query kept");
+    CHECK([ApolloOAuthReadPathToSend(@"GET", @"api/info.json") isEqualToString:@"api/info.json"], @"/api/info not refused yet");
+    CHECK(ApolloOAuthReadPathAfterResponse(@"POST", @"api/morechildren/.json", ok, &refused) == nil && !refused,
+          @"the /.json answer is final");
+
+    CHECK(ApolloOAuthReadPathAfterResponse(@"POST", @"api/morechildren/.json", block, &refused) == nil && refused,
+          @"a refused /.json form isn't retried");
+    CHECK([ApolloOAuthReadPathToSend(@"POST", @"api/morechildren.json") isEqualToString:@"api/morechildren.json"],
+          @"and the endpoint goes back to its usual path");
+
+    retry = ApolloOAuthReadPathAfterResponse(@"GET", @"api/info.json", ResponseAt(@"https://oauth.reddit.com/api/info.json?id=t5_a", 403,
+                                                                                   @"text/html; charset=utf-8"), &refused);
+    CHECK([retry isEqualToString:@"api/info/.json"], @"info retries as /.json, got %@", retry);
+    for (NSString *path in @[ @"api/info", @"/API/Info.json", @"api/info/" ]) {
+        NSString *sent = ApolloOAuthReadPathToSend(@"GET", path);
+        CHECK([sent.lowercaseString hasSuffix:@"info/.json"], @"%@ -> %@", path, sent);
+    }
+    CHECK([ApolloOAuthReadPathToSend(@"POST", @"api/info.json") isEqualToString:@"api/info.json"], @"/api/info POST isn't a read");
+
+    // Everything else is left alone, block page or not.
+    for (NSArray *other in @[ @[ @"GET", @"api/v1/me.json" ], @[ @"GET", @"r/all/hot.json" ], @[ @"POST", @"api/comment" ],
+                               @[ @"GET", @"search.json" ], @[ @"GET", @"comments/abc.json" ] ]) {
+        CHECK(!ApolloOAuthReadIsRetryable(other[0], other[1]), @"%@ %@ isn't retried", other[0], other[1]);
+        CHECK(ApolloOAuthReadPathAfterResponse(other[0], other[1], block, &refused) == nil && !refused,
+              @"%@ %@ block page passes through", other[0], other[1]);
+        CHECK([ApolloOAuthReadPathToSend(other[0], other[1]) isEqualToString:other[1]], @"%@ %@ unchanged", other[0], other[1]);
+    }
+    CHECK(ApolloOAuthReadPathAfterResponse(@"GET", @"api/info.json", nil, NULL) == nil, @"no response");
+
+    ApolloOAuthReadReset();
+    CHECK([ApolloOAuthReadPathToSend(@"GET", @"api/info.json") isEqualToString:@"api/info.json"], @"reset forgets");
+}
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         TestTableParseValid();
@@ -741,6 +803,7 @@ int main(int argc, const char *argv[]) {
         TestMatchedEntryHealth();
         TestRouteParts();
         TestBearerRoutes();
+        TestOAuthReads();
     }
     if (sFailures) {
         fprintf(stderr, "%d failure(s)\n", sFailures);

@@ -704,3 +704,84 @@ NSArray<NSString *> *ApolloWebJSONRouteFallbackEndpoints(void) {
 BOOL ApolloWebJSONRouteIsFromRemoteTable(NSString *method, NSString *path) {
     return [ApolloWebJSONRouteMatch(method, path)[@"remote"] boolValue];
 }
+
+#pragma mark - API-key reads oauth.reddit.com refuses
+
+// The endpoints oauth.reddit.com refuses for some API keys: RedditKit's
+// thingsByFullNames: GETs /api/info, and its moreComments: POSTs
+// /api/morechildren. Both only read.
+static BOOL ApolloOAuthReadIsRefusable(NSString *method, NSString *endpoint) {
+    NSString *m = method.uppercaseString;
+    if ([endpoint isEqualToString:@"/api/info"]) return [m isEqualToString:@"GET"];
+    if ([endpoint isEqualToString:@"/api/morechildren"]) return [m isEqualToString:@"GET"] || [m isEqualToString:@"POST"];
+    return NO;
+}
+
+static NSString *ApolloOAuthReadPathWithoutQuery(NSString *path) {
+    return [path componentsSeparatedByString:@"?"].firstObject ?: @"";
+}
+
+static BOOL ApolloOAuthReadPathIsDotJSON(NSString *path) {
+    return [ApolloOAuthReadPathWithoutQuery(path).lowercaseString hasSuffix:@"/.json"];
+}
+
+// "api/info.json" -> "api/info/.json", "/api/morechildren?x=1" -> "/api/morechildren/.json?x=1".
+static NSString *ApolloOAuthReadDotJSONPath(NSString *path) {
+    NSString *p = ApolloOAuthReadPathWithoutQuery(path);
+    NSString *query = [path substringFromIndex:p.length];
+    while ([p hasSuffix:@"/"]) p = [p substringToIndex:p.length - 1];
+    if ([p.lowercaseString hasSuffix:@".json"]) p = [p substringToIndex:p.length - 5];
+    while ([p hasSuffix:@"/"]) p = [p substringToIndex:p.length - 1];
+    return [NSString stringWithFormat:@"%@/.json%@", p, query];
+}
+
+static NSObject *ApolloOAuthReadLock(void) {
+    static NSObject *lock;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [NSObject new]; });
+    return lock;
+}
+
+// Endpoint keys ("/api/info") oauth.reddit.com refused this launch; lock above.
+static NSMutableSet<NSString *> *sApolloOAuthReadRefused;
+
+BOOL ApolloOAuthReadIsRetryable(NSString *method, NSString *path) {
+    if (![method isKindOfClass:[NSString class]] || ![path isKindOfClass:[NSString class]]) return NO;
+    return ApolloOAuthReadIsRefusable(method, ApolloWebJSONRouteEndpointKey(path)) && !ApolloOAuthReadPathIsDotJSON(path);
+}
+
+NSString *ApolloOAuthReadPathToSend(NSString *method, NSString *path) {
+    if (!ApolloOAuthReadIsRetryable(method, path)) return path;
+    @synchronized (ApolloOAuthReadLock()) {
+        if (![sApolloOAuthReadRefused containsObject:ApolloWebJSONRouteEndpointKey(path)]) return path;
+    }
+    return ApolloOAuthReadDotJSONPath(path);
+}
+
+NSString *ApolloOAuthReadPathAfterResponse(NSString *method, NSString *sentPath, NSHTTPURLResponse *response, BOOL *refused) {
+    if (refused) *refused = NO;
+    if (![method isKindOfClass:[NSString class]] || ![sentPath isKindOfClass:[NSString class]]) return nil;
+    NSString *endpoint = ApolloWebJSONRouteEndpointKey(sentPath);
+    if (!ApolloOAuthReadIsRefusable(method, endpoint) || !ApolloWebJSONRouteResponseIsBlockPage(response)) return nil;
+    // Only oauth.reddit.com, where API-key accounts send these. www refuses
+    // them for the cookie and signed out too, and the /.json form there signed
+    // out is refused as well.
+    if (![response.URL.host.lowercaseString isEqualToString:@"oauth.reddit.com"]) return nil;
+    if (refused) *refused = YES;
+    BOOL dotJSON = ApolloOAuthReadPathIsDotJSON(sentPath);
+    @synchronized (ApolloOAuthReadLock()) {
+        if (dotJSON) {
+            [sApolloOAuthReadRefused removeObject:endpoint];
+            return nil;
+        }
+        if (!sApolloOAuthReadRefused) sApolloOAuthReadRefused = [NSMutableSet set];
+        [sApolloOAuthReadRefused addObject:endpoint];
+    }
+    return ApolloOAuthReadDotJSONPath(sentPath);
+}
+
+void ApolloOAuthReadReset(void) {
+    @synchronized (ApolloOAuthReadLock()) {
+        [sApolloOAuthReadRefused removeAllObjects];
+    }
+}
