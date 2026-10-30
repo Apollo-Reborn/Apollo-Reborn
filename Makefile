@@ -323,6 +323,8 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloFeedShortcutsAppearance.m \
     $(SRC_DIR)/ApolloSubredditIndexPolish.xm \
     $(SRC_DIR)/ApolloSubredditListEditing.xm \
+    $(SRC_DIR)/ApolloSubredditAccountRefresh.m \
+    $(SRC_DIR)/ApolloSubredditAccountReady.xm \
     $(SRC_DIR)/ApolloSubredditListLaunchSettle.xm \
     $(SRC_DIR)/ApolloQuickActions.xm \
     $(SRC_DIR)/ApolloHideModSubreddits.xm \
