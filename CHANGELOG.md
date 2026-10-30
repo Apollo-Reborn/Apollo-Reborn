@@ -17,6 +17,7 @@ All notable changes to this project will be documented in this file.
   - Covers galleries posted from Apollo with Reddit as the Media Upload Host and from other apps; they show as square cards in the feed
 - Fix **API-Key-Free search** showing "Error searching" or "Error loading subreddits" for post search, searching within a subreddit or multireddit, and subreddit search (#1557: @DeltAndy123)
 - Fix **All Posts (r/all)** showing "Couldn't load posts" on **API-Key-Free** accounts, for every sort and with Exclude Subscriptions (#1570: @icpryde)
+  - All Posts has another way in before Old Reddit, and if Reddit blocks another **API-Key-Free** read, a route update can work around it without an app update (#1594: @DeltAndy123)
 - Open the feed you chose to start on again at launch by turning **Restore Reading Session** off by default; it moves to Posts & Feeds → Feed (#1511: @IllIIllIllIllII)
   - A choice you changed yourself in 4.0.0 is kept, so turn it back on there if you relied on the 4.0.0 default
 - Fix a crash when opening a **post or comment link** while Reddit is rate-limiting requests, most often right after returning to Apollo; the usual "Error loading comments" banner shows instead (#1572: @icpryde)
