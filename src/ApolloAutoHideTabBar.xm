@@ -16,6 +16,7 @@
 #import "ApolloUserAvatars.h"
 #import "UserDefaultConstants.h"
 #import "ApolloClasses.h"
+#import "ApolloSwiftRuntime.h"
 
 // MARK: - Tab Bar Auto-Hide Reveal Fix
 //
@@ -2401,6 +2402,12 @@ static void ApolloRestoreBarsForNavigationTransition(UINavigationController *nav
         if (navigationController.hidesBarsOnSwipe && navigationController.isNavigationBarHidden) {
             ApolloLog(@"[AutoHideTabBarFix] %@: revealing scroll-hidden nav bar", reason);
             [navigationController setNavigationBarHidden:NO animated:YES];
+            // Apollo fades its status-bar backing in while the bars are hidden and out again only from
+            // its swipe handler; left at alpha 1 it tints the top of the next page gray.
+            UIView *statusBacking = ApolloObjectIvar(navigationController, "statusBarBackgroundView");
+            if ([statusBacking isKindOfClass:[UIView class]] && statusBacking.alpha > 0.0) {
+                [UIView animateWithDuration:0.25 animations:^{ statusBacking.alpha = 0.0; }];
+            }
         }
         return;
     }
