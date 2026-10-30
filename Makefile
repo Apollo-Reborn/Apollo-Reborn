@@ -69,6 +69,8 @@ KSCRASH_FILES := \
 # the landing hold.
 ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloClasses.m \
+    $(SRC_DIR)/ApolloPasscodePrivacyPolicy.m \
+    $(SRC_DIR)/ApolloPasscodePrivacy.xm \
     $(SRC_DIR)/ApolloFoundationModels.swift \
     $(SRC_DIR)/ApolloAISummary.xm \
     $(SRC_DIR)/ApolloAICloudBridge.m \
