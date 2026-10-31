@@ -2310,6 +2310,22 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
     if (!self.window) {
         ApolloNavigationTitleGlassController *controller =
             objc_getAssociatedObject(self, &kApolloNavigationTitleGlassControllerKey);
+        if (controller && ApolloDuoSplitIsMovingColumns()) {
+            // A Duo column move puts the title back in the window within this
+            // turn: keep its capsule and placement, so the title moves with
+            // the column as one capsule. Drop them only if it stays out.
+            UIView *titleControl = (UIView *)self;   // strong, see below (#893)
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (titleControl.window) return;
+                ApolloNavigationTitleGlassController *stale =
+                    objc_getAssociatedObject(titleControl, &kApolloNavigationTitleGlassControllerKey);
+                if (stale.glassView) ApolloLog(@"[NavigationTitleGlass] title control left the window; capsule dropped");
+                [stale invalidate];
+                objc_setAssociatedObject(titleControl, &kApolloNavigationTitleGlassControllerKey, nil,
+                                         OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            });
+            return;
+        }
         if (controller.glassView) ApolloLog(@"[NavigationTitleGlass] title control left the window; capsule dropped");
         [controller invalidate];
         objc_setAssociatedObject(self, &kApolloNavigationTitleGlassControllerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
