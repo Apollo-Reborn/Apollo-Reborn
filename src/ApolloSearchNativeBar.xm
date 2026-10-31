@@ -215,15 +215,31 @@ static BOOL NSBCommentsKeyboardHeight(UIViewController *vc, CGFloat *outHeight) 
     return YES;
 }
 
+// The top rule of NSBRelativizeInset, against `basis`, the safe-area top
+// Apollo added its band to. A write within a band's reach of it is a resting
+// write (the settled shape, the smaller value Apollo runs while a search is
+// active: 159 against a 176 safe area, and the transiently tall ones computed
+// mid nav-morph: 213), and it collapses to a flush rest. Anything taller
+// keeps its surplus, so a growth Apollo does own (a spinner) still gets its
+// room. Idempotent: 0 maps back to 0. Not `measurable` (no safe area to
+// measure against on screen): the write stays as it is.
+static CGFloat NSBRelativizedTop(CGFloat top, CGFloat basis, BOOL measurable, CGFloat band) {
+    if (!measurable || top < basis - kNSBBandSlack) return top;
+    CGFloat extra = top - basis;
+    CGFloat rest = (extra <= kNSBBandSlack) ? 0.0 : (extra - band);
+    return rest < 0.0 ? 0.0 : rest;
+}
+
 // Convert Apollo's absolute inset writes into the deltas Automatic expects.
 //
 // Apollo sizes the feed as "safe area, plus a band for its own — now hidden —
-// toolbar" (measured: an exact +45 against the table's own safeAreaInsets.top,
-// on every single write). It keeps doing that no matter who owns the inset, so
-// left alone every write would stack on top of the safe area UIKit already
-// provides. The conversion has to be stateless: UIKit and Texture echo our own
-// output back at us, and an earlier subtract-and-floor attempt compounded on
-// those echoes.
+// toolbar": an exact +45 on every single write, against its controller
+// view's safeAreaInsets.top (ASTableViewController's viewDidLayoutSubviews in
+// the 4.0 binary), which matches the table's own once both are laid out. It
+// keeps doing that no matter who owns the inset, so left alone every write
+// would stack on top of the safe area UIKit already provides. The conversion
+// has to be stateless: UIKit and Texture echo our own output back at us, and
+// an earlier subtract-and-floor attempt compounded on those echoes.
 static void NSBRelativizeInset(UIScrollView *sv, UIEdgeInsets *inset) {
     ApolloNativeFeedSession *session = NSBSessionForView(sv);
     UIEdgeInsets safe = sv.safeAreaInsets;
@@ -233,17 +249,17 @@ static void NSBRelativizeInset(UIScrollView *sv, UIEdgeInsets *inset) {
     if (safe.top <= 1.0 && ApolloPaneUsesUnifiedChrome(sv) &&
         inset->top >= 0.0 && inset->top <= kNSBBandSlack) inset->top = 0.0;
 
-    // Top. A write within a band's reach of the safe area is a resting write —
-    // that covers the settled shape, the smaller value Apollo runs while a
-    // search is active (159 against a 176 safe area), and the transiently tall
-    // ones computed mid nav-morph (213) — and it collapses to a flush rest.
-    // Anything taller keeps its surplus, so a growth Apollo does own (a
-    // spinner) still gets its room. Idempotent: 0 maps back to 0.
-    if (safe.top > 1.0 && inset->top >= safe.top - kNSBBandSlack) {
-        CGFloat extra = inset->top - safe.top;
-        inset->top = (extra <= kNSBBandSlack) ? 0.0 : (extra - session.toolbarBand);
-        if (inset->top < 0.0) inset->top = 0.0;
-    }
+    // Top, measured against the screen's safe area that Apollo used. The
+    // table's own can lag it: a page put back off-window (the Duo restoring a
+    // closed thread) or mid column move writes against a table safe area of 0
+    // or one without the palette yet, and measured against that the write's
+    // band, or the palette's height, stayed behind as a permanent top inset.
+    // An off-window write is a resting one too; Automatic derives the top
+    // from the table's safe area once it is on screen. Pane hosts keep the
+    // table's own (their table sits below the context row, see above).
+    UIViewController *screen = ApolloPaneUsesUnifiedChrome(sv) ? nil : NSBFeedVCForView(sv);
+    CGFloat basis = screen.viewIfLoaded ? screen.viewIfLoaded.safeAreaInsets.top : safe.top;
+    inset->top = NSBRelativizedTop(inset->top, basis, basis > 1.0 || (!sv.window && screen), session.toolbarBand);
 
     // Bottom. Apollo sizes it for the tab bar, which the safe area now also
     // provides (measured: an exact 83 against an 83pt safe area), and stacking
@@ -1555,8 +1571,10 @@ void ApolloNativeFeedSearchRestoreCancelledNavigation(UIViewController *vc) {
 // viewDidAppear:, so the appearance reveal, a turn later, drew the feed bar-less
 // for a frame and then shoved it down a bar's height. Note the revealed top
 // here; ApolloNativeFeedSearchFinishColumnMove repairs it before it is drawn.
+// A comments page the split takes off its column and later puts back (a
+// closed thread brought back) moves the same way, and gets the same repair.
 void ApolloNativeFeedSearchWillMoveBetweenColumns(UIViewController *vc) {
-    if (!ApolloNativeFeedSearchEnabled() || !vc || !NSBIsNativeSearchFeedVC(vc)) return;
+    if (!ApolloNativeFeedSearchEnabled() || !vc || !NSBIsNativeSearchVC(vc)) return;
     UIScrollView *table = NSBTableForVC(vc);
     BOOL atRest = table && fabs(table.contentOffset.y + table.adjustedContentInset.top) <= 2.0;
     BOOL revealed = CGRectGetHeight(vc.navigationItem.searchController.searchBar.bounds) > 1.0;
@@ -1573,7 +1591,7 @@ void ApolloNativeFeedSearchWillMoveBetweenColumns(UIViewController *vc) {
 // The appearance may have begun (viewWillAppear: drops `visible`), so this
 // checks the moved list directly rather than through the settled-geometry gate.
 void ApolloNativeFeedSearchFinishColumnMove(UIViewController *vc) {
-    if (!ApolloNativeFeedSearchEnabled() || !vc || !NSBIsNativeSearchFeedVC(vc)) return;
+    if (!ApolloNativeFeedSearchEnabled() || !vc || !NSBIsNativeSearchVC(vc)) return;
     ApolloNativeSearchRestingState *state = NSBRestingStateForVC(vc);
     if (!state.columnMoveRevealed) return;
     state.columnMoveRevealed = NO;
