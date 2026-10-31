@@ -309,6 +309,7 @@ static void ApolloActionsApplyChromeToView(UIView *view, BOOL blueDone) {
 @property (nonatomic) BOOL needsGeometryTransition;
 @property (nonatomic) BOOL geometryDeferred;
 @property (nonatomic) BOOL needsAnimationSettlement;
+@property (nonatomic) BOOL collapseWhenAnimationEnds;
 - (BOOL)collapseEnabled;
 - (void)prepareItems:(NSArray<UIBarButtonItem *> *)items;
 - (BOOL)deferGeometryUpdate;
@@ -1350,8 +1351,19 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
     __weak typeof(self) weakSelf = self;
     _resignObserver = [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationWillResignActiveNotification
         object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {
-            // Finish our animation without retaining UIKit's transient hidden/alpha state.
-            [weakSelf setExpanded:NO animated:NO];
+            ApolloNavigationActionsOwner *owner = weakSelf;
+            if (owner.animator) {
+                // Never stop a running spring from this deactivation callout:
+                // on iOS 27.2 -stopAnimation: throws inside UIKit here (#1609),
+                // e.g. leaving the app while launch's late-slot spring runs.
+                // Let it land; its completion settles, then collapses.
+                owner.collapseWhenAnimationEnds = YES;
+                ApolloLog(@"[NavigationActions] %@ resigned active mid-spring; collapsing when it lands",
+                          NSStringFromClass(owner.controller.class));
+                return;
+            }
+            // Settle without retaining UIKit's transient hidden/alpha state.
+            [owner setExpanded:NO animated:NO];
         }];
     return self;
 }
@@ -1709,6 +1721,8 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
     self.needsGeometryTransition = NO;
     // Supersede deferred settlement so it cannot snap or clean up this new transition.
     self.needsAnimationSettlement = NO;
+    // A newer transition also replaces a collapse the resign observer deferred.
+    self.collapseWhenAnimationEnds = NO;
     // Reversals begin from presentation state, not a guessed endpoint.
     UIViewPropertyAnimator *previous = self.animator;
     BOOL entering = !self.expanded || previous != nil;
@@ -1775,6 +1789,11 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
             // A menu may acquire the source mid-spring; defer the entire settlement.
             owner.needsAnimationSettlement = YES;
             [owner settleAnimationIfNeeded];
+            if (owner.collapseWhenAnimationEnds) {
+                // The app resigned active mid-spring; apply that collapse now.
+                owner.collapseWhenAnimationEnds = NO;
+                [owner setExpanded:NO animated:NO];
+            }
         }];
         [animator startAnimation];
         for (ApolloNavigationActionsStrip *strip in self.strips) [strip animateIconsExpanded:expanded entering:entering];
