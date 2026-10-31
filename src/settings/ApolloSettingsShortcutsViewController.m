@@ -205,6 +205,16 @@ UIImage *ApolloSettingsShortcutImage(NSString *identifier, UITraitCollection *tr
             if (available) cell.accessibilityTraits &= ~UIAccessibilityTraitNotEnabled;
             else cell.accessibilityTraits |= UIAccessibilityTraitNotEnabled;
         };
+        if (!IsLiquidGlass()) {
+            // Configuration supplies artwork and editing state, not a custom
+            // layout. Keep classic rows compact, reserving editing controls
+            // when measuring wrapped text so Edit does not change row heights.
+            row.height = ^CGFloat {
+                CGFloat controlsWidth = [weakSelf.included containsObject:identifier] ? 70.0 : 32.0;
+                return ApolloSettingsClassicRowHeight(weakSelf.tableView,
+                    ApolloSettingsShortcutTitle(identifier), nil, YES, controlsWidth);
+            };
+        }
         NSMutableArray *rows = [self.included containsObject:identifier] ? includedRows : availableRows;
         [rows addObject:row];
     }
