@@ -2900,13 +2900,18 @@ static void ApolloDuoSplitNavigateProfile(ApolloDuoSplitState *state, UIViewCont
     }];
 }
 
-BOOL ApolloDuoSplitReturnFromVisitedProfile(UINavigationController *navigation) {
+BOOL ApolloDuoSplitCanReturnFromVisitedProfile(UINavigationController *navigation) {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(navigation, NO);
-    if (!state.split || state.changing || !state.profilePrefix.count
-        || ![state.kind isEqualToString:@"account"]
-        || ![state.tabKind isEqualToString:@"subreddits"]
-        || state.secondary.viewControllers.count != 1
-        || state.secondary.topViewController != state.root) return NO;
+    return state.split && !state.changing && state.profilePrefix.count
+        && [state.kind isEqualToString:@"account"]
+        && [state.tabKind isEqualToString:@"subreddits"]
+        && state.secondary.viewControllers.count == 1
+        && state.secondary.topViewController == state.root;
+}
+
+BOOL ApolloDuoSplitReturnFromVisitedProfile(UINavigationController *navigation) {
+    if (!ApolloDuoSplitCanReturnFromVisitedProfile(navigation)) return NO;
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(navigation, NO);
     // An unfolded visited profile is the dashboard's detail root. Its native
     // Back pages are retained outside that one-page navigation stack, so use
     // the same transition as the profile's Back button. The Account tab has
