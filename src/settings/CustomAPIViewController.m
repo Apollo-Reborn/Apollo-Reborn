@@ -604,8 +604,11 @@ static BOOL ApolloInterfaceSupportsBarScrollSettings(void) {
     [self.apSuspended removeAllObjects];
 }
 - (BOOL)beginTrackingWithTouch:(UITouch *)touch withEvent:(UIEvent *)event {
-    [self apSuspendAncestorGestures];
-    return [super beginTrackingWithTouch:touch withEvent:event];
+    // UIControl only follows up with end/cancelTracking when this returns YES
+    // (a tap on the bare track returns NO), so only suspend for a real drag.
+    BOOL tracking = [super beginTrackingWithTouch:touch withEvent:event];
+    if (tracking) [self apSuspendAncestorGestures];
+    return tracking;
 }
 - (void)endTrackingWithTouch:(UITouch *)touch withEvent:(UIEvent *)event {
     [super endTrackingWithTouch:touch withEvent:event];
