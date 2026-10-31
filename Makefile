@@ -398,6 +398,8 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloWebJSONRoutes.m \
     $(SRC_DIR)/ApolloWebJSONRouteUpdates.m \
     $(SRC_DIR)/ApolloWebJSONIdentity.xm \
+    $(SRC_DIR)/ApolloAllPlusMerge.m \
+    $(SRC_DIR)/ApolloAllPlusNSFW.xm \
     $(SRC_DIR)/ApolloWebSessionLoginViewController.m \
     $(SRC_DIR)/ApolloWebSessionStore.m \
     $(SRC_DIR)/ApolloProfileEditorWebViewController.m \

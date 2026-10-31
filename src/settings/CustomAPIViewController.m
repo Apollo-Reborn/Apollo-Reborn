@@ -23,6 +23,7 @@
 #import "ApolloMessageDraftStore.h"
 #import "ApolloDevvitPosts.h"        // ApolloDevvitFeedOwnershipChangedNotification
 #import "ApolloFloatingTabs.h"       // close-all / fan-out entry points for the toggles
+#import "ApolloAllPlusNSFW.h"        // ApolloAllPlusInvalidate() -- drop cached candidates on toggle
 #import "settings/ApolloAISettingsViewController.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloReduceRateLimiting.h"
@@ -562,6 +563,61 @@ static BOOL ApolloInterfaceSupportsBarScrollSettings(void) {
 // Hub only: whether the Setup section last rendered its "add a Reddit key"
 // footer, so viewWillAppear reloads that section only when the answer flips.
 @property (nonatomic) BOOL setupFooterShowsKeyNudge;
+@end
+
+// A UISlider that suspends ancestor pan/swipe/edge gestures while the user is
+// dragging it. Apollo's settings live in horizontally swipe-navigable panes, and
+// that swipe recognizer (plus the table's scroll pan) otherwise steals the
+// slider's left/right drag -- you'd have to drag UP first to make the swipe fail
+// before the slider would track. beginTracking fires on touchesBegan, before any
+// ancestor recognizer decides on the subsequent moves, so disabling them here
+// lets the slider own the horizontal drag; they're restored when tracking ends.
+@interface ApolloAPSlider : UISlider
+@property (nonatomic, strong) NSMutableArray<UIGestureRecognizer *> *apSuspended;
+@end
+
+@implementation ApolloAPSlider
+- (UIViewController *)apOwningViewController {
+    UIResponder *r = self.nextResponder;
+    while (r && ![r isKindOfClass:[UIViewController class]]) r = r.nextResponder;
+    return (UIViewController *)r;
+}
+- (void)apSuspendAncestorGestures {
+    if (!self.apSuspended) self.apSuspended = [NSMutableArray array];
+    // Disable EVERY enabled gesture recognizer on the whole ancestor chain (up
+    // through the window) for the duration of the drag. Apollo's swipe-to-exit
+    // gesture isn't necessarily a stock UIPan/Swipe/ScreenEdge subclass, so
+    // class-filtering missed it; during a slider drag nothing else needs to
+    // recognize, and everything is restored the moment tracking ends.
+    for (UIView *v = self.superview; v; v = v.superview) {
+        for (UIGestureRecognizer *gr in v.gestureRecognizers) {
+            if (gr.isEnabled) { gr.enabled = NO; [self.apSuspended addObject:gr]; }
+        }
+    }
+    // The interactive-pop gesture can live on the nav controller's view (not
+    // always on the ancestor chain we can see); disable it explicitly too.
+    UIGestureRecognizer *pop = [self apOwningViewController].navigationController.interactivePopGestureRecognizer;
+    if (pop && pop.isEnabled) { pop.enabled = NO; [self.apSuspended addObject:pop]; }
+}
+- (void)apRestoreAncestorGestures {
+    for (UIGestureRecognizer *gr in self.apSuspended) gr.enabled = YES;
+    [self.apSuspended removeAllObjects];
+}
+- (BOOL)beginTrackingWithTouch:(UITouch *)touch withEvent:(UIEvent *)event {
+    // UIControl only follows up with end/cancelTracking when this returns YES
+    // (a tap on the bare track returns NO), so only suspend for a real drag.
+    BOOL tracking = [super beginTrackingWithTouch:touch withEvent:event];
+    if (tracking) [self apSuspendAncestorGestures];
+    return tracking;
+}
+- (void)endTrackingWithTouch:(UITouch *)touch withEvent:(UIEvent *)event {
+    [super endTrackingWithTouch:touch withEvent:event];
+    [self apRestoreAncestorGestures];
+}
+- (void)cancelTrackingWithEvent:(UIEvent *)event {
+    [super cancelTrackingWithEvent:event];
+    [self apRestoreAncestorGestures];
+}
 @end
 
 @implementation CustomAPIViewController
@@ -2090,6 +2146,43 @@ typedef NS_ENUM(NSInteger, Tag) {
     return [ApolloSettingsSection sectionWithTitle:@"Feed"
                                             footer:@"Feed Video Scrubber: drag the bar under a feed video to scrub it.\n\nSmoother Video Scrolling: prepares feed videos in the background and lets video posts finish drawing right after they scroll in instead of holding the frame for them. Turn off to get Apollo's original behavior back.\n\nForget Forward Swipe After Scrolling: once you've scrolled a few posts on, a forward swipe won't reopen the post you came back from.\n\nLive Interactive Posts: shows live scores, polls, brackets and other interactive posts instead of placeholder text. Show in Feed adds them to the feed as well as comments.\n\nRestore Reading Session: after iOS evicts Apollo, reopen the last feed, post and reading position on the next normal launch. Turn it off to delete the saved session immediately."
                                               rows:@[ textPostThumbnails, infoRow, feedScrubber, videoScrollSmoothing, forwardSwipeForget, blockAnnouncements, devvitPosts, devvitFeedPosts, restoreReadingSession ]];
+}
+
+// All+ r/all: NSFW posts blended into r/all by rank (see ApolloAllPlusNSFW.xm /
+// ApolloAllPlusMerge.m). Grouped with Posts & Feeds since it shapes a feed.
+- (ApolloSettingsSection *)buildPostsAllPlusSection {
+    __weak typeof(self) weakSelf = self;
+
+    ApolloSettingsRow *allPlusNSFW =
+        [ApolloSettingsRow customRowWithID:@"gen.allPlusNSFW"
+                                      cell:^UITableViewCell *(__unused UITableView *tableView, __unused ApolloSettingsRow *row) {
+            return [weakSelf switchCellWithIdentifier:@"Cell_Gen_AllPlusNSFW"
+                                                label:@"Show NSFW in r/all"
+                                               detail:@"Blends NSFW posts into the r/all feed."
+                                                   on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyAllPlusNSFWEnabled]
+                                               action:@selector(allPlusNSFWSwitchToggled:)]
+                ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+        }
+                                  onSelect:nil];
+
+    ApolloSettingsRow *allPlusNSFWBoost =
+        [ApolloSettingsRow customRowWithID:@"gen.allPlusNSFWBoost"
+                                      cell:^UITableViewCell *(__unused UITableView *tableView, __unused ApolloSettingsRow *row) {
+            return [weakSelf sliderCellWithIdentifier:@"Cell_Gen_AllPlusNSFWBoost"
+                                                label:@"NSFW boost"
+                                                  min:0.0
+                                                  max:2.0
+                                                 step:0.05
+                                                value:(float)[[NSUserDefaults standardUserDefaults] doubleForKey:UDKeyAllPlusNSFWBoost]
+                                              enabled:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyAllPlusNSFWEnabled]
+                                               action:@selector(allPlusNSFWBoostChanged:)]
+                ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+        }
+                                  onSelect:nil];
+
+    return [ApolloSettingsSection sectionWithTitle:@"All+"
+                                            footer:@"Shows r/all the way old Reddit did, with NSFW posts placed by the same hot ranking as everything else. Applies to the hot, best and rising sorts; top, new and controversial are left as Reddit sends them. NSFW boost moves the NSFW posts up."
+                                              rows:@[ allPlusNSFW, allPlusNSFWBoost ]];
 }
 
 - (ApolloSettingsSection *)buildPostsFloatingTabsSection {
@@ -3858,6 +3951,95 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     return cell;
 }
 
+// A single-row settings slider: [title] [slider fills the middle] [%.2f value].
+// Single row (not stacked) so it fits the settings table's default row height --
+// the table doesn't self-size, and a stacked layout gets clipped to ~44pt,
+// which cramps the slider's touch target. Tags: title 7700, slider 7701,
+// value 7702. The step is stashed on the slider's accessibilityIdentifier so
+// the handlers can snap without extra state. `enabled` greys the control+labels.
+- (UITableViewCell *)sliderCellWithIdentifier:(NSString *)identifier
+                                        label:(NSString *)label
+                                          min:(float)min
+                                          max:(float)max
+                                         step:(float)step
+                                        value:(float)value
+                                      enabled:(BOOL)enabled
+                                       action:(SEL)action {
+    UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:identifier];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:identifier];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+
+        UILabel *title = [[UILabel alloc] init];
+        title.tag = 7700;
+        title.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+        title.translatesAutoresizingMaskIntoConstraints = NO;
+        [title setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+        [title setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+
+        UISlider *slider = [[ApolloAPSlider alloc] init];
+        slider.tag = 7701;
+        slider.continuous = YES;
+        // valueChanged fires live during the drag (updates label + stored value);
+        // the thumb is snapped to the step only on release, so dragging stays
+        // smooth instead of the handler yanking the thumb mid-drag.
+        [slider addTarget:self action:action forControlEvents:UIControlEventValueChanged];
+        [slider addTarget:self action:@selector(apolloSliderSnapOnRelease:)
+         forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside];
+        slider.translatesAutoresizingMaskIntoConstraints = NO;
+        [slider setContentHuggingPriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
+
+        UILabel *valueLabel = [[UILabel alloc] init];
+        valueLabel.tag = 7702;
+        valueLabel.font = [UIFont monospacedDigitSystemFontOfSize:15 weight:UIFontWeightRegular];
+        valueLabel.textColor = [UIColor secondaryLabelColor];
+        valueLabel.textAlignment = NSTextAlignmentRight;
+        valueLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        [valueLabel setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+        [valueLabel setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+
+        [cell.contentView addSubview:title];
+        [cell.contentView addSubview:slider];
+        [cell.contentView addSubview:valueLabel];
+        UILayoutGuide *g = cell.contentView.layoutMarginsGuide;
+        [NSLayoutConstraint activateConstraints:@[
+            [title.leadingAnchor constraintEqualToAnchor:g.leadingAnchor],
+            [title.centerYAnchor constraintEqualToAnchor:g.centerYAnchor],
+            [slider.leadingAnchor constraintEqualToAnchor:title.trailingAnchor constant:12],
+            [slider.centerYAnchor constraintEqualToAnchor:g.centerYAnchor],
+            [valueLabel.leadingAnchor constraintEqualToAnchor:slider.trailingAnchor constant:12],
+            [valueLabel.trailingAnchor constraintEqualToAnchor:g.trailingAnchor],
+            [valueLabel.centerYAnchor constraintEqualToAnchor:g.centerYAnchor],
+            [valueLabel.widthAnchor constraintGreaterThanOrEqualToConstant:40],  // stable width so slider doesn't jump
+            [title.topAnchor constraintGreaterThanOrEqualToAnchor:g.topAnchor],
+            [title.bottomAnchor constraintLessThanOrEqualToAnchor:g.bottomAnchor],
+        ]];
+    }
+    UILabel *title = [cell.contentView viewWithTag:7700];
+    UILabel *valueLabel = [cell.contentView viewWithTag:7702];
+    UISlider *slider = [cell.contentView viewWithTag:7701];
+    title.text = label;
+    slider.minimumValue = min;
+    slider.maximumValue = max;
+    slider.value = value;
+    slider.enabled = enabled;
+    slider.accessibilityIdentifier = [NSString stringWithFormat:@"%.4f", step];  // step, read back on change
+    valueLabel.text = [NSString stringWithFormat:@"%.2f", value];
+    valueLabel.enabled = enabled;
+    title.enabled = enabled;
+    return cell;
+}
+
+// Ease the thumb to the nearest step when the drag ends. Kept off the live
+// valueChanged path on purpose -- reassigning value mid-drag fights the finger.
+- (void)apolloSliderSnapOnRelease:(UISlider *)sender {
+    float step = sender.accessibilityIdentifier.floatValue;
+    if (step <= 0) return;
+    float snapped = roundf(sender.value / step) * step;
+    snapped = fmaxf(sender.minimumValue, fminf(sender.maximumValue, snapped));
+    [sender setValue:snapped animated:YES];
+}
+
 - (BOOL)isNotificationBackendURLValid:(NSString *)urlString {
     if (urlString.length == 0) return YES; // empty = disabled, treated as valid
     NSURL *url = [NSURL URLWithString:urlString];
@@ -4802,6 +4984,32 @@ static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
     [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyShowRandNsfw];
 }
 
+- (void)allPlusNSFWSwitchToggled:(UISwitch *)sender {
+    sAllPlusNSFWEnabled = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyAllPlusNSFWEnabled];
+    // Either way, start clean: off must stop a search already in flight from
+    // publishing or re-asking; on must not resume from whatever was buffered.
+    ApolloAllPlusInvalidate();
+    // Reload the boost slider row so it enables/disables to match the toggle.
+    [self reloadRowWithID:@"gen.allPlusNSFWBoost"];
+}
+
+- (void)allPlusNSFWBoostChanged:(UISlider *)sender {
+    float step = sender.accessibilityIdentifier.floatValue;   // stashed by sliderCellWithIdentifier:
+    if (step <= 0) step = 0.05f;
+    float snapped = roundf(sender.value / step) * step;
+    snapped = fmaxf(sender.minimumValue, fminf(sender.maximumValue, snapped));
+    // Do NOT write sender.value here -- reassigning the thumb mid-drag fights the
+    // finger. The thumb snaps on release (apolloSliderSnapOnRelease:); live we
+    // only update the label and the stored value.
+    UIView *v = sender.superview;
+    while (v && ![v isKindOfClass:[UITableViewCell class]]) v = v.superview;
+    UILabel *valueLabel = [((UITableViewCell *)v).contentView viewWithTag:7702];
+    valueLabel.text = [NSString stringWithFormat:@"%.2f", snapped];
+    sAllPlusNSFWBoost = snapped;
+    [[NSUserDefaults standardUserDefaults] setDouble:snapped forKey:UDKeyAllPlusNSFWBoost];
+}
+
 - (void)customOAuthSignInSwitchToggled:(UISwitch *)sender {
     [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyUseCustomOAuthSignIn];
     // The Redirect URI row's explainer text and validity color both depend on this.
@@ -5347,7 +5555,8 @@ static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
 - (NSArray<ApolloSettingsSection *> *)buildForm {
     return @[ [self buildPostsRecentlyReadSection],
               [self buildPostsFeedSection],
-              [self buildPostsFloatingTabsSection] ];
+              [self buildPostsFloatingTabsSection],
+              [self buildPostsAllPlusSection] ];
 }
 @end
 

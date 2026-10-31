@@ -3812,6 +3812,8 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyReduceRateLimiting: @NO,
                                     UDKeyKeylessRouteUpdates: @YES,
                                     UDKeyReduceRateLimitingOffered: @NO,
+                                    UDKeyAllPlusNSFWEnabled: @NO,
+                                    UDKeyAllPlusNSFWBoost: @0.0,
                                     UDKeyUseModernRedditChat: @NO,
                                     UDKeyUseModernRedditModmail: @NO,
                                     UDKeyNotificationBackendURL: @"",
@@ -3871,6 +3873,9 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     sImgurAlbumFallbackProxies = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyImgurAlbumFallbackProxies];
     sEnableInlineImages = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableInlineImages];
     sEnableChatMedia = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableChatMedia];
+    sAllPlusNSFWEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyAllPlusNSFWEnabled];
+    double apBoost = [[NSUserDefaults standardUserDefaults] doubleForKey:UDKeyAllPlusNSFWBoost];
+    sAllPlusNSFWBoost = fmax(0.0, fmin(2.0, apBoost));   // clamp to the slider range
     sEnableAISummaries = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableAISummaries];
     sEnableAIPostSummaries = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableAIPostSummaries];
     sEnableAICommentSummaries = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableAICommentSummaries];

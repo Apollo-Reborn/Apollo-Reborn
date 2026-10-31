@@ -861,6 +861,13 @@ static NSString *const UDKeyActionMenuLastPresented = @"ActionMenuLastPresented"
 // Posted (object = the context id) whenever a menu's order or hidden set changes.
 static NSString *const ApolloActionMenuLayoutsChangedNotification = @"ApolloActionMenuLayoutsChangedNotification";
 
+// All+ r/all: blend NSFW posts into r/all the way old Reddit's r/all showed
+// them (see ApolloAllPlusNSFW.xm / ApolloAllPlusMerge.m). Opt-in, default OFF.
+static NSString *const UDKeyAllPlusNSFWEnabled = @"AllPlusNSFWEnabled";
+// User boost added to candidate hot-rank on the r/all merge.
+// double in [0.0, 2.0]; 0.0 = pure hot-merge. Set from the settings slider.
+static NSString *const UDKeyAllPlusNSFWBoost = @"AllPlusNSFWBoost";
+
 // The last TWEAK_VERSION (without the leading "v") the What's New sheet was
 // shown for (or silently advanced past, when a version has no catalog entry).
 // Deliberately never registered with a default value, and an absent value is
