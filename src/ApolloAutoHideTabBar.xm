@@ -3004,4 +3004,3 @@ static void ApolloRevealBarsForScrollToTop(UIViewController *owner) {
         });
     }];
 }
-
