@@ -109,12 +109,16 @@ void ApolloWebSessionPresentSignInChooser(UIViewController *host, void (^apiKeyH
 // Per-account mode conversions (shared by the Custom API settings screen's
 // API-Key-Free switch and the account switcher's per-account menu).
 //
-// Keyless -> API key: confirms with the user, removes u/`username`'s stored
-// web session, then (because the in-memory client still carries a synthetic
-// cookie-session credential until the account blobs are reloaded) offers to
-// quit Apollo so the account comes back on its real OAuth credential.
-// `completion(YES)` fires only when the user confirmed and the session was
-// removed; `completion(NO)` on cancel. Completion is optional.
+// Keyless -> API key: first checks u/`username`'s saved API-key sign-in with
+// Reddit (one refresh-token grant). If it works, confirms with the user,
+// removes the stored web session, and offers to quit Apollo so the account
+// comes back on its real OAuth credential (the in-memory client still carries a
+// synthetic cookie-session credential until the account blobs are reloaded).
+// If the saved sign-in is dead or missing, or there is no API key at all, the
+// web session stays and the user is told how to sign in again (from a screen
+// other than the account switcher, with a button that opens it). Reddit not
+// answering changes nothing. `completion(YES)` fires only when the session was
+// removed; `completion(NO)` otherwise. Completion is optional.
 void ApolloPresentSwitchToAPIKeyFlow(UIViewController *host, NSString *username, void (^ _Nullable completion)(BOOL switched));
 
 #ifdef __cplusplus

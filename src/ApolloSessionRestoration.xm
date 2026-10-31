@@ -406,15 +406,16 @@ static UINavigationController *ApolloSessionSelectedNavigation(id tabs) {
 
 // Selects a built-in feed row (0 Home, 1 Popular, 2 All) in the subreddit
 // list, exactly as tapping it does. NO while the list is not ready, or when a
-// hidden Popular/All shortcut has no row.
+// hidden Popular/All shortcut has no row. Nothing changes on screen until the
+// row can be selected: the route retries every 0.25s, and switching to the
+// Posts tab before each try pulled the reader back from any tab they opened
+// during those six seconds (#1581).
 static BOOL ApolloSessionOpenBuiltInFeed(NSUInteger feedIndex) {
     id tabs = ApolloMainTabBarController();
     if (![tabs isKindOfClass:UITabBarController.class]) return NO;
-    if ([tabs respondsToSelector:@selector(goToHomeTab)]) {
-        ((void (*)(id, SEL))objc_msgSend)(tabs, @selector(goToHomeTab));
-    }
-    UINavigationController *navigation = ApolloSessionSelectedNavigation(tabs);
-    [navigation popToRootViewControllerAnimated:NO];
+    // goToHomeTab selects index 0, the Posts tab.
+    UINavigationController *navigation = ApolloSessionNavigationControllerForTabChild(
+        [(UITabBarController *)tabs viewControllers].firstObject);
     // An open Duo moves the list into its split host; Duo retains the native
     // list controller as the tab's root.
     UIViewController *root = ApolloDuoSplitRootController(navigation) ?: navigation.viewControllers.firstObject;
@@ -422,12 +423,19 @@ static BOOL ApolloSessionOpenBuiltInFeed(NSUInteger feedIndex) {
     if (!ApolloClassRedditListViewController ||
         ![root isMemberOfClass:ApolloClassRedditListViewController] ||
         ![root respondsToSelector:selector]) return NO;
-    UITableView *table = [root respondsToSelector:@selector(tableView)]
-        ? ((id (*)(id, SEL))objc_msgSend)(root, @selector(tableView)) : nil;
+    // The list keeps its table in ApolloTableViewController's Swift ivar,
+    // which has no ObjC getter: -tableView was never answered, so the row
+    // check below always failed and Popular/All never reopened.
+    UITableView *table = ApolloObjectIvar(root, "tableView");
+    if (![table isKindOfClass:UITableView.class]) return NO;
     // Hidden Popular/All shortcuts shift the rows after them.
     NSUInteger row = feedIndex == 0 ? 0 : [ApolloFeedShortcutVisibleIndexes() indexOfObject:@(feedIndex)];
-    if (row == NSNotFound || (feedIndex != 0 && (table.numberOfSections == 0 ||
-        row >= (NSUInteger)[table numberOfRowsInSection:0]))) return NO;
+    if (row == NSNotFound || table.numberOfSections == 0 ||
+        row >= (NSUInteger)[table numberOfRowsInSection:0]) return NO;
+    if ([tabs respondsToSelector:@selector(goToHomeTab)]) {
+        ((void (*)(id, SEL))objc_msgSend)(tabs, @selector(goToHomeTab));
+    }
+    [navigation popToRootViewControllerAnimated:NO];
     ((void (*)(id, SEL, id, id))objc_msgSend)(root, selector, table,
         [NSIndexPath indexPathForRow:row inSection:0]);
     return YES;
@@ -897,11 +905,23 @@ static void ApolloSessionWaitForSortedFeed(UIViewController *controller,
     });
 }
 
-static void ApolloSessionRouteFeed(NSUInteger attempt, NSUInteger generation) {
+static void ApolloSessionRouteFeed(NSUInteger attempt, NSUInteger generation, NSUInteger startTab) {
     if (!ApolloSessionStateQueuedPhaseWorkShouldRun(
             sApolloSessionPendingRestore != nil,
             generation == sApolloSessionRestoreGeneration,
             sApolloSessionFeedViewportFinished)) return;
+    // A tab the reader picks while the saved feed is still loading is newer
+    // intent than the restore. Opening the feed later would pull them back.
+    id tabs = ApolloMainTabBarController();
+    NSUInteger selectedTab = [tabs isKindOfClass:UITabBarController.class]
+        ? [(UITabBarController *)tabs selectedIndex] : NSNotFound;
+    if (startTab == NSNotFound) {
+        startTab = selectedTab;
+    } else if (selectedTab != startTab) {
+        ApolloLog(@"[SessionRestore] Reader switched tabs before the saved feed opened; leaving them there");
+        sApolloSessionPendingRestore = nil;
+        return;
+    }
     if (ApolloSessionOpenURLString(sApolloSessionPendingRestore[ApolloSessionStateFeedURLKey])) return;
     if (attempt + 1 >= kApolloSessionRouteAttempts) {
         ApolloLog(@"[SessionRestore] Timed out opening saved feed");
@@ -909,7 +929,7 @@ static void ApolloSessionRouteFeed(NSUInteger attempt, NSUInteger generation) {
         return;
     }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kApolloSessionRetryDelay * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{ ApolloSessionRouteFeed(attempt + 1, generation); });
+                   dispatch_get_main_queue(), ^{ ApolloSessionRouteFeed(attempt + 1, generation, startTab); });
 }
 
 static void ApolloSessionConsiderInitialRestore(BOOL preferLiveAccount) {
@@ -973,7 +993,7 @@ static void ApolloSessionConsiderInitialRestore(BOOL preferLiveAccount) {
     sApolloSessionMoreCommentsRequestCount = 0;
     NSUInteger generation = ++sApolloSessionRestoreGeneration;
     ApolloLog(@"[SessionRestore] Cold launch has a recent reading session");
-    ApolloSessionRouteFeed(0, generation);
+    ApolloSessionRouteFeed(0, generation, NSNotFound);
 }
 
 void ApolloSessionRestorationSetEnabled(BOOL enabled) {
