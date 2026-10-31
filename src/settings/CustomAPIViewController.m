@@ -2161,6 +2161,40 @@ typedef NS_ENUM(NSInteger, Tag) {
         return !(IsLiquidGlass() && UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad);
     };
 
+    ApolloSettingsRow *inboxUnreadCount =
+        [ApolloSettingsRow switchRowWithID:@"interface.inboxUnreadCount"
+                                     title:@"Show Unread Count"
+                                      isOn:^BOOL { return [NSUserDefaults.standardUserDefaults boolForKey:UDKeyInboxBadgeShowUnreadCount]; }
+                                  onToggle:^(UISwitch *sender) {
+            [NSUserDefaults.standardUserDefaults setBool:sender.isOn forKey:UDKeyInboxBadgeShowUnreadCount];
+            [NSNotificationCenter.defaultCenter postNotificationName:ApolloInboxBadgeChangedNotification object:nil];
+        }];
+
+    ApolloSettingsRow *inboxBadgeColor =
+        [ApolloSettingsRow valueRowWithID:@"interface.inboxBadgeColor"
+                                    title:@"Unread Badge Color"
+                                   detail:^NSString * {
+            return [NSUserDefaults.standardUserDefaults boolForKey:UDKeyInboxBadgeUseThemeAccent] ? @"Theme Accent" : @"Red";
+        }
+                                 onSelect:^{
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self) return;
+            ApolloSettingsPresentLivePicker(self, [self cellForRowID:@"interface.inboxBadgeColor"],
+                                        @"Unread Badge Color", @[@"Red", @"Theme Accent"],
+                                        [NSUserDefaults.standardUserDefaults boolForKey:UDKeyInboxBadgeUseThemeAccent] ? 1 : 0,
+                                        ^(NSInteger pickedIndex) {
+                [NSUserDefaults.standardUserDefaults setBool:(pickedIndex == 1) forKey:UDKeyInboxBadgeUseThemeAccent];
+                [NSNotificationCenter.defaultCenter postNotificationName:ApolloInboxBadgeChangedNotification object:nil];
+                // Keep the existing row in place while its sheet dismisses.
+                UITableViewCell *cell = [weakSelf cellForRowID:@"interface.inboxBadgeColor"];
+                cell.detailTextLabel.text = pickedIndex == 1 ? @"Theme Accent" : @"Red";
+                [cell setNeedsLayout];
+            });
+        }];
+    inboxBadgeColor.configure = ^(UITableViewCell *cell) {
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    };
+
     // Icon-Only already hides every tab label. Hide the narrower profile-only
     // option while it is active, then reinsert it with its remembered value.
     ApolloSettingsRow *hideUsernameTab =
@@ -2288,7 +2322,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     }
     return [ApolloSettingsSection sectionWithTitle:@"Tab Bar"
                                             footer:footer
-                                              rows:@[ profileTabAvatar, iconOnlyTabBar, hideUsernameTab,
+                                              rows:@[ profileTabAvatar, iconOnlyTabBar, inboxUnreadCount, inboxBadgeColor, hideUsernameTab,
                                                       hideBarsOnScroll, hideStyle, hideTopBarToo, tabBarScrollBehavior,
                                                       iPadTabBarBottom, tabBarSwipeNavigation,
                                                       [ApolloSettingsRow disclosureRowWithID:@"interface.settingsShortcuts" title:@"Settings Shortcuts" detail:nil push:^UIViewController *{
@@ -5069,7 +5103,14 @@ static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
     // Icon-Only temporarily supersedes the narrower profile-only choice.
     // Preserve its preference while hiding the redundant row, then restore
     // both when tab labels return.
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    BOOL showUnreadCount = [defaults boolForKey:UDKeyInboxBadgeShowUnreadCount];
     ApolloSetHideTabBarTitlesEnabled(sender.isOn);
+    // Rebuilding the tab bar can cause Apollo/UIKit to re-register its tab
+    // defaults. Icon-Only and Inbox badge presentation are independent, so
+    // preserve the user's badge choice across that rebuild explicitly.
+    [defaults setBool:showUnreadCount forKey:UDKeyInboxBadgeShowUnreadCount];
+    [defaults synchronize];
     [self visibilityDidChange];
 }
 

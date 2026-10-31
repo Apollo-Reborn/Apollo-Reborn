@@ -1,6 +1,8 @@
 #import <Foundation/Foundation.h>
 #import <LocalAuthentication/LocalAuthentication.h>
 #import <objc/runtime.h>
+#import <QuartzCore/QuartzCore.h>
+#include <string.h>
 
 #import "ApolloCommon.h"
 #import "ApolloClasses.h"
@@ -19,6 +21,7 @@
 #import "ipad/ApolloPaneLayout.h"
 #import "ApolloWallpapersViewController.h"
 #import "ApolloSettingsTableViewController.h"
+#import "ApolloSettingsForm.h"
 
 // MARK: - Settings View Controller (Custom API row injection)
 
@@ -855,6 +858,19 @@ static void ApolloPresentFeatureRequestsChooser(UIViewController *aboutVC,
 %end
 %end
 
+%group ApolloSettingsLivePicker
+%hook UIAlertController
+
+- (void)_dismissAnimated:(BOOL)animated
+    triggeringAction:(UIAlertAction *)action
+    triggeredByPopoverDimmingView:(BOOL)fromDimmingView
+    dismissCompletion:(void (^)(void))completion {
+    ApolloSettingsApplyLivePickerAction(action);
+    %orig(animated, action, fromDimmingView, completion);
+}
+
+%end
+%end
 %hook SettingsPortraitLockViewController
 
 - (void)viewDidLoad {
@@ -875,6 +891,18 @@ static void ApolloPresentFeatureRequestsChooser(UIViewController *aboutVC,
 %end
 
 %ctor {
+    SEL dismissSelector = NSSelectorFromString(@"_dismissAnimated:triggeringAction:triggeredByPopoverDimmingView:dismissCompletion:");
+    Method dismissMethod = class_getInstanceMethod(UIAlertController.class, dismissSelector);
+    const char *dismissTypes = dismissMethod ? method_getTypeEncoding(dismissMethod) : NULL;
+    // Only hook the private selector's verified arm64 signature. The public
+    // action handler remains available if UIKit changes it.
+    if (dismissTypes && strcmp(dismissTypes, "v40@0:8B16@20B28@?32") == 0) {
+        %init(ApolloSettingsLivePicker);
+        ApolloLog(@"[SettingsForm] live picker dismissal hook installed");
+    } else {
+        ApolloLog(@"[SettingsForm] live picker uses public handler; dismissal signature: %s", dismissTypes ?: "missing");
+    }
+
     if (@available(iOS 26.0, *)) {
         %init(ApolloSettingsGestureHeaders, ApolloSettingsGesturesViewController = objc_getClass("Apollo.SettingsGesturesViewController"));
     }
