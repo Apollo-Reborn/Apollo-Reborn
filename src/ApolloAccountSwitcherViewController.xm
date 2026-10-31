@@ -190,6 +190,15 @@ static NSArray<ApolloSwitcherAccountRow *> *ApolloSwitcherLoadAccountRows(void) 
     return rows;
 }
 
+// Classic (non-glass) bar buttons inherit the host's system blue; tint the
+// shared bar so +, Edit, back and Save follow the theme accent. Glass keeps
+// UIKit's own glass button styling.
+static void ApolloSwitcherApplyBarAccent(UINavigationBar *bar) {
+    if (!bar || IsLiquidGlass()) return;
+    UIColor *accent = ApolloThemeAccentColor();
+    if (accent) bar.tintColor = accent;
+}
+
 #pragma mark - Per-account credential editor form
 
 // Small standalone form: Reddit API Key / Secret / Redirect URI for one
@@ -229,6 +238,7 @@ static NSArray<ApolloSwitcherAccountRow *> *ApolloSwitcherLoadAccountRows(void) 
     self.navigationController.view.backgroundColor = page;
     self.tableView.separatorColor = ApolloThemeSeparatorColor() ?: UIColor.separatorColor;
     self.view.tintColor = ApolloThemeAccentColor() ?: self.view.tintColor;
+    ApolloSwitcherApplyBarAccent(self.navigationController.navigationBar);
     for (UITableViewCell *cell in self.tableView.visibleCells) {
         cell.backgroundColor = ApolloThemeCardBackgroundColor() ?: UIColor.secondarySystemGroupedBackgroundColor;
     }
@@ -684,6 +694,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
     self.navigationController.navigationBar.standardAppearance = appearance;
     self.navigationController.navigationBar.scrollEdgeAppearance = appearance;
     self.navigationController.navigationBar.compactAppearance = appearance;
+    ApolloSwitcherApplyBarAccent(self.navigationController.navigationBar);
 }
 
 + (BOOL)isAvailable {
