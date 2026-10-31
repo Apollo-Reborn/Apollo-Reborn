@@ -225,8 +225,10 @@ void ApolloWebJSONRouteHealthReset(void);
 // (/api/info/.json, /api/morechildren/.json) still answers, as it does on www:
 // checked 2026-10-30 on oauth.reddit.com with a bearer it refuses (plain form
 // 403 block page, /.json 200) and an API key's bearer it serves (200 both). So
-// an API-key account's refused read is sent once more in that form, and the
-// endpoint keeps using it for the rest of the launch. Any thread.
+// a refused RedditKit read is sent once more in that form
+// (ApolloWebJSONIdentity.xm), and every later read of that endpoint, RedditKit's
+// or a direct lookup's, uses it for the rest of the launch (Tweak.xm's request
+// chokepoint). Any thread.
 
 // The path to send an API-key account's read by: the /.json form of `path` once
 // its endpoint was refused this launch, else `path`. A relative path

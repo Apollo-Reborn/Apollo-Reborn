@@ -1915,7 +1915,8 @@ void ApolloWebJSONPrefetchModernThingData(NSString *fullname, void (^completion)
     NSString *bearer = cookie.length == 0 ? [sLatestRedditBearerToken copy] : nil;
     if (cookie.length == 0 && bearer.length == 0) { completion(nil); return; }
 
-    NSString *base = @"https://oauth.reddit.com/api/info.json";
+    // An API key's bearer: the /.json form once oauth refused /api/info (ApolloOAuthReadPathToSend).
+    NSString *base = [@"https://oauth.reddit.com" stringByAppendingString:ApolloOAuthReadPathToSend(@"GET", @"/api/info.json")];
     if (cookie.length > 0) {
         // The first route that takes the cookie: this probe has no bearer.
         ApolloWebJSONRoute route = ApolloWebJSONRouteWww;
