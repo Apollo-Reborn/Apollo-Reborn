@@ -23,6 +23,7 @@
 #import "Tweak.h"
 #import "settings/ApolloSettingsGeneralTable.h"
 #import "ApolloClasses.h"
+#import "ApolloAccountCredentials.h"
 
 // Generated umbrella header for the Swift compilation unit (ApolloAppleTranslation.swift),
 // which vends the @objc ApolloAppleTranslator used by the on-device "apple" provider.
@@ -4820,14 +4821,19 @@ static void ApolloTranslateChunksSequentially(NSArray<NSString *> *chunks,
     step();
 }
 
-static void ApolloTranslateTextWithFallback(NSString *text,
-                                            NSString *targetLanguage,
-                                            ApolloTranslationLegCompletion completion) {
+static void ApolloTranslateTextWithFallbackPrepared(NSString *text,
+                                                    NSString *targetLanguage,
+                                                    BOOL skipDecisionKnown,
+                                                    BOOL shouldSkip,
+                                                    NSString *providerSnapshot,
+                                                    NSString *appleSourceLanguage,
+                                                    ApolloTranslationLegCompletion completion) {
     // User-controlled skip: if the source language is in the skip list, or already
     // matches the target, return the original text untouched. Downstream callers
     // treat this as a successful no-op (cache will store source==translation,
     // making future hits instant).
-    if (ApolloShouldSkipTranslationForText(text, targetLanguage)) {
+    if ((skipDecisionKnown && shouldSkip) ||
+        (!skipDecisionKnown && ApolloShouldSkipTranslationForText(text, targetLanguage))) {
         if (completion) {
             dispatch_async(dispatch_get_main_queue(), ^{ completion(text, nil, nil); });
         }
@@ -4850,11 +4856,14 @@ static void ApolloTranslateTextWithFallback(NSString *text,
     // length/context makes the conservative detector reliable, then reuse it for every
     // chunk. Detecting each chunk independently makes a short/link-heavy tail fail with
     // error 301 after earlier chunks already translated.
-    if ([sTranslationProvider isEqualToString:@"apple"]) {
+    if ([providerSnapshot isEqualToString:@"apple"]) {
+        NSString *source = appleSourceLanguage;
+        if (!skipDecisionKnown && source.length == 0) {
+            source = ApolloDetectSourceLanguageForApple(text);
+        }
         if (chunks.count <= 1) {
-            ApolloTranslateViaApple(text, targetLanguage, completion);
+            ApolloTranslateViaAppleWithSource(text, targetLanguage, source, completion);
         } else {
-            NSString *source = ApolloDetectSourceLanguageForApple(text);
             ApolloTranslateChunksSequentially(chunks, separators, targetLanguage,
                 ^(NSString *chunk, NSString *target, ApolloTranslationLegCompletion cb) {
                     ApolloTranslateViaAppleWithSource(chunk, target, source, cb);
@@ -4865,7 +4874,7 @@ static void ApolloTranslateTextWithFallback(NSString *text,
 
     // Network providers: "google", "libre", "microsoft". Anything unrecognized
     // defaults to Google. Primary = user's choice.
-    NSString *primaryProvider = sTranslationProvider;
+    NSString *primaryProvider = providerSnapshot;
     if (![primaryProvider isEqualToString:@"libre"] &&
         ![primaryProvider isEqualToString:@"microsoft"] &&
         ![primaryProvider isEqualToString:@"google"]) {
@@ -4938,6 +4947,16 @@ static void ApolloTranslateTextWithFallback(NSString *text,
             completion(nil, nil, [NSError errorWithDomain:@"ApolloTranslation" code:110 userInfo:info]);
         });
     });
+}
+
+static void ApolloTranslateTextWithFallback(NSString *text,
+                                            NSString *targetLanguage,
+                                            ApolloTranslationLegCompletion completion) {
+    NSString *provider = [sTranslationProvider copy] ?: @"google";
+    NSString *appleSource = [provider isEqualToString:@"apple"]
+        ? ApolloDetectSourceLanguageForApple(text) : nil;
+    ApolloTranslateTextWithFallbackPrepared(text, targetLanguage, NO, NO,
+                                            provider, appleSource, completion);
 }
 
 static NSString *ApolloTranslationFailureCooldownKey(NSString *cacheKey) {
@@ -5138,61 +5157,60 @@ static void ApolloClearTranslationFailureCooldowns(void) {
     }
 }
 
-static void ApolloRequestTranslation(NSString *cacheKey,
-                                     NSString *sourceText,
-                                     NSString *targetLanguage,
-                                     void (^completion)(NSString *translated, NSError *error)) {
-    NSString *cached = ApolloRawTranslationCacheGet(cacheKey);
-    if (cached.length > 0) {
-        completion(cached, nil);
-        return;
-    }
-
-    NSError *recentFailure = ApolloRecentTranslationFailure(cacheKey);
-    if (recentFailure) {
-        completion(nil, recentFailure);
-        return;
-    }
-
-    BOOL shouldStartRequest = NO;
-    @synchronized (sPendingTranslationCallbacks) {
-        NSMutableArray *callbacks = sPendingTranslationCallbacks[cacheKey];
-        if (!callbacks) {
-            callbacks = [NSMutableArray array];
-            sPendingTranslationCallbacks[cacheKey] = callbacks;
-            shouldStartRequest = YES;
+// Starts the provider leg after all pure text preparation has finished on the
+// serial utility queue. This function runs on main because Apple's Translation
+// bridge and several provider-status/UI side effects are main-thread-owned.
+// The expensive work (NER, language recognition, URL/name tokenization) is no
+// longer paid while a newly visible feed row is being composited.
+static void ApolloStartPreparedTranslation(NSString *cacheKey,
+                                           NSString *pendingKey,
+                                           NSString *sourceText,
+                                           NSString *targetLanguage,
+                                           NSString *requestText,
+                                           NSDictionary<NSString *, NSString *> *protectedNames,
+                                           NSDictionary<NSString *, NSString *> *protectedLinks,
+                                           NSString *providerSnapshot,
+                                           NSString *appleSourceLanguage,
+                                           uint32_t requestGeneration,
+                                           id requestAccount,
+                                           BOOL properNounTitle,
+                                           BOOL onlyDetectedNames,
+                                           BOOL shouldSkip) {
+    BOOL (^requestContextIsCurrent)(void) = ^BOOL{
+        return requestGeneration == sTranslationCacheGeneration &&
+            requestAccount == ApolloActiveAccountClient() &&
+            [(providerSnapshot ?: @"") isEqualToString:(sTranslationProvider ?: @"")] &&
+            [(targetLanguage ?: @"") isEqualToString:(ApolloResolvedTargetLanguageCode() ?: @"")];
+    };
+    void (^cancelPendingTranslation)(void) = ^{
+        NSArray *callbacks = nil;
+        @synchronized (sPendingTranslationCallbacks) {
+            callbacks = [sPendingTranslationCallbacks[pendingKey] copy] ?: @[];
+            [sPendingTranslationCallbacks removeObjectForKey:pendingKey];
         }
-        [callbacks addObject:[completion copy]];
-    }
-
-    if (!shouldStartRequest) return;
-
-    // Protect proper nouns (names/places/orgs) and links from the translator, then translate
-    // only what's left. Names are detected first so NLTagger sees clean text (not the link
-    // sentinels); restore order is irrelevant since the two token shapes are distinct.
-    // Inline media-id tokens (![gif](giphy|…)) are stripped outright — Apollo never
-    // displays them and the provider would only mangle them.
-    NSString *mediaStripped = ApolloStripInlineMediaTokens(sourceText);
-    NSDictionary<NSString *, NSString *> *protectedNames = nil;
-    NSString *nameProtected = ApolloProtectTranslationNames(mediaStripped, &protectedNames);
-
-    NSDictionary<NSString *, NSString *> *protectedLinks = nil;
-    NSString *requestText = ApolloProtectTranslationLinks(nameProtected, &protectedLinks);
+        for (id callbackObj in callbacks) {
+            void (^callback)(NSString *, NSError *) = callbackObj;
+            callback(nil, nil);
+        }
+    };
 
     // providerRoundTrip distinguishes real provider deliveries from skip-path
     // echoes (proper-noun/name-only text, skip-listed or already-target
-    // language). Only the former is evidence the provider is healthy: letting
-    // skip echoes reset the consecutive-failure counter meant a mixed feed —
-    // English posts interleaved with foreign ones — kept the counter below the
-    // toast threshold for an entire outage, silencing exactly the notification
-    // issue #995 added.
+    // language). Only the former is evidence the provider is healthy.
     void (^deliverTranslationInternal)(NSString *, NSError *, BOOL) = ^(NSString *translated, NSError *error, BOOL providerRoundTrip) {
+        // A settings flush or account switch may land while pure preparation or
+        // the provider leg is in flight. Do not let the old request repopulate a
+        // freshly cleared cache or satisfy nodes from the new session.
+        if (!requestContextIsCurrent()) {
+            cancelPendingTranslation();
+            return;
+        }
         NSString *restoredTranslation = ApolloRestoreTranslationLinks(translated, protectedLinks);
         restoredTranslation = ApolloRestoreTranslationNames(restoredTranslation, protectedNames);
         NSArray *callbacks = nil;
         @synchronized (sPendingTranslationCallbacks) {
-            callbacks = [sPendingTranslationCallbacks[cacheKey] copy] ?: @[];
-            [sPendingTranslationCallbacks removeObjectForKey:cacheKey];
+            callbacks = [sPendingTranslationCallbacks[pendingKey] copy] ?: @[];
+            [sPendingTranslationCallbacks removeObjectForKey:pendingKey];
         }
 
         if ([restoredTranslation isKindOfClass:[NSString class]] && restoredTranslation.length > 0) {
@@ -5212,17 +5230,13 @@ static void ApolloRequestTranslation(NSString *cacheKey,
         }
     };
     void (^deliverTranslation)(NSString *, NSString *, NSError *) = ^(NSString *translated, NSString *reportedSource, NSError *error) {
-        // Keep the language the provider says it translated FROM, before any
-        // callback builds a marker: the markers name it instead of re-guessing
-        // on-device (#1345).
+        if (!requestContextIsCurrent()) {
+            cancelPendingTranslation();
+            return;
+        }
         NSString *sourceLanguage = ApolloNormalizedReportedSourceLanguage(reportedSource);
         if (sourceLanguage.length > 0 && [translated isKindOfClass:[NSString class]] && translated.length > 0) {
             ApolloRecordTranslationSourceLanguage(sourceText, sourceLanguage);
-            // "Don't Translate" is about the language the text is IN, and the
-            // provider knows that better than the on-device guess that let this
-            // request through. Hand the original back: the marker gate already
-            // hides a skipped language, so applying this would be a silent
-            // translation of exactly what the user asked to keep.
             if (ApolloLanguageCodeIsInSkipList(sourceLanguage)) {
                 deliverTranslationInternal(requestText, nil, YES);
                 return;
@@ -5231,27 +5245,6 @@ static void ApolloRequestTranslation(NSString *cacheKey,
         deliverTranslationInternal(translated, error, YES);
     };
 
-    // Skip the round-trip and hand back the original when the text is just name(s): either a
-    // short title-cased proper-noun string the language detector would misread (the main
-    // #549 case, e.g. "Dua Lipa"/"Sabalenka def. Kostovic"), or a string that's nothing but
-    // NER-detected names after protection. Caching source==translation makes future hits an
-    // instant no-op and keeps the translated-globe from lighting up on a post we never
-    // actually translated (the "globe appears too often" complaint in the same issue).
-    BOOL properNounTitle = ApolloTitleLooksLikeProperNouns(sourceText);
-    // The proper-noun skip exists ONLY for short, title-cased strings that MISLEAD
-    // language detection (e.g. "Dua Lipa"). A genuinely foreign title that happens
-    // to be Title Case ("Bicampeões de Futsal Masculino") is detected with high
-    // confidence — so if the recognizer is very sure of a specific language, trust
-    // it and translate. This fixes real titles the word-count-only heuristic wrongly
-    // suppressed, while still protecting the truly-ambiguous short name strings
-    // (which score well below this bar).
-    if (properNounTitle) {
-        double conf = 0.0;
-        NSString *detLang = ApolloDominantLanguageWithConfidence(sourceText, &conf);
-        if (detLang.length > 0 && conf >= 0.90) properNounTitle = NO;
-    }
-    BOOL onlyDetectedNames = protectedNames.count > 0 &&
-        ApolloProtectedTextIsOnlyProtectedTokens(requestText, protectedNames, protectedLinks);
     if (properNounTitle || onlyDetectedNames) {
         ApolloTranslationVerboseLog("[Translation] Skipping proper-noun text (titleHeuristic=%d nerOnly=%d): \"%{public}@\"",
                                     properNounTitle, onlyDetectedNames, sourceText);
@@ -5259,15 +5252,92 @@ static void ApolloRequestTranslation(NSString *cacheKey,
         return;
     }
 
-    // Front-run ApolloTranslateTextWithFallback's identical language-skip check
-    // (same text, same target) so the delivery carries providerRoundTrip=NO —
-    // through the provider path it would arrive flagged as a real success.
-    if (ApolloShouldSkipTranslationForText(requestText, targetLanguage)) {
+    if (shouldSkip) {
         deliverTranslationInternal(requestText, nil, NO);
         return;
     }
 
-    ApolloTranslateTextWithFallback(requestText, targetLanguage, deliverTranslation);
+    if (!requestContextIsCurrent()) {
+        cancelPendingTranslation();
+        return;
+    }
+    ApolloTranslateTextWithFallbackPrepared(requestText, targetLanguage, YES, NO,
+                                            providerSnapshot, appleSourceLanguage,
+                                            deliverTranslation);
+}
+
+static void ApolloRequestTranslation(NSString *cacheKey,
+                                     NSString *sourceText,
+                                     NSString *targetLanguage,
+                                     void (^completion)(NSString *translated, NSError *error)) {
+    NSString *cached = ApolloRawTranslationCacheGet(cacheKey);
+    if (cached.length > 0) {
+        completion(cached, nil);
+        return;
+    }
+
+    NSError *recentFailure = ApolloRecentTranslationFailure(cacheKey);
+    if (recentFailure) {
+        completion(nil, recentFailure);
+        return;
+    }
+
+    NSString *providerSnapshot = [sTranslationProvider copy] ?: @"google";
+    uint32_t requestGeneration = sTranslationCacheGeneration;
+    id requestAccount = ApolloActiveAccountClient();
+    // Coalesce only requests from the same provider/settings/account context.
+    // A request arriving after a context change must not join (and then be
+    // canceled by) the stale in-flight request that owns the same cache key.
+    NSString *pendingKey = [NSString stringWithFormat:@"%@|%@|%u|%p",
+                            cacheKey ?: @"", providerSnapshot,
+                            requestGeneration, (__bridge void *)requestAccount];
+    BOOL shouldStartRequest = NO;
+    @synchronized (sPendingTranslationCallbacks) {
+        NSMutableArray *callbacks = sPendingTranslationCallbacks[pendingKey];
+        if (!callbacks) {
+            callbacks = [NSMutableArray array];
+            sPendingTranslationCallbacks[pendingKey] = callbacks;
+            shouldStartRequest = YES;
+        }
+        [callbacks addObject:[completion copy]];
+    }
+
+    if (!shouldStartRequest) return;
+
+    // The main-thread caller only registers/coalesces the request. Everything
+    // below is immutable text work and runs on the same serial utility queue as
+    // language-cache warming. A second node with the same cache key joins the
+    // pending callback array while this is in flight instead of repeating NER.
+    dispatch_async(ApolloTranslationDetectionQueue(), ^{
+        NSString *mediaStripped = ApolloStripInlineMediaTokens(sourceText);
+        NSDictionary<NSString *, NSString *> *protectedNames = nil;
+        NSString *nameProtected = ApolloProtectTranslationNames(mediaStripped, &protectedNames);
+
+        NSDictionary<NSString *, NSString *> *protectedLinks = nil;
+        NSString *requestText = ApolloProtectTranslationLinks(nameProtected, &protectedLinks);
+
+        BOOL properNounTitle = ApolloTitleLooksLikeProperNouns(sourceText);
+        if (properNounTitle) {
+            double conf = 0.0;
+            NSString *detLang = ApolloDominantLanguageWithConfidence(sourceText, &conf);
+            if (detLang.length > 0 && conf >= 0.90) properNounTitle = NO;
+        }
+        BOOL onlyDetectedNames = protectedNames.count > 0 &&
+            ApolloProtectedTextIsOnlyProtectedTokens(requestText, protectedNames, protectedLinks);
+        BOOL shouldSkip = !properNounTitle && !onlyDetectedNames &&
+            ApolloShouldSkipTranslationForText(requestText, targetLanguage);
+        NSString *appleSource = (!properNounTitle && !onlyDetectedNames && !shouldSkip &&
+                                 [providerSnapshot isEqualToString:@"apple"])
+            ? ApolloDetectSourceLanguageForApple(requestText) : nil;
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ApolloStartPreparedTranslation(cacheKey, pendingKey, sourceText, targetLanguage,
+                                           requestText, protectedNames, protectedLinks,
+                                           providerSnapshot, appleSource,
+                                           requestGeneration, requestAccount,
+                                           properNounTitle, onlyDetectedNames, shouldSkip);
+        });
+    });
 }
 
 BOOL ApolloRichPreviewTranslationShouldTranslateForNode(id node) {
@@ -10163,6 +10233,28 @@ static void ApolloApplyTranslationToTitleNode(id titleNode, id textNode, NSStrin
     } @catch (__unused NSException *e) {}
 }
 
+// Immutable completion guard used by feed title/body requests. The callback may
+// outlive a recycled ASDK node, a target/provider change, a skip-list flush, or
+// an account switch. Comparing all request-owned context before any UIKit/node
+// mutation keeps a valid translation from landing on the wrong row/session.
+static BOOL ApolloTranslationContextMatches(NSString *expectedSource,
+                                            NSString *currentSource,
+                                            NSString *expectedTarget,
+                                            NSString *currentTarget,
+                                            NSString *expectedProvider,
+                                            NSString *currentProvider,
+                                            uint32_t expectedGeneration,
+                                            uint32_t currentGeneration,
+                                            id expectedAccount,
+                                            id currentAccount) {
+    if (expectedGeneration != currentGeneration || expectedAccount != currentAccount) return NO;
+    if (![(expectedTarget ?: @"") isEqualToString:(currentTarget ?: @"")]) return NO;
+    if (![(expectedProvider ?: @"") isEqualToString:(currentProvider ?: @"")]) return NO;
+    NSString *expected = ApolloNormalizeTextForCompare(expectedSource);
+    NSString *current = ApolloNormalizeTextForCompare(currentSource);
+    return expected.length > 0 && [expected isEqualToString:current];
+}
+
 static void ApolloMaybeTranslatePostTitleNode(id titleNode) {
     if (!titleNode) return;
     if (!sEnableBulkTranslation || !sTranslatePostTitles) return;
@@ -10324,6 +10416,9 @@ static void ApolloMaybeTranslatePostTitleNode(id titleNode) {
 
     __weak id weakTitleNode = titleNode;
     __weak id weakTextNode = textNode;
+    NSString *requestProvider = [sTranslationProvider copy];
+    uint32_t requestGeneration = sTranslationCacheGeneration;
+    id requestAccount = ApolloActiveAccountClient();
     ApolloRequestTranslation(cacheKey, titleText, targetLanguage, ^(NSString *translated, NSError *error) {
         if (![translated isKindOfClass:[NSString class]] || translated.length == 0) {
             if (error) ApolloLogError(@"[Translation] Title translate failed: %@", error.localizedDescription ?: @"unknown");
@@ -10334,6 +10429,14 @@ static void ApolloMaybeTranslatePostTitleNode(id titleNode) {
         id strongTextNode = weakTextNode;
         if (!strongTitleNode || !strongTextNode) return;
         dispatch_async(dispatch_get_main_queue(), ^{
+            NSString *currentText = ApolloVisibleTextFromNode(strongTextNode);
+            if (!ApolloTranslationContextMatches(titleText, currentText,
+                                                 targetLanguage, ApolloResolvedTargetLanguageCode(),
+                                                 requestProvider, sTranslationProvider,
+                                                 requestGeneration, sTranslationCacheGeneration,
+                                                 requestAccount, ApolloActiveAccountClient())) {
+                return;
+            }
             // Re-check the visible feed VC mode after async translate — user
             // may have toggled the globe off while the request was in
             // flight. Use topmost-visible feed VC (NOT enclosing) for the
@@ -10459,6 +10562,9 @@ static void ApolloMaybeTranslateFeedPostBodyNode(id feedCellNode, id excludeTitl
     ApolloLog(@"[FeedBodyDBG] body translate (len=%lu)", (unsigned long)previewText.length);
     NSString *cacheKey = ApolloTranslationCacheKey(previewText, targetLanguage);
     __weak id weakTextNode = textNode;
+    NSString *requestProvider = [sTranslationProvider copy];
+    uint32_t requestGeneration = sTranslationCacheGeneration;
+    id requestAccount = ApolloActiveAccountClient();
     ApolloRequestTranslation(cacheKey, previewText, targetLanguage, ^(NSString *translated, NSError *error) {
         if (![translated isKindOfClass:[NSString class]] || translated.length == 0) {
             if (error) ApolloLogError(@"[Translation] Feed body translate failed: %@", error.localizedDescription ?: @"unknown");
@@ -10468,6 +10574,14 @@ static void ApolloMaybeTranslateFeedPostBodyNode(id feedCellNode, id excludeTitl
         id strongTextNode = weakTextNode;
         if (!strongTextNode) return;
         dispatch_async(dispatch_get_main_queue(), ^{
+            NSString *currentText = ApolloVisibleTextFromNode(strongTextNode);
+            if (!ApolloTranslationContextMatches(previewText, currentText,
+                                                 targetLanguage, ApolloResolvedTargetLanguageCode(),
+                                                 requestProvider, sTranslationProvider,
+                                                 requestGeneration, sTranslationCacheGeneration,
+                                                 requestAccount, ApolloActiveAccountClient())) {
+                return;
+            }
             // Re-check the visible feed mode after the async translate — the user may
             // have toggled the globe off mid-flight.
             UIViewController *enclosing = ApolloEnclosingViewControllerForNode(strongTextNode);
