@@ -2170,6 +2170,31 @@ static UIViewController *ApolloDuoSplitForwardPage(UINavigationController *nav) 
     return [page isKindOfClass:UIViewController.class] ? page : nil;
 }
 
+// Apollo records forward pages when its own pop override runs, and forgets
+// them in didShow only after its own push override (RE: the pushing/popping
+// flags in -navigationController:didShowViewController:animated:). The split
+// opens subreddits, threads and sidebar destinations with
+// setViewControllers:, which skips that push, so a page left by an earlier
+// Back stayed queued: a left swipe after picking r/X from the list re-pushed
+// the old one. When the split moves a stack forward (its new top is a page
+// the stack did not hold), forget the forward pages as a native push would.
+// A Back keeps them, as do the user's own Back gestures and buttons.
+static BOOL ApolloDuoSplitStackMovesForward(NSArray<UIViewController *> *before, NSArray<UIViewController *> *after) {
+    UIViewController *top = after.lastObject;
+    return top && [before indexOfObjectIdenticalTo:top] == NSNotFound;
+}
+
+static void ApolloDuoSplitForgetForward(UINavigationController *nav, NSArray<UIViewController *> *before) {
+    if (before && !ApolloDuoSplitStackMovesForward(before, nav.viewControllers)) return;
+    UIViewController *forward = ApolloDuoSplitForwardPage(nav);
+    if (!forward) return;
+    // The same native wipe as ForwardSwipeExpiry: Apollo's override of
+    // -didReceiveMemoryWarning only empties poppedViewControllers.
+    [nav didReceiveMemoryWarning];
+    ApolloLog(@"[DuoSplit] forgot forward page %@ after the split opened %@",
+              NSStringFromClass(forward.class), NSStringFromClass(nav.topViewController.class));
+}
+
 static BOOL ApolloDuoSplitOpenStartupFeed(ApolloDuoSplitState *state) {
     // Native General stores ["subreddit", name], ["multireddit", user, name],
     // or a one-element built-in-feed choice (verified in Apollo's setter).
@@ -2253,7 +2278,9 @@ static void ApolloDuoAccountSetPages(ApolloDuoSplitState *state, NSArray<UIViewC
     // UINavigationController selects a pop when the destination is already in
     // the stack and a push for a new shortcut. Keep Apollo's animator/delegate.
     BOOL animated = surface.window && !UIAccessibilityIsReduceMotionEnabled();
+    NSArray *before = state.secondary.viewControllers;
     [state.secondary setViewControllers:pages animated:animated];
+    ApolloDuoSplitForgetForward(state.secondary, before);
     state.host.pendingAccountDetail = nil;
     [state.secondary setNavigationBarHidden:pages.count == 1 animated:animated];
 
@@ -3289,7 +3316,9 @@ static BOOL ApolloDuoSplitRoutePush(UINavigationController *nav, UIViewControlle
             // Let Apollo's navigation controller/delegate perform its normal
             // forward transition. Replacing the root with animation avoids
             // accumulating old subreddit pages in the comments Back stack.
+            NSArray *feedBefore = state.feed.viewControllers;
             [state.feed setViewControllers:@[page] animated:animate];
+            ApolloDuoSplitForgetForward(state.feed, feedBefore);
             ApolloLog(@"[DuoSplit] subreddit forward transition animated=%d", animate);
             [state.host setListVisible:NO animated:YES];
         } else if (nav == state.feed || nav == state.outer) {
@@ -3303,7 +3332,12 @@ static BOOL ApolloDuoSplitRoutePush(UINavigationController *nav, UIViewControlle
                 [state.feed pushViewController:page animated:animated];
                 return YES;
             }
+            NSArray *threadBefore = state.secondary.viewControllers;
             ApolloDuoPostsSetDetail(state, page, animated);
+            // A thread is a new page for the whole Posts tab, as a native
+            // push onto one stack would be: neither pane keeps a forward page.
+            ApolloDuoSplitForgetForward(state.feed, nil);
+            ApolloDuoSplitForgetForward(state.secondary, threadBefore);
         } else return NO;
         ApolloDuoPostsSyncColumns(state);
         return YES;
@@ -3343,6 +3377,9 @@ static BOOL ApolloDuoSplitRoutePush(UINavigationController *nav, UIViewControlle
         // remains Apollo's normal push path.
         if (state.secondary.viewControllers.count > 1) {
             [state.secondary popToRootViewControllerAnimated:animated && !UIAccessibilityIsReduceMotionEnabled()];
+            // Apollo's popToRoot override queues the popped pages as forward
+            // pages. This reselection is not a Back, so drop them.
+            ApolloDuoSplitForgetForward(state.secondary, nil);
         }
         ApolloLog(@"[DuoSplit] current Settings destination reselected; keeping root page");
         return YES;
@@ -3357,7 +3394,9 @@ static BOOL ApolloDuoSplitRoutePush(UINavigationController *nav, UIViewControlle
         // root replacement. Animate its entire live navigation pane, including
         // chrome, rather than a blank page whose content appears afterward.
         // This mirrors the explicit rightward Back across the split boundary.
+        NSArray *before = state.secondary.viewControllers;
         [state.secondary setViewControllers:@[page] animated:NO];
+        ApolloDuoSplitForgetForward(state.secondary, before);
         if (searchSubreddit) {
             ApolloDuoSearchUpdateBackItem(state);
             // The host was just installed as the outer navigation root.
