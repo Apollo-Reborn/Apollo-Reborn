@@ -1,10 +1,13 @@
 // Pull request rules check, run by .github/workflows/pr-rules-check.yml.
 //
 // Pull requests from outside the core team have to show the work behind them
-// (CONTRIBUTING.md#pull-request-rules): a linked issue, steps that reproduce
-// the bug on main, before and after media, the devices they were tested on,
-// and a ticked checklist. .github/pull_request_template.md has a section for
-// each, and this reads those sections back out of the description.
+// (CONTRIBUTING.md#pull-request-rules): a linked issue, what kind of change it
+// is, the devices it was tested on and a ticked checklist, plus by type:
+//   bug fix:  steps that reproduce the bug on main, before and after media
+//   feature:  steps to try it, after media (before is optional)
+//   refactor: how the author checked that nothing changed (no media)
+// .github/pull_request_template.md has a section for each, and this reads
+// those sections back out of the description.
 //
 // A newly opened PR (or a draft marked ready for review) that's missing any of
 // it is labelled `needs-verification`, gets one comment listing exactly what to
@@ -32,22 +35,37 @@ const DOCS_FILE = /(?:^docs\/|\.md$)/i;
 // Template sections, matched on the start of the heading text (lowercased,
 // punctuation dropped). Keep in sync with .github/pull_request_template.md.
 const SECTIONS = {
-    summary: { prefix: 'what this fixes', name: 'What this fixes' },
-    steps: { prefix: 'steps to reproduce', name: 'Steps to reproduce' },
+    type: { prefix: 'type', name: 'Type' },
+    summary: { prefix: 'what', name: 'What this changes' },
+    steps: { prefix: 'steps', name: 'Steps' },
     before: { prefix: 'before', name: 'Before' },
     after: { prefix: 'after', name: 'After' },
+    unchanged: { prefix: 'how i checked nothing changed', name: 'How I checked nothing changed' },
     tested: { prefix: 'tested on', name: 'Tested on' },
     checklist: { prefix: 'checklist', name: 'Checklist' },
 };
-// Rows of the Tested on table, matched on the first cell.
-const DEVICE_ROWS = [
-    { name: 'older or smaller iPhone', match: /older|smaller/i },
-    { name: 'newer or larger iPhone', match: /newer|larger/i },
-    { name: 'iPad', match: /ipad/i },
-    { name: 'iPhone Duo', match: /duo/i },
+// The ticked box under Type picks which sections have to be filled in. Until
+// one (and only one) is ticked, only the sections every type needs are checked.
+const COMMON_SECTIONS = ['summary', 'tested', 'checklist'];
+const TYPES = [
+    { name: 'Bug fix', match: /\bbug\b/i, sections: ['summary', 'steps', 'before', 'after', 'tested', 'checklist'] },
+    { name: 'Feature', match: /\bfeature\b/i, sections: ['summary', 'steps', 'after', 'tested', 'checklist'] },
+    { name: 'Refactor', match: /\brefactor/i, sections: ['summary', 'unchanged', 'tested', 'checklist'] },
 ];
+// Rows of the Tested on table, matched on the first cell. Both iPhone rows
+// always need a real result; iPad and iPhone Duo can be "N/A: <reason>" when
+// the change can't affect them (say, a network-only fix).
+const DEVICE_ROWS = [
+    { name: 'older or smaller iPhone', match: /older|smaller/i, skippable: false },
+    { name: 'newer or larger iPhone', match: /newer|larger/i, skippable: false },
+    { name: 'iPad', match: /ipad/i, skippable: true },
+    { name: 'iPhone Duo', match: /duo/i, skippable: true },
+];
+// "N/A: no layout change, network path only": N/A plus a reason of at least
+// eight characters, so a bare "N/A" or "N/A: no iPad" isn't one.
+const SKIPPED_WITH_REASON = /^n\/?a\b[\s:—–-]+\S.{7,}$/i;
 // How many boxes the template's checklist has; deleting one doesn't pass.
-const CHECKLIST_ITEMS = 6;
+const CHECKLIST_ITEMS = 7;
 // What the steps and summary need at least, not counting list markers and
 // whitespace, so an untouched "1. 2. 3." doesn't pass.
 const MIN_TEXT = 20;
@@ -131,8 +149,12 @@ function meaningfulLength(text) {
         .length;
 }
 
+function plainCell(cell) {
+    return (cell || '').replace(/[*_`~]/g, '').trim();
+}
+
 function cellFilled(cell) {
-    const plain = (cell || '').replace(/[*_`~]/g, '').trim();
+    const plain = plainCell(cell);
     return plain.length > 0 && !PLACEHOLDER.test(plain);
 }
 
@@ -146,18 +168,28 @@ function tableRows(text) {
 }
 
 // Device rows that aren't filled in: model, an iOS version with a number in
-// it, real device or simulator, and a result.
+// it, real device or simulator, and a result. An iPad or iPhone Duo row with
+// "N/A: <reason>" in any cell counts as filled in.
 function missingDeviceRows(text) {
     const rows = tableRows(text);
     return DEVICE_ROWS.filter((device) => {
         const row = rows.find((cells) => device.match.test(cells[0] || ''));
         if (!row) return true;
+        if (device.skippable && row.slice(1).some((cell) => SKIPPED_WITH_REASON.test(plainCell(cell)))) return false;
         const [, model, ios, kind, result] = row;
         return !(cellFilled(model)
             && cellFilled(ios) && /\d/.test(ios)
             && cellFilled(kind) && /real|device|sim/i.test(kind)
             && cellFilled(result));
-    }).map((device) => device.name);
+    });
+}
+
+// The type whose box is the only one ticked under Type, or null.
+function typeOf(text) {
+    if (text === null) return null;
+    const ticked = text.split(/\r?\n/).filter((line) => /^\s*[-*+]\s+\[[xX]\]/.test(line));
+    const types = TYPES.filter((type) => ticked.some((line) => type.match.test(line)));
+    return types.length === 1 ? types[0] : null;
 }
 
 function countBoxes(text) {
@@ -182,36 +214,53 @@ function problemsIn(body, owner, repo) {
     const problems = [];
     const sections = sectionsOf(body);
     const text = {};
-    const missingSections = [];
-    for (const key of Object.keys(SECTIONS)) {
-        text[key] = findSection(sections, key);
-        if (text[key] === null) missingSections.push(SECTIONS[key].name);
-    }
+    for (const key of Object.keys(SECTIONS)) text[key] = findSection(sections, key);
+    const type = typeOf(text.type);
+    const required = type ? type.sections : COMMON_SECTIONS;
+    // A section is checked only when this PR's type needs it and it's there;
+    // a missing one is named once, in the template line.
+    const needs = (key) => required.includes(key) && text[key] !== null;
+
+    const missingSections = ['type', ...required].filter((key) => text[key] === null).map((key) => SECTIONS[key].name);
     if (missingSections.length) {
         problems.push(`**Pull request template:** the description has no ${listWords(missingSections)} section${missingSections.length > 1 ? 's' : ''}. Start from the [template](${templateUrl(owner, repo)}).`);
     }
     if (!linksIssue(body, owner, repo)) {
-        problems.push("**Issue:** link the issue this fixes, like `Closes #123`. If there isn't one, open it first; new features need an issue a maintainer has agreed to.");
+        problems.push("**Issue:** link the issue this is for, like `Closes #123`. If there isn't one, open it first; features and refactors need an issue a maintainer has agreed to.");
     }
-    if (text.summary !== null && meaningfulLength(text.summary) < MIN_TEXT) {
-        problems.push('**What this fixes:** say what was wrong and how this change fixes it.');
+    if (text.type !== null && !type) {
+        problems.push('**Type:** tick one box: bug fix, feature or refactor.');
     }
-    if (text.steps !== null && meaningfulLength(text.steps) < MIN_TEXT) {
-        problems.push('**Steps to reproduce:** list the steps that show the bug on current `main`.');
+    if (needs('summary') && meaningfulLength(text.summary) < MIN_TEXT) {
+        problems.push('**What this changes:** say what was wrong or missing, and how this change fixes or adds it.');
     }
-    if (text.before !== null && !hasMedia(text.before)) {
+    if (needs('steps') && meaningfulLength(text.steps) < MIN_TEXT) {
+        problems.push(type.name === 'Feature'
+            ? '**Steps:** list the steps to try the feature.'
+            : '**Steps:** list the steps that show the bug on current `main`.');
+    }
+    if (needs('before') && !hasMedia(text.before)) {
         problems.push('**Before:** add a screenshot or screen recording of the bug on current `main`, without your change.');
     }
-    if (text.after !== null && !hasMedia(text.after)) {
-        problems.push('**After:** add a screenshot or screen recording of the same steps with your change.');
+    if (needs('after') && !hasMedia(text.after)) {
+        problems.push(type.name === 'Feature'
+            ? '**After:** add a screenshot or screen recording of the feature in use.'
+            : '**After:** add a screenshot or screen recording of the same steps with your change.');
     }
-    if (text.tested !== null) {
+    if (needs('unchanged') && meaningfulLength(text.unchanged) < MIN_TEXT) {
+        problems.push('**How I checked nothing changed:** say what you ran or compared to make sure the refactor behaves the same.');
+    }
+    if (needs('tested')) {
         const missingRows = missingDeviceRows(text.tested);
         if (missingRows.length) {
-            problems.push(`**Tested on:** fill in the ${listWords(missingRows)} row${missingRows.length > 1 ? 's' : ''} (model, iOS version, real device or simulator, and the result). Simulators are fine.`);
+            const names = missingRows.map((device) => device.name);
+            const skipHint = missingRows.some((device) => device.skippable)
+                ? " The iPad and iPhone Duo rows can say `N/A: <why the change can't affect them>` instead."
+                : '';
+            problems.push(`**Tested on:** fill in the ${listWords(names)} row${names.length > 1 ? 's' : ''} (model, iOS version, real device or simulator, and the result). Simulators are fine.${skipHint}`);
         }
     }
-    if (text.checklist !== null) {
+    if (needs('checklist')) {
         const { ticked, unticked } = countBoxes(text.checklist);
         if (unticked > 0 || ticked < CHECKLIST_ITEMS) {
             problems.push(`**Checklist:** tick every box once it's true (${ticked} of ${CHECKLIST_ITEMS} ticked).`);

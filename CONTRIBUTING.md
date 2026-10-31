@@ -8,15 +8,23 @@ These apply to pull requests from anyone outside the core team (anyone without w
 
 Using AI to write a change is fine; this repo's own [AGENTS.md](AGENTS.md) is written for it. What we can't take is a fix nobody ran: a guess at a bug you never saw, or a change you never tried in the app. Those take longer to review than to write, and they tend to ship new bugs. So every PR needs:
 
-1. **A linked issue.** Put `Closes #123` in the description. If there's no issue yet, open one first. For a new feature or a big change, wait for a maintainer to agree on the issue before you build it.
-2. **A reproduction.** You saw the bug yourself on current `main` (or the latest release) before changing anything, and the PR lists the steps. If you can't reproduce it, say so on the issue instead of opening a PR with a guess.
-3. **Before and after media.** A screenshot for a layout or color change, a screen recording for anything that moves or happens over time: first the bug on current `main`, then the same steps with your change. Drag them into the PR description; don't commit them to the branch.
-4. **Testing on a range of devices.** An older or smaller iPhone (say an SE or 13 mini on iOS 17 or 18), a newer or larger iPhone (a Pro Max on iOS 26 or 27), an iPad, and the iPhone Duo, across both the Standard and the Liquid Glass build. Simulators count, including the iPhone Duo simulator (Xcode 27.1 or later); see [Testing in the iOS Simulator](#testing-in-the-ios-simulator). Say which you used.
-5. **A passing device build.** `make package` has to pass on current `main`. The simulator build compiles less, so a change can pass there and still break the release.
-6. **One fix per PR,** with no unrelated changes, and no screenshots, videos or build output in the branch.
-7. **You can explain every line.** Reviewers will ask why a change is there.
+1. **A linked issue.** Put `Closes #123` in the description. If there's no issue yet, open one first. For a feature, a refactor or a big change, wait for a maintainer to agree on the issue before you build it.
+2. **A reproduction (bug fixes).** You saw the bug yourself on current `main` (or the latest release) before changing anything, and the PR lists the steps. If you can't reproduce it, say so on the issue instead of opening a PR with a guess. For a feature, list the steps to try it instead.
+3. **Before and after media.** A screenshot for a layout or color change, a screen recording at normal speed for anything that moves or happens over time: first the bug on current `main`, then the same steps with your change. A feature needs the after; a refactor has nothing to show, so it says how you checked that nothing changed instead. Drag media into the PR description; don't commit it to the branch.
+4. **Testing on a range of devices.** An older or smaller iPhone (say an SE or 13 mini on iOS 17 or 18), a newer or larger iPhone (a Pro Max on iOS 26 or 27), an iPad, and the iPhone Duo, across both the Standard and the Liquid Glass build. Simulators count, including the iPhone Duo simulator (Xcode 27.1 or later); see [Testing in the iOS Simulator](#testing-in-the-ios-simulator). Say which you used. Both iPhones are always needed; if the change can't affect iPad or iPhone Duo (say, a network-only fix), write `N/A: <why>` for that row instead of making up a result.
+5. **A person tried it.** Changes to animations, transitions, gestures, scrolling, media playback, haptics or keyboard behavior must be tried by a person, not only checked through an agent's screenshots. Gestures, scrolling performance, audio and haptics need a physical device. If you can't test on a device, say so: the PR can still be reviewed, but it won't merge until someone has (one of us, or a tester using the PR's test IPA).
+6. **A passing device build.** `make package` has to pass on current `main`. The simulator build compiles less, so a change can pass there and still break the release.
+7. **One change per PR,** with no unrelated changes, and nothing in the branch but the change: no screenshots, videos or build output.
+8. **You can explain every line.** Reviewers will ask why a change is there.
 
-The [pull request template](.github/pull_request_template.md) has a section for each of these. When you open a PR, a bot checks it. If anything is missing, it closes the PR with a comment listing what to add; edit the PR description to add it and the PR reopens on its own. Drafts aren't checked until you mark them ready for review, and PRs that only change docs are skipped.
+The [pull request template](.github/pull_request_template.md) has a section for each of these; tick whether your PR is a bug fix, a feature or a refactor, and it tells you which ones apply. When you open a PR, a bot checks it. If anything is missing, it closes the PR with a comment listing what to add; edit the PR description to add it and the PR reopens on its own. Drafts aren't checked until you mark them ready for review, and PRs that only change docs are skipped.
+
+A few more things:
+
+- **Several PRs at once.** Separate fixes go in separate PRs, but each one says whether it depends on or conflicts with your others. Stack a PR on another only as a last resort: it still targets `main`, its description starts with "Depends on #N (stacked; the new work is the last K commits)", it stays a draft until the parent merges, and you rebase it yourself.
+- **Batch your pushes.** Each push to an outside PR needs one of us to approve its test build, so push fixes together rather than one at a time.
+- **Don't edit `CHANGELOG.md`.** Release notes are written from PR descriptions at release time.
+- **Never commit** settings backup zips (they contain live account credentials), API keys, or Apollo binaries and IPAs.
 
 Repeatedly opening PRs that skip these rules can get you blocked from the repo.
 

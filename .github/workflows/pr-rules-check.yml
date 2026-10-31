@@ -1,7 +1,8 @@
 name: Pull request rules
 
-# Pull requests from outside the core team have to link an issue, show the bug
-# reproduced on main, include before/after media and list the devices they
+# Pull requests from outside the core team have to link an issue, say whether
+# they're a bug fix, feature or refactor, show the bug reproduced on main and
+# include before/after media where that applies, and list the devices they
 # were tested on (CONTRIBUTING.md#pull-request-rules, with a section for each
 # in .github/pull_request_template.md). This checks a PR when it's opened or
 # marked ready for review. If anything is missing it labels the PR
