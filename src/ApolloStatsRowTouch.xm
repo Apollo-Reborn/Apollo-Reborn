@@ -44,6 +44,7 @@
 #import "ApolloThemeRuntime.h"
 #import "UIWindow+Apollo.h"
 #import "ApolloClasses.h"
+#import "ApolloDuoNavigationGestures.h"
 
 // MARK: - Minimal AsyncDisplayKit forward declarations
 
@@ -783,6 +784,11 @@ static void SRTWireCornerFailureRequirements(UIGestureRecognizer *loupe, UIView 
         for (UIGestureRecognizer *g in v.gestureRecognizers) {
             if (objc_getAssociatedObject(g, kSRTGestureTypeKey)) continue;   // ours
             if (g == scrollPan || g == pop || [wired containsObject:g]) continue;
+            // The Duo pane Back and its highlight guard decide a sideways drag
+            // from its motion and take it before the hold could; their drag
+            // claim then cancels the undecided loupe. The loupe keeps
+            // press-and-hold.
+            if (ApolloDuoIsPaneGesture(g)) continue;
             NSString *cls = NSStringFromClass([g class]);
             BOOL pressLike = [g isKindOfClass:[UILongPressGestureRecognizer class]]
                 || [cls containsString:@"Press"]
