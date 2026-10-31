@@ -1,6 +1,7 @@
 #import "ApolloDuoAccount.h"
 #import "ApolloDuoRail.h"
 #import "ApolloDuoSplitView.h"
+#import "ApolloNavigationActions.h"
 #import "ApolloClasses.h"
 #import "ApolloCommon.h"
 #import "ApolloThemeRuntime.h"
@@ -355,6 +356,7 @@ static void ApolloDuoAdjustFloatingActionButton(UIView *button) {
 - (void)viewDidLayoutSubviews {
     %orig;
     ApolloDuoRailSync();
+    ApolloNavigationActionsDuoRailLayoutChanged();
 }
 
 - (void)viewDidAppear:(BOOL)animated {

@@ -13,6 +13,7 @@
 #import "ApolloCommon.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloNavigationActions.h"
+#import "ApolloDuoRail.h"
 #import "ApolloNativeActionMenus.h"
 #import "ApolloDeletedCommentsData.h"
 #import "ApolloState.h"
@@ -104,6 +105,8 @@ static const void *kApolloGlobeStandaloneItemKey = &kApolloGlobeStandaloneItemKe
 // The right-shift the merge applied to Apollo's buttons, stored on the container
 // so removal can undo it exactly.
 static const void *kApolloGlobeMergeShiftKey = &kApolloGlobeMergeShiftKey;
+// Marks a standalone globe item built as a plain image item for the Duo rail.
+static const void *kApolloGlobeRailItemKey = &kApolloGlobeRailItemKey;
 static BOOL sApplyingGlobeMerge = NO;
 // Globe slot width inside Apollo's container. ~34pt centers the ~26pt glyph with
 // the same modest padding Apollo's own icons use, so spacing reads even.
@@ -7918,6 +7921,13 @@ static UIView *ApolloStandaloneGlobeView(UIButton *globe) {
 // custom-view UIView that holds at least one UIButton OTHER than our globe.
 static UIView *ApolloFindTrailingButtonContainerInItems(NSArray<UIBarButtonItem *> *items, UIButton *globe) {
     for (UIBarButtonItem *item in items) {
+        // The opened Duo's List/Split/Layout controls are custom views with
+        // buttons too, but not Apollo's action strip: merging into one parks
+        // the globe in the top bar beside Layout.
+        if (@available(iOS 26.0, *)) {
+            if ([item.identifier hasPrefix:@"ApolloReborn.duo-"]) continue;
+        }
+        if ([item.accessibilityIdentifier isEqualToString:@"ApolloDuoFeedControl"]) continue;
         UIView *cv = ApolloNavigationActionsContentView(item);
         if (![cv isKindOfClass:[UIView class]]) continue;
         BOOL hasOtherButton = NO;
@@ -8190,6 +8200,63 @@ static void ApolloApplyGlobeMergeForNavItem(UINavigationItem *navItem) {
     // only trailing button is a plain image item — PostsSearchResultsViewController
     // with its sort bullseye — live on this path permanently.
     ApolloDetachGlobeFromContainer(globe);  // only unpacks a container we merged into
+    // On the Duo's vertical rail a custom-view item cannot sit on the platter;
+    // UIKit parks it in the top bar. Use a plain image item there instead,
+    // forwarding to the globe button, and swap kinds when the rail comes or goes.
+    BOOL railActive = ApolloDuoRailHasVisibleSideBar();
+    if (railActive && ApolloNavigationActionsDuoRailHostsGlobe(navItem)) {
+        // The closed Duo's rail shows More alone and offers the globe as a row
+        // in it, so the globe gets no rail item of its own.
+        if (standalone) {
+            NSMutableArray<UIBarButtonItem *> *its = [navItem.rightBarButtonItems mutableCopy];
+            if ([its containsObject:standalone]) {
+                [its removeObject:standalone];
+                sApplyingGlobeMerge = YES;
+                navItem.rightBarButtonItems = its;
+                sApplyingGlobeMerge = NO;
+            }
+            if (ApolloStandaloneItemHostsGlobe(standalone, globe)) standalone.customView = nil;
+            objc_setAssociatedObject(navItem, kApolloGlobeStandaloneItemKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            ApolloLog(@"[Translation] Globe: offered in the Duo rail's More (title length %lu)", (unsigned long)navItem.title.length);
+        }
+        return;
+    }
+    BOOL railKind = objc_getAssociatedObject(standalone, kApolloGlobeRailItemKey) != nil;
+    if (standalone && railKind != railActive) {
+        NSMutableArray<UIBarButtonItem *> *its = [navItem.rightBarButtonItems mutableCopy];
+        if ([its containsObject:standalone]) {
+            [its removeObject:standalone];
+            sApplyingGlobeMerge = YES;
+            navItem.rightBarButtonItems = its;
+            sApplyingGlobeMerge = NO;
+        }
+        if (!railKind && ApolloStandaloneItemHostsGlobe(standalone, globe)) standalone.customView = nil;
+        standalone = nil;
+        objc_setAssociatedObject(navItem, kApolloGlobeStandaloneItemKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (railActive) {
+        if (!standalone) {
+            __weak UIButton *weakGlobe = globe;
+            UIImage *image = [globe imageForState:UIControlStateNormal];
+            standalone = [[UIBarButtonItem alloc] initWithPrimaryAction:[UIAction actionWithTitle:@"" image:image identifier:nil
+                                                                                          handler:^(__unused UIAction *action) {
+                [weakGlobe sendActionsForControlEvents:UIControlEventTouchUpInside];
+            }]];
+            objc_setAssociatedObject(standalone, kApolloGlobeRailItemKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(navItem, kApolloGlobeStandaloneItemKey, standalone, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            ApolloLog(@"[Translation] Globe: hosting as a native Duo rail item (title length %lu)", (unsigned long)navItem.title.length);
+        }
+        standalone.image = [globe imageForState:UIControlStateNormal];
+        standalone.accessibilityLabel = globe.accessibilityLabel;
+        NSMutableArray<UIBarButtonItem *> *its = [navItem.rightBarButtonItems mutableCopy] ?: [NSMutableArray array];
+        if (![its containsObject:standalone]) {
+            [its addObject:standalone];
+            sApplyingGlobeMerge = YES;
+            navItem.rightBarButtonItems = its;
+            sApplyingGlobeMerge = NO;
+        }
+        return;
+    }
     if (standalone && ApolloStandaloneItemHostsGlobe(standalone, globe) && [navItem.rightBarButtonItems containsObject:standalone]) {
         return;  // already hosted as its own item — leave UIKit's wrapper alone
     }
@@ -8217,6 +8284,32 @@ static void ApolloApplyGlobeMergeForNavItem(UINavigationItem *navItem) {
 }
 
 static void ApolloNormalizeTrailingPillPaddingForNavItem(UINavigationItem *navItem);
+
+BOOL ApolloTranslationNavigationItemHasGlobe(UINavigationItem *navItem) {
+    if (!navItem || [objc_getAssociatedObject(navItem, kApolloGlobeRemovalPendingKey) boolValue]) return NO;
+    return objc_getAssociatedObject(navItem, kApolloGlobeMergeButtonKey) != nil;
+}
+
+UIButton *ApolloTranslationNavigationItemGlobeButton(UINavigationItem *navItem) {
+    return ApolloTranslationNavigationItemHasGlobe(navItem) ? objc_getAssociatedObject(navItem, kApolloGlobeMergeButtonKey) : nil;
+}
+
+BOOL ApolloTranslationNavigationItemIsTranslated(UINavigationItem *navItem) {
+    // The globe targets the controller whose translation it toggles.
+    UIButton *globe = ApolloTranslationNavigationItemGlobeButton(navItem);
+    for (id target in globe.allTargets) {
+        if ([target isKindOfClass:UIViewController.class] && ApolloControllerIsInTranslatedMode(target)) return YES;
+    }
+    return NO;
+}
+
+BOOL ApolloTranslationIsDuoRailGlobeItem(UIBarButtonItem *item) {
+    return item && objc_getAssociatedObject(item, kApolloGlobeRailItemKey) != nil;
+}
+
+void ApolloTranslationRefreshNavigationItemGlobe(UINavigationItem *navItem) {
+    if (ApolloTranslationNavigationItemHasGlobe(navItem)) ApolloApplyGlobeMergeForNavItem(navItem);
+}
 
 // Remove the globe entirely (translation gated off): detach from any container,
 // drop any standalone item, and clear tracking.
@@ -8362,7 +8455,9 @@ static void ApolloNormalizeTrailingPillPaddingForNavItem(UINavigationItem *navIt
 
 static void ApolloUpdateTranslationUIForController(id controller) {
     UIViewController *vc = (UIViewController *)controller;
-    if (!sEnableBulkTranslation) return;
+    // Translation switched off: still run the cleanup below for a page that
+    // already shows the globe, or it lingers (merged, standalone or on the Duo rail).
+    if (!sEnableBulkTranslation && !objc_getAssociatedObject(vc.navigationItem, kApolloGlobeMergeButtonKey)) return;
 
     BOOL isFeedVC = [objc_getAssociatedObject(controller, kApolloFeedTranslationVCKey) boolValue];
     // Comments VCs require sEnableBulkTranslation.
@@ -10603,7 +10698,13 @@ static void ApolloScheduleFeedSettledTitleRefresh(UIViewController *vc) {
 
 static void ApolloFeedVCInstallGlobe(UIViewController *vc) {
     if (!vc) return;
-    if (!sEnableBulkTranslation) return;
+    if (!sEnableBulkTranslation) {
+        // Switched off while this feed showed its globe: remove it.
+        if (objc_getAssociatedObject(vc.navigationItem, kApolloGlobeMergeButtonKey)) {
+            ApolloRemoveGlobeMergeForNavItem(vc.navigationItem);
+        }
+        return;
+    }
     BOOL alreadyMarked = [objc_getAssociatedObject(vc, kApolloFeedTranslationVCKey) boolValue];
     objc_setAssociatedObject(vc, kApolloFeedTranslationVCKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     sLastInstalledFeedViewController = vc;

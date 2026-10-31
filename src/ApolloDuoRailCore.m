@@ -16,6 +16,8 @@
 #import <stdbool.h>
 #import <stdatomic.h>
 
+NSNotificationName const ApolloDuoModeDidChangeNotification = @"ApolloDuoModeDidChangeNotification";
+
 static char kApolloDuoRailModeKey;
 static char kApolloDuoAdaptiveBarsKey;
 static char kApolloDuoRailSavedIndicatorInsetsKey;
@@ -494,6 +496,9 @@ void ApolloDuoRailSync(void) {
     NSNumber *previous = objc_getAssociatedObject(tabs, &kApolloDuoRailModeKey);
     if (!previous || previous.intValue != mode) {
         objc_setAssociatedObject(tabs, &kApolloDuoRailModeKey, @(mode), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (previous) {
+            [NSNotificationCenter.defaultCenter postNotificationName:ApolloDuoModeDidChangeNotification object:tabs];
+        }
     }
     if (mode != ApolloDuoModePhone &&
         ![objc_getAssociatedObject(tabs, &kApolloDuoAdaptiveBarsKey) boolValue]) {

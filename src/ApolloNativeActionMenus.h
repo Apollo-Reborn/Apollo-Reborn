@@ -28,6 +28,11 @@ BOOL ApolloNativeActionMenuPresentCapturedAtPoint(UIMenu *menu, UIView *source, 
 // UIContextMenuInteraction gestures already supply their own feedback.
 void ApolloNativeActionMenuPreviewFeedback(UIView *source, CGPoint point);
 void ApolloNativeActionMenuAnchorMediaConfiguration(UIContextMenuConfiguration *configuration, CGPoint point);
+// One of Apollo's option-* menu assets, trimmed of transparent margins and
+// fitted to a `side`-point box.
+UIImage *_Nullable ApolloNativeActionMenuAssetIcon(NSString *assetName, CGFloat side);
+// The same for any image, e.g. a bar button's glyph shown as a menu row.
+UIImage *_Nullable ApolloNativeActionMenuFittedIcon(UIImage *_Nullable image, CGFloat side);
 
 // Runs `action` after the tweak-owned Liquid Glass context menu that was built
 // from `actionController` has completely dismissed. Returns NO when the
