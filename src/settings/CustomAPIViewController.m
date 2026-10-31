@@ -2994,6 +2994,20 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
         }];
     panelStyle.visible = ^BOOL { return ApolloDuoUsesAdaptiveBars(); };
 
+    // Movable divider for the unfolded landscape Posts split: press and hold
+    // the divider, then drag. Off keeps the fixed 50/50 split; the drag lives
+    // in ApolloDuoSplitDivider.m and ApolloDuoSplitView.xm.
+    ApolloSettingsRow *adjustableSplit =
+        [ApolloSettingsRow switchRowWithID:@"sub.adjustableSplit"
+                                     title:@"Adjustable Split"
+                                      isOn:^BOOL { return sDuoAdjustableSplit; }
+                                  onToggle:^(UISwitch *sender) {
+                                      sDuoAdjustableSplit = sender.isOn;
+                                      [NSUserDefaults.standardUserDefaults setBool:sender.isOn forKey:UDKeyDuoAdjustableSplit];
+                                      ApolloDuoSplitApplyPostsStop(nil);
+                                  }];
+    adjustableSplit.visible = ^BOOL { return ApolloDuoUsesAdaptiveBars(); };
+
     // Pushes the dedicated Subreddit Sections screen: the FOLLOWING section
     // for followed users, drag-to-reorder for the special sections, and a
     // live preview of the list layout (see ApolloSubredditSectionsViewController).
@@ -3032,7 +3046,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                   }];
     return [ApolloSettingsSection sectionWithTitle:@"Subreddit List"
                                             footer:nil
-                                              rows:@[ feedShortcuts, subredditSections, panelStyle,
+                                              rows:@[ feedShortcuts, subredditSections, panelStyle, adjustableSplit,
                                                       perAccountFavorites, sortFavoritesAlphabetically, confirmFavoriteToggle ]];
 }
 

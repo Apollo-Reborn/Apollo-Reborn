@@ -796,8 +796,22 @@ static void ApolloTitlePresentationItemChanged(UINavigationItem *item) {
 - (void)didMoveToWindow {
     %orig;
     ApolloTitlePresentationOwner *owner = objc_getAssociatedObject(self, &kApolloTitlePresentationOwnerKey);
-    if (!self.window) [owner resetPresentation];
-    else ApolloNavigationTitlePresentationRefresh(self);
+    if (self.window) {
+        ApolloNavigationTitlePresentationRefresh(self);
+    } else if (owner && ApolloDuoSplitIsMovingColumns()) {
+        // The Duo split moves this navigation to another column and puts it
+        // back in the window within this turn. Keep the hosted title, so it
+        // moves with the column instead of handing its custom view back to
+        // the native title for a few frames; reset only if it stays out.
+        __weak UINavigationBar *weakBar = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UINavigationBar *bar = weakBar;
+            if (!bar || bar.window) return;
+            [(ApolloTitlePresentationOwner *)objc_getAssociatedObject(bar, &kApolloTitlePresentationOwnerKey) resetPresentation];
+        });
+    } else {
+        [owner resetPresentation];
+    }
 }
 - (void)setTitleTextAttributes:(NSDictionary *)attributes {
     %orig(attributes);
