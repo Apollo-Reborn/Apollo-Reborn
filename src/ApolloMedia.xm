@@ -411,6 +411,10 @@ static void ApolloMediaStyleVideoControlsAirPlayButton(UIButton *button, NSStrin
 }
 
 static void ApolloMediaRepairRouteControlLayout(UIView *routeView, NSString *reason) {
+    // The tabletop picker owns its icon sizing and keeps UIKit's native route
+    // button intact. Applying the legacy-player image repair duplicates its
+    // animated system artwork and overwrites its native button configuration.
+    if ([routeView.accessibilityIdentifier isEqualToString:@"ApolloDuoTabletopAirPlay"]) return;
     if (![routeView isKindOfClass:[UIView class]] || !ApolloMediaRouteControlIsInMediaViewer(routeView)) return;
     routeView.clipsToBounds = NO;
     routeView.contentMode = UIViewContentModeScaleAspectFit;

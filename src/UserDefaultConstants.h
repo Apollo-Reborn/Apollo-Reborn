@@ -367,6 +367,9 @@ static NSString *const UDKeyDuoLandscapeFeedLayout = @"DuoLandscapeFeedLayout";
 // Open Duo subreddit panel appearance: NO = Standard
 // (default), YES = Liquid Glass. The panel keeps the same size and navigation.
 static NSString *const UDKeyDuoSubredditPanelGlassEnabled = @"DuoSubredditPanelGlassEnabled";
+// Opt-in tabletop video layout on a partly folded Duo. Default OFF.
+static NSString *const UDKeyDuoTabletopVideoEnabled = @"DuoTabletopVideoEnabled";
+static NSString *const ApolloDuoVideoLayoutDidChangeNotification = @"ApolloDuoVideoLayoutDidChangeNotification";
 // iPad only. When ON, replaces each tab's single navigation stack with a
 // multi-column UISplitViewController: sidebar (the tab's own root list) →
 // content → detail. Opt-in; default OFF via registerDefaults. Installation
