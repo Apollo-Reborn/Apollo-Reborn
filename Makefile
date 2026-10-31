@@ -433,6 +433,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/settings/TranslationSettingsViewController.m \
     $(SRC_DIR)/settings/SavedCategoriesViewController.m \
     $(SRC_DIR)/TagFiltersViewController.m \
+    $(SRC_DIR)/ApolloLocalFilterTransfer.m \
     $(SRC_DIR)/ApolloPostFilterStore.m \
     $(SRC_DIR)/ApolloPostFilters.xm \
     $(SRC_DIR)/ApolloFiltersBlocksInject.xm \

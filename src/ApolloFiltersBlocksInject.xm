@@ -1,7 +1,7 @@
 // ApolloFiltersBlocksInject
 //
 // Beefs out Apollo's native Filters & Blocks screen
-// (_TtC6Apollo29SettingsFiltersViewController) by APPENDING three Reborn sections
+// (_TtC6Apollo29SettingsFiltersViewController) by APPENDING four Reborn sections
 // below the native Keywords / Subreddits / Users sections:
 //
 //   • SUBREDDIT-SPECIFIC FILTERS — a list of configured subreddits; tap one to
@@ -13,6 +13,8 @@
 //     "Per-Subreddit Overrides" disclosure (settings IA restructure: Tag
 //     Filters is a filter, so it lives here now instead of a top-level
 //     Settings row; the switches write the same defaults the old screen did).
+//   • LOCAL SUBREDDIT FILTERS — merge-only plain-text transfer for the active
+//     account's built-in local subreddit filter list.
 //
 // Native sections are left fully intact (we append, so their indices never shift;
 // every native section/row routes straight to %orig). Cells are borrowed from a
@@ -26,12 +28,16 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloAccountCredentials.h"
+#import "ApolloClasses.h"
+#import "ApolloLocalFilterTransfer.h"
 #import "ApolloPostFilterStore.h"
 #import "ApolloState.h"
 #import "ApolloSubredditFilterDetailViewController.h"
 #import "ApolloTagFilters.h"
 #import "TagFiltersViewController.h"
 #import "UserDefaultConstants.h"
+#import <objc/message.h>
 
 // Native Filters & Blocks screen (Apollo.SettingsFiltersViewController). Declared
 // for the compiler so our self-calls (the dataSource method + the %new helpers
@@ -49,10 +55,13 @@
 - (void)apollo_tfNSFWChanged:(UISwitch *)sw;
 - (void)apollo_tfSpoilerChanged:(UISwitch *)sw;
 - (void)apollo_tfOpenOverrides;
+- (UITableViewCell *)apollo_lftCellForTable:(UITableView *)tableView row:(NSInteger)row;
+- (void)apollo_lftCopyLocalFilters;
+- (void)apollo_lftImportLocalFiltersFromTable:(UITableView *)tableView;
 @end
 
 // Number of Reborn sections appended after the native ones.
-static const NSInteger kApolloPFExtraSections = 3;
+static const NSInteger kApolloPFExtraSections = 4;
 
 // Rows of the appended Tag Filters section (always 4; static).
 enum {
@@ -62,6 +71,81 @@ enum {
     ApolloTFRowOverrides,
     ApolloTFRowCount,
 };
+
+enum {
+    ApolloLFTRowCopy = 0,
+    ApolloLFTRowImport,
+    ApolloLFTRowCount,
+};
+
+static id ApolloLFTUserForClient(id client) {
+    if (!client) return nil;
+    @try {
+        id user = [client valueForKey:@"currentUser"];
+        return user;
+    } @catch (NSException *exception) {
+        ApolloLogError(@"[LocalFilterTransfer] Could not read active user: %@", exception.name);
+        return nil;
+    }
+}
+
+static id ApolloLFTActiveUser(void) {
+    return ApolloLFTUserForClient(ApolloActiveAccountClient());
+}
+
+static NSArray *ApolloLFTStoredNames(id user) {
+    if (!user) return nil;
+    @try {
+        id names = [user valueForKey:@"locallyFilteredSubreddits"];
+        // A signed-in account may legitimately have no local filters yet.
+        // Treat a nil property as an empty list while still failing closed for
+        // an unexpected model type or an unavailable KVC key.
+        if (!names) return @[];
+        return [names isKindOfClass:NSArray.class] ? names : nil;
+    } @catch (NSException *exception) {
+        ApolloLogError(@"[LocalFilterTransfer] Could not read local filters: %@", exception.name);
+        return nil;
+    }
+}
+
+static BOOL ApolloLFTPersistNames(id user, NSArray *names) {
+    if (!user || ![names isKindOfClass:NSArray.class] || ![NSThread isMainThread]) return NO;
+    NSArray *previous = ApolloLFTStoredNames(user);
+    if (!previous) return NO;
+
+    Class managerClass = ApolloClassAccountManager;
+    SEL sharedSelector = @selector(shared);
+    SEL persistSelector = @selector(persistInformationToDisk);
+    id manager = managerClass && [managerClass respondsToSelector:sharedSelector]
+        ? ((id (*)(id, SEL))objc_msgSend)(managerClass, sharedSelector) : nil;
+    NSMethodSignature *persistSignature = [manager methodSignatureForSelector:persistSelector];
+    if (!manager || object_getClass(manager) != managerClass ||
+        !persistSignature || persistSignature.numberOfArguments != 2 ||
+        persistSignature.methodReturnLength != 0) return NO;
+
+    @try {
+        [user setValue:[names copy] forKey:@"locallyFilteredSubreddits"];
+        ((void (*)(id, SEL))objc_msgSend)(manager, persistSelector);
+        ApolloLog(@"[LocalFilterTransfer] Persisted %lu local subreddit filters",
+                  (unsigned long)names.count);
+        return YES;
+    } @catch (NSException *exception) {
+        @try { [user setValue:previous forKey:@"locallyFilteredSubreddits"]; }
+        @catch (__unused NSException *rollbackException) {}
+        ApolloLogError(@"[LocalFilterTransfer] Import persistence failed: %@", exception.name);
+        return NO;
+    }
+}
+
+static void ApolloLFTPresentMessage(UIViewController *presenter,
+                                    NSString *title,
+                                    NSString *message) {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [presenter presentViewController:alert animated:YES completion:nil];
+}
 
 // Collapsible native Blocked Users section (the last native section): collapsed by
 // default to a single tappable "Blocked Users (N)" row so a long block list doesn't
@@ -186,7 +270,8 @@ static UIView *ApolloPFSectionFooterView(NSString *text) {
     }
     if (section == native) return (NSInteger)[ApolloPostFilterStore allSubreddits].count + 1;     // + Add
     if (section == native + 1) return (NSInteger)[ApolloPostFilterStore nameSubstrings].count + 1; // + Add
-    return ApolloTFRowCount; // Tag Filters (static)
+    if (section == native + 2) return ApolloTFRowCount; // Tag Filters (static)
+    return ApolloLFTRowCount; // Local filter transfer (static)
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -204,6 +289,7 @@ static UIView *ApolloPFSectionFooterView(NSString *text) {
     }
 
     if (indexPath.section == native + 2) return [self apollo_tfCellForTable:tableView row:indexPath.row];
+    if (indexPath.section == native + 3) return [self apollo_lftCellForTable:tableView row:indexPath.row];
 
     BOOL isSubSection = (indexPath.section == native);
     NSArray<NSString *> *items = isSubSection ? [ApolloPostFilterStore allSubreddits]
@@ -259,7 +345,8 @@ static UIView *ApolloPFSectionFooterView(NSString *text) {
     NSString *title;
     if (section == native) title = @"Subreddit-Specific Filters";
     else if (section == native + 1) title = @"Filter Subreddits by Name";
-    else title = @"Tag Filters";
+    else if (section == native + 2) title = @"Tag Filters";
+    else title = @"Local Subreddit Filters";
     return ApolloPFSectionHeaderView(title);
 }
 
@@ -276,8 +363,10 @@ static UIView *ApolloPFSectionFooterView(NSString *text) {
         text = @"Hide posts in a specific subreddit by title keyword or post flair. Tap a subreddit to configure. Applies on this device.";
     } else if (section == native + 1) {
         text = @"Hide any subreddit whose name contains one of these words, in feeds and in search (e.g. 'circlejerk' hides r/carscirclejerk). Applies on this device.";
-    } else {
+    } else if (section == native + 2) {
         text = @"Filtered posts are covered with a frosted blur over the post's title and thumbnail. Tap the blur to confirm and reveal the post.";
+    } else {
+        text = @"Copy the active account's local subreddit filters as plain text, or merge a copied list back in. Import never removes existing filters.";
     }
     return ApolloPFSectionFooterView(text);
 }
@@ -319,6 +408,9 @@ static UIView *ApolloPFSectionFooterView(NSString *text) {
         // Existing name rows: no detail; remove via swipe / Edit.
     } else if (indexPath.section == native + 2) {
         if (indexPath.row == ApolloTFRowOverrides) [self apollo_tfOpenOverrides];
+    } else if (indexPath.section == native + 3) {
+        if (indexPath.row == ApolloLFTRowCopy) [self apollo_lftCopyLocalFilters];
+        else [self apollo_lftImportLocalFiltersFromTable:tableView];
     }
 }
 
@@ -537,6 +629,118 @@ static UIView *ApolloPFSectionFooterView(NSString *text) {
     } else {
         [selfVC presentViewController:[[UINavigationController alloc] initWithRootViewController:vc] animated:YES completion:nil];
     }
+}
+
+#pragma mark - Local subreddit filter transfer
+
+%new
+- (UITableViewCell *)apollo_lftCellForTable:(UITableView *)tableView row:(NSInteger)row {
+    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+    cell.textLabel.text = row == ApolloLFTRowCopy ? @"Copy Local Filter List" : @"Import from Clipboard...";
+    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    cell.accessoryType = UITableViewCellAccessoryNone;
+    @try {
+        UITableViewCell *probe = [self tableView:tableView cellForRowAtIndexPath:
+                                  [NSIndexPath indexPathForRow:0 inSection:0]];
+        UIColor *background = probe.backgroundColor ?: probe.contentView.backgroundColor;
+        if (background && CGColorGetAlpha(background.CGColor) > 0.01) {
+            cell.backgroundColor = background;
+        }
+    } @catch (__unused NSException *exception) {}
+    return cell;
+}
+
+%new
+- (void)apollo_lftCopyLocalFilters {
+    UIViewController *presenter = (UIViewController *)self;
+    NSArray *names = ApolloLFTStoredNames(ApolloLFTActiveUser());
+    if (!names) {
+        ApolloLFTPresentMessage(presenter, @"No Active Account",
+                               @"Sign in to copy this account's local subreddit filters.");
+        return;
+    }
+    NSString *text = ApolloLocalFilterExportText(names);
+    if (text.length == 0) {
+        ApolloLFTPresentMessage(presenter, @"No Local Filters",
+                               @"This account does not have any local subreddit filters to copy.");
+        return;
+    }
+    UIPasteboard.generalPasteboard.string = text;
+    NSUInteger count = [text componentsSeparatedByString:@"\n"].count;
+    ApolloLFTPresentMessage(presenter, @"Filter List Copied",
+                           [NSString stringWithFormat:@"Copied %lu subreddit%@ as one name per line.",
+                            (unsigned long)count, count == 1 ? @"" : @"s"]);
+}
+
+%new
+- (void)apollo_lftImportLocalFiltersFromTable:(UITableView *)tableView {
+    UIViewController *presenter = (UIViewController *)self;
+    id accountClient = ApolloActiveAccountClient();
+    id user = ApolloLFTUserForClient(accountClient);
+    NSArray *existing = ApolloLFTStoredNames(user);
+    if (!existing) {
+        ApolloLFTPresentMessage(presenter, @"No Active Account",
+                               @"Sign in before importing local subreddit filters.");
+        return;
+    }
+    NSString *clipboard = UIPasteboard.generalPasteboard.string;
+    if (clipboard.length == 0) {
+        ApolloLFTPresentMessage(presenter, @"Clipboard Is Empty",
+                               @"Copy a plain-text list of subreddit names, then try again.");
+        return;
+    }
+
+    NSUInteger added = 0;
+    NSUInteger invalid = 0;
+    ApolloLocalFilterImportStatus importStatus = ApolloLocalFilterImportStatusSuccess;
+    NSArray *merged = ApolloLocalFilterMergeImportText(existing, clipboard, &added, &invalid,
+                                                        &importStatus);
+    if (importStatus != ApolloLocalFilterImportStatusSuccess) {
+        ApolloLFTPresentMessage(presenter, @"Filter List Is Too Large",
+                               @"Import supports up to 256 KB and 4,096 entries at a time.");
+        return;
+    }
+    if (added == 0) {
+        NSString *message = invalid > 0
+            ? [NSString stringWithFormat:@"No new valid subreddit names were found. %lu entr%@ ignored.",
+               (unsigned long)invalid, invalid == 1 ? @"y was" : @"ies were"]
+            : @"Every subreddit on the clipboard is already in this account's local filter list.";
+        ApolloLFTPresentMessage(presenter, @"Nothing to Import", message);
+        return;
+    }
+
+    NSString *message = [NSString stringWithFormat:
+        @"Add %lu new subreddit%@ to this account? Existing filters will stay unchanged.%@",
+        (unsigned long)added, added == 1 ? @"" : @"s",
+        invalid > 0 ? [NSString stringWithFormat:@"\n\n%lu invalid entr%@ ignored.",
+                       (unsigned long)invalid, invalid == 1 ? @"y was" : @"ies were"] : @""];
+    UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"Import Local Filters"
+                                                                      message:message
+                                                               preferredStyle:UIAlertControllerStyleAlert];
+    [confirm addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    __weak UITableView *weakTable = tableView;
+    __weak UIViewController *weakPresenter = presenter;
+    [confirm addAction:[UIAlertAction actionWithTitle:@"Import" style:UIAlertActionStyleDefault
+                                               handler:^(__unused UIAlertAction *action) {
+        UIViewController *strongPresenter = weakPresenter;
+        if (!strongPresenter) return;
+        if (ApolloActiveAccountClient() != accountClient ||
+            ApolloLFTUserForClient(accountClient) != user) {
+            ApolloLFTPresentMessage(strongPresenter, @"Account Changed",
+                                   @"The active account changed before import. No filters were saved. Try again.");
+            return;
+        }
+        if (!ApolloLFTPersistNames(user, merged)) {
+            ApolloLFTPresentMessage(strongPresenter, @"Import Failed",
+                                   @"Apollo could not safely save the local filter list. Nothing was removed.");
+            return;
+        }
+        [weakTable reloadData];
+        ApolloLFTPresentMessage(strongPresenter, @"Filters Imported",
+                               [NSString stringWithFormat:@"Added %lu subreddit%@.",
+                                (unsigned long)added, added == 1 ? @"" : @"s"]);
+    }]];
+    [presenter presentViewController:confirm animated:YES completion:nil];
 }
 
 #pragma mark - Collapsible Blocked Users toggle
