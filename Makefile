@@ -204,6 +204,8 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloVideoVisibility.m \
     $(SRC_DIR)/ApolloCommentsCollapse.xm \
     $(SRC_DIR)/ApolloCommentHeaderLayout.xm \
+    $(SRC_DIR)/ApolloCommentSpoilerContrast.c \
+    $(SRC_DIR)/ApolloCommentSpoilerContrast.xm \
     $(SRC_DIR)/ApolloMaintainerTint.m \
     $(SRC_DIR)/ApolloFindInComments.xm \
     $(SRC_DIR)/ApolloFindInCommentsGlass.xm \
