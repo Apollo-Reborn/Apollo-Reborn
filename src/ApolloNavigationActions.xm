@@ -314,6 +314,7 @@ static void ApolloActionsApplyChromeToView(UIView *view, BOOL blueDone) {
 - (BOOL)deferGeometryUpdate;
 - (void)publishExpandedState;
 - (void)settleAnimationIfNeeded;
+- (void)collapseForResignActive;
 - (void)setExpanded:(BOOL)expanded animated:(BOOL)animated;
 - (void)watchScrollViews;
 - (void)scrolled:(UIPanGestureRecognizer *)pan;
@@ -1350,8 +1351,7 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
     __weak typeof(self) weakSelf = self;
     _resignObserver = [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationWillResignActiveNotification
         object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {
-            // Finish our animation without retaining UIKit's transient hidden/alpha state.
-            [weakSelf setExpanded:NO animated:NO];
+            [weakSelf collapseForResignActive];
         }];
     return self;
 }
@@ -1680,6 +1680,20 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
         }
     }
     return items;
+}
+- (void)collapseForResignActive {
+    // Scene deactivation can arrive while UIKit is also committing its own
+    // navigation-bar transition. Finishing our property animator from inside
+    // that scene-settings transaction re-enters QuartzCore and can raise an
+    // exception. Discard only the in-flight presentation animation first, then
+    // settle the same collapsed model synchronously without firing its completion.
+    UIViewPropertyAnimator *running = self.animator;
+    if (running) {
+        self.animator = nil;
+        if (running.state == UIViewAnimatingStateActive) [running stopAnimation:YES];
+        self.needsAnimationSettlement = YES;
+    }
+    [self setExpanded:NO animated:NO];
 }
 - (void)setExpanded:(BOOL)expanded animated:(BOOL)animated {
     // All collapse entry points share the per-page policy.
