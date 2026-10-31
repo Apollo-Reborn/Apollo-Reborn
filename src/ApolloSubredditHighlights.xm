@@ -1712,7 +1712,7 @@ static NSString *const kApolloHLDuoPaneBackName = @"ApolloReborn.Duo.PaneBack";
     // pan always refuses (ApolloDuoSplitView's gestureRecognizerShouldBegin:).
     if (atStart) {
         BOOL back = ApolloDuoHasBackSwipe(nav)
-            ? [self ahlDuoBackSwipeTracksRightwardTouch]
+            ? [self ahlDuoPaneSwipeTracksTouchForward:NO]
             : nav.viewControllers.count > 1 && ApolloHLNavigationPanWouldBegin(nav, self.panGestureRecognizer, NO);
         if (back) {
             ApolloLog(@"[Highlights] carousel at its first highlight; Back takes the swipe (offset=%.0f)", offset);
@@ -1724,23 +1724,34 @@ static NSString *const kApolloHLDuoPaneBackName = @"ApolloReborn.Duo.PaneBack";
         ApolloLog(@"[Highlights] carousel at its last highlight; Forward takes the swipe (offset=%.0f)", offset);
         return YES;
     }
+    // On the Duo the pane swipe, leftward, is also the forward swipe that
+    // brings back a thread a Back closed beside the Posts feed.
+    if (atEnd && ApolloDuoHasBackSwipe(nav) && [self ahlDuoPaneSwipeTracksTouchForward:YES]) {
+        ApolloLog(@"[Highlights] carousel at its last highlight; the Duo forward swipe takes it (offset=%.0f)", offset);
+        return YES;
+    }
     return NO;
 }
 
 // The Duo's pane Back swipe only accepts a touch that lands in its narrow
 // strip at the pane's left edge while it can navigate (or reveal the
-// subreddit drawer at the feed root); its shouldReceiveTouch: makes both
-// checks at touch-down. So it is tracking this touch exactly when it would
-// act on a rightward swipe. (Possible while undecided; a continuous
-// recognizer waiting on the carousel would read Began.)
-- (BOOL)ahlDuoBackSwipeTracksRightwardTouch {
-    if ([self.panGestureRecognizer velocityInView:self].x <= 0.0) return NO;
+// subreddit drawer at the feed root), or, for the forward swipe, in the strip
+// at its right edge while a closed thread can come back; its
+// shouldReceiveTouch: makes those checks at touch-down and records which way
+// it took the touch (ApolloDuoPaneBackPanAdmits). So it is tracking this
+// touch for the way the carousel is being swiped exactly when it would act on
+// it. (Possible while undecided; a continuous recognizer waiting on the
+// carousel would read Began.)
+- (BOOL)ahlDuoPaneSwipeTracksTouchForward:(BOOL)forward {
+    CGFloat velocity = [self.panGestureRecognizer velocityInView:self].x;
+    if (forward ? velocity >= 0.0 : velocity <= 0.0) return NO;
     for (UIView *view = self.superview; view; view = view.superview) {
         for (UIGestureRecognizer *recognizer in view.gestureRecognizers) {
             if (![recognizer.name isEqualToString:kApolloHLDuoPaneBackName]) continue;
             UIGestureRecognizerState state = recognizer.state;
             if (recognizer.enabled && recognizer.numberOfTouches > 0 &&
-                (state == UIGestureRecognizerStatePossible || state == UIGestureRecognizerStateBegan)) return YES;
+                (state == UIGestureRecognizerStatePossible || state == UIGestureRecognizerStateBegan) &&
+                ApolloDuoPaneBackPanAdmits(recognizer, forward)) return YES;
         }
     }
     return NO;
@@ -1773,7 +1784,8 @@ static NSString *const kApolloHLDuoPaneBackName = @"ApolloReborn.Duo.PaneBack";
             if (g == self.panGestureRecognizer) continue;
             // The Duo's pane Back swipe recognizes alongside scroll views, so
             // an edge swipe went Back even mid-carousel. It waits here too and
-            // ahlShouldYieldToNavigation releases it at the first highlight.
+            // ahlShouldYieldToNavigation releases it at the first highlight
+            // (or, for the forward swipe, the last).
             if (([g isKindOfClass:[UIPanGestureRecognizer class]] && ![g.view isKindOfClass:[UIScrollView class]]) ||
                 [g.name isEqualToString:kApolloHLDuoPaneBackName]) {
                 [g requireGestureRecognizerToFail:self.panGestureRecognizer];

@@ -30,6 +30,7 @@
 #import "Tweak.h"
 #import "UserDefaultConstants.h"
 #import "ApolloClasses.h"
+#import "ApolloDuoNavigationGestures.h"
 
 struct ApolloFeedGallerySizeRange { CGSize min; CGSize max; };
 
@@ -395,6 +396,9 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
             // go back. A permanent failure requirement would instead make every
             // carousel on the screen block navigation, even when untouched.
             if ([recognizer isKindOfClass:[UIScreenEdgePanGestureRecognizer class]]) continue;
+            // The Duo pane Back makes the same page 1 / edge decision in its
+            // own touch admission, so it doesn't wait for the carousel either.
+            if (ApolloDuoIsPaneBackPan(recognizer)) continue;
             UIView *recognizerView = recognizer.view;
             if ([recognizerView isKindOfClass:[UIScrollView class]] &&
                 recognizer == ((UIScrollView *)recognizerView).panGestureRecognizer) continue;
