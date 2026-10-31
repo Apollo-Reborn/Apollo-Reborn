@@ -50,12 +50,11 @@ UIFont *ApolloSettingsFont(UIFontTextStyle style, UITraitCollection *traits) {
 CGFloat ApolloSettingsClassicRowHeight(UITableView *table, NSString *title, NSString *detail,
                                       BOOL hasIcon, CGFloat accessoryWidth) {
     UIFont *font = ApolloSettingsFont(UIFontTextStyleBody, table.traitCollection);
-    // Inset-grouped cells are narrower than the table. Use a displayed cell
-    // when available, otherwise the table's section margins (also on iPad).
-    CGFloat width = CGRectGetWidth(table.visibleCells.firstObject.bounds);
-    if (width <= 0) {
-        width = CGRectGetWidth(table.bounds) - table.layoutMargins.left - table.layoutMargins.right;
-    }
+    // Inset-grouped cells are narrower than the table: use its section
+    // margins (also on iPad). Don't read visibleCells here; this runs from
+    // heightForRowAtIndexPath: while UIKit is updating them, which trips
+    // UIKit's visible-cells access assert.
+    CGFloat width = CGRectGetWidth(table.bounds) - table.layoutMargins.left - table.layoutMargins.right;
     width -= 32.0 + accessoryWidth + (hasIcon ? 45.0 : 0.0);
     if (detail.length) {
         CGFloat detailWidth = ceil([detail sizeWithAttributes:@{NSFontAttributeName: font}].width);
