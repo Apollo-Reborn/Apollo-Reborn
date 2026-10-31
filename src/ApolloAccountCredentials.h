@@ -96,6 +96,11 @@ NSString *ApolloEffectiveRedirectURI(void);
 // (the active account's saved key), so that setup doesn't fall through to
 // Apollo's own client id; the new account is still pinned to what it used.
 void ApolloAccountCredentialsBeginInteractiveSignIn(id credential);
+// NO when a new sign-in has no API key to send: none in Settings and none
+// saved on the active account. Its authorize URL then carries Apollo's own
+// client id (the RDKOAuthCredential -clientIdentifier hook falls back to it),
+// which Reddit rejects only after the person has logged in.
+BOOL ApolloAccountCredentialsNewSignInHasAPIKey(void);
 // The snapshot captured for `credential`, or nil for every other credential.
 ApolloAccountCredentialEntry * _Nullable ApolloInteractiveSignInCredentialsFor(id _Nullable credential);
 // What RDKOAuthCredential's -clientIdentifier / -redirectURI hooks return for
