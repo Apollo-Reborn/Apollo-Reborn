@@ -44,6 +44,7 @@
 #import "ApolloWebAuthViewController.h"
 #import "ApolloToast.h"
 #import "ApolloWebJSON.h"
+#import "ApolloWebJSONPreference.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloReduceRateLimiting.h"
 #import "ApolloWebSessionLoginViewController.h"
@@ -3809,6 +3810,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyImgurAlbumFallbackProxies: @YES,
                                     UDKeyAutomaticUpdateChecks: @YES,
                                     UDKeyWebJSONEnabled: @NO,
+                                    UDKeyWebJSONExplicitlyDisabled: @NO,
                                     UDKeyReduceRateLimiting: @NO,
                                     UDKeyKeylessRouteUpdates: @YES,
                                     UDKeyReduceRateLimitingOffered: @NO,
@@ -4455,18 +4457,24 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     // where sWebJSONEnabled is read). Migrates any legacy NSUserDefaults cookie,
     // then any legacy single-global session, into the per-account store.
     ApolloWebJSONLoadPersistedCredentials();
-    // Per-account coherence: a stored web session IS that account's sign-in —
-    // it only works while the Web JSON transport is enabled. The mode is
-    // chosen per account now (sign-in choosers no longer gate on this flag,
-    // and turning an account's mode off REMOVES its session), so "sessions
-    // exist but the flag is off" is a stale kill-switch state from an older
-    // build; without this the accounts would badge as keyless in the switcher
-    // while every one of their requests hangs.
-    if (!sWebJSONEnabled && ApolloWebSessionUsernames().count > 0) {
+    // Per-account coherence: old builds could leave the transport flag off
+    // while stored primary web sessions still existed. Repair that legacy
+    // state, but honor the settings screen's explicit "Turn Off Anyway"
+    // choice even though those accounts cannot make requests until the mode is
+    // enabled again or they are removed/re-signed-in with API credentials.
+    NSUserDefaults *webJSONDefaults = NSUserDefaults.standardUserDefaults;
+    NSUInteger webSessionCount = ApolloWebSessionUsernames().count;
+    BOOL explicitlyDisabled = [webJSONDefaults boolForKey:UDKeyWebJSONExplicitlyDisabled];
+    BOOL launchEnabled = ApolloWebJSONLaunchShouldEnable(
+        sWebJSONEnabled, webSessionCount > 0, explicitlyDisabled);
+    if (launchEnabled && !sWebJSONEnabled) {
         sWebJSONEnabled = YES;
-        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:UDKeyWebJSONEnabled];
+        [webJSONDefaults setBool:YES forKey:UDKeyWebJSONEnabled];
         ApolloLog(@"[WebJSON] Enabled Web JSON transport at launch — %lu web-session account(s) exist",
-                  (unsigned long)ApolloWebSessionUsernames().count);
+                  (unsigned long)webSessionCount);
+    } else if (!launchEnabled && webSessionCount > 0 && explicitlyDisabled) {
+        ApolloLog(@"[WebJSON] Keeping Web JSON transport disabled by user choice with %lu stored web-session account(s)",
+                  (unsigned long)webSessionCount);
     }
     if (sWebJSONEnabled) {
         NSArray<NSString *> *webSessionUsers = ApolloWebSessionUsernames().allObjects;

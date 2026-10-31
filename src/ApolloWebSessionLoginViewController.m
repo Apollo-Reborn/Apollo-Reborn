@@ -352,10 +352,17 @@ static void ApolloWebSessionHarvestFromCookieStore(WKHTTPCookieStore *cookieStor
             // transport spine and rides along an OAuth account that keeps its
             // own request path, so enabling the global transport here would be
             // an unwanted side effect the user never opted into.
-            if (!auxiliaryOnly && !sWebJSONEnabled) {
-                sWebJSONEnabled = YES;
-                [[NSUserDefaults standardUserDefaults] setBool:YES forKey:UDKeyWebJSONEnabled];
-                ApolloLog(@"[WebJSON] Enabled Web JSON transport — u/%@ signed in without an API key", username);
+            if (!auxiliaryOnly) {
+                NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+                // A new primary web-session sign-in is an explicit opt-in. It
+                // supersedes a previous master-switch opt-out even if restored
+                // preferences happened to leave the runtime flag on already.
+                [defaults setBool:NO forKey:UDKeyWebJSONExplicitlyDisabled];
+                [defaults setBool:YES forKey:UDKeyWebJSONEnabled];
+                if (!sWebJSONEnabled) {
+                    sWebJSONEnabled = YES;
+                    ApolloLog(@"[WebJSON] Enabled Web JSON transport — u/%@ signed in without an API key", username);
+                }
             }
             // Tell the Custom API screen to re-derive itself. It may be
             // sitting right behind this login page sheet (whose dismissal

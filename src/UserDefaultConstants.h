@@ -625,6 +625,12 @@ static NSString *const UDKeyPostFilterNameSubstrings = @"PostFilterNameSubstring
 // Web JSON spike (see ApolloWebJSON.m). Master switch for re-pointing
 // whitelisted listing reads at cookie-authenticated www.reddit.com JSON.
 static NSString *const UDKeyWebJSONEnabled = @"WebJSONEnabled";
+// Set only when the user deliberately turns API-Key-Free Mode off. Older
+// builds repaired a stale off flag whenever stored web sessions existed; this
+// marker distinguishes that legacy state from a confirmed opt-out. Signing in
+// to a new primary web-session account or turning the mode on clears it.
+// Default NO.
+static NSString *const UDKeyWebJSONExplicitlyDisabled = @"WebJSONExplicitlyDisabled";
 // Reduce Rate Limiting (ApolloReduceRateLimiting.m). Reddit gives an
 // API-key-free (web session) account a much smaller request budget than an API
 // key, so while one is active this trades a little polish for fewer requests:

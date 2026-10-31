@@ -4732,7 +4732,12 @@ static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
 - (void)_applyWebJSONEnabled:(BOOL)enabled {
     BOOL wasOn = sWebJSONEnabled;
     sWebJSONEnabled = enabled;
-    [[NSUserDefaults standardUserDefaults] setBool:sWebJSONEnabled forKey:UDKeyWebJSONEnabled];
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    [defaults setBool:sWebJSONEnabled forKey:UDKeyWebJSONEnabled];
+    // This method is reached only from the user-facing master switch. Record
+    // the confirmed off choice separately so launch-time legacy repair cannot
+    // silently reverse it while stored web-session accounts still exist.
+    [defaults setBool:!enabled forKey:UDKeyWebJSONExplicitlyDisabled];
     if (sWebJSONEnabled == wasOn) return;
 
     // The Web Session Login row only exists while the mode is on.
