@@ -61,6 +61,10 @@
 // media viewer's swipe-up comments sheet.
 extern "C" BOOL ApolloSwipeCommentsIsPaneCommentsController(UIViewController *controller);
 
+// ApolloInboxCommentScroll.xm: YES for a thread that opens on a linked comment
+// (an Inbox reply, a comment permalink) rather than at the top of the post.
+extern "C" BOOL ApolloInboxCommentScrollLandsOnLinkedComment(UIViewController *vc);
+
 // Forward ref for the geometry hooks (same pattern as ApolloSearchInPlace.xm).
 @interface ASTableView : UITableView
 @end
@@ -152,6 +156,7 @@ static const void *kNSBBridgeKey     = &kNSBBridgeKey;      // VC -> bridge dele
 static const void *kNSBNativeBarKey  = &kNSBNativeBarKey;   // UISearchBar -> @YES for the bars this module attaches
 static const void *kNSBFeedTableKey  = &kNSBFeedTableKey;   // ASTableView -> @YES (native-managed table: a feed, or a comments screen)
 static const void *kNSBAppearedKey   = &kNSBAppearedKey;    // VC -> @YES once it has appeared at least once
+static const void *kNSBParkedForLandingKey = &kNSBParkedForLandingKey; // VC -> @YES: attached scrolled away for a linked comment, until it first appears
 // How far above the safe area a resting write may sit and still count as one:
 // the toolbar band (45pt fresh, 37pt on a feed restored after a post) plus
 // room for the taller values Apollo computes mid nav-morph.
@@ -1143,9 +1148,22 @@ static void NSBAttachNativeSearch(UIViewController *vc) {
 
     // Attach laid-out-visible; the scroll-away policy flips it after the first
     // appearance (plain YES here parks the bar off-screen — no large title).
+    // Except a thread that opens on a linked comment: the landing scrolls it
+    // straight past the post, so the bar was on screen for the push and then
+    // vanished a beat after the comment landed, when the policy flipped. Park it
+    // instead: the push lays it out scrolled away, it stays that way at the
+    // comment, and it comes back like any scrolled-away bar (a pull at the top
+    // of the post). viewDidAppear skips the
+    // appearance reveal for it, so a short thread that lands at the top rest
+    // doesn't push everything down a bar's height once it's on screen.
+    BOOL parkForLanding = comments && objc_getAssociatedObject(vc, kNSBAppearedKey) == nil &&
+                          ApolloInboxCommentScrollLandsOnLinkedComment(vc);
     navItem.searchController = sc;
     ApolloPaneApplySearchPlacement(vc);
-    navItem.hidesSearchBarWhenScrolling = NO;
+    navItem.hidesSearchBarWhenScrolling = parkForLanding;
+    if (parkForLanding) {
+        objc_setAssociatedObject(vc, kNSBParkedForLandingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
 
     // Point UIKit's bar collapse tracking at the actual feed table — automatic
     // detection lands on Apollo's full-screen intercepting scroll view, which
@@ -1171,7 +1189,8 @@ static void NSBAttachNativeSearch(UIViewController *vc) {
     // other holds), UIKit draws it inside the band; keep the look it has once
     // the scroll-away policy takes over (ApolloScrollEdgeEffect.xm, #1361).
     ApolloHeaderStyleRegisterScrollAwaySearchBar(sc.searchBar, navItem, table);
-    ApolloLog(@"[NativeSearch] attached search controller to %s", object_getClassName(vc));
+    ApolloLog(@"[NativeSearch] attached search controller to %s%s", object_getClassName(vc),
+              parkForLanding ? " (scrolled away: opens on a linked comment)" : "");
 }
 
 // Hide Apollo's own toolbar (the resting pill inside the feed). Re-asserted
@@ -1701,6 +1720,10 @@ static void NSBViewWillDisappear(UIViewController *vc) {
     // Fresh notes: the next viewWillAppear: is a new appearance even if it
     // arrives inside the transition this one ran in (a cancelled pop).
     leavingState.notesTransition = nil;
+    // A push into a linked-comment thread that never finished appearing (a
+    // cancelled forward swipe) leaves the park note unspent; it was for that
+    // first appearance only.
+    objc_setAssociatedObject(vc, kNSBParkedForLandingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (NSBTraceEnabled()) {
         ApolloLog(@"[NSBTrace] leaving: y=%.1f adjTop=%.1f bar=%.1f -> leftAtTop=%d leftCollapsedAtRest=%d",
                   leavingTable.contentOffset.y, leavingTable.adjustedContentInset.top,
@@ -1870,7 +1893,11 @@ static void NSBViewWillDisappear(UIViewController *vc) {
     // Cancellation sends didAppear from inside completeTransition:, before
     // UIKit finishes restoring the palette. Read its geometry next turn.
     UIScrollView *appearedTable = NSBTableForVC((UIViewController *)self);
-    if (!appearedState.keepCollapsedOnAppear) NSBArmReveal(appearedTable, "appeared");
+    // A bar parked for a linked comment (NSBAttachNativeSearch) stays away on
+    // its first appearance, the same as one the user left scrolled away.
+    BOOL parkedForLanding = objc_getAssociatedObject(self, kNSBParkedForLandingKey) != nil;
+    objc_setAssociatedObject(self, kNSBParkedForLandingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!appearedState.keepCollapsedOnAppear && !parkedForLanding) NSBArmReveal(appearedTable, "appeared");
     // A Duo column move the split did not finish repairs here
     // (ApolloNativeFeedSearchFinishColumnMove).
     ApolloNativeFeedSearchFinishColumnMove((UIViewController *)self);

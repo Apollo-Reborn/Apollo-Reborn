@@ -23,7 +23,9 @@
 // (the "jumps up and down" in the inbox → comment transition).
 //
 // Fix: the tweak owns the landing for isolated threads and makes it one instant placement
-// that doesn't move afterwards.
+// that doesn't move afterwards. On Liquid Glass the "Find in Comments" bar also starts out
+// scrolled away for these threads instead of showing for the push and vanishing once the
+// comment lands (ApolloSearchNativeBar.xm asks ApolloInboxCommentScrollLandsOnLinkedComment).
 //   - Land: the first table layout that has the linked row puts it at the top of the visible
 //     area (clamped to the content). This runs in ASTableView's layoutSubviews, after UIKit
 //     tiled the rows and before the frame paints, so the thread appears already on your
@@ -31,11 +33,12 @@
 //   - Apollo's own animated landing scroll (the first animated setContentOffset it sends that
 //     table) is swallowed: by the time it fires we're already there.
 //   - Anchor: until the layout settles, every later layout keeps the linked comment at the
-//     same spot on screen. Rows above that grow or shrink (post body, a parent's media) are
-//     absorbed before paint; rows below that grow (a reply's image) fill in underneath; the
-//     "Find in Comments" bar collapsing at the end of the push no longer drags the list up
-//     with it. If the thread was short at landing and the comment sat lower on screen, it
-//     stays there instead of sliding up when a reply's media arrives later.
+//     same spot on screen. Rows above that grow or shrink (post body, a parent's media, the
+//     post's AI summary card restoring) are absorbed before paint, and their height commits
+//     are made instant so UIKit doesn't slide the rows back afterwards; rows below that grow
+//     (a reply's image) fill in underneath. If the thread was short at landing and the comment
+//     sat lower on screen, it stays there instead of sliding up when a reply's media arrives
+//     later.
 //   - A poll loop is the backstop: it lands when no layout pass comes, detects the settle,
 //     and enforces the deadlines.
 // It never fights the user. A touch, drag or deceleration, a status-bar tap, reselecting the
@@ -95,6 +98,7 @@ static const NSInteger kICSMaxCorrections = 40;            // something else kee
 @property (nonatomic) BOOL landed;
 @property (nonatomic) BOOL nativeSwallowed;               // Apollo's one animated landing scroll consumed
 @property (nonatomic) BOOL ended;
+@property (nonatomic) BOOL batchLogged;                   // logged the first de-animated batch update
 @property (nonatomic, strong) NSIndexPath *linked;        // cached linked row, re-validated on each use
 @end
 
@@ -142,6 +146,12 @@ static BOOL ICSIsIsolatedThread(UIViewController *vc) {
 
 static ApolloICSState *ICSStateFor(UIViewController *vc) {
     return vc ? objc_getAssociatedObject(vc, kICSStateKey) : nil;
+}
+
+// For the native search bar (ApolloSearchNativeBar.xm), asked when it attaches to the thread
+// on its first appearance: this thread opens on a linked comment, not at the top of the post.
+extern "C" BOOL ApolloInboxCommentScrollLandsOnLinkedComment(UIViewController *vc) {
+    return vc && ICSIsIsolatedThread(vc);
 }
 
 // Find the linked comment's index path. AsyncDisplayKit holds a node object for every row —
@@ -462,6 +472,26 @@ static void ICSArm(UIViewController *vc) {
         %orig;
     }];
     ICSAnchor(vc, @"row heights");
+}
+
+// The same slide through Texture's batch updates: a plain begin/endUpdates on the table (the AI
+// summary card's re-entry remeasure grows the post header by its card's height) or a batch from
+// Apollo's ListAdapter commits animated. Commit it instantly while the landing holds; the
+// anchor absorbs the height change in the layout pass that applies it. Not before the landing:
+// the thread's first batch swaps the loading spinner for the comments, and its fade covers the
+// moment Texture is still measuring them.
+- (void)endUpdatesAnimated:(BOOL)animated completion:(id)completion {
+    UIViewController *vc = (animated && (__bridge void *)self == sICSTable) ? sICSVC : nil;
+    ApolloICSState *st = ICSStateFor(vc);
+    if (!st || !st.landed || st.ended) {
+        %orig;
+        return;
+    }
+    if (!st.batchLogged) {
+        st.batchLogged = YES;
+        ApolloLog(@"[InboxScroll] committing the table's batch update without animation while holding (gen=%ld)", st.gen);
+    }
+    %orig(NO, completion);
 }
 
 %end
