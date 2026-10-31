@@ -4703,27 +4703,32 @@ static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
 }
 
 - (void)webJSONSwitchToggled:(UISwitch *)sender {
-    // Turning this OFF while ANY account has a stored web session leaves that
-    // account with no working transport: no OAuth key is configured (it never
-    // needed one) and cookie auth just got disabled by this flag — every
-    // request for it would hang forever with no visible error. Confirm before
-    // applying so that's a deliberate choice, not a surprise.
-    NSUInteger webSessionCount = ApolloWebSessionUsernames().count;
-    if (sender.isOn == NO && sWebJSONEnabled && webSessionCount > 0) {
-        [sender setOn:YES animated:YES]; // revert the visual toggle pending confirmation
-        NSString *who = webSessionCount == 1 ? @"An account" : [NSString stringWithFormat:@"%lu accounts", (unsigned long)webSessionCount];
-        UIAlertController *alert = [UIAlertController
-            alertControllerWithTitle:@"Turn Off API-Key-Free Mode?"
-                             message:[NSString stringWithFormat:
-                                 @"%@ signed in via a web session, not an API key. Turning this off will make every request for it hang. Remove or re-sign-in that account first, or turn it back on if you change your mind.", who]
-                      preferredStyle:UIAlertControllerStyleAlert];
+    // A stored web session IS that account's sign-in, so launch turns this
+    // back on while one exists (Tweak.xm %ctor). Turning it off alone never
+    // stuck (#1581), and until the relaunch every request for that account
+    // hung. Off therefore means moving those accounts to an API key first,
+    // through the same switch the account switcher offers.
+    NSArray<NSString *> *webSessionUsers = ApolloWebSessionUsernames().allObjects;
+    if (sender.isOn == NO && sWebJSONEnabled && webSessionUsers.count > 0) {
+        [sender setOn:YES animated:YES]; // stays on while a web session is left
+        if (webSessionUsers.count > 1) {
+            UIAlertController *alert = [UIAlertController
+                alertControllerWithTitle:@"Turn Off API-Key-Free Mode?"
+                                 message:[NSString stringWithFormat:
+                                     @"%lu accounts sign in without an API key. Switch each one to an API key from the account switcher first.",
+                                     (unsigned long)webSessionUsers.count]
+                          preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+            [self presentViewController:alert animated:YES completion:nil];
+            return;
+        }
         __weak typeof(self) weakSelf = self;
-        [alert addAction:[UIAlertAction actionWithTitle:@"Turn Off Anyway" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a) {
-            [sender setOn:NO animated:YES];
+        __weak UISwitch *weakSender = sender;
+        ApolloPresentSwitchToAPIKeyFlow(self, webSessionUsers.firstObject, ^(BOOL switched) {
+            if (!switched || ApolloWebSessionUsernames().count > 0) return;
+            [weakSender setOn:NO animated:YES];
             [weakSelf _applyWebJSONEnabled:NO];
-        }]];
-        [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-        [self presentViewController:alert animated:YES completion:nil];
+        });
         return;
     }
     [self _applyWebJSONEnabled:sender.isOn];

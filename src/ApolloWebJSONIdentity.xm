@@ -616,24 +616,41 @@ void ApolloWebJSONSeedBearerRegistryFromDisk(void) {
     if (seeded > 0) ApolloLog(@"[WebJSON][identity] Seeded bearer registry from disk (%lu account(s))", (unsigned long)seeded);
 }
 
-BOOL ApolloWebJSONDiskAccountHasRealCredential(NSString *username) {
-    if (username.length == 0) return NO;
+// The Valet sensitive dicts persisted for `username` (case-insensitive), one per
+// matching RedditAccounts2 entry — normally one, more if the blobs hold duplicates.
+static NSArray<NSDictionary *> *ApolloWebJSONDiskSensitiveEntriesForUsername(NSString *username) {
+    if (username.length == 0) return @[];
     NSString *lowerUsername = username.lowercaseString;
     NSUserDefaults *group = [[NSUserDefaults alloc] initWithSuiteName:kApolloGroupSuite];
     id accountsObj = ApolloWebJSONUnarchive([group objectForKey:@"RedditAccounts2"]);
     NSArray *accounts = [accountsObj isKindOfClass:[NSArray class]] ? accountsObj : @[];
-    if (accounts.count == 0) return NO;
+    if (accounts.count == 0) return @[];
     NSArray<NSDictionary *> *valet = ApolloWebJSONReadValetAccountsArray(NULL) ?: @[];
 
+    NSMutableArray<NSDictionary *> *entries = [NSMutableArray array];
     for (NSUInteger i = 0; i < accounts.count && i < valet.count; i++) {
         if (![ApolloWebJSONUsernameAtIndex(accounts, i) isEqualToString:lowerUsername]) continue;
-        NSDictionary *sensitive = [valet[i] isKindOfClass:[NSDictionary class]] ? valet[i] : nil;
+        if ([valet[i] isKindOfClass:[NSDictionary class]]) [entries addObject:valet[i]];
+    }
+    return entries;
+}
+
+BOOL ApolloWebJSONDiskAccountHasRealCredential(NSString *username) {
+    for (NSDictionary *sensitive in ApolloWebJSONDiskSensitiveEntriesForUsername(username)) {
         NSString *accessToken  = [sensitive[@"accessToken"]  isKindOfClass:[NSString class]] ? sensitive[@"accessToken"]  : nil;
         NSString *refreshToken = [sensitive[@"refreshToken"] isKindOfClass:[NSString class]] ? sensitive[@"refreshToken"] : nil;
         if (refreshToken.length > 0) return YES;
         if (accessToken.length > 0 && !ApolloWebJSONBearerIsSynthetic(accessToken)) return YES;
     }
     return NO;
+}
+
+NSString *ApolloWebJSONDiskAccountRefreshToken(NSString *username) {
+    for (NSDictionary *sensitive in ApolloWebJSONDiskSensitiveEntriesForUsername(username)) {
+        NSString *refreshToken = [sensitive[@"refreshToken"] isKindOfClass:[NSString class]] ? sensitive[@"refreshToken"] : nil;
+        if (refreshToken.length > 0) return refreshToken;
+    }
+    return nil;
 }
 
 // One-shot launch repair for installs poisoned by the pre-fix cross-account
