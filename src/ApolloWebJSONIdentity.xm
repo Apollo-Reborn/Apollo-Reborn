@@ -1116,12 +1116,35 @@ static BOOL ApolloWebJSONKeepSubscriptionListAfterFailedWalk(RDKUser *user, NSAr
     NSString *requestMethod = [method copy];
     NSString *requestPath = [path copy];
     NSString *username = ApolloWebJSONShouldActForClient(self) ? ApolloWebJSONClientUsername(self) : nil;
+    // API-key accounts: /api/info and /api/morechildren go by their /.json form
+    // once oauth.reddit.com refused their usual path this launch (below).
+    if (!username) requestPath = ApolloOAuthReadPathToSend(requestMethod, requestPath);
     ApolloWebJSONCheckAccountSession(username);
     // API-Key-Free account listings: 100 per page (ApolloWebJSONParametersForAccountRead).
     parameters = ApolloWebJSONParametersForAccountRead(username, requestMethod, requestPath, parameters);
     RDKClient *client = self;
     id sentParameters = parameters;
     void (^wrapped)(NSHTTPURLResponse *, id, NSError *) = ^(NSHTTPURLResponse *response, id object, NSError *error) {
+        // API-key accounts (#1608, #1615): oauth.reddit.com answers some keys'
+        // /api/info and /api/morechildren with Reddit's block page, which
+        // RedditKit reads as no answer and no error, so "more replies" puts its
+        // label back and loads nothing. The same read in its /.json form is
+        // still answered (ApolloWebJSONRoutes.h): send it once more that way,
+        // and only that answer reaches the caller.
+        if (!username) {
+            BOOL refused = NO;
+            NSString *retryPath = ApolloOAuthReadPathAfterResponse(requestMethod, requestPath, response, &refused);
+            if (retryPath) {
+                ApolloWebJSONLogRouteOutcomeOnce(requestMethod, requestPath, [NSString stringWithFormat:
+                    @"oauth.reddit.com sent this API key Reddit's block page; sending it as %@ from now on", retryPath]);
+                [client taskWithMethod:requestMethod path:retryPath parameters:sentParameters completion:completion];
+                return;
+            }
+            if (refused) {
+                ApolloWebJSONLogRouteOutcomeOnce(requestMethod, requestPath,
+                    @"oauth.reddit.com sent this API key Reddit's block page for the /.json form too");
+            }
+        }
         // A read that has another route gets sent again on it, at most once per
         // route, and only the last answer reaches the caller. Writes never get
         // here (ApolloWebJSONRouteRequestMayRetry). A bearer route's 401 is a
@@ -1183,10 +1206,10 @@ static BOOL ApolloWebJSONKeepSubscriptionListAfterFailedWalk(RDKUser *user, NSAr
     // answered is shared instead of sent again (ApolloWebJSONShareAccountRead).
     ApolloWebJSONTaskCompletion send = ApolloWebJSONShareAccountRead(username, requestMethod, requestPath, parameters, wrapped);
     if (!send) return ApolloWebJSONSharedReadPlaceholderTask();
-    if (routesTried == 0) return %orig(method, path, parameters, send);
+    if (routesTried == 0) return %orig(method, requestPath, parameters, send);
     sApolloWebJSONRoutesTriedToStamp = routesTried;
     @try {
-        return %orig(method, path, parameters, send);
+        return %orig(method, requestPath, parameters, send);
     } @finally {
         sApolloWebJSONRoutesTriedToStamp = 0;
     }

@@ -44,6 +44,7 @@
 #import "ApolloWebAuthViewController.h"
 #import "ApolloToast.h"
 #import "ApolloWebJSON.h"
+#import "ApolloWebJSONRoutes.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloReduceRateLimiting.h"
 #import "ApolloWebSessionLoginViewController.h"
@@ -3203,6 +3204,24 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
                 ApolloLog(@"[RecentlyRead] Rerouted unauthenticated info.json to oauth.reddit.com");
             }
         }
+        // API-key accounts: /api/info and /api/morechildren go by their /.json
+        // form once oauth.reddit.com refused their usual path this launch
+        // (ApolloWebJSONRoutes.h), whoever sends them. RedditKit's are already
+        // sent that way (ApolloWebJSONIdentity.xm); this covers the direct
+        // lookups too (link previews, Hidden & Deleted, URL search, the Recently
+        // Read reroute above). Refusals are noted in _onqueue_didFinishWithError.
+        if ([mutableRequest.URL.host isEqualToString:@"oauth.reddit.com"]) {
+            NSString *readPath = mutableRequest.URL.path ?: @"";
+            NSString *sendPath = ApolloOAuthReadPathToSend(mutableRequest.HTTPMethod ?: @"GET", readPath);
+            if (![sendPath isEqualToString:readPath]) {
+                NSURLComponents *components = [NSURLComponents componentsWithURL:mutableRequest.URL resolvingAgainstBaseURL:NO];
+                components.path = sendPath;
+                if (components.URL) [mutableRequest setURL:components.URL];
+            }
+        }
+#if APOLLO_SIM_BUILD
+        ApolloWebJSONSimBlockOAuthRead(mutableRequest);
+#endif
 
         [self setValue:mutableRequest forKey:@"_originalRequest"];
         [self setValue:mutableRequest forKey:@"_currentRequest"];
@@ -3233,12 +3252,22 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
 // Reddit's 403 HTML block page (signalling the harvested cookie expired). It's a
 // cheap predicate when the flag is off, so this is safe on the hot path.
 - (void)_onqueue_didFinishWithError:(id)error {
+    NSURLSessionTask *task = (NSURLSessionTask *)self;
+    // The request as sent (the rewrite above installs it as both). After a
+    // redirect, such as Old Reddit's sign-in gate, the current request is
+    // the redirect target, whose path isn't the read's.
+    NSURLRequest *sent = task.originalRequest ?: task.currentRequest;
+    // oauth.reddit.com's block page for /api/info or /api/morechildren: later
+    // reads of that endpoint go by its /.json form (ApolloOAuthReadPathToSend).
+    if ([sent.URL.host isEqualToString:@"oauth.reddit.com"] && [task.response isKindOfClass:[NSHTTPURLResponse class]]) {
+        NSString *dotJSONPath = ApolloOAuthReadPathAfterResponse(sent.HTTPMethod ?: @"GET", sent.URL.path ?: @"/",
+                                                                 (NSHTTPURLResponse *)task.response, NULL);
+        if (dotJSONPath) {
+            ApolloLog(@"[OAuthReads] oauth.reddit.com sent Reddit's block page for %@ %@; later reads go by %@",
+                      sent.HTTPMethod ?: @"GET", sent.URL.path, dotJSONPath);
+        }
+    }
     if (sWebJSONEnabled) {
-        NSURLSessionTask *task = (NSURLSessionTask *)self;
-        // The request as sent (the rewrite above installs it as both). After a
-        // redirect, such as Old Reddit's sign-in gate, the current request is
-        // the redirect target, whose path isn't the read's.
-        NSURLRequest *sent = task.originalRequest ?: task.currentRequest;
         ApolloWebJSONNoteResponse(sent, task.response);
     }
     %orig;

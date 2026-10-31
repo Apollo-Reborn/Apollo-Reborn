@@ -328,6 +328,12 @@ void ApolloWebJSONSimSetBlockedRoutes(NSUInteger routeMask);
 // Same, but send them with a cookie Reddit doesn't know, so old.reddit.com
 // answers with its real sign-in gate, as it does an account it won't serve.
 void ApolloWebJSONSimSetGatedRoutes(NSUInteger routeMask);
+// "oauthblock on|off": send an API-key account's /api/info and /api/morechildren
+// at their usual path without its token, so the /.json retry runs against
+// oauth.reddit.com's real block page. Applied by the request
+// chokepoint (Tweak.xm) through ApolloWebJSONSimBlockOAuthRead.
+void ApolloWebJSONSimSetOAuthBlockedReads(BOOL on);
+void ApolloWebJSONSimBlockOAuthRead(NSMutableURLRequest *request);
 #endif
 
 // Seconds the tweak's optional reads (author avatars, subreddit header info)

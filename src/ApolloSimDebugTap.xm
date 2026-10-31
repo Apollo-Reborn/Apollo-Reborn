@@ -2376,6 +2376,15 @@ static BOOL ApolloSimDebugHandleIntegratedMainCommand(NSString *contents) {
         ApolloWebJSONSimSetGatedRoutes(mask);
         return YES;
     }
+    // "oauthblock on|off": an API-key account's /api/info and /api/morechildren
+    // get oauth.reddit.com's real block page at their usual path, to exercise
+    // the /.json retry (ApolloOAuthReadPathAfterResponse).
+    if ([contents hasPrefix:@"oauthblock "]) {
+        BOOL on = [[contents substringFromIndex:11] hasPrefix:@"on"];
+        if (!on) ApolloOAuthReadReset();
+        ApolloWebJSONSimSetOAuthBlockedReads(on);
+        return YES;
+    }
     // "routehealth" logs the API-Key-Free route health; "routehealth reset" clears it.
     if ([contents hasPrefix:@"routehealth"]) {
         if ([contents containsString:@"reset"]) ApolloWebJSONRouteHealthReset();
