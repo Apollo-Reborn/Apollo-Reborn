@@ -214,6 +214,43 @@ BOOL ApolloWebJSONRouteIsFromRemoteTable(NSString *method, NSString *path);
 // Forgets everything (tests and the sim debug bridge).
 void ApolloWebJSONRouteHealthReset(void);
 
+#pragma mark - API-key reads oauth.reddit.com refuses
+
+// Since about 2026-10-29 oauth.reddit.com answers some tokens with the same 403
+// block page www.reddit.com gives the cookie, on GET /api/info and
+// /api/morechildren only; everything else still answers. API keys hit it
+// (issues #1608, #1615: "more replies" loads nothing, and the Inbox's reply
+// parents and the feed's subreddit icons go missing). RedditKit hands the block
+// page on as no answer and no error. Those endpoints' /.json form
+// (/api/info/.json, /api/morechildren/.json) still answers, as it does on www:
+// checked 2026-10-30 on oauth.reddit.com with a bearer it refuses (plain form
+// 403 block page, /.json 200) and an API key's bearer it serves (200 both). So
+// a refused RedditKit read is sent once more in that form
+// (ApolloWebJSONIdentity.xm), and every later read of that endpoint, RedditKit's
+// or a direct lookup's, uses it for the rest of the launch (Tweak.xm's request
+// chokepoint). Any thread.
+
+// The path to send an API-key account's read by: the /.json form of `path` once
+// its endpoint was refused this launch, else `path`. A relative path
+// ("api/info.json", RedditKit's form) stays relative, and a query is kept.
+NSString *ApolloOAuthReadPathToSend(NSString *method, NSString *path);
+
+// YES for these reads at their usual path: GET /api/info, GET or POST
+// /api/morechildren, not already in the /.json form.
+BOOL ApolloOAuthReadIsRetryable(NSString *method, NSString *path);
+
+// After `response` to a read sent by `sentPath`: when it's oauth.reddit.com's
+// block page for one of these endpoints, `refused` (if given) is set, and the
+// return is the path to send the read again by, its /.json form, which
+// ApolloOAuthReadPathToSend uses from then on. nil when there's nothing to
+// retry: any other answer, or the /.json form refused too, which puts the
+// endpoint back on its usual path for the next read.
+NSString *_Nullable ApolloOAuthReadPathAfterResponse(NSString *method, NSString *sentPath,
+                                                     NSHTTPURLResponse *_Nullable response, BOOL *_Nullable refused);
+
+// Forgets which endpoints were refused (tests).
+void ApolloOAuthReadReset(void);
+
 #ifdef __cplusplus
 }
 #endif
