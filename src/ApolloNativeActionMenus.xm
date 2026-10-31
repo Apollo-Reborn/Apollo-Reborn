@@ -3,6 +3,7 @@
 #import "ApolloCommentNavigator.h"
 #import "ApolloCommon.h"
 #import "ApolloNativeActionMenus.h"
+#import "ApolloProfileMoreMenu.h"
 #import "ApolloNavigationActions.h"
 #import "ApolloNativeActionMetadata.h"
 #import "ApolloSwiftRuntime.h"
@@ -2646,6 +2647,7 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
 %hook _TtC6Apollo26ApolloNavigationController
 - (void)presentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(void (^)(void))completion {
     ApolloCommentNavigatorPreparePresentation(viewControllerToPresent);
+    if (!ApolloProfileMoreMenuPreparePresentation((UIViewController *)self, viewControllerToPresent)) return;
     if (ApolloNativeActionMenuPerformPendingDirectAction(viewControllerToPresent)) {
         if (completion) completion();
         return;
@@ -2664,6 +2666,7 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
 
 - (void)presentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(void (^)(void))completion {
     ApolloCommentNavigatorPreparePresentation(viewControllerToPresent);
+    if (!ApolloProfileMoreMenuPreparePresentation((UIViewController *)self, viewControllerToPresent)) return;
     if (ApolloNativeActionMenuPerformPendingDirectAction(viewControllerToPresent)) {
         if (completion) completion();
         return;
