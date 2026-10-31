@@ -211,6 +211,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloCommentVoteFlicker.xm \
     $(SRC_DIR)/ApolloThreeStateVoting.xm \
     $(SRC_DIR)/ApolloFeedSubredditIcons.xm \
+    $(SRC_DIR)/ApolloSubredditIconLookup.xm \
     $(SRC_DIR)/ApolloPostedCommentInsert.xm \
     $(SRC_DIR)/ApolloLoadMoreComments.xm \
     $(SRC_DIR)/ApolloCommentSubmitFailure.xm \
