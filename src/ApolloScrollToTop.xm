@@ -123,6 +123,15 @@ static NSString *ApolloReturnItemID(id node) {
     BOOL visible = bar.window && bar.topItem == item;
     BOOL animate = animated && visible;
     BOOL reduceMotion = UIAccessibilityIsReduceMotionEnabled();
+    if (self.returnItem && !button) {
+        // Classic uses a native item: UIKit owns its view and transition.
+        NSMutableArray *leftItems = [item.leftBarButtonItems mutableCopy];
+        [leftItems removeObjectIdenticalTo:self.returnItem];
+        [item setLeftBarButtonItems:leftItems.count ? leftItems : nil animated:animate && !reduceMotion];
+        item.leftItemsSupplementBackButton = self.supplementedBackButton;
+        self.returnItem = nil;
+        return;
+    }
     CASpringAnimation *spring = animate && !reduceMotion ? ApolloScrollReturnSpring() : nil;
     if (self.returnItem) {
         if (visible) {
@@ -425,6 +434,23 @@ static NSString *ApolloReturnItemID(id node) {
 }
 - (void)showButton {
     if (!sScrollReturnButton || self.returnItem) return;
+    if (!IsLiquidGlass()) {
+        // Let the classic navigation bar own sizing, placement, and tint just
+        // like its other controls. No custom surface or fixed foreground color:
+        // the arrow also follows theme changes while it remains visible.
+        UIImage *image = [UIImage systemImageNamed:@"arrow.uturn.down"];
+        self.returnItem = [[UIBarButtonItem alloc] initWithImage:image style:UIBarButtonItemStylePlain
+                                                        target:self action:@selector(returnToPosition)];
+        self.returnItem.accessibilityIdentifier = @"apollo.scrollReturn";
+        self.returnItem.accessibilityLabel = @"Return to your spot";
+        UINavigationItem *item = self.owner.navigationItem;
+        self.supplementedBackButton = item.leftItemsSupplementBackButton;
+        NSMutableArray *leftItems = [item.leftBarButtonItems mutableCopy] ?: [NSMutableArray array];
+        if (leftItems.count == 0) item.leftItemsSupplementBackButton = YES;
+        [leftItems addObject:self.returnItem];
+        [item setLeftBarButtonItems:leftItems animated:!UIAccessibilityIsReduceMotionEnabled()];
+        return;
+    }
     UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
     button.frame = CGRectMake(0, 0, 44, 44);
     button.translatesAutoresizingMaskIntoConstraints = NO;
@@ -459,11 +485,7 @@ static NSString *ApolloReturnItemID(id node) {
                 [arrow.centerYAnchor constraintEqualToAnchor:glass.contentView.centerYAnchor]
             ]];
             [button addSubview:glass];
-        } else {
-            button.backgroundColor = UIColor.secondarySystemBackgroundColor;
         }
-    } else {
-        button.backgroundColor = UIColor.secondarySystemBackgroundColor;
     }
     button.tintColor = UIColor.labelColor;
     button.layer.cornerRadius = 22;
