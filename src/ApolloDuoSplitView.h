@@ -25,7 +25,15 @@ BOOL ApolloDuoSplitCanRevealPostsListWithSwipe(UINavigationController *navigatio
 /// Closes the Posts subreddit drawer when it is open; NO when it was not.
 BOOL ApolloDuoSplitDismissPostsList(UINavigationController *navigation);
 /// Returns from a visited profile dashboard to its retained Posts Back stack.
+BOOL ApolloDuoSplitCanReturnFromVisitedProfile(UINavigationController *navigation);
 BOOL ApolloDuoSplitReturnFromVisitedProfile(UINavigationController *navigation);
+/// A native pop here uncovers a real page of the same pane, not the Posts
+/// backstop under a thread, an empty detail's placeholder or Account's Overview.
+BOOL ApolloDuoSplitPopRevealsContent(UINavigationController *nav);
+/// An unfolded split lays `nav` out (folded and portrait have none).
+BOOL ApolloDuoSplitIsActive(UINavigationController *nav);
+/// Back in `nav` is the Posts thread close: the thread right above its backstop.
+BOOL ApolloDuoSplitBackClosesThread(UINavigationController *nav);
 BOOL ApolloDuoSplitShowSidebar(UINavigationController *navigation);
 __END_DECLS
 

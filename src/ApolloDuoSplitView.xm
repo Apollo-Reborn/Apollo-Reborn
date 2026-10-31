@@ -989,6 +989,14 @@ static __thread void *sDuoSplitGesture;
 static __thread void *sDuoSplitGestureView;
 static __thread CGFloat sDuoSplitGestureOffset;
 
+// Apollo's pan handler (sub_10015e204, behind screenEdgePanned: and
+// navigationBarPanned:) completes a held release at half its view's width.
+// A split pane's view extends under the sidebar or the feed column, so scale
+// only that release's translation: half is then measured on the visible pane.
+static __thread void *sDuoSplitReleaseGesture;
+static __thread void *sDuoSplitReleaseView;
+static __thread CGFloat sDuoSplitReleaseScale = 1.0;
+
 static NSString *ApolloDuoSplitKind(UIViewController *root) {
     NSString *name = NSStringFromClass(root.class);
     if ([name isEqualToString:@"Apollo.RedditListViewController"]) return @"subreddits";
@@ -1076,6 +1084,53 @@ BOOL ApolloDuoSplitAllowsNavigationSwipe(UINavigationController *nav) {
     return !state.host.listVisible && (nav == state.feed || nav == state.secondary);
 }
 
+// Whether a native pop in `nav` uncovers a real page of that same pane. With
+// no split (folded, portrait) every pop does. In the split only a visible pane
+// qualifies: the feed with no thread beside it (Apollo's own pans stay off
+// the feed while a thread shows, see gestureRecognizerShouldBegin: below), or
+// the detail pane. A thread right above the Posts backstop does not: closing
+// it is a column change, and a native pop would show the backstop. Neither do
+// an empty detail's plain placeholder or Account's Overview beneath the
+// shared header, which only the split's own Back lays out.
+BOOL ApolloDuoSplitPopRevealsContent(UINavigationController *nav) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    NSArray<UIViewController *> *pages = nav.viewControllers;
+    if (pages.count < 2) return NO;
+    if (!state.split) return YES;
+    if (state.changing) return NO;
+    if (nav == state.feed) return !state.host.postsShowingDetail;
+    if (nav != state.secondary) return NO;
+    if (state.feed) return pages.count > 2;
+    UIViewController *below = pages[pages.count - 2];
+    BOOL placeholder = below.class == UIViewController.class;
+    BOOL overview = [state.kind isEqualToString:@"account"] && below == state.root;
+    return !placeholder && !overview;
+}
+
+// An unfolded split lays `nav` out: a pane, its outer host, a sidebar or the
+// drawer list. Folded or in portrait there is none.
+BOOL ApolloDuoSplitIsActive(UINavigationController *nav) {
+    return ApolloDuoSplitStateForNavigation(nav, NO).split != nil;
+}
+
+// Back in `nav` closes the Posts thread column: the thread pane right above
+// its backstop, which this file's popViewControllerAnimated: hook closes.
+BOOL ApolloDuoSplitBackClosesThread(UINavigationController *nav) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    return state.split && state.feed && !state.changing && nav == state.secondary
+        && nav.viewControllers.count == 2;
+}
+
+// A native pop has still left the Posts thread pane on its backstop. Apollo's
+// tab-bar pan and goBack call its Swift pop directly, so they never reach this
+// file's popViewControllerAnimated: hook and its column close.
+static BOOL ApolloDuoPostsPopReachedBackstop(ApolloDuoSplitState *state, UINavigationController *nav,
+                                             UIViewController *shown) {
+    return state.split && state.feed && !state.changing && nav == state.secondary
+        && state.host.postsShowingDetail && nav.viewControllers.count == 1
+        && shown == nav.viewControllers.firstObject;
+}
+
 BOOL ApolloDuoSplitCanRevealPostsListWithSwipe(UINavigationController *nav) {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
     return state.split && !state.changing && state.feed == nav
@@ -1109,6 +1164,64 @@ CGRect ApolloDuoSplitContentFrame(UIViewController *controller, UIView *coordina
 static UIView *ApolloDuoSplitMediaSurface(ApolloDuoSplitState *state, UINavigationController *nav) {
     if (!state.split || (nav != state.feed && nav != state.secondary && nav != state.primary)) return nil;
     return state.outer.viewIfLoaded;
+}
+
+// How much wider a pane's navigation view is than the visible pane, or 1
+// when it is not, or either width is missing.
+static CGFloat ApolloDuoSplitNativePanReleaseScale(CGFloat viewWidth, CGFloat paneWidth) {
+    if (!(viewWidth > 0.0) || !(paneWidth > 0.0) || paneWidth >= viewWidth) return 1.0;
+    return viewWidth / paneWidth;
+}
+
+// The scale for the translation Apollo reads on releasing one of its own
+// navigation pans (edge Back, edge Forward, navigation bar) in a visible pane,
+// else 1. Dragging stays unscaled, so the page keeps tracking the finger.
+// The pane is the one the Duo pane Back measures: it excludes the sidebar or
+// feed column and keeps the trailing rail.
+static CGFloat ApolloDuoSplitNativePanReleaseScaleForNavigation(UINavigationController *nav, UIPanGestureRecognizer *gesture) {
+    if (!gesture || (gesture.state != UIGestureRecognizerStateEnded && gesture.state != UIGestureRecognizerStateCancelled)) return 1.0;
+    static const char *const names[] = {"leftScreenEdgePanGestureRecognizer", "rightScreenEdgePanGestureRecognizer",
+                                        "navigationBarPanGestureRecognizer"};
+    BOOL apolloPan = NO;
+    for (size_t index = 0; index < sizeof(names) / sizeof(names[0]); index++) {
+        Ivar ivar = class_getInstanceVariable(nav.class, names[index]);
+        if (ivar && object_getIvar(nav, ivar) == gesture) apolloPan = YES;
+    }
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    if (!apolloPan || !state.split || state.changing || ApolloDuoSplitIsResizing()
+        || (nav != state.secondary && nav != state.feed)) return 1.0;
+    CGRect pane = ApolloDuoSplitContentFrame(nav, nav.view);
+    return ApolloDuoSplitNativePanReleaseScale(CGRectGetWidth(nav.view.bounds), CGRectIsNull(pane) ? 0.0 : CGRectGetWidth(pane));
+}
+
+// Runs Apollo's pan handler with its release translation scaled for `nav`.
+// Apollo then takes its own finish or cancel branch, with its own bookkeeping.
+// The previous window is restored afterwards, so a nested release is safe.
+static void ApolloDuoSplitNativePanReleaseRun(UINavigationController *nav, UIPanGestureRecognizer *gesture, void (^handler)(void)) {
+    CGFloat scale = ApolloDuoSplitNativePanReleaseScaleForNavigation(nav, gesture);
+    if (scale == 1.0) {
+        handler();
+        return;
+    }
+    void *previousGesture = sDuoSplitReleaseGesture;
+    void *previousView = sDuoSplitReleaseView;
+    CGFloat previousScale = sDuoSplitReleaseScale;
+    sDuoSplitReleaseGesture = (__bridge void *)gesture;
+    sDuoSplitReleaseView = (__bridge void *)nav.view;
+    sDuoSplitReleaseScale = scale;
+    handler();
+    sDuoSplitReleaseGesture = previousGesture;
+    sDuoSplitReleaseView = previousView;
+    sDuoSplitReleaseScale = previousScale;
+}
+
+// The translation `gesture` reports in `view`: scaled only for the pan and
+// view of the release that is running.
+static CGPoint ApolloDuoSplitReleaseTranslation(UIPanGestureRecognizer *gesture, UIView *view, CGPoint translation) {
+    if ((__bridge void *)gesture == sDuoSplitReleaseGesture && (__bridge void *)view == sDuoSplitReleaseView) {
+        translation.x *= sDuoSplitReleaseScale;
+    }
+    return translation;
 }
 
 BOOL ApolloDuoSplitIsAccountFeedController(UIViewController *controller) {
@@ -2900,13 +3013,18 @@ static void ApolloDuoSplitNavigateProfile(ApolloDuoSplitState *state, UIViewCont
     }];
 }
 
-BOOL ApolloDuoSplitReturnFromVisitedProfile(UINavigationController *navigation) {
+BOOL ApolloDuoSplitCanReturnFromVisitedProfile(UINavigationController *navigation) {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(navigation, NO);
-    if (!state.split || state.changing || !state.profilePrefix.count
-        || ![state.kind isEqualToString:@"account"]
-        || ![state.tabKind isEqualToString:@"subreddits"]
-        || state.secondary.viewControllers.count != 1
-        || state.secondary.topViewController != state.root) return NO;
+    return state.split && !state.changing && state.profilePrefix.count
+        && [state.kind isEqualToString:@"account"]
+        && [state.tabKind isEqualToString:@"subreddits"]
+        && state.secondary.viewControllers.count == 1
+        && state.secondary.topViewController == state.root;
+}
+
+BOOL ApolloDuoSplitReturnFromVisitedProfile(UINavigationController *navigation) {
+    if (!ApolloDuoSplitCanReturnFromVisitedProfile(navigation)) return NO;
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(navigation, NO);
     // An unfolded visited profile is the dashboard's detail root. Its native
     // Back pages are retained outside that one-page navigation stack, so use
     // the same transition as the profile's Back button. The Account tab has
@@ -3163,13 +3281,12 @@ static void ApolloDuoPostsRestoreFeedLinkDetail(ApolloDuoSplitState *state,
 // Back from a feed a link opened: return to the previous feed with its thread
 // in one animation (the mirror of the forward one) instead of a native pop
 // followed by the thread sliding back in. Returns the popped page, or nil to
-// leave the pop to UIKit (interactive swipes, or a thread is open).
+// leave the pop to UIKit (Apollo's own interactive Back, or a thread is open).
 static UIViewController *ApolloDuoPostsPopFeedLink(ApolloDuoSplitState *state, BOOL animated) {
     NSArray<UIViewController *> *pages = state.feed.viewControllers;
     if (!state.split || state.changing || pages.count < 2 || !ApolloDuoPostsUsesSplit(state)
         || state.secondary.viewControllers.count > 1) return nil;
-    UIGestureRecognizerState swipe = state.feed.interactivePopGestureRecognizer.state;
-    if (swipe == UIGestureRecognizerStateBegan || swipe == UIGestureRecognizerStateChanged) return nil;
+    if (ApolloDuoNativeBackInFlight(state.feed)) return nil;
     UIViewController *top = pages.lastObject, *previous = pages[pages.count - 2];
     ApolloDuoFeedLinkReturn *ret = objc_getAssociatedObject(previous, &kDuoFeedLinkReturnDetail);
     if (![objc_getAssociatedObject(top, &kDuoFeedLinkPage) boolValue] || !ret.detail.count) return nil;
@@ -3525,6 +3642,7 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
 - (void)navigationController:(UINavigationController *)navigation didShowViewController:(UIViewController *)controller animated:(BOOL)animated {
     %orig(navigation, controller, animated);
     ApolloDuoInstallBackSwipe(navigation);
+    ApolloDuoNoteNativeBackShown(navigation);
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(navigation, NO);
     // Native didShow finalizes the bar after push/pop and column migration.
     // Relayout the host then so it does not keep the outgoing Back reservation.
@@ -3533,6 +3651,47 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     }
     ApolloDuoPostsRestoreFeedLinkDetail(state, navigation, controller);
     if (navigation == state.secondary) ApolloDuoSplitSyncGallerySidebar(state);
+    if (ApolloDuoPostsPopReachedBackstop(state, navigation, controller)) {
+        // A Swift-direct pop (the tab-bar pan, the goBack key command) left
+        // the thread pane on its backstop. Close the column at once, without
+        // animation, under a snapshot of the pane: the column is reparented,
+        // which must wait until UIKit has finished this transition, and the
+        // snapshot holds the pane until the close lays out the full-width feed
+        // in the same transaction. Apollo also queued the thread as a forward
+        // page, which the split's own close never does, and a later forward
+        // pan would push it over a new thread. Drop it on purpose with
+        // Apollo's own didReceiveMemoryWarning override, which empties
+        // poppedViewControllers (the native wipe ApolloForwardSwipeExpiry
+        // relies on); the split never edits that Swift array itself.
+        if (ApolloDuoSplitForwardPage(navigation)) [navigation didReceiveMemoryWarning];
+        UIView *surface = state.host.view;
+        CGRect pane = ApolloDuoPostsDetailPane(state);
+        UIView *snapshot = surface.window && !CGRectIsNull(pane) && !CGRectIsEmpty(pane)
+            ? [surface resizableSnapshotViewFromRect:pane afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero] : nil;
+        if (snapshot) {
+            [state.host.postsTransitionSnapshot removeFromSuperview];
+            snapshot.frame = pane;
+            snapshot.userInteractionEnabled = NO;
+            [surface insertSubview:snapshot belowSubview:state.host.listDismiss];
+            state.host.postsTransitionSnapshot = snapshot;
+        }
+        __weak ApolloDuoSplitState *weakState = state;
+        __weak ApolloDuoSplitHost *weakHost = state.host;
+        __weak UINavigationController *weakNavigation = navigation;
+        __weak UIViewController *weakShown = controller;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ApolloDuoSplitState *live = weakState;
+            if (ApolloDuoPostsPopReachedBackstop(live, weakNavigation, weakShown)) {
+                // Removes the snapshot along with the close's own layout.
+                ApolloDuoPostsSetDetail(live, nil, NO);
+                ApolloLog(@"[DuoSplit] a pop reached the thread backstop; closed the thread column");
+            }
+            if (snapshot && weakHost.postsTransitionSnapshot == snapshot) {
+                [snapshot removeFromSuperview];
+                weakHost.postsTransitionSnapshot = nil;
+            }
+        });
+    }
 }
 - (void)setNavigationBarHidden:(BOOL)hidden animated:(BOOL)animated {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(self, NO);
@@ -3547,11 +3706,17 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     UINavigationController *nav = (id)self;
     Ivar leftIvar = class_getInstanceVariable(nav.class, "leftScreenEdgePanGestureRecognizer");
     BOOL back = leftIvar && object_getIvar(self, leftIvar) == gesture;
-    // One owner for backward navigation, including when folded. Apollo's old
-    // edge pan otherwise competes with the pane-aware swipe and can pop twice.
-    if (back && ApolloDuoHasBackSwipe(nav)) return NO;
+    // One owner for backward navigation, including when folded. Apollo's edge
+    // pan otherwise competes with the pane-aware swipe and can pop twice. It
+    // owns a pop onto a real page of the same pane (every pop when folded),
+    // and the pane swipe stands down for that one.
+    if (back && ApolloDuoHasBackSwipe(nav) && !ApolloDuoNativeBackPanOwns(nav)) return NO;
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(self, NO);
-    if (!state.split || state.changing) return %orig(gesture);
+    if (!state.split || state.changing) {
+        BOOL result = %orig(gesture);
+        if (back && result) ApolloDuoNoteNativeBackBegan(nav);
+        return result;
+    }
     Ivar rightIvar = class_getInstanceVariable(nav.class, "rightScreenEdgePanGestureRecognizer");
     BOOL forward = rightIvar && object_getIvar(self, rightIvar) == gesture;
     if (!back && !forward) return %orig(gesture);
@@ -3570,7 +3735,15 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     sDuoSplitGesture = NULL;
     sDuoSplitGestureView = NULL;
     sDuoSplitGestureOffset = 0.0;
+    if (back && result) ApolloDuoNoteNativeBackBegan(nav);
     return result;
+}
+- (void)screenEdgePanned:(UIPanGestureRecognizer *)gesture {
+    ApolloDuoSplitNativePanReleaseRun(self, gesture, ^{ %orig(gesture); });
+}
+// Apollo's navigation-bar pan drives the same handler, Back or Forward.
+- (void)navigationBarPanned:(UIPanGestureRecognizer *)gesture {
+    ApolloDuoSplitNativePanReleaseRun(self, gesture, ^{ %orig(gesture); });
 }
 - (void)pushViewController:(UIViewController *)controller animated:(BOOL)animated {
     // Record the completed navigation request using its synchronous PostsType
@@ -3614,21 +3787,23 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     UINavigationController *detail = ApolloDuoSplitDetailNavigation(self);
     if (detail != self) return [detail popViewControllerAnimated:animated];
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(self, NO);
-    if (state.feed && !state.changing && self == state.secondary && state.secondary.viewControllers.count == 2) {
+    // A pop Apollo's own interactive Back drives, whether it reaches here as
+    // the pan begins or as it ends, is a native page pop: never one of the
+    // split's own (thread close, Account pages, feed-link Back).
+    BOOL native = ApolloDuoNativeBackInFlight(self);
+    if (!native && state.feed && !state.changing && self == state.secondary && state.secondary.viewControllers.count == 2) {
         UIViewController *page = state.secondary.topViewController;
         ApolloDuoPostsSetDetail(state, nil, animated);
         return page;
     }
-    if (state.split && !state.changing && [state.kind isEqualToString:@"account"]
-        && self == state.secondary && detail.viewControllers.count > 1
-        && detail.interactivePopGestureRecognizer.state != UIGestureRecognizerStateBegan
-        && detail.interactivePopGestureRecognizer.state != UIGestureRecognizerStateChanged) {
+    if (!native && state.split && !state.changing && [state.kind isEqualToString:@"account"]
+        && self == state.secondary && detail.viewControllers.count > 1) {
         UIViewController *page = detail.topViewController;
         ApolloDuoAccountSetPages(state, [detail.viewControllers subarrayWithRange:NSMakeRange(0, detail.viewControllers.count - 1)]);
         ApolloDuoSplitSyncGallerySidebar(state);
         return page;
     }
-    if (state.feed && self == state.feed) {
+    if (!native && state.feed && self == state.feed) {
         UIViewController *popped = ApolloDuoPostsPopFeedLink(state, animated);
         if (popped) return popped;
     }
@@ -3753,6 +3928,9 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
         point.x += sDuoSplitGestureOffset;
     }
     return point;
+}
+- (CGPoint)translationInView:(UIView *)view {
+    return ApolloDuoSplitReleaseTranslation(self, view, %orig(view));
 }
 %end
 
