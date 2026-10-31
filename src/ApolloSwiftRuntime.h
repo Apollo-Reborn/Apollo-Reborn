@@ -60,6 +60,22 @@ static inline APOLLO_IVAR_NAME ptrdiff_t ApolloIvarOffset(Class cls, const char 
     return ivar ? ivar_getOffset(ivar) : -1;
 }
 
+// Storage of the one-word ivar `name` on `object`, when `object` is an instance
+// of `className` or of a runtime subclass of it, and `following` starts exactly
+// one pointer after `name`. NULL otherwise. The layout is read from `className`
+// itself, never from the object's class: Firebase's GoogleUtilities moves the
+// app delegate of older Apollo builds onto a generated GUL_ subclass, and a
+// subclass can declare an ivar of the same name. Superclass ivars never move.
+static inline __attribute__((nonnull(2, 3, 4)))
+void *ApolloPointerIvarSlot(id object, const char *className, const char *name, const char *following) {
+    Class cls = objc_getClass(className);
+    if (!cls || ![object isKindOfClass:cls]) return NULL;
+    Ivar ivar = class_getInstanceVariable(cls, name);
+    Ivar next = class_getInstanceVariable(cls, following);
+    if (!ivar || !next || ivar_getOffset(next) - ivar_getOffset(ivar) != (ptrdiff_t)sizeof(void *)) return NULL;
+    return (uint8_t *)(__bridge void *)object + ivar_getOffset(ivar);
+}
+
 static inline APOLLO_IVAR_NAME void *ApolloReadRawIvar(id object, const char *name) {
     ptrdiff_t offset = ApolloIvarOffset(object_getClass(object), name);
     if (offset < 0) return NULL;
