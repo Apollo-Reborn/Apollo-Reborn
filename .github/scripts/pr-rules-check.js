@@ -64,8 +64,11 @@ const MEDIA = [
     /https?:\/\/\S+?\.(?:png|jpe?g|gif|webp|heic|mp4|mov|m4v|webm)(?:[?#][^\s)\]"'<>]*)?(?=[\s)\]"'<>]|$)/i,
     /https?:\/\/(?:www\.|i\.)?(?:imgur\.com|streamable\.com|youtu\.be|youtube\.com\/(?:watch|shorts))\/?\S+/i,
 ];
-// A table cell left as a placeholder ("", "-", "N/A", "not tested", "?", ...).
-const PLACEHOLDER = /^(?:[-–—?x.]*|n\/?a\b.*|none\b.*|no\b.*|not\b.*|untested\b.*|didn'?t\b.*|did not\b.*|skip.*|tbd\b.*|todo\b.*|unknown\b.*)$/i;
+// A table cell left as a placeholder: empty, "-", "?", a bare "no" or "none",
+// or one that says it wasn't tested ("N/A", "not tested (no iPad)", ...). A
+// real result that starts with "No" or "Not" ("No regressions", "Not
+// affected") still counts.
+const PLACEHOLDER = /^(?:[-–—?x.]*|no|none|(?:n\/?a|not tested|untested|didn'?t test|did not test|skip(?:ped)?|tbd|todo|unknown)\b.*)$/i;
 
 function stripComments(text) {
     // An unterminated comment hides the rest, the way GitHub renders it.
