@@ -11,14 +11,8 @@
 // At the feed root the same gesture reveals the subreddit drawer. Calling the
 // native pop entry point keeps the author's feed/thread restoration animation.
 // Keep row swipe actions elsewhere, and honor Apollo's navigation-gesture opt-out.
-static BOOL ApolloDuoBackSwipeCanNavigate(UINavigationController *navigation) {
-    // A visited profile is a visit of the whole account split, header column
-    // included: from either column, Back leaves the profile.
-    BOOL pane = (navigation.viewControllers.count > 1 || ApolloDuoSplitCanRevealPostsListWithSwipe(navigation))
-        && ApolloDuoSplitAllowsNavigationSwipe(navigation)
-        && ApolloDuoSplitDetailNavigation(navigation) == navigation;
+static BOOL ApolloDuoSwipeEnvironmentAllows(UINavigationController *navigation) {
     BOOL eligible = ApolloDeviceIsDuo() && navigation.viewIfLoaded.window
-        && (pane || ApolloDuoSplitCanReturnFromVisitedProfile(navigation))
         && ![NSUserDefaults.standardUserDefaults boolForKey:@"DisableNavigationGestures"]
         && !ApolloDuoSplitIsResizing() && !navigation.transitionCoordinator
         && !navigation.presentedViewController && !navigation.topViewController.presentedViewController
@@ -30,6 +24,15 @@ static BOOL ApolloDuoBackSwipeCanNavigate(UINavigationController *navigation) {
         if (parent.presentedViewController || parent.isBeingDismissed || parent.transitionCoordinator) return NO;
     }
     return YES;
+}
+
+static BOOL ApolloDuoBackSwipeCanNavigate(UINavigationController *navigation) {
+    // A visited profile is a visit of the whole account split, header column
+    // included: from either column, Back leaves the profile.
+    BOOL pane = (navigation.viewControllers.count > 1 || ApolloDuoSplitCanRevealPostsListWithSwipe(navigation))
+        && ApolloDuoSplitAllowsNavigationSwipe(navigation)
+        && ApolloDuoSplitDetailNavigation(navigation) == navigation;
+    return (pane || ApolloDuoSplitCanReturnFromVisitedProfile(navigation)) && ApolloDuoSwipeEnvironmentAllows(navigation);
 }
 
 // Gestures > Disable Left Swipes turns off the row actions a right swipe would
@@ -65,19 +68,48 @@ static BOOL ApolloDuoBackSwipeAcceptsPoint(UINavigationController *navigation, C
     return ApolloDuoBackSwipeInEdgeStrip(pane, point) || ApolloDuoBackSwipeStartsAnywhere();
 }
 
+// The forward half. After the thread beside the Posts feed is closed, a left
+// swipe on the full-width feed brings it back as it was left. It mirrors Back:
+// the feed's trailing 28pt strip, or anywhere with Gestures > Disable Right
+// Swipes on, which turns off the row actions a left swipe would trigger.
+static BOOL ApolloDuoForwardSwipeStartsAnywhere(void) {
+    return [NSUserDefaults.standardUserDefaults boolForKey:@"DisableRightSwipeGestureActions"];
+}
+
+static BOOL ApolloDuoForwardSwipeCanNavigate(UINavigationController *navigation) {
+    return ApolloDuoSplitCanRestoreClosedThread(navigation) && ApolloDuoSwipeEnvironmentAllows(navigation);
+}
+
+static BOOL ApolloDuoForwardSwipeInEdgeStrip(CGRect pane, CGPoint point) {
+    return point.x >= CGRectGetMaxX(pane) - 28.0;
+}
+
+static BOOL ApolloDuoForwardSwipeAcceptsPoint(UINavigationController *navigation, CGPoint point) {
+    if (!ApolloDuoForwardSwipeCanNavigate(navigation)) return NO;
+    CGRect pane = ApolloDuoBackSwipePane(navigation);
+    if (CGRectIsEmpty(pane) || !CGRectContainsPoint(pane, point)) return NO;
+    return ApolloDuoForwardSwipeInEdgeStrip(pane, point) || ApolloDuoForwardSwipeStartsAnywhere();
+}
+
 // Away from the edge strip, content with its own sideways drag keeps it: a
 // gallery or carousel that can still page back, and sliders/switches. When
 // the swipe would only reveal a root's list, any sideways scroller keeps it,
 // even at its leading end or when its content fits (one that bounces
 // sideways still drags): a Community Highlights carousel is being scrolled,
-// not asked to open the list over itself.
-static BOOL ApolloDuoBackSwipeTouchOwnsHorizontalDrag(UIView *view, UIView *container, BOOL rootReveal) {
+// not asked to open the list over itself. Forward mirrors it: a scroller keeps
+// the touch until it has scrolled to its trailing end.
+static BOOL ApolloDuoBackSwipeTouchOwnsHorizontalDrag(UIView *view, UIView *container, BOOL rootReveal, BOOL forward) {
     for (UIView *candidate = view; candidate && candidate != container; candidate = candidate.superview) {
         if ([candidate isKindOfClass:UISlider.class] || [candidate isKindOfClass:UISwitch.class]) return YES;
         if (![candidate isKindOfClass:UIScrollView.class]) continue;
         UIScrollView *scroll = (UIScrollView *)candidate;
         if (!scroll.scrollEnabled) continue;
         BOOL overflows = scroll.contentSize.width > CGRectGetWidth(scroll.bounds) + 1.0;
+        if (forward) {
+            CGFloat trailingOffset = scroll.contentSize.width + scroll.adjustedContentInset.right - CGRectGetWidth(scroll.bounds);
+            if (overflows && scroll.contentOffset.x < trailingOffset - 0.5) return YES;
+            continue;
+        }
         if (rootReveal ? overflows || scroll.alwaysBounceHorizontal
                        : overflows && scroll.contentOffset.x > -scroll.adjustedContentInset.left + 0.5) return YES;
     }
@@ -146,6 +178,8 @@ static const NSTimeInterval kApolloDuoHighlightGuardDelay = 0.12;
 @interface ApolloDuoBackSwipe : NSObject <UIGestureRecognizerDelegate>
 @property(nonatomic, weak) UINavigationController *navigation;
 @property(nonatomic, strong) UISwipeGestureRecognizer *swipe;
+// The forward half: a left swipe that brings back the thread just closed.
+@property(nonatomic, strong) UISwipeGestureRecognizer *forwardSwipe;
 // Recognizes as soon as a touch the Back swipe accepts moves clearly sideways, so the
 // row under the finger gets touchesCancelled and drops its highlight. The discrete
 // swipe only recognizes after the motion, which left the post highlighted throughout.
@@ -157,14 +191,20 @@ static const NSTimeInterval kApolloDuoHighlightGuardDelay = 0.12;
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldReceiveTouch:(UITouch *)touch {
     UINavigationController *navigation = self.navigation;
     CGPoint point = [touch locationInView:navigation.view];
-    if ((gesture != self.swipe && gesture != self.highlightGuard)
-        || !ApolloDuoBackSwipeAcceptsPoint(navigation, point)) return NO;
-    return ApolloDuoBackSwipeInEdgeStrip(ApolloDuoBackSwipePane(navigation), point)
-        || !ApolloDuoBackSwipeTouchOwnsHorizontalDrag(touch.view, navigation.view, ApolloDuoBackSwipeRevealsAtRoot(navigation));
+    if (gesture != self.swipe && gesture != self.forwardSwipe && gesture != self.highlightGuard) return NO;
+    BOOL back = gesture != self.forwardSwipe && ApolloDuoBackSwipeAcceptsPoint(navigation, point)
+        && (ApolloDuoBackSwipeInEdgeStrip(ApolloDuoBackSwipePane(navigation), point)
+            || !ApolloDuoBackSwipeTouchOwnsHorizontalDrag(touch.view, navigation.view, ApolloDuoBackSwipeRevealsAtRoot(navigation), NO));
+    // A carousel keeps its sideways swipes until it is at its last item, in
+    // the strip too: Back gets that from the carousel's own yielding.
+    BOOL forward = gesture != self.swipe && ApolloDuoForwardSwipeAcceptsPoint(navigation, point)
+        && !ApolloDuoBackSwipeTouchOwnsHorizontalDrag(touch.view, navigation.view, NO, YES);
+    return back || forward;
 }
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gesture {
+    if (gesture == self.forwardSwipe) return ApolloDuoForwardSwipeCanNavigate(self.navigation);
     if (gesture == self.highlightGuard) {
-        if (!ApolloDuoBackSwipeCanNavigate(self.navigation)) return NO;
+        if (!ApolloDuoBackSwipeCanNavigate(self.navigation) && !ApolloDuoForwardSwipeCanNavigate(self.navigation)) return NO;
         CGPoint velocity = [self.highlightGuard velocityInView:self.navigation.view];
         return fabs(velocity.x) > fabs(velocity.y) * 1.5;
     }
@@ -175,7 +215,7 @@ static const NSTimeInterval kApolloDuoHighlightGuardDelay = 0.12;
     // The highlight guard only cancels the row's touch; it never competes with anything.
     if (gesture == self.highlightGuard || other == self.highlightGuard) return YES;
     // Vertical table scrolling should not wait for a discrete right swipe.
-    return gesture == self.swipe && [other.view isKindOfClass:UIScrollView.class]
+    return (gesture == self.swipe || gesture == self.forwardSwipe) && [other.view isKindOfClass:UIScrollView.class]
         && other == ((UIScrollView *)other.view).panGestureRecognizer;
 }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture
@@ -185,7 +225,7 @@ static const NSTimeInterval kApolloDuoHighlightGuardDelay = 0.12;
     // unless Disable Left Swipes has already turned those row actions off.
     BOOL scrollPan = [other.view isKindOfClass:UIScrollView.class]
         && other == ((UIScrollView *)other.view).panGestureRecognizer;
-    return gesture == self.swipe && other != self.highlightGuard
+    return (gesture == self.swipe || gesture == self.forwardSwipe) && other != self.highlightGuard
         && [other isKindOfClass:UIPanGestureRecognizer.class] && !scrollPan;
 }
 - (void)guardMoved:(UIPanGestureRecognizer *)gesture {
@@ -193,6 +233,12 @@ static const NSTimeInterval kApolloDuoHighlightGuardDelay = 0.12;
 }
 - (void)swiped:(UISwipeGestureRecognizer *)gesture {
     UINavigationController *navigation = self.navigation;
+    if (gesture == self.forwardSwipe) {
+        if (gesture.state != UIGestureRecognizerStateRecognized || !ApolloDuoForwardSwipeCanNavigate(navigation)) return;
+        ApolloLog(@"[DuoSwipe] feed: bring back the closed thread");
+        ApolloDuoSplitRestoreClosedThread(navigation);
+        return;
+    }
     if (gesture.state != UIGestureRecognizerStateRecognized || !ApolloDuoBackSwipeCanNavigate(navigation)) return;
     if (ApolloDuoSplitReturnFromVisitedProfile(navigation)) {
         ApolloLog(@"[DuoSwipe] visited profile: Back out of the profile");
@@ -223,11 +269,18 @@ void ApolloDuoInstallBackSwipe(UINavigationController *navigation) {
     swipe.delegate = owner;
     swipe.name = @"ApolloReborn.Duo.PaneBack";
     owner.swipe = swipe;
+    UISwipeGestureRecognizer *forwardSwipe = [[UISwipeGestureRecognizer alloc] initWithTarget:owner action:@selector(swiped:)];
+    forwardSwipe.direction = UISwipeGestureRecognizerDirectionLeft;
+    forwardSwipe.numberOfTouchesRequired = 1;
+    forwardSwipe.delegate = owner;
+    forwardSwipe.name = @"ApolloReborn.Duo.PaneForward";
+    owner.forwardSwipe = forwardSwipe;
     ApolloDuoHighlightGuard *highlightGuard = [[ApolloDuoHighlightGuard alloc] initWithTarget:owner action:@selector(guardMoved:)];
     highlightGuard.delegate = owner;
     highlightGuard.name = @"ApolloReborn.Duo.PaneBackHighlightGuard";
     owner.highlightGuard = highlightGuard;
     objc_setAssociatedObject(navigation, &kApolloDuoBackSwipe, owner, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [navigation.view addGestureRecognizer:swipe];
+    [navigation.view addGestureRecognizer:forwardSwipe];
     [navigation.view addGestureRecognizer:highlightGuard];
 }

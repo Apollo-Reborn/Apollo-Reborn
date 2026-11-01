@@ -122,7 +122,7 @@ typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 @property(nonatomic) BOOL changing;
 @end
 @implementation ApolloDuoSplitState @end
-static BOOL duo = YES, disabled, leftSwipesDisabled, resizing, reduceMotion;
+static BOOL duo = YES, disabled, leftSwipesDisabled, rightSwipesDisabled, resizing, reduceMotion;
 static NSUInteger drawerReveals, profileReturns;
 @interface TestDefaults : NSObject
 + (instancetype)standardUserDefaults;
@@ -133,6 +133,7 @@ static NSUInteger drawerReveals, profileReturns;
 - (BOOL)boolForKey:(NSString *)key {
     if ([key isEqualToString:@"DisableNavigationGestures"]) return disabled;
     if ([key isEqualToString:@"DisableLeftSwipeGestureActions"]) return leftSwipesDisabled;
+    if ([key isEqualToString:@"DisableRightSwipeGestureActions"]) return rightSwipesDisabled;
     return NO;
 }
 @end
@@ -152,9 +153,24 @@ static BOOL ApolloDuoSplitReturnFromVisitedProfile(UINavigationController *nav) 
     profileReturns++;
     return YES;
 }
+// The split's memory of a thread a Back closed beside the feed: the feed that
+// remembers one answers CanRestore while no thread shows beside it; Restore
+// reopens it once.
+static __weak UINavigationController *closedThreadFeed;
+static NSUInteger threadRestores;
+static BOOL ApolloDuoSplitCanRestoreClosedThread(UINavigationController *nav) {
+    return nav && nav == closedThreadFeed && !nav.duoState.host.postsShowingDetail
+        && nav.duoState.secondary.viewControllers.count <= 1;
+}
+static BOOL ApolloDuoSplitRestoreClosedThread(UINavigationController *nav) {
+    if (!ApolloDuoSplitCanRestoreClosedThread(nav)) return NO;
+    closedThreadFeed = nil;
+    threadRestores++;
+    return YES;
+}
 static CGRect ApolloDuoSplitContentFrame(UINavigationController *nav, __unused UIView *view) { return nav.pane; }
 static BOOL UIAccessibilityIsReduceMotionEnabled(void) { return reduceMotion; }
-enum { UISwipeGestureRecognizerDirectionRight = 1, UIGestureRecognizerStatePossible = 0,
+enum { UISwipeGestureRecognizerDirectionRight = 1, UISwipeGestureRecognizerDirectionLeft = 2, UIGestureRecognizerStatePossible = 0,
        UIGestureRecognizerStateRecognized = 3, UIGestureRecognizerStateFailed = 5 };
 #define ApolloLog(...) ((void)0)
 // INCLUDE_PRODUCTION_GESTURES
@@ -214,7 +230,7 @@ int main(void) {
         Check(!ApolloDuoBackSwipeCanNavigate(nav), @"outer containment cannot compete with the real pane");
         nav.duoState = nil;
         ApolloDuoInstallBackSwipe(nav); ApolloDuoInstallBackSwipe(nav);
-        Check(ApolloDuoHasBackSwipe(nav) && nav.view.gestureRecognizers.count == 2, @"recognizer installation is idempotent (swipe + highlight guard)");
+        Check(ApolloDuoHasBackSwipe(nav) && nav.view.gestureRecognizers.count == 3, @"recognizer installation is idempotent (back swipe + forward swipe + highlight guard)");
         ApolloDuoBackSwipe *owner = objc_getAssociatedObject(nav, &kApolloDuoBackSwipe);
         Check(owner.swipe.direction == UISwipeGestureRecognizerDirectionRight && owner.swipe.numberOfTouchesRequired == 1,
               @"Back uses a one-finger right swipe");
@@ -478,6 +494,162 @@ int main(void) {
         leftSwipesDisabled = NO;
         touch.view = cell;
         Check(![owner gestureRecognizer:owner.swipe shouldReceiveTouch:touch], @"with left swipes on, interior touches stay with row actions");
+
+        // The forward swipe brings back the thread a close took from beside the
+        // feed, on release: from the feed's trailing strip, or anywhere with
+        // Disable Right Swipes on, and only while the split has one to bring back.
+        {
+            UINavigationController *fwdFeed = Navigation();
+            fwdFeed.viewControllers = @[[UIViewController new]];
+            ApolloDuoSplitState *fwdState = [ApolloDuoSplitState new];
+            fwdState.split = [NSObject new]; fwdState.host = [TestDuoHost new]; fwdState.feed = fwdFeed;
+            fwdState.secondary = Navigation(); fwdState.secondary.viewControllers = @[[UIViewController new]];
+            fwdFeed.duoState = fwdState;
+            ApolloDuoInstallBackSwipe(fwdFeed);
+            ApolloDuoBackSwipe *fwdOwner = objc_getAssociatedObject(fwdFeed, &kApolloDuoBackSwipe);
+            Check(fwdOwner.forwardSwipe.direction == UISwipeGestureRecognizerDirectionLeft
+                  && fwdOwner.forwardSwipe.numberOfTouchesRequired == 1
+                  && [fwdFeed.view.gestureRecognizers containsObject:fwdOwner.forwardSwipe],
+                  @"forward: a one-finger left swipe is installed beside Back");
+            UITouch *strip = [UITouch new]; strip.point = CGPointMake(1270, 300); strip.view = fwdFeed.view;
+            UITouch *inner = [UITouch new]; inner.point = CGPointMake(600, 300); inner.view = fwdFeed.view;
+            UITouch *leading = [UITouch new]; leading.point = CGPointMake(5, 300); leading.view = fwdFeed.view;
+            closedThreadFeed = nil; rightSwipesDisabled = NO;
+            Check(![fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:strip]
+                  && ![fwdOwner gestureRecognizer:fwdOwner.highlightGuard shouldReceiveTouch:strip]
+                  && ![fwdOwner gestureRecognizerShouldBegin:fwdOwner.forwardSwipe],
+                  @"forward: nothing remembered, nothing to swipe");
+            closedThreadFeed = fwdFeed;
+            Check([fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:strip]
+                  && [fwdOwner gestureRecognizerShouldBegin:fwdOwner.forwardSwipe],
+                  @"forward: the trailing strip of the feed starts it");
+            strip.point = CGPointMake(1280 - 28, 300);
+            Check([fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:strip],
+                  @"forward: the strip is 28pt wide");
+            strip.point = CGPointMake(1280 - 29, 300);
+            Check(![fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:strip],
+                  @"forward: just inside the strip, row swipe actions keep the touch");
+            Check(![fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:inner],
+                  @"forward: the feed's interior keeps its row actions by default");
+            Check(![fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:leading],
+                  @"forward: the leading edge is Back's, not forward's");
+            strip.point = CGPointMake(1270, 300);
+            Check(![fwdOwner gestureRecognizer:fwdOwner.swipe shouldReceiveTouch:strip],
+                  @"forward: the Back swipe does not take the trailing strip");
+            Check([fwdOwner gestureRecognizer:fwdOwner.swipe shouldReceiveTouch:leading],
+                  @"forward: Back keeps its leading edge with a thread to bring back");
+            Check([fwdOwner gestureRecognizer:fwdOwner.highlightGuard shouldReceiveTouch:strip],
+                  @"forward: the highlight guard takes the strip too, so the row drops its highlight");
+            Check(![fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldRecognizeSimultaneouslyWithGestureRecognizer:[UIPanGestureRecognizer new]]
+                  && [fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldBeRequiredToFailByGestureRecognizer:[UIPanGestureRecognizer new]],
+                  @"forward: at the strip it has priority over row gestures");
+            rightSwipesDisabled = YES;
+            Check([fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:inner]
+                  && [fwdOwner gestureRecognizer:fwdOwner.highlightGuard shouldReceiveTouch:inner],
+                  @"forward: with Disable Right Swipes on, it starts anywhere in the feed");
+            UIScrollView *carousel = [UIScrollView new]; carousel.scrollEnabled = YES;
+            carousel.bounds = CGRectMake(0, 0, 400, 100); carousel.contentSize = CGSizeMake(1200, 100);
+            carousel.contentOffset = CGPointMake(300, 0); inner.view = carousel;
+            Check(![fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:inner],
+                  @"forward: a carousel with more to scroll forward keeps its drag");
+            carousel.contentOffset = CGPointMake(800, 0);
+            Check([fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:inner],
+                  @"forward: a carousel at its last item hands the swipe over");
+            strip.view = carousel; strip.point = CGPointMake(1270, 300); carousel.contentOffset = CGPointMake(300, 0);
+            Check(![fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:strip],
+                  @"forward: a carousel with more to scroll keeps the strip too, so one swipe never does both");
+            carousel.contentOffset = CGPointMake(800, 0);
+            Check([fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:strip],
+                  @"forward: the strip goes forward over a carousel at its last item");
+            inner.view = fwdFeed.view; strip.view = fwdFeed.view;
+            rightSwipesDisabled = NO;
+            // It acts on release, once, and only while there is something to bring back.
+            NSUInteger restoresBefore = threadRestores;
+            fwdOwner.forwardSwipe.state = UIGestureRecognizerStateRecognized;
+            [fwdOwner swiped:fwdOwner.forwardSwipe];
+            Check(threadRestores == restoresBefore + 1 && fwdFeed.pops == 0,
+                  @"forward: the swipe brings the closed thread back on release");
+            [fwdOwner swiped:fwdOwner.forwardSwipe];
+            Check(threadRestores == restoresBefore + 1, @"forward: a second swipe finds nothing to bring back");
+            closedThreadFeed = fwdFeed; fwdState.host.postsShowingDetail = YES;
+            Check(![fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:strip],
+                  @"forward: with a thread already beside the feed there is nothing to bring back");
+            fwdState.host.postsShowingDetail = NO;
+            Check([fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:strip], @"forward: control, restorable again");
+            disabled = YES;
+            Check(![fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:strip],
+                  @"forward: Disable Navigation Gestures is honored");
+            disabled = NO; resizing = YES;
+            Check(![fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:strip],
+                  @"forward: a fold or rotation in flight blocks it");
+            resizing = NO; fwdFeed.transitionCoordinator = [NSObject new];
+            Check(![fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:strip],
+                  @"forward: a push or pop in flight blocks it");
+            fwdFeed.transitionCoordinator = nil; fwdFeed.presentedViewController = [UIViewController new];
+            Check(![fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:strip],
+                  @"forward: never behind a sheet");
+            fwdFeed.presentedViewController = nil; duo = NO;
+            Check(![fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:strip],
+                  @"forward: ordinary phones are excluded");
+            duo = YES; closedThreadFeed = nil;
+        }
+
+        // The memory forgets the thread whenever what the feed shows changes
+        // (the rules the split applies): the events and facts of the moment.
+        {
+            typedef ApolloDuoClosedThreadFacts ThreadFacts;
+            ThreadFacts current = {.split = YES, .feedPageOnTop = YES, .feedUnchanged = YES, .accountUnchanged = YES};
+            Check(!ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventCheck, current),
+                  @"memory: kept while its feed page is on top and no thread is open");
+            ThreadFacts folded = current; folded.split = NO;
+            Check(ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventCheck, folded) != nil,
+                  @"memory: folding or turning to portrait forgets it");
+            ThreadFacts threadOpen = current; threadOpen.threadOpen = YES;
+            Check(ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventCheck, threadOpen) != nil,
+                  @"memory: a thread shown beside the feed forgets it");
+            ThreadFacts otherPage = current; otherPage.feedPageOnTop = NO;
+            Check(ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventCheck, otherPage) != nil,
+                  @"memory: a new feed page (subreddit switch, feed link, Search) or a gone one forgets it");
+            ThreadFacts otherFeed = current; otherFeed.feedUnchanged = NO;
+            Check(ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventCheck, otherFeed) != nil,
+                  @"memory: the same feed page showing another feed (reused in place) forgets it");
+            ThreadFacts otherAccount = current; otherAccount.accountUnchanged = NO;
+            Check(ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventCheck, otherAccount) != nil,
+                  @"memory: another account's session on the same feed page forgets it");
+            Check(ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventAccountChanged, current) != nil,
+                  @"memory: an account switch forgets it whatever the facts say");
+            Check(ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventScrolledAway, current) != nil,
+                  @"memory: scrolling the feed away from where it was closed forgets it");
+            Check(ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventFeedOpened, current) != nil,
+                  @"memory: a feed opening (list row, feed link, Search, a reroot) forgets it whatever the facts say");
+            Check(ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventThreadOpened, current) != nil,
+                  @"memory: another thread opening beside the feed forgets it");
+            Check(ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventMemoryWarning, current) != nil,
+                  @"memory: a memory warning forgets it, as Apollo's own forward page");
+            ThreadFacts away = current;
+            away.away = 5.0;
+            Check(!ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventForeground, away),
+                  @"memory: a short trip to the background keeps it");
+            away.away = kApolloDuoClosedThreadBackgroundLimit;
+            Check(!ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventForeground, away),
+                  @"memory: up to the background limit keeps it");
+            away.away = kApolloDuoClosedThreadBackgroundLimit + 1.0;
+            Check(ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventForeground, away) != nil,
+                  @"memory: a longer stay in the background forgets it");
+            Check(ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventCheck, away) == nil,
+                  @"memory: only a return from the background reads the time away");
+            away.away = 5.0; away.feedPageOnTop = NO;
+            Check(ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventForeground, away) != nil,
+                  @"memory: a short trip still forgets it when the feed changed meanwhile");
+            ThreadFacts onStack = current; onStack.pagesOnStack = YES;
+            Check(ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEventCheck, onStack) != nil,
+                  @"memory: pages that are on a stack again are never pushed twice");
+            UIViewController *backstop = [UIViewController new], *thread = [UIViewController new], *profile = [UIViewController new];
+            Check([ApolloDuoClosedThreadPages(@[backstop, thread, profile]) isEqualToArray:@[thread, profile]],
+                  @"remember: the thread and every page pushed over it, without the backstop");
+            Check(ApolloDuoClosedThreadPages(@[backstop]).count == 0 && ApolloDuoClosedThreadPages(@[]).count == 0,
+                  @"remember: nothing when only the backstop is left");
+        }
         printf("OK: %lu checks\n", (unsigned long)checks);
     }
     return 0;
