@@ -2215,6 +2215,20 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
     // a zero-width constraint here makes that temporary size self-perpetuating.
     // Its content/layout callback retries once the native title is ready.
     if (!searching && naturalWidth <= 1.0) return NO;
+    // A Live Activity on the unfolded Duo pushes the pill near the midpoint;
+    // slide the title into the free space rather than squeezing it to "…".
+    if (!searching && !lowerIPadTitle && !centerBetweenButtons) {
+        ApolloNavigationTitleGeometry fitted = ApolloNavigationTitleFittedGeometry(geometry,
+            MAX(leftLimit, CGRectGetMinX(titleBounds)), MIN(rightLimit, CGRectGetMaxX(titleBounds)),
+            naturalWidth, capsulePadding, kEdgePadding);
+        if (fitted.center != geometry.center || fitted.maximumContentWidth != geometry.maximumContentWidth) {
+            os_log_debug(ApolloFixLog(), "[ApolloFix] [NavigationTitleLayout] %{public}@ slid title center %.1f -> %.1f max %.1f -> %.1f",
+                         NSStringFromClass(topVC.class), geometry.center, fitted.center,
+                         geometry.maximumContentWidth, fitted.maximumContentWidth);
+            geometry = fitted;
+            maximumWidth = geometry.maximumContentWidth;
+        }
+    }
     CGFloat fittedWidth = searching ? maximumWidth : MIN(maximumWidth, naturalWidth);
     CGFloat widthTolerance = 0.5 / MAX(1.0, titleControl.traitCollection.displayScale);
     BOOL widthChanged = !controller.fittedWidthConstraint ||
