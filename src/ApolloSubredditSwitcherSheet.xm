@@ -8,6 +8,7 @@
 #import "ApolloThemeRuntime.h"
 #import "settings/ApolloSettingsTableViewController.h"
 #import "ApolloDuoUIKitCompatibility.h"
+#import "ApolloDuoSplitView.h"
 
 @interface _TtC6Apollo7JumpBar : UIControl
 - (void)searchTextFieldChanged:(UITextField *)field;
@@ -50,6 +51,7 @@ static const CGFloat ApolloSubredditSearchBarHeight = 56.0;
 static char kApolloSubredditSheetReference;
 static char kApolloActiveSubredditSheetReference;
 static char kApolloPendingClassicJumpBar;
+BOOL ApolloPostsTabHoldConsumesTap = NO;
 
 static BOOL ApolloSubredditSheetIsActive(UITabBarController *tabs) {
     ApolloSubredditSheetReference *reference = objc_getAssociatedObject(tabs, &kApolloActiveSubredditSheetReference);
@@ -420,22 +422,35 @@ BOOL ApolloPresentPostsTabSubredditSheet(UIWindow *sourceWindow) {
     if (![postsTab isKindOfClass:UINavigationController.class]) return NO;
     UINavigationController *navigation = (id)postsTab;
     if (navigation.presentedViewController || navigation.topViewController.presentedViewController) return NO;
+    // An unfolded Duo shows the tab as columns; the feed lives in the split's
+    // own feed stack rather than in the tab's navigation controller.
+    UINavigationController *feedNavigation = ApolloDuoSplitFeedNavigation(navigation);
+    BOOL columns = feedNavigation != nil;
+    if (!feedNavigation) feedNavigation = navigation;
+    if (feedNavigation.presentedViewController) return NO;
     // Preserve the active feed when the tab is showing comments. Cancel keeps
     // that stack intact; choosing a subreddit returns to the feed first.
     UIViewController *feed = nil;
-    for (UIViewController *candidate in navigation.viewControllers.reverseObjectEnumerator) {
+    for (UIViewController *candidate in feedNavigation.viewControllers.reverseObjectEnumerator) {
         if ([candidate isKindOfClass:ApolloClassPostsViewController]) { feed = candidate; break; }
     }
-    if (!feed) return NO;
-    BOOL feedVisible = tabs.selectedViewController == navigation && navigation.topViewController == feed;
+    if (!feed) {
+        ApolloLog(@"[SubredditSheet] Posts tab hold: no feed in %@ (columns=%d)",
+                  NSStringFromClass(feedNavigation.class), columns);
+        return NO;
+    }
+    BOOL feedVisible = tabs.selectedViewController == navigation && feedNavigation.topViewController == feed;
     tabs.selectedViewController = navigation;
-    if (!sSubredditSwitcherSheetEnabled) {
+    // Columns can hide the feed behind a full-width thread; the inline popup
+    // needs the feed on screen, so use the sheet there.
+    BOOL feedColumnHidden = columns && feedVisible && !feed.viewIfLoaded.window;
+    if (!sSubredditSwitcherSheetEnabled && !feedColumnHidden) {
         // Classic: open Apollo's inline popup through its own Go to Jump Bar
         // key command. The popup lives in the feed's title, so the feed has
         // to be on top first.
-        if (![navigation respondsToSelector:@selector(goToJumpBar)]) return NO;
+        if (![feedNavigation respondsToSelector:@selector(goToJumpBar)]) return NO;
         if (feedVisible) {
-            [navigation goToJumpBar];
+            [feedNavigation goToJumpBar];
             ApolloLog(@"[SubredditSheet] classic: opened native jump bar from Posts tab");
             return YES;
         }
@@ -444,10 +459,13 @@ BOOL ApolloPresentPostsTabSubredditSheet(UIWindow *sourceWindow) {
         // jump bar from the feed's viewDidAppear: instead.
         objc_setAssociatedObject(feed, &kApolloPendingClassicJumpBar, @(CACurrentMediaTime()),
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        if (navigation.topViewController != feed) [navigation popToViewController:feed animated:NO];
+        if (feedNavigation.topViewController != feed) [feedNavigation popToViewController:feed animated:NO];
         return YES;
     }
-    return ApolloPresentSubredditSheetForFeed(feed, navigation.topViewController);
+    // A hidden feed column can't present; the tab's own top controller can.
+    UIViewController *presenter = feedNavigation.topViewController.viewIfLoaded.window
+        ? feedNavigation.topViewController : navigation.topViewController;
+    return ApolloPresentSubredditSheetForFeed(feed, presenter);
 }
 
 @interface _TtC6Apollo22ApolloTabBarController : UITabBarController
