@@ -49,6 +49,7 @@ static const CGFloat ApolloSubredditSearchBarHeight = 56.0;
 @implementation ApolloSubredditSheetReference @end
 static char kApolloSubredditSheetReference;
 static char kApolloActiveSubredditSheetReference;
+static char kApolloPendingClassicJumpBar;
 
 static BOOL ApolloSubredditSheetIsActive(UITabBarController *tabs) {
     ApolloSubredditSheetReference *reference = objc_getAssociatedObject(tabs, &kApolloActiveSubredditSheetReference);
@@ -426,15 +427,24 @@ BOOL ApolloPresentPostsTabSubredditSheet(UIWindow *sourceWindow) {
         if ([candidate isKindOfClass:ApolloClassPostsViewController]) { feed = candidate; break; }
     }
     if (!feed) return NO;
+    BOOL feedVisible = tabs.selectedViewController == navigation && navigation.topViewController == feed;
     tabs.selectedViewController = navigation;
     if (!sSubredditSwitcherSheetEnabled) {
         // Classic: open Apollo's inline popup through its own Go to Jump Bar
         // key command. The popup lives in the feed's title, so the feed has
         // to be on top first.
         if (![navigation respondsToSelector:@selector(goToJumpBar)]) return NO;
+        if (feedVisible) {
+            [navigation goToJumpBar];
+            ApolloLog(@"[SubredditSheet] classic: opened native jump bar from Posts tab");
+            return YES;
+        }
+        // The tab switch or pop runs the feed's appearance pass later, and that
+        // pass resets its bar items, dropping the jump bar's Cancel. Open the
+        // jump bar from the feed's viewDidAppear: instead.
+        objc_setAssociatedObject(feed, &kApolloPendingClassicJumpBar, @(CACurrentMediaTime()),
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         if (navigation.topViewController != feed) [navigation popToViewController:feed animated:NO];
-        [navigation goToJumpBar];
-        ApolloLog(@"[SubredditSheet] classic: opened native jump bar from Posts tab");
         return YES;
     }
     return ApolloPresentSubredditSheetForFeed(feed, navigation.topViewController);
@@ -442,6 +452,31 @@ BOOL ApolloPresentPostsTabSubredditSheet(UIWindow *sourceWindow) {
 
 @interface _TtC6Apollo22ApolloTabBarController : UITabBarController
 @end
+
+@interface _TtC6Apollo19PostsViewController : UIViewController
+@end
+
+%hook _TtC6Apollo19PostsViewController
+- (void)viewDidAppear:(BOOL)animated {
+    %orig(animated);
+    NSNumber *requested = objc_getAssociatedObject(self, &kApolloPendingClassicJumpBar);
+    if (!requested) return;
+    objc_setAssociatedObject(self, &kApolloPendingClassicJumpBar, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // Only the hold that asked for it; a stale request never opens the popup later.
+    UINavigationController *navigation = self.navigationController;
+    if (CACurrentMediaTime() - requested.doubleValue > 1.0 || navigation.topViewController != self ||
+        ![navigation respondsToSelector:@selector(goToJumpBar)]) return;
+    // One more turn so the transition's focus cleanup can't drop the keyboard.
+    __weak UIViewController *weakFeed = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *feed = weakFeed;
+        UINavigationController *current = feed.navigationController;
+        if (!feed || current.topViewController != feed) return;
+        [current goToJumpBar];
+        ApolloLog(@"[SubredditSheet] classic: opened native jump bar from Posts tab after the feed appeared");
+    });
+}
+%end
 
 %hook _TtC6Apollo22ApolloTabBarController
 - (void)tabBarLongPressedWithLongPressGestureRecognizer:(UILongPressGestureRecognizer *)recognizer {
