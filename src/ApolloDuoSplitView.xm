@@ -3978,6 +3978,42 @@ static void ApolloDuoSplitCoverYouTubeLoading(UIView *loading) {
 %end
 %end
 
+// Apollo's SlideGestureBuilder (comment and post swipe actions) creates its
+// colored gestureDisplayView with the sliding cell view's superview FRAME and
+// inserts it into that same superview, then lays out gestureDisplayIcon from
+// the sliding view's frame. That only works while the cell's content view sits
+// at x = 0. In the split the comments table spans the whole window and its
+// cells place their content view at the pane's offset (e.g. 476pt into a 951pt
+// cell), so the color and icon were drawn that far to the right, outside the
+// cell: swipes still fired with no visual prompt. Give the display view the
+// sliding view's frame, which is where Apollo meant it to be.
+static void ApolloDuoSlideFitDisplay(id builder) {
+    UIView *display = ApolloObjectIvar(builder, "gestureDisplayView");
+    if (![display isKindOfClass:UIView.class]) return;
+    // Apollo inserts the display view directly below the sliding view.
+    NSArray<UIView *> *siblings = display.superview.subviews;
+    NSUInteger index = [siblings indexOfObjectIdenticalTo:display];
+    if (index == NSNotFound || index + 1 >= siblings.count) return;
+    UIView *sliding = siblings[index + 1];
+    // The sliding view moves horizontally; its resting frame starts at 0 and
+    // shares the display's height.
+    CGRect rest = CGRectMake(0.0, CGRectGetMinY(sliding.frame), CGRectGetWidth(sliding.bounds), CGRectGetHeight(sliding.bounds));
+    if (CGRectEqualToRect(display.frame, rest)) return;
+    ApolloLog(@"[DuoSplit] Swipe reveal moved from %@ to the cell's %@",
+              NSStringFromCGRect(display.frame), NSStringFromCGRect(rest));
+    display.frame = rest;
+}
+
+@interface ApolloDuoSlideGestureBuilder : NSObject @end
+%group ApolloDuoSlideGestureHooks
+%hook ApolloDuoSlideGestureBuilder
+- (void)slidingViewPannedWithGestureRecognizer:(UIPanGestureRecognizer *)gesture {
+    %orig(gesture);
+    if (gesture.state == UIGestureRecognizerStateBegan) ApolloDuoSlideFitDisplay(self);
+}
+%end
+%end
+
 %ctor {
     if (!ApolloDeviceIsDuo()) {
         ApolloLog(@"[DuoSplit] not an iPhone Duo; split view hooks NOT installed");
@@ -4003,5 +4039,7 @@ static void ApolloDuoSplitCoverYouTubeLoading(UIView *loading) {
                          ApolloDuoEmptyStateTable = NSClassFromString(@"ASTableView"));
     Class youTubeLoading = NSClassFromString(@"Apollo.YouTubeLoadingView");
     if (youTubeLoading) %init(ApolloDuoYouTubeLoadingHooks, ApolloDuoYouTubeLoading = youTubeLoading);
+    Class slideGesture = NSClassFromString(@"Apollo.SlideGestureBuilder");
+    if (slideGesture) %init(ApolloDuoSlideGestureHooks, ApolloDuoSlideGestureBuilder = slideGesture);
     %init;
 }
