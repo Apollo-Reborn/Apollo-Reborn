@@ -32,6 +32,8 @@ static const CGFloat ApolloSubredditSearchBarHeight = 56.0;
 @property(nonatomic, strong) UISearchBar *searchBar;
 @property(nonatomic, strong) UITableView *tableView;
 @property(nonatomic, copy) NSArray<NSArray<NSString *> *> *sections;
+// Native table index path of each row, for Classic's own row selection.
+@property(nonatomic, copy) NSArray<NSArray<NSIndexPath *> *> *nativePaths;
 @property(nonatomic, copy) NSArray<NSString *> *sectionTitles;
 @property(nonatomic, copy) NSString *selectedName;
 @property(nonatomic) BOOL refreshScheduled;
@@ -83,6 +85,7 @@ static BOOL ApolloSubredditSheetIsActive(UITabBarController *tabs) {
     table.rowHeight = 52.0;
     table.estimatedRowHeight = 0.0;
     table.keyboardDismissMode = UIScrollViewKeyboardDismissModeInteractive;
+    if (@available(iOS 15.0, *)) table.sectionHeaderTopPadding = 0.0;
     self.tableView = table;
     [self.view addSubview:table];
 
@@ -115,6 +118,9 @@ static BOOL ApolloSubredditSheetIsActive(UITabBarController *tabs) {
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
+    UISearchTextField *field = self.searchBar.searchTextField;
+    CGFloat radius = CGRectGetHeight(field.bounds) / 2.0;
+    if (field.layer.cornerRadius != radius) field.layer.cornerRadius = radius;
     if (self.contentSizeUpdateScheduled) return;
     self.contentSizeUpdateScheduled = YES;
     __weak typeof(self) weakSelf = self;
@@ -153,7 +159,15 @@ static BOOL ApolloSubredditSheetIsActive(UITabBarController *tabs) {
     self.view.tintColor = ApolloThemeAccentColor() ?: self.view.tintColor;
     self.navigationController.view.tintColor = self.view.tintColor;
     self.tableView.separatorColor = ApolloThemeSeparatorColor() ?: UIColor.separatorColor;
-    self.searchBar.searchTextField.textColor = ApolloThemeRuntimeColor(ApolloThemeTokenLabel) ?: UIColor.labelColor;
+    UISearchTextField *field = self.searchBar.searchTextField;
+    field.textColor = ApolloThemeRuntimeColor(ApolloThemeTokenLabel) ?: UIColor.labelColor;
+    // UIKit's glass border draws a darker rim just outside a 44pt field, which
+    // shows past the theme's pill at both ends. Draw the field's own capsule.
+    field.borderStyle = UITextBorderStyleNone;
+    UIColor *fill = ApolloThemeRuntimeColor(ApolloThemeTokenElevatedBackground)
+        ?: UIColor.secondarySystemGroupedBackgroundColor;
+    field.backgroundColor = [fill resolvedColorWithTraitCollection:self.traitCollection];
+    field.layer.cornerCurve = kCACornerCurveCircular;
     UINavigationBarAppearance *appearance = [UINavigationBarAppearance new];
     [appearance configureWithTransparentBackground];
     appearance.titleTextAttributes = @{NSForegroundColorAttributeName:
@@ -187,20 +201,30 @@ static BOOL ApolloSubredditSheetIsActive(UITabBarController *tabs) {
         ? [source numberOfSectionsInTableView:native] : 1;
     NSMutableArray *sections = [NSMutableArray array];
     NSMutableArray *titles = [NSMutableArray array];
+    NSMutableArray *paths = [NSMutableArray array];
     for (NSInteger section = 0; section < count; section++) {
         NSMutableArray *names = [NSMutableArray array];
+        NSMutableArray *sectionPaths = [NSMutableArray array];
         NSInteger rows = [source tableView:native numberOfRowsInSection:section];
         for (NSInteger row = 0; row < rows; row++) {
-            UITableViewCell *cell = [source tableView:native cellForRowAtIndexPath:
-                [NSIndexPath indexPathForRow:row inSection:section]];
+            NSIndexPath *path = [NSIndexPath indexPathForRow:row inSection:section];
+            UITableViewCell *cell = [source tableView:native cellForRowAtIndexPath:path];
             NSString *name = cell.textLabel.text;
-            if (name.length) [names addObject:name];
+            if (!name.length) continue;
+            [names addObject:name];
+            [sectionPaths addObject:path];
         }
+        // Apollo keeps empty sections while searching; they only add space here.
+        if (!names.count) continue;
         NSString *title = [source respondsToSelector:@selector(tableView:titleForHeaderInSection:)]
             ? [source tableView:native titleForHeaderInSection:section] : nil;
         [sections addObject:names.copy];
+        [paths addObject:sectionPaths.copy];
+        // Apollo titles its results section with blank text; treat it as untitled.
+        title = [title stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
         [titles addObject:title ?: @""];
     }
+    self.nativePaths = paths;
     if ([self.sections isEqualToArray:sections] && [self.sectionTitles isEqualToArray:titles]) return;
     self.sections = sections;
     self.sectionTitles = titles;
@@ -215,6 +239,21 @@ static BOOL ApolloSubredditSheetIsActive(UITabBarController *tabs) {
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     return self.sections[section].count;
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
+    // Compact titles; the grouped default leaves a wide gap under the search bar.
+    return self.sectionTitles[section].length ? 32.0 : 8.0;
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section {
+    return 12.0;
+}
+
+// Search results have no title. Without a header view UIKit keeps its 35pt
+// grouped top gap there and ignores the height above.
+- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
+    return self.sectionTitles[section].length ? nil : [UIView new];
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
@@ -241,7 +280,39 @@ static BOOL ApolloSubredditSheetIsActive(UITabBarController *tabs) {
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    [self chooseName:self.sections[indexPath.section][indexPath.row]];
+    NSString *name = self.sections[indexPath.section][indexPath.row];
+    if ([self selectNativeRowForName:name atIndexPath:indexPath]) return;
+    [self chooseName:name];
+}
+
+// Classic's row tap: Apollo's own dropdown selection switches the feed with the
+// row's model directly, so the load starts now instead of after the dismissal
+// and a typed-name lookup. Only used while the native row still holds the name.
+- (BOOL)selectNativeRowForName:(NSString *)name atIndexPath:(NSIndexPath *)indexPath {
+    if (self.choosing) return YES;
+    UITableView *native = self.nativeTable;
+    UIViewController *feed = self.feedToRestore;
+    id<UITableViewDelegate> delegate = native.delegate;
+    if (!native || !feed || ![delegate respondsToSelector:@selector(tableView:didSelectRowAtIndexPath:)]) return NO;
+    if (indexPath.section >= (NSInteger)self.nativePaths.count) return NO;
+    NSArray<NSIndexPath *> *paths = self.nativePaths[indexPath.section];
+    if (indexPath.row >= (NSInteger)paths.count) return NO;
+    NSIndexPath *nativePath = paths[indexPath.row];
+    id<UITableViewDataSource> source = native.dataSource;
+    if (nativePath.section >= [native numberOfSections] ||
+        nativePath.row >= [native numberOfRowsInSection:nativePath.section]) return NO;
+    NSString *current = [source tableView:native cellForRowAtIndexPath:nativePath].textLabel.text;
+    if (![current isEqualToString:name]) return NO;
+
+    self.choosing = YES;
+    [self.view endEditing:YES];
+    if (feed.navigationController.topViewController != feed) {
+        [feed.navigationController popToViewController:feed animated:NO];
+    }
+    [delegate tableView:native didSelectRowAtIndexPath:nativePath];
+    ApolloLog(@"[SubredditSheet] selected native row %ld.%ld", (long)nativePath.section, (long)nativePath.row);
+    [self dismissViewControllerAnimated:YES completion:nil];
+    return YES;
 }
 
 - (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
@@ -263,13 +334,13 @@ static BOOL ApolloSubredditSheetIsActive(UITabBarController *tabs) {
     UITextField *field = [UITextField new];
     field.text = name;
     // Native Return handles both subreddit and multireddit titles and performs
-    // the normal in-place feed switch. Wait until the sheet is out of the way.
-    [self dismissViewControllerAnimated:YES completion:^{
-        if (feed && feed.navigationController.topViewController != feed) {
-            [feed.navigationController popToViewController:feed animated:NO];
-        }
-        [jump textFieldShouldReturn:field];
-    }];
+    // the normal in-place feed switch. Start it now so the feed loads during
+    // the dismissal rather than after it.
+    if (feed && feed.navigationController.topViewController != feed) {
+        [feed.navigationController popToViewController:feed animated:NO];
+    }
+    [jump textFieldShouldReturn:field];
+    [self dismissViewControllerAnimated:YES completion:nil];
 }
 
 - (void)closeSheet {
