@@ -45,6 +45,26 @@ static inline ApolloNavigationTitleGeometry ApolloNavigationTitleCenteredGeometr
     return result;
 }
 
+// Content wider than the centered allowance slides toward the roomier side,
+// truncating only once it fills the gap between the edges. Same coordinates
+// and padding as above; returns `centered` when the content already fits.
+static inline ApolloNavigationTitleGeometry ApolloNavigationTitleFittedGeometry(
+    ApolloNavigationTitleGeometry centered, CGFloat leftEdge, CGFloat rightEdge,
+    CGFloat naturalWidth, CGFloat capsulePadding, CGFloat edgePadding) {
+    if (!isfinite(naturalWidth) || naturalWidth <= centered.maximumContentWidth ||
+        !isfinite(leftEdge) || !isfinite(rightEdge) || !isfinite(centered.center)) return centered;
+    CGFloat inset = (isfinite(capsulePadding) && capsulePadding > 0.0 ? capsulePadding : 0.0) +
+        (isfinite(edgePadding) && edgePadding > 0.0 ? edgePadding : 0.0);
+    CGFloat available = rightEdge - leftEdge - 2.0 * inset;
+    if (!isfinite(available) || available <= centered.maximumContentWidth) return centered;
+
+    ApolloNavigationTitleGeometry result = { centered.center, fmin(naturalWidth, available) };
+    CGFloat halfWidth = result.maximumContentWidth / 2.0 + inset;
+    if (result.center + halfWidth > rightEdge) result.center = rightEdge - halfWidth;
+    if (result.center - halfWidth < leftEdge) result.center = leftEdge + halfWidth;
+    return result;
+}
+
 // For expanded right-hand actions, shift the full title capsule left only enough
 // to clear the pill, bounded by the left controls/safe area. Never resize it;
 // the caller handles any remaining overlap. Collapse targets an offset of zero.
