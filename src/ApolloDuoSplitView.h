@@ -25,7 +25,22 @@ BOOL ApolloDuoSplitCanRevealPostsListWithSwipe(UINavigationController *navigatio
 /// Closes the Posts subreddit drawer when it is open; NO when it was not.
 BOOL ApolloDuoSplitDismissPostsList(UINavigationController *navigation);
 /// Returns from a visited profile dashboard to its retained Posts Back stack.
+BOOL ApolloDuoSplitCanReturnFromVisitedProfile(UINavigationController *navigation);
 BOOL ApolloDuoSplitReturnFromVisitedProfile(UINavigationController *navigation);
+/// The thread the last close (the button or a Back) took from beside the Posts
+/// feed `nav`, while it can still come back: the feed page it was closed from
+/// is on top and shows the same feed for the same account, no thread is open,
+/// the split still pairs columns and nothing has forgotten it (another thread,
+/// a feed change, an account switch, scrolling on when Forget Forward Swipe
+/// After Scrolling is on, a memory warning, a long stay in the background).
+/// Restore reopens it beside the feed, with any pages pushed over it, through
+/// the normal open.
+BOOL ApolloDuoSplitCanRestoreClosedThread(UINavigationController *nav);
+BOOL ApolloDuoSplitRestoreClosedThread(UINavigationController *nav);
+/// For ApolloForwardSwipeExpiry: the feed's closed thread counted as a forward
+/// page (a token for it, nil without one) and its forget.
+id ApolloDuoSplitClosedThreadToken(UINavigationController *nav);
+void ApolloDuoSplitForgetClosedThreadAfterScrolling(UINavigationController *nav);
 BOOL ApolloDuoSplitShowSidebar(UINavigationController *navigation);
 __END_DECLS
 

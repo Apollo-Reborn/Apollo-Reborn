@@ -46,6 +46,7 @@
 #import "ApolloSwiftRuntime.h"    // ApolloObjectIvar
 #import "ApolloState.h"           // sForwardSwipeForgetAfterScrolling
 #import "ApolloClasses.h"
+#import "ApolloDuoSplitView.h"  // the Duo split's closed thread
 
 // Expire once the top visible row is this many rows past the anchor. The
 // feed table alternates post cells with ThinSeparatorCellNode rows (verified
@@ -152,6 +153,14 @@ static void ApolloForwardExpiryHandleScroll(UIViewController *feedController, UI
         poppedCount = 0;
         poppedFirst = nil;
     }
+    // On an unfolded Duo the split closes a thread by changing its columns,
+    // which never reaches poppedViewControllers; the thread it remembers for
+    // the feed's forward swipe is the forward page, and expires the same way.
+    id closedThread = ApolloDuoSplitClosedThreadToken(navigationController);
+    if (poppedCount == 0 && closedThread) {
+        poppedCount = 1;
+        poppedFirst = closedThread;
+    }
     if (poppedCount == 0) {
         state.anchored = NO;
         return;
@@ -184,6 +193,7 @@ static void ApolloForwardExpiryHandleScroll(UIViewController *feedController, UI
     if (fabs(offsetY - state.offsetY) < minTravel) return;
 
     state.anchored = NO;
+    if (closedThread) ApolloDuoSplitForgetClosedThreadAfterScrolling(navigationController);
     [navigationController didReceiveMemoryWarning];
     ApolloLog(@"[ForwardExpiry] Dropped %lu forward entry(ies) after scrolling %ld rows from %ld.%ld to %ld.%ld",
               (unsigned long)poppedCount, (long)rowDelta,
