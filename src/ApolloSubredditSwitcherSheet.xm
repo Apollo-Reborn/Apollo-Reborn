@@ -31,7 +31,6 @@ static const CGFloat ApolloSubredditSearchBarHeight = 56.0;
 @property(nonatomic) BOOL refreshScheduled;
 @property(nonatomic) BOOL contentSizeUpdateScheduled;
 @property(nonatomic) BOOL choosing;
-// Set when opened from the title: raise the keyboard once the sheet appears.
 @property(nonatomic) BOOL focusSearchOnAppear;
 - (void)scheduleResultsRefresh;
 - (void)updatePreferredContentSize;
