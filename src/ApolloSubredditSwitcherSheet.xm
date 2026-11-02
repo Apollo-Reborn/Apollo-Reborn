@@ -9,6 +9,7 @@
 #import "settings/ApolloSettingsTableViewController.h"
 #import "ApolloDuoUIKitCompatibility.h"
 #import "ApolloDuoSplitView.h"
+#import "ApolloDuoRail.h"
 
 @interface _TtC6Apollo7JumpBar : UIControl
 - (void)searchTextFieldChanged:(UITextField *)field;
@@ -85,7 +86,8 @@ static BOOL ApolloSubredditSheetIsActive(UITabBarController *tabs) {
     table.translatesAutoresizingMaskIntoConstraints = NO;
     table.dataSource = self;
     table.delegate = self;
-    table.rowHeight = 52.0;
+    // Same row height as Classic's popup.
+    table.rowHeight = self.nativeTable.rowHeight > 0.0 ? self.nativeTable.rowHeight : 44.0;
     table.estimatedRowHeight = 0.0;
     table.keyboardDismissMode = UIScrollViewKeyboardDismissModeInteractive;
     if (@available(iOS 15.0, *)) table.sectionHeaderTopPadding = 0.0;
@@ -474,7 +476,68 @@ BOOL ApolloPresentPostsTabSubredditSheet(UIWindow *sourceWindow) {
 @interface _TtC6Apollo19PostsViewController : UIViewController
 @end
 
+// Classic's popup is centered across the whole feed view (up to 400pt, 10pt
+// margins), so on the Duo's closed screen it runs under the trailing rail and
+// status column. Apollo sets its frame each time it shows or resizes it, so
+// the table itself keeps the same margins and cap inside the visible feed,
+// running up to 10pt before the rail when the rail is showing.
+@interface ApolloClassicDropdownTableView : UITableView
+@end
+
+@implementation ApolloClassicDropdownTableView
+- (void)setFrame:(CGRect)frame {
+    UIView *feed = self.superview;
+    if (feed) {
+        CGRect pane = feed.safeAreaLayoutGuide.layoutFrame;
+        CGFloat minX = CGRectGetMinX(pane) + 10.0, maxX = CGRectGetMaxX(pane) - 10.0;
+        if (ApolloDuoRailHasVisibleSideBar()) {
+            UITabBar *rail = ((UITabBarController *)ApolloMainTabBarController()).tabBar;
+            if (rail.window && rail.window == feed.window) {
+                maxX = CGRectGetMinX([rail convertRect:rail.bounds toView:feed]) - 10.0;
+            }
+        }
+        CGFloat width = MIN(400.0, maxX - minX);
+        if (width > 0.0 && (CGRectGetMinX(frame) < minX - 0.5 || CGRectGetMaxX(frame) > maxX + 0.5)) {
+            frame.origin.x = minX + floor((maxX - minX - width) / 2.0);
+            frame.size.width = width;
+        }
+    }
+    [super setFrame:frame];
+}
+@end
+
 %hook _TtC6Apollo19PostsViewController
+- (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
+    %orig(tableView, view, section);
+    // On the Duo's closed screen the popup's section titles sit 10pt closer to
+    // the edge than its rows. The plain header's title follows the table's own
+    // leading margin, so match it to where the row titles start.
+    if (![tableView isKindOfClass:ApolloClassicDropdownTableView.class]) return;
+    UILabel *rowTitle = tableView.visibleCells.firstObject.textLabel;
+    CGFloat leading = rowTitle.window ? [rowTitle convertPoint:CGPointZero toView:tableView].x : 20.0;
+    NSDirectionalEdgeInsets margins = tableView.directionalLayoutMargins;
+    if (leading <= 0.0 || fabs(margins.leading - leading) < 0.5) return;
+    margins.leading = leading;
+    tableView.preservesSuperviewLayoutMargins = NO;
+    tableView.insetsLayoutMarginsFromSafeArea = NO;
+    tableView.directionalLayoutMargins = margins;
+}
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    // Adopt Apollo's plain dropdown table once; it adds no storage.
+    static Ivar dropdownIvar;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        dropdownIvar = class_getInstanceVariable(ApolloClassPostsViewController, "dropDownTableView");
+    });
+    UITableView *dropdown = dropdownIvar ? object_getIvar(self, dropdownIvar) : nil;
+    if (dropdown && object_getClass(dropdown) == UITableView.class) {
+        object_setClass(dropdown, ApolloClassicDropdownTableView.class);
+        dropdown.frame = dropdown.frame;
+    }
+}
+
 - (void)viewDidAppear:(BOOL)animated {
     %orig(animated);
     NSNumber *requested = objc_getAssociatedObject(self, &kApolloPendingClassicJumpBar);
