@@ -41,6 +41,7 @@ static const CGFloat ApolloSubredditSearchBarHeight = 56.0;
 @property(nonatomic) BOOL refreshScheduled;
 @property(nonatomic) BOOL contentSizeUpdateScheduled;
 @property(nonatomic) BOOL choosing;
+@property(nonatomic) BOOL searchFocused;
 - (void)scheduleResultsRefresh;
 - (void)updatePreferredContentSize;
 @end
@@ -119,6 +120,15 @@ static BOOL ApolloSubredditSheetIsActive(UITabBarController *tabs) {
     self.queryField.text = @"";
     [self.jumpBar searchTextFieldChanged:self.queryField];
     [self refreshResults];
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    // Bring the keyboard up like Classic's popup, once the presentation has
+    // settled so it doesn't fight the sheet animation.
+    if (self.searchFocused) return;
+    self.searchFocused = YES;
+    [self.searchBar becomeFirstResponder];
 }
 
 - (void)viewDidLayoutSubviews {
