@@ -1647,7 +1647,7 @@ static char kApolloAccountSheetContentKey;
 // propagates the presenting window's rail reservation into the sheet. Scope
 // the correction to this owned navigation subtree, leaving the actual sheet
 // frame and its vertical safe areas under UIKit's control.
-static BOOL ApolloIsAccountSheetContent(UIView *view) {
+BOOL ApolloIsAccountSheetContent(UIView *view) {
     if (ApolloDuoCurrentMode() == ApolloDuoModePhone) return NO;
     for (UIView *ancestor = view; ancestor; ancestor = ancestor.superview) {
         if (objc_getAssociatedObject(ancestor, &kApolloAccountSheetContentKey)) {

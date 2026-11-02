@@ -570,6 +570,7 @@ static void ApolloTitlePresentationDetachCustom(UIView *source) {
     // system strip. Match the search field's usable header rather than the
     // physical display midpoint. Unfolded columns retain their own policy.
     UIEdgeInsets coverInsets = ApolloDuoUsesCoverContentInsets() && !splitColumn
+        && !ApolloIsAccountSheetContent(bar)
         ? ApolloDeviceChromeInsetsForView(bar) : UIEdgeInsetsZero;
     CGFloat leading = coverInsets.left;
     CGFloat trailing = -coverInsets.right;
