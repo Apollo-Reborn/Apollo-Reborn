@@ -31,6 +31,8 @@ static const CGFloat ApolloSubredditSearchBarHeight = 56.0;
 @property(nonatomic) BOOL refreshScheduled;
 @property(nonatomic) BOOL contentSizeUpdateScheduled;
 @property(nonatomic) BOOL choosing;
+// Set when opened from the title: raise the keyboard once the sheet appears.
+@property(nonatomic) BOOL focusSearchOnAppear;
 - (void)scheduleResultsRefresh;
 - (void)updatePreferredContentSize;
 @end
@@ -105,6 +107,14 @@ static BOOL ApolloSubredditSheetIsActive(UITabBarController *tabs) {
     self.queryField.text = @"";
     [self.jumpBar searchTextFieldChanged:self.queryField];
     [self refreshResults];
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    if (self.focusSearchOnAppear) {
+        self.focusSearchOnAppear = NO;
+        [self.searchBar becomeFirstResponder];
+    }
 }
 
 - (void)viewDidLayoutSubviews {
@@ -273,7 +283,7 @@ static BOOL ApolloSubredditSheetIsActive(UITabBarController *tabs) {
 
 @end
 
-static BOOL ApolloPresentSubredditSheetForFeed(UIViewController *owner, UIViewController *presenter) {
+static BOOL ApolloPresentSubredditSheetForFeed(UIViewController *owner, UIViewController *presenter, BOOL focusSearch) {
     if (@available(iOS 15.0, *)) {
         if (![owner isKindOfClass:ApolloClassPostsViewController] || !presenter) return NO;
         if (presenter.presentedViewController || presenter.navigationController.presentedViewController ||
@@ -287,6 +297,7 @@ static BOOL ApolloPresentSubredditSheetForFeed(UIViewController *owner, UIViewCo
         picker.nativeTable = native;
         picker.feedToRestore = owner;
         picker.selectedName = owner.navigationItem.title;
+        picker.focusSearchOnAppear = focusSearch;
         UINavigationController *sheetNavigation = [[UINavigationController alloc] initWithRootViewController:picker];
         // Keep UIKit's centered, content-sized form on the unfolded display.
         sheetNavigation.modalPresentationStyle = UIModalPresentationFormSheet;
@@ -321,7 +332,7 @@ static BOOL ApolloPresentSubredditSheet(_TtC6Apollo7JumpBar *jump) {
     UIViewController *owner = ApolloReadSwiftWeakObjectIvar(jump, "delegate");
     if (![owner isKindOfClass:ApolloClassPostsViewController]) return NO;
     if (owner.presentedViewController || owner.navigationController.presentedViewController) return YES;
-    return ApolloPresentSubredditSheetForFeed(owner, owner);
+    return ApolloPresentSubredditSheetForFeed(owner, owner, YES);
 }
 
 static UITabBarController *ApolloSubredditTabsInController(UIViewController *controller) {
@@ -348,7 +359,7 @@ BOOL ApolloPresentPostsTabSubredditSheet(UIWindow *sourceWindow) {
     }
     if (!feed) return NO;
     tabs.selectedViewController = navigation;
-    return ApolloPresentSubredditSheetForFeed(feed, navigation.topViewController);
+    return ApolloPresentSubredditSheetForFeed(feed, navigation.topViewController, NO);
 }
 
 @interface _TtC6Apollo22ApolloTabBarController : UITabBarController
