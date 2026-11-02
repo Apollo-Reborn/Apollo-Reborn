@@ -745,10 +745,17 @@ static BOOL ApolloAccountReorderSchedulePersist(
     self.tableView.estimatedRowHeight = 0.0;
     self.tableView.estimatedSectionHeaderHeight = 0.0;
     self.tableView.estimatedSectionFooterHeight = 0.0;
-    // Scroll only when the account list exceeds the current sheet detent;
-    // UIKit's grabber owns expansion and interactive dismissal.
-    self.tableView.scrollEnabled = NO;
-    self.tableView.alwaysBounceVertical = NO;
+    if (@available(iOS 15.0, *)) {
+        // The sheet tracks this table (see ApolloInstallAccountSwitcherOverlay):
+        // an upward drag expands it to the large detent, a downward drag at the
+        // top collapses it. That needs a live pan, even when the list fits.
+        self.tableView.alwaysBounceVertical = YES;
+    } else {
+        // iOS 14 keeps Apollo's fitted popup: scroll only when the list
+        // overflows it (viewDidLayoutSubviews), never rubber-band.
+        self.tableView.scrollEnabled = NO;
+        self.tableView.alwaysBounceVertical = NO;
+    }
     self.accountReorderGesture = [[UILongPressGestureRecognizer alloc]
         initWithTarget:self action:@selector(handleAccountReorderGesture:)];
     self.accountReorderGesture.minimumPressDuration = 0.16;
@@ -915,10 +922,13 @@ static BOOL ApolloAccountReorderSchedulePersist(
         self.preferredContentSize = CGSizeMake(self.view.bounds.size.width, height);
         [self.liveManager.presentationController.containerView setNeedsLayout];
     }
-    CGFloat visibleTableHeight = CGRectGetHeight(self.tableView.bounds) -
-        self.tableView.adjustedContentInset.top - self.tableView.adjustedContentInset.bottom;
-    self.tableView.scrollEnabled =
-        self.tableView.contentSize.height > MAX(visibleTableHeight, 0.0) + 0.5;
+    if (@available(iOS 15.0, *)) {
+    } else {
+        CGFloat visibleTableHeight = CGRectGetHeight(self.tableView.bounds) -
+            self.tableView.adjustedContentInset.top - self.tableView.adjustedContentInset.bottom;
+        self.tableView.scrollEnabled =
+            self.tableView.contentSize.height > MAX(visibleTableHeight, 0.0) + 0.5;
+    }
 }
 
 #pragma mark - UITableViewDataSource
@@ -1148,6 +1158,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
     self.accountReorderFeedback = nil;
     self.accountReorderActive = NO;
     self.accountReorderFinishPending = NO;
+    self.tableView.panGestureRecognizer.enabled = YES;
 }
 
 - (void)evaluateAccountReorderDestination {
@@ -1285,6 +1296,8 @@ static BOOL ApolloAccountReorderSchedulePersist(
             self.accountReorderCornerRadius = cornerRadius;
             self.accountReorderLatestPoint = viewPoint;
             self.accountReorderActive = YES;
+            // Keep a reorder drag from also scrolling or resizing the sheet.
+            self.tableView.panGestureRecognizer.enabled = NO;
             self.accountReorderFeedback = [UISelectionFeedbackGenerator new];
             [self.accountReorderFeedback prepare];
             cell.hidden = YES;
@@ -1711,6 +1724,12 @@ static void ApolloInstallAccountSwitcherOverlay(UIViewController *host) {
         overlayNav.modalPresentationStyle = UIModalPresentationCurrentContext;
 
         [host addChildViewController:overlayNav];
+        if (@available(iOS 15.0, *)) {
+            // The sheet turns drags on the presented controller's content
+            // scroll view into detent changes. Name the visible list, not
+            // whatever UIKit's lookup finds (possibly Apollo's hidden table).
+            [host setContentScrollView:switcher.tableView forEdge:NSDirectionalRectEdgeAll];
+        }
         objc_setAssociatedObject(overlayNav.view, &kApolloAccountSheetContentKey, @YES,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         overlayNav.view.frame = host.view.bounds;
