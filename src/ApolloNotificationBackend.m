@@ -237,6 +237,22 @@ static NSData *ApolloAugmentDeviceRegistrationBody(NSData *originalBody) {
 
 // MARK: - Request rewrite
 
+// `/v1/device/<apns>/account/<id>` for a log line: every segment after
+// `device`, `account`, `accounts` or `watcher(s)` is an identifier.
+__attribute__((unused)) // only referenced from ApolloLog, which host tests compile out
+static NSString *ApolloNotificationBackendLogRoute(NSString *path) {
+    NSArray<NSString *> *segments = [path componentsSeparatedByString:@"/"];
+    NSMutableArray<NSString *> *out = [NSMutableArray arrayWithCapacity:segments.count];
+    NSSet<NSString *> *identifierParents = [NSSet setWithArray:@[ @"device", @"account", @"accounts", @"watcher", @"watchers" ]];
+    for (NSUInteger i = 0; i < segments.count; i++) {
+        BOOL identifier = i > 0 && segments[i].length > 0 &&
+            [identifierParents containsObject:segments[i - 1].lowercaseString] &&
+            ![identifierParents containsObject:segments[i].lowercaseString];
+        [out addObject:identifier ? @"<id>" : segments[i]];
+    }
+    return [out componentsJoinedByString:@"/"];
+}
+
 NSURLRequest *ApolloRewriteRequestForNotificationBackend(NSURLRequest *request) {
     if (!request) return nil;
     NSURL *requestURL = request.URL;
@@ -361,7 +377,10 @@ NSURLRequest *ApolloRewriteRequestForNotificationBackend(NSURLRequest *request) 
         }
     }
 
-    ApolloLog(@"[NotifBackend] Rewriting %@ %@ -> %@", method, requestURL.absoluteString, rewrittenURL.absoluteString);
+    // Route template only: the path carries the APNs device token and Reddit
+    // account IDs, and the rewritten host (maybe with user:password@) is the
+    // user's own server.
+    ApolloLog(@"[NotifBackend] Rewriting %@ %@ -> custom backend", method, ApolloNotificationBackendLogRoute(path));
     return [mutable copy];
 }
 

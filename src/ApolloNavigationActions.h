@@ -32,6 +32,11 @@ CGRect ApolloNavigationActionsExpandedFrame(UINavigationBar *navigationBar);
 // do not cache across layout/content changes.
 NSArray<UIView *> *ApolloNavigationActionsManagedRoots(UINavigationBar *navigationBar);
 
+// YES for an actions strip that belongs to another navigation item. UIKit keeps
+// the outgoing page's bar items mounted briefly after a stack change; they are
+// not edges of the incoming page's title.
+BOOL ApolloNavigationActionsViewIsStaleForItem(UIView *view, UINavigationItem *item);
+
 static inline BOOL ApolloNavigationActionsViewIsInManagedRoots(UIView *view, NSArray<UIView *> *roots) {
     for (UIView *root in roots) {
         if (view == root || [view isDescendantOfView:root]) return YES;

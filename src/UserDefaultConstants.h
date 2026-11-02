@@ -157,6 +157,9 @@ static NSString *const UDKeyEnableFlairColors = @"EnableFlairColors";
 static NSString *const UDKeyBoldPostTitles = @"BoldPostTitles";
 static NSString *const ApolloFlairColorsChangedNotification = @"ApolloFlairColorsChangedNotification";
 static NSString *const UDKeyReadPostMaxCount = @"ReadPostMaxCount";
+// Hidden & Deleted's Posts tab: YES = compact posts, NO = large thumbnails.
+// Unset follows the feeds' own UseCompactThumbnails.
+static NSString *const UDKeyHiddenContentCompactPosts = @"HiddenContentCompactPosts";
 static NSString *const UDKeyPreferredGIFFallbackFormat = @"PreferredGIFFallbackFormat";
 static NSString *const UDKeyUnmuteCommentsVideos = @"UnmuteCommentsVideos";
 // "Unmute Videos in Feed": how feed videos behave when they autoplay while
@@ -413,6 +416,9 @@ static NSString *const UDKeyInfoRowOverlayMode = @"InfoRowOverlayMode";   // %/t
 static NSString *const UDKeyInfoRowTapTranslation = @"InfoRowTapTranslation";
 static NSString *const UDKeyThreeStateVoting = @"ThreeStateVoting";
 static NSString *const UDKeyLiveCommentsFollow = @"LiveCommentsFollow";
+// Existing floating comment jump button: 0 = native parent threads (default),
+// 1 = comments added since the previous visit. Shared by General and More.
+static NSString *const UDKeyCommentNavigationMode = @"CommentNavigationMode";
 // Per-POST comment sort memory (issue #555). When ON, changing a post's comment sort
 // is remembered for that post (capped LRU mapping below) and restored when its
 // comments are reopened; every other post keeps Apollo's native chain (suggested
@@ -631,6 +637,11 @@ static NSString *const UDKeyReduceRateLimiting = @"ReduceRateLimiting";
 // API-key-free sign-in, or at the first rate limit for accounts that signed in
 // before the prompt existed), so it never asks twice. Not user-facing.
 static NSString *const UDKeyReduceRateLimitingOffered = @"ReduceRateLimitingOffered";
+// Use Route Updates (ApolloWebJSONRouteUpdates.m). While API-Key-Free Mode is
+// on, fetch keyless-routes.json from the repository so maintainers can change
+// which reddit.com routes blocked API-key-free reads take without a release.
+// Off uses only the routes built into the tweak. Default YES.
+static NSString *const UDKeyKeylessRouteUpdates = @"KeylessRouteUpdates";
 // Reddit's modern web Chat, for API-key and API-key-free accounts alike. Off
 // means Apollo's own Direct Chat, which needs Reddit API credentials.
 static NSString *const UDKeyUseModernRedditChat = @"UseModernRedditChat";
@@ -740,7 +751,7 @@ static NSString *const UDKeyUpdateSkippedVersion = @"UpdateSkippedVersion"; // "
 // Feed thumbnails for text posts with embedded images (off = native behavior).
 static NSString *const UDKeyFeedTextPostThumbnails = @"FeedTextPostThumbnails";
 // Restores the last feed, open post and reading position after process eviction.
-// Default YES. Turning it off deletes any saved or pending reading session.
+// Default NO. Turning it off deletes any saved or pending reading session.
 static NSString *const UDKeyRestoreReadingSession = @"RestoreReadingSession";
 // Replaces Apollo's fixed two/three-tile Reddit-gallery mosaic in large feed
 // cards with a horizontally paging image carousel. Default YES. See

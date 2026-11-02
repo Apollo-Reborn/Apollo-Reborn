@@ -15,6 +15,8 @@
 #import "ApolloPerPostCommentSort.h"
 #import "ApolloSessionRestoration.h"
 #import "ApolloSessionState.h"
+#import "ApolloDuoSplitView.h"
+#import "ApolloFeedShortcutsAppearance.h"
 #import "ApolloState.h"
 #import "ApolloSwiftRuntime.h"
 
@@ -402,7 +404,10 @@ static UINavigationController *ApolloSessionSelectedNavigation(id tabs) {
         [(UITabBarController *)tabs selectedViewController]);
 }
 
-static BOOL ApolloSessionOpenHomeFeed(void) {
+// Selects a built-in feed row (0 Home, 1 Popular, 2 All) in the subreddit
+// list, exactly as tapping it does. NO while the list is not ready, or when a
+// hidden Popular/All shortcut has no row.
+static BOOL ApolloSessionOpenBuiltInFeed(NSUInteger feedIndex) {
     id tabs = ApolloMainTabBarController();
     if (![tabs isKindOfClass:UITabBarController.class]) return NO;
     if ([tabs respondsToSelector:@selector(goToHomeTab)]) {
@@ -410,21 +415,34 @@ static BOOL ApolloSessionOpenHomeFeed(void) {
     }
     UINavigationController *navigation = ApolloSessionSelectedNavigation(tabs);
     [navigation popToRootViewControllerAnimated:NO];
-    UIViewController *root = navigation.viewControllers.firstObject;
+    // An open Duo moves the list into its split host; Duo retains the native
+    // list controller as the tab's root.
+    UIViewController *root = ApolloDuoSplitRootController(navigation) ?: navigation.viewControllers.firstObject;
     SEL selector = @selector(tableView:didSelectRowAtIndexPath:);
     if (!ApolloClassRedditListViewController ||
         ![root isMemberOfClass:ApolloClassRedditListViewController] ||
         ![root respondsToSelector:selector]) return NO;
     UITableView *table = [root respondsToSelector:@selector(tableView)]
         ? ((id (*)(id, SEL))objc_msgSend)(root, @selector(tableView)) : nil;
+    // Hidden Popular/All shortcuts shift the rows after them.
+    NSUInteger row = feedIndex == 0 ? 0 : [ApolloFeedShortcutVisibleIndexes() indexOfObject:@(feedIndex)];
+    if (row == NSNotFound || (feedIndex != 0 && (table.numberOfSections == 0 ||
+        row >= (NSUInteger)[table numberOfRowsInSection:0]))) return NO;
     ((void (*)(id, SEL, id, id))objc_msgSend)(root, selector, table,
-        [NSIndexPath indexPathForRow:0 inSection:0]);
+        [NSIndexPath indexPathForRow:row inSection:0]);
     return YES;
 }
 
 static BOOL ApolloSessionOpenURLString(NSString *URLString) {
     if (!sApolloSessionRestoreScene) return NO;
-    if ([URLString isEqualToString:kApolloSessionHomeURL]) return ApolloSessionOpenHomeFeed();
+    if ([URLString isEqualToString:kApolloSessionHomeURL]) return ApolloSessionOpenBuiltInFeed(0);
+    // Popular/All are saved as r/popular and r/all. Routing those URLs opens a
+    // separate subreddit page named "all" on top of (or, on an open Duo,
+    // beside) the built-in feed. Reopen the built-in feed itself.
+    NSUInteger feedIndex = ApolloSessionStateBuiltInFeedIndex(URLString);
+    if (feedIndex != NSNotFound && [ApolloFeedShortcutVisibleIndexes() containsObject:@(feedIndex)]) {
+        return ApolloSessionOpenBuiltInFeed(feedIndex);
+    }
     NSURL *URL = [NSURL URLWithString:URLString];
     return URL ? ApolloRouteURLThroughApp(URL) : NO;
 }

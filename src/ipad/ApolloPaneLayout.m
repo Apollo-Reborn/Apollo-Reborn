@@ -42,17 +42,21 @@ static NSMapTable<UINavigationController *, UISplitViewController *> *sPaneNavig
 static NSMapTable<UINavigationItem *, UINavigationController *> *sPaneItemOwners;
 
 BOOL ApolloPaneLayoutSupported(void) {
+    return ApolloPaneLayoutDeviceSupported() && IsLiquidGlass();
+}
+
+BOOL ApolloPaneLayoutDeviceSupported(void) {
     static BOOL supported = NO;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         // The experiment's navigation model depends on UIKit's system tab
-        // sidebar. Earlier iPadOS releases can render the split columns, but
-        // retain Apollo's tab bar alongside them, which does not match the UI
-        // promised by the setting and has not received the same test coverage.
-        // Keep the production opt-in honest and conservative: iPadOS 18 is the
-        // first supported release, while Apollo's normal layout remains
-        // untouched everywhere else.
-        if (@available(iOS 18.0, *)) {
+        // sidebar (iPadOS 18) and, in practice, on Liquid Glass (iPadOS 26):
+        // in the classic design the pane fails to install. Earlier releases
+        // can render the split columns, but retain Apollo's tab bar alongside
+        // them, which does not match the UI promised by the setting. iPadOS 26
+        // is therefore the first supported release, while Apollo's normal
+        // layout remains untouched everywhere else.
+        if (@available(iOS 26.0, *)) {
             supported = (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad);
 #if APOLLO_SIM_BUILD
             // Development only: exercise an actual phone idiom at cold narrow

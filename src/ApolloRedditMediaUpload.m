@@ -480,7 +480,9 @@ static void ApolloPerformRedditMediaS3Upload(NSURL *actionURL,
             return;
         }
 
-        ApolloLog(@"[RedditUpload] Uploaded media: %@ assetID=%@", imageURL.absoluteString, assetID ?: @"(none)");
+        // Host + fingerprint only: the user's own upload. Its i.redd.it link or
+        // asset ID finds the post, and with it the author.
+        ApolloLog(@"[RedditUpload] Uploaded media to %@ (asset #%@)", imageURL.host ?: @"(none)", ApolloLogFingerprint(assetID));
         ApolloRedditMediaUploadProgress handler = operation.progressHandler;
         if (handler) handler(1.0, (int64_t)s3BodyLength, (int64_t)s3BodyLength);
         completion(imageURL, assetID, webSocketURL, nil);

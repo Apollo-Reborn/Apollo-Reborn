@@ -273,6 +273,7 @@ extern BOOL sThreeStateVoting;
 // while you're at the top, and shows a "N new comments" jump pill when you've scrolled down
 // to read/reply. See ApolloLiveCommentsFollow.xm. Default ON via registerDefaults.
 extern BOOL sLiveCommentsFollow;
+extern NSInteger sCommentNavigationMode; // 0 = parent threads; 1 = new comments
 // Per-post comment sort memory (issue #555): reopening a post restores the comment
 // sort last picked inside it; other posts keep Apollo's native sort chain. Opt-in;
 // default OFF via registerDefaults. See ApolloPerPostCommentSort.xm.
@@ -645,6 +646,9 @@ extern BOOL sWebJSONEnabled;
 // active account is API-key-free; read it through
 // ApolloReduceRateLimitingActive() (ApolloReduceRateLimiting.h). Default NO.
 extern BOOL sReduceRateLimiting;
+// Use Route Updates (UDKeyKeylessRouteUpdates): keyless-routes.json may adjust
+// the API-Key-Free route table (ApolloWebJSONRouteUpdates.h). Default YES.
+extern BOOL sKeylessRouteUpdates;
 // Native Polls (ApolloPollVoting.xm / ApolloPollCompose.xm): master gate for
 // the experimental poll voting + creation feature. Default NO. Cached here (not
 // re-read from NSUserDefaults per call) because the poll node's layoutSubviews

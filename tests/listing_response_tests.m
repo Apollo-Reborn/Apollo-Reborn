@@ -130,6 +130,55 @@ int main(void) {
                 }
             }
         }
+        // #1531: a post-and-comments read is an array of two listings, and
+        // RedditKit's completion (0x100039680, 0x100039b38) checks only
+        // `count >= 2` before reading root[0] on a background queue. Anything
+        // else, above all a dictionary RedditKit maps no error for (a 429's),
+        // must fail before it gets there.
+        NSError *offline = [NSError errorWithDomain:NSURLErrorDomain code:-1009 userInfo:nil];
+        for (NSString *path in @[@"comments/abc.json", @"/comments/abc.json?limit=3&depth=1", @"comments/abc/_/def.json",
+                                 @"comments/abc", @"r/test/comments/abc.json", @"/r/test/comments/abc/slug/"]) {
+            for (NSNumber *status in @[@429, @200]) {
+                for (id bad in @[@{@"message": @"Too Many Requests", @"error": @429}, @{}, @"text", @42, [NSNull null]]) {
+                    for (NSNumber *hasError in @[@NO, @YES]) {
+                        nextResponse = [[NSHTTPURLResponse alloc] initWithURL:[NSURL URLWithString:@"https://oauth.reddit.com/comments/abc.json"]
+                            statusCode:status.integerValue HTTPVersion:@"HTTP/1.1" headerFields:@{}];
+                        nextObject = bad;
+                        nextError = hasError.boolValue ? offline : nil;
+                        NSError *original = nextError;
+                        [client taskWithMethod:@"GET" path:path parameters:nil completion:^(NSHTTPURLResponse *response, id object, NSError *error) {
+                            (void)response;
+                            if (object && [object count] >= 2) (void)object[0];
+                            Check(object == nil && error != nil, @"a comment thread that isn't an array must fail");
+                            if (original) {
+                                Check(error == original, @"preserve original error");
+                            } else {
+                                Check([error.domain isEqualToString:@"ApolloReborn.WebJSON.Response"] && error.code == 1531,
+                                      @"report the failed comments load");
+                                Check([error.localizedDescription containsString:status.integerValue == 429 ? @"limiting" : @"unexpected"],
+                                      @"a 429 says Reddit is limiting requests");
+                            }
+                        }]; checks++;
+                    }
+                }
+            }
+        }
+        // Recent-comment listings (no post id) are dictionaries, and writes are
+        // never checked.
+        nextResponse = okResponse;
+        nextError = nil;
+        for (NSString *method in @[@"GET", @"POST"]) {
+            for (NSString *path in @[@"comments.json", @"r/test/comments.json", @"comments/", @"r/test/comments/"]) {
+                nextObject = @{@"data": @{@"children": @[]}};
+                [client taskWithMethod:method path:path parameters:nil completion:^(NSHTTPURLResponse *response, id object, NSError *error) {
+                    (void)response; Check(object == nextObject && error == nil, @"comment listing dictionary untouched");
+                }]; checks++;
+            }
+        }
+        nextObject = @{@"json": @{@"errors": @[]}};
+        [client taskWithMethod:@"POST" path:@"comments/abc.json" parameters:nil completion:^(NSHTTPURLResponse *response, id object, NSError *error) {
+            (void)response; Check(object == nextObject && error == nil, @"comment thread writes untouched");
+        }]; checks++;
         // An error RedditKit or the transport already reported passes through,
         // with whatever object came with it.
         NSError *transportError = [NSError errorWithDomain:NSURLErrorDomain code:-1009 userInfo:nil];

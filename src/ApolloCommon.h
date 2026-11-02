@@ -3,6 +3,7 @@
 #import <os/log.h>
 #import <Security/SecBase.h>
 #import <objc/message.h>
+#import "ApolloLogRedaction.h"
 
 /// The backing `UIView` of an ASDisplayNode-like object, or nil if it has none.
 ///
@@ -39,8 +40,9 @@ static inline UIView *ApolloNodeView(id node) {
 //
 // The in-memory levels have no wrapper: call os_log_info / os_log_debug
 // directly with ApolloFixLog() and a C-literal format that starts with
-// "[ApolloFix] [Tag] ". They never reach exports and belong to chatty call
-// sites and hot paths (per cell, per layout pass, per scroll tick, per touch).
+// "[ApolloFix] [Tag] ". The exporter drops them (it keeps Notice and up), and
+// they belong to chatty call sites and hot paths (per cell, per layout pass,
+// per scroll tick, per touch).
 // Debug is off unless something asks for it (log stream --level debug, log
 // config, a profile), and Apple's macros check the level before touching the
 // arguments, so a disabled debug line costs one os_log_type_enabled call and
@@ -50,6 +52,13 @@ static inline UIView *ApolloNodeView(id node) {
 // os_log_error directly too. In every direct call each dynamic string or
 // object needs %{public}@ / %{public}s, or it is <private> in exports;
 // integers, floats, bools and %p are public by default.
+//
+// Exports are shared publicly (bug reports become GitHub issues). The exporter
+// masks URLs, u/ names, the signed-in accounts and token-shaped values
+// (ApolloLogRedaction.h), but it cannot recognise free text. Never log a
+// secret, message/comment/post text, a title, a search query, a prompt or a
+// handle: log its length, a count, a bool, the host, or error domain + code
+// (not `%@` of an NSError, whose userInfo carries the failing URL).
 #define ApolloLog(fmt, ...) ApolloLogEmit(OS_LOG_TYPE_DEFAULT, @"[ApolloFix] " fmt, ##__VA_ARGS__)
 #define ApolloLogError(fmt, ...) ApolloLogEmit(OS_LOG_TYPE_ERROR, @"[ApolloFix] " fmt, ##__VA_ARGS__)
 #define ApolloLogFault(fmt, ...) ApolloLogEmit(OS_LOG_TYPE_FAULT, @"[ApolloFix] " fmt, ##__VA_ARGS__)
@@ -235,6 +244,9 @@ void ApolloNavigationTitleGlassSetContentAlpha(UIView *contentView, CGFloat alph
 void ApolloNavigationTitleGlassRefreshNavigationBar(UINavigationBar *bar);
 // YES through interactive push/pop setup and UIKit's completion cleanup (Liquid Glass only).
 BOOL ApolloNavTransitionInFlight(void);
+// Finish a running, noninteractive Apollo pop so another Posts tap can act now.
+// Never takes control of a finger-driven transition or a push.
+BOOL ApolloFinishNavigationPopForPostsTap(UINavigationController *navigationController);
 
 // Apollo's main ApolloTabBarController, found via the scene/app delegate's
 // tabBarController ivar or by walking window root VCs. Returns nil while the

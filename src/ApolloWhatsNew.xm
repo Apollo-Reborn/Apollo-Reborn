@@ -97,7 +97,7 @@ static NSString *ApolloWhatsNewCurrentVersion(void);
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor systemBackgroundColor];
 
-    // 3.9.0 only: a one-off Halloween look (ApolloWhatsNewHalloween.m) with a
+    // 3.9.0 and 4.0.1 only: a Halloween look (ApolloWhatsNewHalloween.m) with a
     // pumpkin-orange accent, Count Helios in the header and a flock of bats.
     _halloween = ApolloWhatsNewHalloweenWantedForVersion(ApolloWhatsNewCurrentVersion());
 
@@ -108,8 +108,10 @@ static NSString *ApolloWhatsNewCurrentVersion(void);
     [self apollo_updateContinueTitleColor];
     [self.view addSubview:_continueButton];
     [NSLayoutConstraint activateConstraints:@[
-        [_continueButton.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:20],
-        [_continueButton.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-20],
+        // Full width like the header and rows; the Duo's side safe-area inset
+        // left the button off-center.
+        [_continueButton.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:20],
+        [_continueButton.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-20],
         [_continueButton.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-12],
         [_continueButton.heightAnchor constraintEqualToConstant:50],
     ]];
@@ -247,8 +249,8 @@ static NSString *ApolloWhatsNewCurrentVersion(void);
     [self apollo_playBatsIfNeeded];
 }
 
-// 3.9.0 only (ApolloWhatsNewHalloween.m): a small flock of bats bursts out of
-// the header icon as the header lands. Measured after apollo_animateEntrance, whose
+// 3.9.0 and 4.0.1 only (ApolloWhatsNewHalloween.m): a small flock of bats bursts
+// out of the header icon as the header lands. Measured after apollo_animateEntrance, whose
 // animation blocks have already applied the header's final layout to the
 // model layers, so this is where the icon ends up, not where it starts.
 - (void)apollo_playBatsIfNeeded {

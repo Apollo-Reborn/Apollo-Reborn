@@ -132,6 +132,8 @@ static BOOL sSendNextRemovalAsSubreddit = NO;
     // via…" rows are plain colored text, so the shared cell's icon stays empty
     // regardless (no non-nil `image` block needed).
     spec.legacyDismissesSheet = NO; // perform forwards into row 0's own handler, which self-dismisses.
+    // Match the green Public Sticky row above it rather than the theme accent.
+    spec.legacyModerator = YES;
 
     spec.matches = ^BOOL(id actionController, NSString *menuTitle) {
         (void)actionController;

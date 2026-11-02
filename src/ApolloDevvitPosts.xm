@@ -112,6 +112,7 @@ static BOOL ApolloDevvitReserveFeedSlot(void);
 static BOOL ApolloDevvitReserveGlobalSlot(void);
 static void ApolloDevvitSetFailedHeight(NSString *fullName, BOOL failed);
 static void ApolloDevvitShedPagesOfOtherAccounts(NSString *identity);
+static void ApolloDevvitResetReloadBudget(NSString *fullName);
 
 NSString *const ApolloDevvitFeedOwnershipChangedNotification = @"ApolloDevvitFeedOwnershipChangedNotification";
 
@@ -237,8 +238,19 @@ BOOL ApolloDevvitLinkShowsWidget(id link) {
     return ApolloDevvitLinkIsInteractive((RDKLink *)link);
 }
 
+// The widget page loads from sh.reddit.com, never www (#1551). An account with
+// "Use new Reddit as my default experience" turned off is served OLD Reddit at
+// www.reddit.com: no devvit element ever appears, so every interactive post sat
+// on "Loading interactive post…" until the probe gave up, on any device, for
+// that account only. sh.reddit.com always serves the current web app whatever
+// the account prefers — it is where Reddit's own old-Reddit fallback text sends
+// people ("Click here to view the full post"). The seeded session cookies are
+// .reddit.com-wide, so it is the same signed-in page.
+static NSString *const kApolloDevvitPageHost = @"sh.reddit.com";
+
 // RDKLink.permalink is NSString on some paths and a relative NSURL on others
-// (see ApolloShareAsImageLink.xm) — normalize to an absolute www URL.
+// (see ApolloShareAsImageLink.xm) — normalize to an absolute URL on the page
+// host. An absolute reddit permalink keeps its path and loses its host.
 static NSURL *ApolloDevvitPermalinkURL(RDKLink *link) {
     id perm = nil;
     @try { perm = [(id)link permalink]; } @catch (__unused id e) {}
@@ -246,9 +258,19 @@ static NSURL *ApolloDevvitPermalinkURL(RDKLink *link) {
     if ([perm isKindOfClass:[NSURL class]]) path = [(NSURL *)perm absoluteString];
     else if ([perm isKindOfClass:[NSString class]]) path = (NSString *)perm;
     if (path.length == 0) return nil;
-    if ([path hasPrefix:@"http"]) return [NSURL URLWithString:path];
+    if ([path hasPrefix:@"http"]) {
+        NSURLComponents *comps = [NSURLComponents componentsWithString:path];
+        NSString *host = comps.host.lowercaseString;
+        if (!host || !([host isEqualToString:@"reddit.com"] || [host hasSuffix:@".reddit.com"])) {
+            return [NSURL URLWithString:path];
+        }
+        comps.scheme = @"https";
+        comps.host = kApolloDevvitPageHost;
+        comps.port = nil;
+        return comps.URL;
+    }
     if (![path hasPrefix:@"/"]) path = [@"/" stringByAppendingString:path];
-    return [NSURL URLWithString:[@"https://www.reddit.com" stringByAppendingString:path]];
+    return [NSURL URLWithString:[NSString stringWithFormat:@"https://%@%@", kApolloDevvitPageHost, path]];
 }
 
 static NSString *ApolloDevvitFullName(RDKLink *link) {
@@ -277,6 +299,9 @@ static const CGFloat kApolloDevvitMaxHeight = 900.0;
 // app's expanded view): devvit's own "tall" size, which is what such a view
 // is designed for. Reverts through the normal correction path on close.
 static const CGFloat kApolloDevvitModalHeight = 512.0;
+// How long that size outlives Reddit's report sheet: the platform reopens the
+// expanded view the sheet replaced about a second after it closes.
+static const NSTimeInterval kApolloDevvitReportReopenGrace = 2.5;
 // Row height while a widget shows its retry cover. The tall default exists so
 // a never-seen post measures final on its first pass; a post that then FAILED
 // on that first sight must not keep a screen-high reservation for a cover
@@ -440,11 +465,23 @@ static NSString *const kApolloDevvitCropScript = @""
 "    + ':not(shreddit-devvit-ui-loader):not(shreddit-devvit-ui-loader *)'"
 "    + ':not(devvit-blocks-renderer):not(devvit-blocks-renderer *)'"
 "    + ':not([id^=\"devvit-app-permission-consent-dialog\"])'"
-"    + ':not([id^=\"devvit-app-permission-consent-dialog\"] *) { visibility: hidden !important; }'"
+"    + ':not([id^=\"devvit-app-permission-consent-dialog\"] *)'"
+"    + ':not(#report-flow-content-modal):not(#report-flow-content-modal *) { visibility: hidden !important; }'"
 "    + 'devvit2-custom-post, shreddit-devvit-ui-loader, devvit-blocks-renderer {'"
 "    + '  visibility: visible !important; position: fixed !important;'"
 "    + '  top: 0 !important; left: 0 !important; right: 0 !important; width: 100vw !important;'"
-"    + '  margin: 0 !important; z-index: 2147483000 !important; }'"
+"    + '  margin: 0 !important; z-index: 2147483000 !important;'"
+    /* Pointer events back on for the widget. The "View in Reddit App" sheet
+       hidden below opens as a modal and locks the page behind it with an
+       inline pointer-events:none on <body> until it is dismissed, which can
+       never happen once it is hidden. Everything inherits that lock, so only
+       the parts devvit re-enables itself (the app iframe) took taps, and the
+       platform-drawn controls around it were dead: an expanded view's ✕
+       ("open the full match thread") never closed it and its ••• menu never
+       opened. Declared on the widget root, this beats any lock an ancestor
+       inherits down; the rest of the page stays hidden, and hidden content
+       is never hit. */
+"    + '  pointer-events: auto !important; }'"
     /* Reddit's one-time "Give <app> limited access to your Reddit Account"
        prompt (Deny / Allow). An app asks for it (canRunAsUser) before it first
        acts as the user — Subscriber Goal's "Subscribe to r/X", posting or
@@ -456,6 +493,14 @@ static NSString *const kApolloDevvitCropScript = @""
        a modal over the widget, which the probe grows to the tall size while
        it is up. */
 "    + '[id^=\"devvit-app-permission-consent-dialog\"] { visibility: visible !important; }'"
+    /* Reddit's report sheet, the one item in an expanded view's ••• menu: the
+       platform closes its dialog and opens this page-level sheet instead.
+       Crop-hidden, it stayed open where nobody could close it, and the
+       platform queues every later dialog behind it, so the card could not be
+       expanded again until the page reloaded. Shown like the permission
+       prompt above (it takes taps through the body lock on its own), at the
+       tall size while it is open. */
+"    + '#report-flow-content-modal { visibility: visible !important; }'"
 "    + '#credential_picker_container, #credential_picker_iframe { display: none !important; }'"
     /* Overlays that escape the visibility crop by promoting into the top
        layer (dialog.showModal): the "View in Reddit App" xpromo sheet and
@@ -551,6 +596,14 @@ static NSString *const kApolloDevvitProbeScript = @""
 "    var rd = cd && cd.shadowRoot ? cd.shadowRoot.querySelector('rpl-dialog') : null;"
 "    if (rd && rd.hasAttribute('open')) { consent = 1; modal = 1; }"
 "  } catch (e) {}"
+    /* Reddit's report sheet (see the crop CSS): outside the devvit element
+       too, open for as long as it carries the attribute (dropped when the
+       sheet closes); it needs the tall size for its reasons and buttons. */
+"  var report = 0;"
+"  try {"
+"    var rf = document.getElementById('report-flow-content-modal');"
+"    if (rf && rf.hasAttribute('open')) { report = 1; modal = 1; }"
+"  } catch (e) {}"
     /* Offsite-link confirmation fix (#959): tapping an external link makes
        the devvit platform show devvit2-navigate-offsite-dialog, which is
        broken twice over on narrow viewports (both halves reproduce on mobile
@@ -633,7 +686,7 @@ static NSString *const kApolloDevvitProbeScript = @""
 "      }"
 "    })(el, 0);"
 "  } catch (e) {}"
-"  return JSON.stringify({ found: 1, h: h, w: Math.round(r.width), hostH: Math.round(r.height), deep: Math.round(deep), modal: modal, consent: consent, err: err, frames: frames, blocks: blocks, tag: el.tagName.toLowerCase() });"
+"  return JSON.stringify({ found: 1, h: h, w: Math.round(r.width), hostH: Math.round(r.height), deep: Math.round(deep), modal: modal, consent: consent, report: report, err: err, frames: frames, blocks: blocks, tag: el.tagName.toLowerCase() });"
 "})();";
 
 // Click the page's own retry control inside the devvit surface (the error
@@ -671,8 +724,8 @@ static NSString *const kApolloDevvitInventoryScript = @""
 "    if (t.indexOf('-') > 0) { tags[t] = (tags[t] || 0) + 1; }"
 "  }"
 "  var sp = document.querySelector('shreddit-post');"
-"  return JSON.stringify({ t: (document.title || '').slice(0, 60),"
-"    u: location.pathname.slice(0, 70),"
+"  return JSON.stringify({ tl: (document.title || '').length,"
+"    u: location.pathname.split('/').slice(0, 5).join('/'),"
 "    pt: sp ? sp.getAttribute('post-type') : null,"
 "    tags: Object.keys(tags).slice(0, 30) });"
 "})();";
@@ -721,7 +774,8 @@ static void ApolloDevvitCompileRuleList(void) {
 
 // "name=value; name2=value2" -> NSHTTPCookie array. __Host- prefixed cookies
 // must be host-scoped (the SocialLinks/BadgeBook variant — the Chat one drops
-// them silently).
+// them silently), and here that host is the one the page loads from: a
+// www-scoped copy would never reach sh.reddit.com.
 static NSArray<NSHTTPCookie *> *ApolloDevvitCookiesFromHeader(NSString *header) {
     NSMutableArray<NSHTTPCookie *> *cookies = [NSMutableArray array];
     for (NSString *pair in [header componentsSeparatedByString:@";"]) {
@@ -736,7 +790,7 @@ static NSArray<NSHTTPCookie *> *ApolloDevvitCookiesFromHeader(NSString *header) 
             NSHTTPCookieName: name,
             NSHTTPCookieValue: value,
             NSHTTPCookiePath: @"/",
-            NSHTTPCookieDomain: [name hasPrefix:@"__Host-"] ? @"www.reddit.com" : @".reddit.com",
+            NSHTTPCookieDomain: [name hasPrefix:@"__Host-"] ? kApolloDevvitPageHost : @".reddit.com",
             NSHTTPCookieSecure: @"TRUE",
             NSHTTPCookieExpires: [NSDate dateWithTimeIntervalSinceNow:60.0 * 60.0 * 24.0],
         };
@@ -1039,6 +1093,10 @@ static void ApolloDevvitScheduleSubscriptionCheck(NSURL *permalink) {
 @property (nonatomic, strong) UIImageView *retryIcon;
 // Reddit's app-permission prompt was open at the last probe (log transitions).
 @property (nonatomic) BOOL consentShowing;
+// Reddit's report sheet was open at the last probe (log transitions), and
+// CACurrentMediaTime() of the last time it closed (the reopen hold).
+@property (nonatomic) BOOL reportShowing;
+@property (nonatomic) CFTimeInterval reportClosedAt;
 // In the keep-alive pool (no host; page still live) — see ApolloDevvitParkWidget.
 @property (nonatomic) BOOL parked;
 @property (nonatomic) CFTimeInterval parkedAt;
@@ -1230,6 +1288,11 @@ static const NSUInteger kApolloDevvitMaxLiveWidgets = 4;
     self.heightCorrections = 0;
     self.heightFrozen = NO;
     self.pendingProbeHeight = 0.0;
+    // The same goes for the feed row's reload budget: in a feed card every
+    // expand and every ✕ is a row reload, so a second expand-and-close inside
+    // a minute ran it out and left the row at the expanded height, the card
+    // collapsed above ~400pt of dead space.
+    ApolloDevvitResetReloadBudget(self.fullName);
     // Start a fresh brisk poll loop timed for the page's expand/collapse
     // animation to have finished; bumping the generation orphans whatever idle
     // tick was pending, so loops never double up. handleProbeResult then keeps
@@ -1407,6 +1470,10 @@ static const NSUInteger kApolloDevvitMaxLiveWidgets = 4;
     self.lastProbeHeight = 0;
     self.pendingProbeHeight = 0.0;
     self.heightFrozen = NO;
+    // A fresh page has no report sheet up; the reopen hold must not carry
+    // into its first measurements (recycled onto another post, or reloaded).
+    self.reportShowing = NO;
+    self.reportClosedAt = 0;
     [self pollAfter:kApolloDevvitFirstProbeDelay attempt:0 generation:gen];
 }
 
@@ -1457,6 +1524,21 @@ static const NSUInteger kApolloDevvitMaxLiveWidgets = 4;
         self.consentShowing = consent;
         ApolloLog(@"[Devvit] %@ app permission prompt %@", self.fullName, consent ? @"opened" : @"closed");
     }
+    BOOL report = found && [info[@"report"] boolValue];
+    if (report != self.reportShowing) {
+        self.reportShowing = report;
+        if (!report) self.reportClosedAt = CACurrentMediaTime();
+        ApolloLog(@"[Devvit] %@ report sheet %@", self.fullName, report ? @"opened" : @"closed");
+    }
+    // The platform reopens the expanded view it closed for the report sheet
+    // ~1.4s after the sheet goes away (measured in the simulator). Hold the
+    // tall size across that gap; otherwise the row commits the compact card
+    // in between and grows straight back, bouncing everything below it.
+    if (found && !report && self.reportClosedAt > 0 &&
+        CACurrentMediaTime() - self.reportClosedAt < kApolloDevvitReportReopenGrace &&
+        h < kApolloDevvitModalHeight) {
+        h = kApolloDevvitModalHeight;
+    }
 
     if (!self.revealed) {
         // "Prove your humanity" interstitial: its clearance cookie lands in
@@ -1486,13 +1568,20 @@ static const NSUInteger kApolloDevvitMaxLiveWidgets = 4;
         // a bot-challenge auto-redirect); poll fast for ~18s then give up into
         // the retry cover (after one silent reload).
         if (attempt >= kApolloDevvitPreRevealMaxAttempts) {
-            ApolloLog(@"[Devvit] %@ never produced a devvit element (last=%@)", self.fullName, result);
+            // Not the raw probe JSON: its title field is the post title (it is
+            // only read for the "humanity" interstitial check above).
+            NSString *lastTitle = [info[@"title"] isKindOfClass:[NSString class]] ? info[@"title"] : @"";
+            ApolloLog(@"[Devvit] %@ never produced a devvit element (last state=%@ title=%lu chars)",
+                      self.fullName, info[@"state"] ?: @"?", (unsigned long)lastTitle.length);
             // Dump what the page actually is (bot-block page vs stuck shell)
             // before giving up — reddit's edge intermittently serves a plain
-            // block page that never hydrates.
+            // block page that never hydrates. Shape only, never page text: the
+            // title/body are the post and its comments, and the path ends in
+            // the title slug (kept to /r/<sub>/comments/<id>).
             [self.webView evaluateJavaScript:
-                @"JSON.stringify({t:document.title.slice(0,60),u:location.pathname.slice(0,80),"
-                 "b:(document.body.innerText||'').replace(/\\s+/g,' ').slice(0,120)})"
+                @"(function(){var t=document.title||'',b=(document.body&&document.body.innerText)||'';"
+                 "return JSON.stringify({tl:t.length,bl:b.length,u:location.pathname.split('/').slice(0,5).join('/'),"
+                 "block:/blocked|verif|moment|security|captcha|robot/i.test(t+' '+b.slice(0,300))})})()"
                               completionHandler:^(id r, __unused NSError *e) {
                 ApolloLog(@"[Devvit] page state at failure: %@", r);
             }];
@@ -1774,9 +1863,12 @@ static NSURL *ApolloDevvitNormalizedPermalink(NSURL *url) {
 // Main-document milestones, stamped from the load start: commit = first
 // bytes of the HTML are in (network + edge latency), finish = the document
 // and its synchronous resources are done (the shreddit shell is then still
-// hydrating, and the devvit app itself boots after that).
+// hydrating, and the devvit app itself boots after that). The commit names
+// the host the page landed on: anything but sh.reddit.com (old Reddit, a
+// login or block page) explains a widget that never appears (#1551).
 - (void)webView:(WKWebView *)webView didCommitNavigation:(WKNavigation *)navigation {
-    ApolloLog(@"[Devvit] %@ document committed +%.2fs", self.fullName, [self sinceLoadStart]);
+    ApolloLog(@"[Devvit] %@ document committed +%.2fs (%@)", self.fullName, [self sinceLoadStart],
+              webView.URL.host ?: @"no host");
 }
 
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
@@ -2504,6 +2596,12 @@ static BOOL ApolloDevvitBurnReloadBudget(NSString *fullName) {
     if (attempts.count >= 3) return NO;
     [attempts addObject:@(now)];
     return YES;
+}
+
+// An explicit tap in the widget re-arms its post's budget (apolloDevvitTapPoke):
+// user-driven resizes are self-limiting, unlike a widget resizing itself.
+static void ApolloDevvitResetReloadBudget(NSString *fullName) {
+    if (fullName) [sDevvitReloadBudget removeObjectForKey:fullName];
 }
 
 // fullName -> widget detached from a row that is about to reload. The reloaded

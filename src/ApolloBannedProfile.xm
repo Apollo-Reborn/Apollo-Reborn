@@ -40,6 +40,8 @@ static NSString *ApolloBannedProfileNormalizedUsername(NSString *username) {
     if ([clean hasPrefix:@"u/"] || [clean hasPrefix:@"U/"]) clean = [clean substringFromIndex:2];
     if (clean.length == 0) return nil;
     if ([clean isEqualToString:@"[deleted]"] || [clean isEqualToString:@"deleted"]) return nil;
+    // Hidden & Deleted's placeholder list owners (~hd…); never a real account.
+    if ([clean hasPrefix:@"~"]) return nil;
     return clean;
 }
 

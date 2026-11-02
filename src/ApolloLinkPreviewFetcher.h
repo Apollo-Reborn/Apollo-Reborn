@@ -12,7 +12,8 @@
 // just the DOI, or the slug-title + favicon fallback with no description — and
 // therefore deserves a background refetch rather than squatting in the cache
 // for its whole TTL. Returns a short reason slug for logging ("bot-wall",
-// "weak-academic", "weak-generic") or nil for a healthy preview. Shared by
+// "weak-academic", "weak-generic") or nil for a healthy preview, and nil for
+// a URL this launch already fetched (its answer is the current one). Shared by
 // requestPreviewForURL:'s own staleness gate and the render path's
 // once-per-launch cache-healing kick in ApolloInlineLinkPreviews.
 + (NSString *)refetchReasonForCachedPreview:(ApolloLinkPreview *)preview url:(NSURL *)url;

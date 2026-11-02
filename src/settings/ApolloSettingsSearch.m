@@ -285,6 +285,15 @@ static NSArray<ApolloSettingsSearchEntry *> *ApolloSettingsSearchBuildIndex(UITr
     iconTheme.rowTitle = @"Settings Icon Theme";
     [entries addObject:iconTheme];
 
+    // Injected beside Apollo's native jump-button controls, so this does not
+    // appear in either the generated native snapshot or a Reborn form crawl.
+    ApolloSettingsSearchEntry *commentNavigator = [[ApolloSettingsSearchEntry alloc] init];
+    commentNavigator.title = @"Jump Button Navigation";
+    commentNavigator.breadcrumb = @"General → Comments";
+    commentNavigator.nativePath = @[ @"General" ];
+    commentNavigator.rowTitle = @"Jump Button Navigation";
+    [entries addObject:commentNavigator];
+
     // Resolve a leading icon for every result so the list is visually uniform:
     //   own row icon (captured above) → the parent screen/section's icon (by
     //   breadcrumb) → a neutral generic. Parent lookup consults both the live

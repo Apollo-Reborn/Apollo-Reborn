@@ -190,6 +190,15 @@ static NSArray<ApolloSwitcherAccountRow *> *ApolloSwitcherLoadAccountRows(void) 
     return rows;
 }
 
+// Classic (non-glass) bar buttons inherit the host's system blue; tint the
+// shared bar so +, Edit, back and Save follow the theme accent. Glass keeps
+// UIKit's own glass button styling.
+static void ApolloSwitcherApplyBarAccent(UINavigationBar *bar) {
+    if (!bar || IsLiquidGlass()) return;
+    UIColor *accent = ApolloThemeAccentColor();
+    if (accent) bar.tintColor = accent;
+}
+
 #pragma mark - Per-account credential editor form
 
 // Small standalone form: Reddit API Key / Secret / Redirect URI for one
@@ -229,6 +238,7 @@ static NSArray<ApolloSwitcherAccountRow *> *ApolloSwitcherLoadAccountRows(void) 
     self.navigationController.view.backgroundColor = page;
     self.tableView.separatorColor = ApolloThemeSeparatorColor() ?: UIColor.separatorColor;
     self.view.tintColor = ApolloThemeAccentColor() ?: self.view.tintColor;
+    ApolloSwitcherApplyBarAccent(self.navigationController.navigationBar);
     for (UITableViewCell *cell in self.tableView.visibleCells) {
         cell.backgroundColor = ApolloThemeCardBackgroundColor() ?: UIColor.secondarySystemGroupedBackgroundColor;
     }
@@ -684,6 +694,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
     self.navigationController.navigationBar.standardAppearance = appearance;
     self.navigationController.navigationBar.scrollEdgeAppearance = appearance;
     self.navigationController.navigationBar.compactAppearance = appearance;
+    ApolloSwitcherApplyBarAccent(self.navigationController.navigationBar);
 }
 
 + (BOOL)isAvailable {
@@ -1739,26 +1750,9 @@ static void ApolloQuarantineAccountSwitcher(UIViewController *controller) {
     });
 }
 
-// Keep Apollo's initialized account manager and its live account callbacks,
-// but let UIKit own the sheet's geometry, animation and interactive dismissal.
-// Configure at presentation time, after Apollo's Swift initializer has chosen
-// its custom presentation style and before UIKit creates a presentation owner.
 %hook UIViewController
 - (void)presentViewController:(UIViewController *)controller animated:(BOOL)animated
                   completion:(void (^)(void))completion {
-    if (@available(iOS 15.0, *)) {
-        if ([ApolloAccountSwitcherViewController isAvailable] &&
-            [NSStringFromClass(controller.class) isEqualToString:@"Apollo.AccountManagerViewController"]) {
-            controller.transitioningDelegate = nil;
-            controller.modalPresentationStyle = UIModalPresentationFormSheet;
-            controller.preferredContentSize = CGSizeMake(540.0, 380.0);
-            UISheetPresentationController *sheet = controller.sheetPresentationController;
-            sheet.detents = @[UISheetPresentationControllerDetent.mediumDetent,
-                              UISheetPresentationControllerDetent.largeDetent];
-            sheet.prefersGrabberVisible = YES;
-            sheet.prefersScrollingExpandsWhenScrolledToEdge = YES;
-        }
-    }
     // Holding the Account tab invokes its native action without selecting it.
     // After unfolding (or before Account's first visit), that action's navigation
     // controller is offscreen. Present the same initialized manager from the
@@ -1775,7 +1769,45 @@ static void ApolloQuarantineAccountSwitcher(UIViewController *controller) {
 }
 %end
 
+// Keep Apollo's initialized account manager and its live account callbacks,
+// but let UIKit own the sheet's geometry, animation and interactive dismissal.
+// Answer UIKit's presentation-time reads here rather than configuring from a
+// -presentViewController: hook: in a post Apollo presents from
+// CommentsViewController, whose own presentViewController: hook calls the
+// unhooked UIKit implementation, so a UIViewController-level hook never runs.
+static BOOL ApolloAccountSwitcherUsesNativeSheet(void) {
+    if (@available(iOS 15.0, *)) return [ApolloAccountSwitcherViewController isAvailable];
+    return NO;
+}
+
 %hook _TtC6Apollo28AccountManagerViewController
+
+- (UIModalPresentationStyle)modalPresentationStyle {
+    return ApolloAccountSwitcherUsesNativeSheet() ? UIModalPresentationFormSheet : %orig;
+}
+
+- (id)transitioningDelegate {
+    return ApolloAccountSwitcherUsesNativeSheet() ? nil : %orig;
+}
+
+- (CGSize)preferredContentSize {
+    return ApolloAccountSwitcherUsesNativeSheet() ? CGSizeMake(540.0, 380.0) : %orig;
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
+    // Apollo keeps this instance, and every presentation gets a new sheet.
+    if (@available(iOS 15.0, *)) {
+        UIViewController *controller = (UIViewController *)self;
+        if (ApolloAccountSwitcherUsesNativeSheet() && controller.isBeingPresented) {
+            UISheetPresentationController *sheet = controller.sheetPresentationController;
+            sheet.detents = @[UISheetPresentationControllerDetent.mediumDetent,
+                              UISheetPresentationControllerDetent.largeDetent];
+            sheet.prefersGrabberVisible = YES;
+            sheet.prefersScrollingExpandsWhenScrolledToEdge = YES;
+        }
+    }
+}
 
 - (void)viewDidLoad {
     %orig;

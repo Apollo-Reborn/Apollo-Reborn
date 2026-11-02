@@ -55,6 +55,7 @@ static char kApolloComposeFormBodyDoneItemKey;
 static char kApolloComposeBodyEditorNavItemDoneKey;
 static char kApolloComposeBodyEditorRedirectLoggedKey;
 static char kApolloMediaComposerTitleRemeasureScheduledKey;
+static char kApolloMediaComposerTitleLastMeasuredKey;
 static BOOL sApolloMediaComposerContextActive = NO;
 static BOOL sApolloMediaComposerPickerActive = NO;
 static BOOL sApolloMediaComposerInlineBodyPickerActive = NO;
@@ -1914,6 +1915,12 @@ static UITextView *ApolloMediaComposerTitleTextViewInCell(UITableViewCell *title
 // caret kept moving further down. Measure the live title text instead, and only fall back to
 // the legacy constant while the title cell hasn't materialized yet (fresh composer, empty
 // title, one-line baseline where 106 was always correct).
+//
+// The title cell also goes missing for a moment on every reloadData: UIKit drops the visible
+// cells and asks for every row height before the next layout builds new ones. Apollo reloads
+// the form after a flair pick (and a photo pick), so a typed two-line title fell back to the
+// one-line height, the whole form jumped up for a frame, and the next height pass slid it
+// back open. While there's no cell, reuse the height last measured at this table width.
 static CGFloat ApolloMediaComposerTitleHeightWithEmbeddedBody(UITableView *tableView, CGFloat originalHeight, CGFloat width) {
     CGFloat bodyHeight = ApolloMediaComposerEmbeddedBodyRowHeight();
     if (originalHeight != UITableViewAutomaticDimension && originalHeight > 0.0) return originalHeight + bodyHeight;
@@ -1921,7 +1928,14 @@ static CGFloat ApolloMediaComposerTitleHeightWithEmbeddedBody(UITableView *table
     CGFloat titleHeight = 60.0;
     UITableViewCell *titleCell = tableView ? [tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]] : nil;
     UITextView *titleTextView = ApolloMediaComposerTitleTextViewInCell(titleCell);
-    if (titleTextView) {
+    if (!titleTextView) {
+        NSValue *lastMeasured = tableView ? objc_getAssociatedObject(tableView, &kApolloMediaComposerTitleLastMeasuredKey) : nil;
+        CGSize last = [lastMeasured isKindOfClass:[NSValue class]] ? lastMeasured.CGSizeValue : CGSizeZero;
+        if (last.height > 0.0 && fabs(last.width - width) < 0.5) {
+            titleHeight = last.height;
+            os_log_debug(ApolloFixLog(), "[ApolloFix] [MediaPostBody] title row has no cell (reload); reused last measured height %.1f", last.height);
+        }
+    } else {
         CGFloat targetWidth = titleTextView.bounds.size.width;
         if (targetWidth <= 1.0) targetWidth = width;
         if (targetWidth > 1.0) {
@@ -1935,6 +1949,8 @@ static CGFloat ApolloMediaComposerTitleHeightWithEmbeddedBody(UITableView *table
             if (!(verticalChrome >= 0.0 && verticalChrome <= 60.0)) verticalChrome = 24.0;
             if (fittingSize.height > 1.0 && fittingSize.height < 2000.0) {
                 titleHeight = MAX(titleHeight, ceil(fittingSize.height) + verticalChrome);
+                objc_setAssociatedObject(tableView, &kApolloMediaComposerTitleLastMeasuredKey,
+                    [NSValue valueWithCGSize:CGSizeMake(width, titleHeight)], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             }
         }
     }
@@ -1980,6 +1996,22 @@ static void ApolloMediaComposerScheduleTitleRowRemeasure(UIViewController *contr
             return;
         }
         sApolloMediaComposerLoggedStaleSkip = NO;
+        // Skip the pass when the title row already has the height it would get. An empty
+        // batch isn't free: right after Apollo's reloadData it re-lays the self-sizing photo
+        // and Choose Media rows from their 44pt estimates inside the batch's animation, so
+        // after a flair pick the form collapsed and slid back open even with the title right.
+        // cellForRow schedules this pass on every title cell, reloads included.
+        NSIndexPath *titleIndexPath = [NSIndexPath indexPathForRow:0 inSection:0];
+        id<UITableViewDelegate> delegate = tableView.delegate;
+        if (tableView.numberOfSections > 0 && [tableView numberOfRowsInSection:0] > 0 &&
+            [delegate respondsToSelector:@selector(tableView:heightForRowAtIndexPath:)]) {
+            CGFloat currentHeight = [tableView rectForRowAtIndexPath:titleIndexPath].size.height;
+            CGFloat wantedHeight = [delegate tableView:tableView heightForRowAtIndexPath:titleIndexPath];
+            if (wantedHeight > 0.0 && fabs(currentHeight - wantedHeight) < 0.5) {
+                os_log_debug(ApolloFixLog(), "[ApolloFix] [MediaPostBody] skipped title row height pass: row already %.1fpt", wantedHeight);
+                return;
+            }
+        }
         // Height-only pass: re-queries heightForRowAtIndexPath (our measured title height)
         // without reloading cells, so the keyboard and first responder stay untouched.
         [tableView beginUpdates];

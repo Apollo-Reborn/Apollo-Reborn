@@ -21,6 +21,7 @@
 #import "ApolloNotificationBackend.h"
 #import "ApolloUsageHeartbeat.h"
 #import "ApolloUpdateChecker.h"
+#import "ApolloWebJSONRouteUpdates.h"
 #import "ApolloPushNotifications.h"
 #import "ApolloBarkNotifications.h"
 #import "ApolloLiquidGlassIconSelectionState.h"
@@ -1100,7 +1101,10 @@ static void ApolloLogAccountSnapshot(NSString *reason) {
 
     ApolloLoginDiag(@"[AccountSnapshot] %@ | device=%@ | keychain: len=%ld status=%d accessible=%@ | defaults: len=%ld index=%ld accounts=%ld withUser=%ld | mirror: len=%ld | active=%@",
                     reason, ApolloProtectedDataString(), kcLen, (int)kcStatus, accessible ?: @"?",
-                    defaultsLen, (long)index, (long)acctCount, (long)acctWithUser, mirrorLen, active ?: @"(nil)");
+                    defaultsLen, (long)index, (long)acctCount, (long)acctWithUser, mirrorLen,
+                    // A fingerprint, not the name: this file outlives sign-outs and
+                    // account removals, so the export scrub can't know every name in it.
+                    active.length ? [@"#" stringByAppendingString:ApolloLogFingerprint(active.lowercaseString)] : @"(nil)");
     // The access-group breakdown (root-cause confirmation) — separate line to keep both legible.
     ApolloLoginDiag(@"[AccountBlobGroups] %@ | %@", reason, ApolloAccountsBlobGroupBreakdown(keychainItems, kcStatus));
 }
@@ -3231,8 +3235,11 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
 - (void)_onqueue_didFinishWithError:(id)error {
     if (sWebJSONEnabled) {
         NSURLSessionTask *task = (NSURLSessionTask *)self;
-        NSURLRequest *finished = task.currentRequest ?: task.originalRequest;
-        ApolloWebJSONNoteResponse(finished, task.response);
+        // The request as sent (the rewrite above installs it as both). After a
+        // redirect, such as Old Reddit's sign-in gate, the current request is
+        // the redirect target, whose path isn't the read's.
+        NSURLRequest *sent = task.originalRequest ?: task.currentRequest;
+        ApolloWebJSONNoteResponse(sent, task.response);
     }
     %orig;
 }
@@ -3669,7 +3676,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyEnableFlairColors: @NO,
                                     UDKeyBoldPostTitles: @NO,
                                     UDKeyFeedTextPostThumbnails: @YES,
-                                    UDKeyRestoreReadingSession: @YES,
+                                    UDKeyRestoreReadingSession: @NO,
                                     UDKeyFeedGalleryCarousel: @YES,
                                     UDKeyFeedGalleryEdgeSwipeNav: @NO,
                                     UDKeyGalleryAutoplayVideos: @YES,
@@ -3755,6 +3762,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyInfoRowTapTranslation: @YES,
                                     UDKeyThreeStateVoting: @NO,
                                     UDKeyLiveCommentsFollow: @YES,
+                                    UDKeyCommentNavigationMode: @0,
                                     UDKeyPerPostCommentSort: @NO,
                                     UDKeyEnableBulkTranslation: @NO,
                                     UDKeyAutoTranslateOnAppear: @YES,
@@ -3802,6 +3810,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyAutomaticUpdateChecks: @YES,
                                     UDKeyWebJSONEnabled: @NO,
                                     UDKeyReduceRateLimiting: @NO,
+                                    UDKeyKeylessRouteUpdates: @YES,
                                     UDKeyReduceRateLimitingOffered: @NO,
                                     UDKeyUseModernRedditChat: @NO,
                                     UDKeyUseModernRedditModmail: @NO,
@@ -4081,6 +4090,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     sInfoRowTapTranslation = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyInfoRowTapTranslation];
     sThreeStateVoting = [standardDefaults boolForKey:UDKeyThreeStateVoting];
     sLiveCommentsFollow = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyLiveCommentsFollow];
+    sCommentNavigationMode = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyCommentNavigationMode] == 1 ? 1 : 0;
     sPerPostCommentSort = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyPerPostCommentSort];
     // Both sort memories on = stale state from an older build or a restored backup;
     // they are mutually exclusive (see ApolloPerPostCommentSort.xm) and per-post wins.
@@ -4206,6 +4216,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     // hooks, so reading before they're in place returns nothing.
     sWebJSONEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyWebJSONEnabled];
     sReduceRateLimiting = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyReduceRateLimiting];
+    sKeylessRouteUpdates = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyKeylessRouteUpdates];
     sPollsFeatureEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyPollsEnabled];
     sPollOptionAlignment = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyPollOptionAlignment];
     if (sPollOptionAlignment != ApolloPollOptionAlignmentCenter && sPollOptionAlignment != ApolloPollOptionAlignmentLeft) {
@@ -4544,6 +4555,8 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                     object:nil
                      queue:[NSOperationQueue mainQueue]
                 usingBlock:^(NSNotification *note) {
+        // Silent, so the Setup Assistant doesn't hold it back.
+        ApolloWebJSONRouteUpdatesCheckIfNeeded();
         if (ApolloSetupAssistantBlocksLaunchPrompts()) return;
         ApolloSendUsageHeartbeatIfNeeded();
         ApolloUpdateCheckIfNeeded();

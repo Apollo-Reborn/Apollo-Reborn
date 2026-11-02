@@ -6,6 +6,9 @@ extern "C" {
 #endif
 UIColor *ApolloSettingsPrimaryTextColor(void);
 UIFont *ApolloSettingsFont(UIFontTextStyle style, UITraitCollection *traits);
+// Classic single-title rows: native 44pt minimum, growing for wrapped/larger text.
+CGFloat ApolloSettingsClassicRowHeight(UITableView *table, NSString *title, NSString *detail,
+                                      BOOL hasIcon, CGFloat accessoryWidth);
 void ApolloSettingsApplyCellTypography(UITableViewCell *cell);
 void ApolloSettingsApplySectionHeaderTypography(UIView *view);
 #ifdef __cplusplus

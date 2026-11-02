@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "version": "4.0.0",
+  "headline": "What's New in Apollo Reborn",
+  "items": [
+    { "icon": "rectangle.split.2x1", "title": "iPhone Duo", "subtitle": "Browse paired columns with steadier folding, centered cover titles and text that stays clear of the rail." },
+    { "icon": "sidebar.left", "title": "iPad Layout (Beta)", "subtitle": "Try a native sidebar and adjustable feed and reader columns on iPadOS 18 or later." },
+    { "icon": "bookmark.fill", "title": "Pick Up Where You Left Off", "subtitle": "Return to your last feed, post and nearby reading position after iOS closes Apollo." },
+    { "icon": "square.grid.2x2.fill", "title": "Gallery, Reworked", "subtitle": "Open galleries faster, pinch to change tile size, and browse Saved categories in Gallery View." },
+    { "icon": "clock.fill", "title": "Recently Read, Rebuilt", "subtitle": "Your reading history now uses Apollo's native feed, layouts, swipe actions and post menus." },
+    { "icon": "magnifyingglass.circle.fill", "title": "Make Search Yours", "subtitle": "Find recently visited subreddits and choose the order and limits of Search's sections." },
+    { "icon": "slider.horizontal.3", "title": "Setup Assistant", "subtitle": "Connect or restore an account, choose a starting layout, and review your preferences before applying them." },
+    { "icon": "arrow.down.circle.fill", "title": "Downvote by Tapping", "subtitle": "Tap a post or comment score to cycle through upvote, downvote and no vote." }
+  ]
+}

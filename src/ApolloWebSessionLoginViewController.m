@@ -62,8 +62,8 @@ static const NSTimeInterval kFarFutureCookieInterval = 10000.0 * 24 * 60 * 60;
 // How many times the harvest may defer back to the 2s auth poll while waiting
 // for a complete session (missing token_v2/reddit_session/modhash) before
 // proceeding with whatever is there — ~10s total, bounded so flows that never
-// produce a given cookie (e.g. old.reddit logins on iOS < 16, or sessions
-// whose /api/me.json omits the modhash) still finish.
+// produce a given cookie (e.g. sessions whose /api/me.json omits the modhash)
+// still finish.
 static const NSUInteger kMaxIncompleteHarvestAttempts = 5;
 
 // Off-screen WKWebView that refreshes a stale stored session from the shared
@@ -181,17 +181,13 @@ static const NSTimeInterval kReharvestTimeout = 25.0;
                              target:self
                              action:@selector(_cancelTapped)];
 
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
-        initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"]
-                 menu:nil];
-    [self _rebuildOptionsMenu];
-
-    // iOS 15 and earlier can't render the modern Reddit login page.
-    // Rewrite www.reddit.com → old.reddit.com before the first load.
-    if (![self _isModernRedditSupported]) {
-        ApolloLog(@"[WebJSON] iOS < 16 detected — auto-switching to old.reddit.com");
-        self.loginURL = [self _rewriteToOldReddit:self.loginURL];
-    }
+    // No Old Reddit option or iOS < 16 rewrite here (the OAuth sign-in keeps
+    // its own for the consent step). old.reddit.com/login has served Reddit's
+    // new sign-in page since Reddit limited Old Reddit to accounts that used it
+    // recently (seen 2026-10-02 and 2026-10-27, iOS 15 user agent included), so
+    // it gained nothing, and on that host the /api/me.json probe below gets the
+    // gate's sign-in page instead of JSON for any account Old Reddit won't
+    // serve, leaving the sign-in waiting forever.
 
     // Persistent store (unlike the OAuth flow's nonPersistentDataStore): the
     // whole point is keeping the harvested session cookie around.
@@ -577,7 +573,7 @@ static void ApolloWebSessionHarvestFromCookieStore(WKHTTPCookieStore *cookieStor
                 return;
             }
             if (!complete) {
-                ApolloLog(@"[WebJSON] Proceeding with an incomplete session for u/%@ after %lu attempts (token_v2=%d reddit_session=%d modhash=%d) — some flows (old.reddit) never produce every field",
+                ApolloLog(@"[WebJSON] Proceeding with an incomplete session for u/%@ after %lu attempts (token_v2=%d reddit_session=%d modhash=%d) — some sessions never produce every field",
                           username, (unsigned long)s2.harvestAttempts, hasTokenV2, hasRedditSession, modhash.length > 0);
             }
             [s2.authPollTimer invalidate];
@@ -612,41 +608,6 @@ static void ApolloWebSessionHarvestFromCookieStore(WKHTTPCookieStore *cookieStor
 }
 
 #pragma mark - Plumbing
-
-- (BOOL)_isModernRedditSupported {
-    if (@available(iOS 16, *)) return YES;
-    return NO;
-}
-
-- (NSURL *)_rewriteToOldReddit:(NSURL *)url {
-    NSURLComponents *c = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
-    if ([c.host isEqualToString:@"www.reddit.com"] || [c.host isEqualToString:@"reddit.com"]) {
-        c.host = @"old.reddit.com";
-    }
-    return c.URL ?: url;
-}
-
-- (void)_switchToOldReddit {
-    NSURL *rewritten = [self _rewriteToOldReddit:self.webView.URL ?: self.loginURL];
-    ApolloLog(@"[WebJSON] Switching to old Reddit: %@", rewritten);
-    [self.webView loadRequest:[NSURLRequest requestWithURL:rewritten]];
-}
-
-- (void)_rebuildOptionsMenu {
-    BOOL onOldReddit = [self.webView.URL.host isEqualToString:@"old.reddit.com"];
-    __weak typeof(self) weakSelf = self;
-
-    UIAction *oldReddit = [UIAction actionWithTitle:@"Switch to Old Reddit"
-                                              image:[UIImage systemImageNamed:@"arrow.triangle.2.circlepath"]
-                                         identifier:nil
-                                            handler:^(__kindof UIAction *action) {
-        [weakSelf _switchToOldReddit];
-    }];
-    if (onOldReddit) oldReddit.attributes = UIMenuElementAttributesDisabled;
-
-    UIMenu *menu = [UIMenu menuWithTitle:@"Sign-In Options" children:@[oldReddit]];
-    self.navigationItem.rightBarButtonItem.menu = menu;
-}
 
 - (void)_cancelTapped {
     ApolloLog(@"[WebJSON] User cancelled web session login");
@@ -859,33 +820,12 @@ static void ApolloWebSessionHarvestFromCookieStore(WKHTTPCookieStore *cookieStor
 
 #pragma mark - WKNavigationDelegate
 
-- (void)webView:(WKWebView *)webView
-decidePolicyForNavigationAction:(WKNavigationAction *)navigationAction
-decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
-    NSURL *url = navigationAction.request.URL;
-
-    // On iOS < 16 the modern Reddit web app fails to render; keep the whole
-    // login on old.reddit.com (same mid-flow rewrite as the OAuth flow).
-    if (![self _isModernRedditSupported]) {
-        NSURL *rewritten = [self _rewriteToOldReddit:url];
-        if (![rewritten isEqual:url]) {
-            decisionHandler(WKNavigationActionPolicyCancel);
-            ApolloLog(@"[WebJSON] Rewriting mid-flow www.reddit.com → old.reddit.com: %@", rewritten);
-            [self.webView loadRequest:[NSURLRequest requestWithURL:rewritten]];
-            return;
-        }
-    }
-
-    decisionHandler(WKNavigationActionPolicyAllow);
-}
-
 - (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation {
     [self.spinner startAnimating];
 }
 
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
     [self.spinner stopAnimating];
-    [self _rebuildOptionsMenu];
     self.pageLoaded = YES;
     [self _evaluateAuthState];
 }

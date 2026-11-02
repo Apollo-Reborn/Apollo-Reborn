@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "version": "4.0.1",
+  "headline": "What's New in Apollo Reborn",
+  "items": [
+    { "icon": "photo.on.rectangle.angled", "title": "Multi-Photo Posts Are Back", "subtitle": "Posts with several photos show their gallery again instead of a reddit.com link with 0 photos." },
+    { "icon": "magnifyingglass.circle.fill", "title": "Search Without an API Key", "subtitle": "API-Key-Free post and subreddit search work again, and All Posts (r/all) loads." },
+    { "icon": "speedometer", "title": "Fewer Rate Limits", "subtitle": "API-Key-Free accounts send fewer Reddit requests from link previews and the Inbox." },
+    { "icon": "house.fill", "title": "Your Start Page Again", "subtitle": "Apollo opens your chosen feed at launch again; Restore Reading Session is now opt-in under Posts & Feeds." },
+    { "icon": "envelope.open.fill", "title": "Straight to the Reply", "subtitle": "Tapping an Inbox reply opens right on the comment, without the jump and glide." },
+    { "icon": "wrench.and.screwdriver.fill", "title": "Fixes Across the App", "subtitle": "A crash on rate-limited posts, grid icons after updates, interactive posts, Duo galleries and iPad Layout." }
+  ]
+}

@@ -4,6 +4,7 @@
 #import "ApolloGalleryFeed.h"
 #import "ApolloHostedVideo.h"
 #import "ApolloGalleryGridGeometry.h"
+#import "ApolloMediaMetadata.h"
 
 static NSUInteger checks;
 static void Check(BOOL condition, NSString *message) {

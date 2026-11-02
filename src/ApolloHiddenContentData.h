@@ -37,6 +37,9 @@ typedef NS_ENUM(NSInteger, ApolloHiddenContentReason) {
 @property (nonatomic, copy, nullable) NSString *subreddit;
 @property (nonatomic, copy, nullable) NSString *permalink;
 @property (nonatomic, strong, nullable) NSDate *createdDate;
+// Reddit's JSON for the item (the archived copy, with live counts when it
+// still resolves), which the native lists turn into an RDKLink/RDKComment.
+@property (nonatomic, copy, nullable) NSDictionary *redditData;
 @end
 
 typedef void (^ApolloHiddenContentProgress)(double fraction, NSString *stage);
@@ -45,11 +48,12 @@ typedef void (^ApolloHiddenContentFetchCompletion)(NSArray<ApolloHiddenContentIt
 
 // Diffs `username`'s Arctic Shift archive against their live /submitted or
 // /comments listing; archived items missing from the live listing come back
-// classified hidden or deleted, newest-first. Scoped to one `kind` per call --
-// Arctic Shift is shared/unauthenticated/rate-limited, and firing posts+comments
-// concurrently occasionally trips a transient error on one of the two. Cached
-// per username+kind; pass forceRefresh:YES to bypass (e.g. pull-to-refresh).
-// Main-thread progress measures completed work within three bounded phases.
+// classified hidden or deleted, newest-first. Scoped to one `kind` per call;
+// posts and comments can be fetched at the same time (each call's live listing
+// and archive search run in parallel, and archive searches queue so the shared,
+// rate-limited Arctic Shift only sees one at a time). Cached per username+kind;
+// pass forceRefresh:YES to bypass (e.g. pull-to-refresh). Main-thread progress
+// measures completed work: the two fetches, then the classification.
 void ApolloHiddenContentFetchWithProgress(NSString *username, ApolloHiddenContentKind kind, BOOL forceRefresh, ApolloHiddenContentProgress _Nullable progress, ApolloHiddenContentFetchCompletion completion);
 
 NS_ASSUME_NONNULL_END

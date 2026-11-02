@@ -44,6 +44,8 @@
 #import "ApolloWebSessionStore.h"
 #import "ApolloClasses.h"
 #import "ApolloDuoRail.h"
+#import "ApolloDuoNavigationGestures.h"
+#import "ApolloHighlightsCarouselGesturePolicy.h"
 
 NSNotificationName const ApolloCommunityHighlightsDataReadyNotification =
     @"ApolloCommunityHighlightsDataReadyNotification";
@@ -1633,6 +1635,39 @@ static ApolloHLCardView *ApolloHLBuildCard(ApolloHLItem *item) {
 
 #pragma mark - Carousel view
 
+// Would Apollo's Back (or Forward) pan begin for the carousel's current touch
+// if the carousel let it go? That pan can't simply be asked: when the carousel
+// decides, it often hasn't processed the finger's movement yet (still
+// Possible, zero velocity, touch-down location), so its delegate would refuse
+// a swipe it takes a moment later. Apply its rule to the carousel pan's own
+// reading instead (ApolloHLNavigationPanRuleAllows). Apollo's
+// gestureRecognizerShouldBegin: also refuses with Disable Navigation Gestures
+// on, or while its tab-bar or navigation-bar pan is mid-gesture, which can't
+// happen during a carousel drag. A pan that has already refused this touch
+// (Failed) stays out.
+static BOOL ApolloHLNavigationPanWouldBegin(UINavigationController *nav, UIPanGestureRecognizer *carouselPan, BOOL forward) {
+    UIPanGestureRecognizer *pan = ApolloObjectIvar(nav, forward ? "rightScreenEdgePanGestureRecognizer"
+                                                                : "leftScreenEdgePanGestureRecognizer");
+    if (![pan isKindOfClass:UIPanGestureRecognizer.class] || !pan.enabled) return NO;
+    // Waiting on the carousel's failure, the pan reads Possible, or Began once
+    // it has crossed its own threshold and Apollo accepted it.
+    UIGestureRecognizerState state = pan.state;
+    if (state != UIGestureRecognizerStatePossible && state != UIGestureRecognizerStateBegan) return NO;
+
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    if ([defaults boolForKey:@"DisableNavigationGestures"]) return NO;
+    UIView *view = nav.view;
+    CGPoint velocity = [carouselPan velocityInView:view];
+    BOOL swipeAnywhere = [defaults boolForKey:(forward ? @"DisableRightSwipeGestureActions"
+                                                       : @"DisableLeftSwipeGestureActions")];
+    return ApolloHLNavigationPanRuleAllows(forward, velocity.x, velocity.y, [carouselPan locationInView:view].x,
+                                           CGRectGetWidth(view.bounds), swipeAnywhere);
+}
+
+// UIGestureRecognizer.name ApolloDuoInstallBackSwipe gives the Duo's pane Back
+// swipe (ApolloDuoNavigationGestures.m; the gesture policy test checks it).
+static NSString *const kApolloHLDuoPaneBackName = @"ApolloReborn.Duo.PaneBack";
+
 // Match Daily Spotlight's gesture arbitration: the table waits for the carousel
 // to resolve horizontal versus vertical intent.
 @interface ApolloHLCarouselScrollView : UIScrollView <UIGestureRecognizerDelegate>
@@ -1643,13 +1678,79 @@ static ApolloHLCardView *ApolloHLBuildCard(ApolloHLItem *item) {
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
     if (gestureRecognizer != self.panGestureRecognizer) return YES;
     CGPoint velocity = [self.panGestureRecognizer velocityInView:self];
-    return fabs(velocity.x) >= fabs(velocity.y);
+    if (fabs(velocity.x) < fabs(velocity.y)) return NO;
+    return ![self ahlShouldYieldToNavigation];
+}
+
+// With the first highlight fully in view, a Back swipe has no cards left to
+// reveal and only rubber-bands, so hand it to Apollo's Back pan (which waits on
+// this pan, see didMoveToWindow). Same for Forward at the last highlight. Away
+// from that end the carousel keeps the swipe, so one swipe scrolls back to the
+// first highlight and the next one goes Back. Cards are laid out left to right
+// and Apollo's pans are physical (vx > 0 is Back); Apollo ships no
+// right-to-left localization, so neither side mirrors.
+- (BOOL)ahlShouldYieldToNavigation {
+    UINavigationController *nav = nil;
+    for (UIResponder *responder = self.nextResponder; responder; responder = responder.nextResponder) {
+        if ([responder isKindOfClass:UIViewController.class]) {
+            nav = ((UIViewController *)responder).navigationController;
+            break;
+        }
+    }
+    if (!nav || nav.transitionCoordinator) return NO;
+
+    UIEdgeInsets inset = self.adjustedContentInset;
+    CGFloat offset = self.contentOffset.x;
+    CGFloat minOffset = -inset.left;
+    CGFloat maxOffset = self.contentSize.width - CGRectGetWidth(self.bounds) + inset.right;
+    BOOL atStart = ApolloHLCarouselAtStart(offset, minOffset, kApolloHLSidePadding);
+    BOOL atEnd = ApolloHLCarouselAtEnd(offset, minOffset, maxOffset, kApolloHLSidePadding);
+
+    // Apollo's Back pan also begins at the root page, and its Forward pan with
+    // nothing to go forward to. Neither navigates, so keep the bounce there.
+    // On the Duo, Back belongs to the pane's own edge swipe and Apollo's Back
+    // pan always refuses (ApolloDuoSplitView's gestureRecognizerShouldBegin:).
+    if (atStart) {
+        BOOL back = ApolloDuoHasBackSwipe(nav)
+            ? [self ahlDuoBackSwipeTracksRightwardTouch]
+            : nav.viewControllers.count > 1 && ApolloHLNavigationPanWouldBegin(nav, self.panGestureRecognizer, NO);
+        if (back) {
+            ApolloLog(@"[Highlights] carousel at its first highlight; Back takes the swipe (offset=%.0f)", offset);
+            return YES;
+        }
+    }
+    if (atEnd && ApolloSwiftArrayCount(ApolloReadRawIvar(nav, "poppedViewControllers")) > 0 &&
+        ApolloHLNavigationPanWouldBegin(nav, self.panGestureRecognizer, YES)) {
+        ApolloLog(@"[Highlights] carousel at its last highlight; Forward takes the swipe (offset=%.0f)", offset);
+        return YES;
+    }
+    return NO;
+}
+
+// The Duo's pane Back swipe only accepts a touch that lands in its narrow
+// strip at the pane's left edge while it can navigate (or reveal the
+// subreddit drawer at the feed root); its shouldReceiveTouch: makes both
+// checks at touch-down. So it is tracking this touch exactly when it would
+// act on a rightward swipe. (Possible while undecided; a continuous
+// recognizer waiting on the carousel would read Began.)
+- (BOOL)ahlDuoBackSwipeTracksRightwardTouch {
+    if ([self.panGestureRecognizer velocityInView:self].x <= 0.0) return NO;
+    for (UIView *view = self.superview; view; view = view.superview) {
+        for (UIGestureRecognizer *recognizer in view.gestureRecognizers) {
+            if (![recognizer.name isEqualToString:kApolloHLDuoPaneBackName]) continue;
+            UIGestureRecognizerState state = recognizer.state;
+            if (recognizer.enabled && recognizer.numberOfTouches > 0 &&
+                (state == UIGestureRecognizerStatePossible || state == UIGestureRecognizerStateBegan)) return YES;
+        }
+    }
+    return NO;
 }
 
 // Make the navigation controller's swipe-to-go-back pan (a non-scrollview pan /
 // screen-edge pan on an ancestor) WAIT for our horizontal scroll to fail. A
-// sideways swipe over the carousel scrolls or bounces it instead of unexpectedly
-// navigating back; the back gesture remains available outside the carousel.
+// sideways swipe over the carousel scrolls it instead of unexpectedly
+// navigating back; the back gesture remains available outside the carousel,
+// and over it once it is at its first highlight (ahlShouldYieldToNavigation).
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)g shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)other {
     if (g != self.panGestureRecognizer) return NO;
     if (![other isKindOfClass:[UIPanGestureRecognizer class]]) return NO;
@@ -1670,7 +1771,11 @@ static ApolloHLCardView *ApolloHLBuildCard(ApolloHLItem *item) {
     for (UIView *v = self.superview; v != nil; v = v.superview) {
         for (UIGestureRecognizer *g in v.gestureRecognizers) {
             if (g == self.panGestureRecognizer) continue;
-            if ([g isKindOfClass:[UIPanGestureRecognizer class]] && ![g.view isKindOfClass:[UIScrollView class]]) {
+            // The Duo's pane Back swipe recognizes alongside scroll views, so
+            // an edge swipe went Back even mid-carousel. It waits here too and
+            // ahlShouldYieldToNavigation releases it at the first highlight.
+            if (([g isKindOfClass:[UIPanGestureRecognizer class]] && ![g.view isKindOfClass:[UIScrollView class]]) ||
+                [g.name isEqualToString:kApolloHLDuoPaneBackName]) {
                 [g requireGestureRecognizerToFail:self.panGestureRecognizer];
             }
         }

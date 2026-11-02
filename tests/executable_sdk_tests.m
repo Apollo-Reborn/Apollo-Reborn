@@ -324,12 +324,36 @@ static void TestLoadCommands(void) {
           @"ambiguous duplicate iOS build-version commands are rejected");
 }
 
+static void TestNativeImageUUID(void) {
+    struct { struct mach_header_64 header; struct uuid_command uuid; } image = {0};
+    const uint8_t expected[16] = {1,2,3,4};
+    image.header.magic = MH_MAGIC_64;
+    image.header.cputype = CPU_TYPE_ARM64;
+    image.header.ncmds = 1;
+    image.header.sizeofcmds = sizeof(image.uuid);
+    image.uuid.cmd = LC_UUID;
+    image.uuid.cmdsize = sizeof(image.uuid);
+    memcpy(image.uuid.uuid, expected, 16);
+    Check(ApolloMachOHasUUID((const void *)&image, expected), @"matching native image UUID");
+    image.uuid.uuid[0] = 9;
+    Check(!ApolloMachOHasUUID((const void *)&image, expected), @"different native image rejected");
+    image.uuid.uuid[0] = 1;
+    image.uuid.cmdsize = sizeof(struct load_command);
+    Check(!ApolloMachOHasUUID((const void *)&image, expected), @"short UUID command rejected");
+    image.uuid.cmdsize = sizeof(image.uuid) + 8;
+    Check(!ApolloMachOHasUUID((const void *)&image, expected), @"out of bounds UUID command rejected");
+    image.header.sizeofcmds = 0;
+    Check(!ApolloMachOHasUUID((const void *)&image, expected), @"missing load commands rejected");
+    Check(!ApolloMachOHasUUID(NULL, expected), @"missing image rejected");
+}
+
 int main(void) {
     @autoreleasepool {
         TestGlassCompatibilityEligibility();
         TestGlassRuntimeOverride();
         TestImageSelection();
         TestLoadCommands();
+        TestNativeImageUUID();
         printf("PASS: %u executable SDK and Liquid Glass checks\n", checks);
     }
     return 0;

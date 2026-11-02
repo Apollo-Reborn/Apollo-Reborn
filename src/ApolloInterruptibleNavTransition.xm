@@ -127,6 +127,23 @@ static UIViewPropertyAnimator *ApolloNavAnimatorForContext(id animatorObject,
 BOOL ApolloNavTransitionInFlight(void) {
     return sApolloNavTransitionsInFlight > 0;
 }
+
+BOOL ApolloFinishNavigationPopForPostsTap(UINavigationController *navigationController) {
+    id<UIViewControllerTransitionCoordinator> transition = navigationController.transitionCoordinator;
+    if (!IsLiquidGlass() || !transition || transition.isInteractive) return NO;
+    id owner = ApolloObjectIvar(navigationController, "animator");
+    if (ApolloReadBoolIvar(owner, "isPresenting", YES)) return NO;
+    UIViewPropertyAnimator *animator = objc_getAssociatedObject(owner, kApolloNavAnimatorKey);
+    if (![animator isKindOfClass:UIViewPropertyAnimator.class] ||
+        animator.state != UIViewAnimatingStateActive || animator.reversed) return NO;
+    // Run the normal completion, including UIKit's stack/interaction cleanup.
+    // The next re-selection runs on the next turn, after that cleanup returns.
+    [animator stopAnimation:NO];
+    [animator finishAnimationAtPosition:UIViewAnimatingPositionEnd];
+    ApolloLog(@"[PostsTab] Finished back animation for repeat tap");
+    return YES;
+}
+
 static const CGFloat kApolloNavParallaxDivisor = 3.0;
 static const NSTimeInterval kApolloNavInteractiveDuration = 0.225;
 static const NSTimeInterval kApolloNavNonInteractiveDuration = 0.5;

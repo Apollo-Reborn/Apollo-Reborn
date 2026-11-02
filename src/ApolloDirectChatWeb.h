@@ -17,8 +17,8 @@ typedef NS_ENUM(NSInteger, ApolloModernChatInboxSection) {
 __BEGIN_DECLS
 
 // Modern reddit.com (shreddit) fails to render below iOS 16 — the same floor
-// the web-session login enforces by rewriting to old.reddit.com. Every modern
-// Chat/Modmail gate below returns NO under it, so pre-16 devices keep
+// at which the OAuth sign-in sends its consent step to old.reddit.com. Every
+// modern Chat/Modmail gate below returns NO under it, so pre-16 devices keep
 // Apollo's stock (dormant) chat UI instead of a blank web page.
 BOOL ApolloModernMailboxOSSupported(void);
 BOOL ApolloModernChatIsAvailable(void);

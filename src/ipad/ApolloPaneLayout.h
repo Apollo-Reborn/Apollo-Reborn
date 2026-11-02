@@ -49,7 +49,14 @@ typedef NS_ENUM(NSInteger, ApolloPaneColumn) {
 // the default would make every consumer disagree with reality for the rest of
 // the session.
 
-// iPad idiom. Cached — the idiom cannot change for the life of the process.
+// iPad idiom on iPadOS 26+. Cached — neither can change for the life of the
+// process. Use this to decide whether to show the setting at all.
+BOOL ApolloPaneLayoutDeviceSupported(void);
+
+// DeviceSupported AND Liquid Glass is active this launch. The layout is built on
+// the Liquid Glass tab sidebar: with glass turned off, installation fails and rolls
+// back while its navigation hooks would otherwise stay live and crash UIKit's
+// classic navigation bar.
 BOOL ApolloPaneLayoutSupported(void);
 
 // Supported AND the user default was on when %ctor read it. This is the

@@ -203,6 +203,7 @@ static ApolloActionMenuItem *ApolloAMItemMuteNotifs(void)  { return ApolloAMNati
 static ApolloActionMenuItem *ApolloAMItemFloatingTabs(void)    { return ApolloAMTweak(@"FloatingTabs", @"Keep in Floating Tab", @"pin.circle"); }
 static ApolloActionMenuItem *ApolloAMItemDeletedComments(void) { return ApolloAMTweak(@"DeletedComments", @"Show Deleted Comments", @"eye"); }
 static ApolloActionMenuItem *ApolloAMItemGalleryView(void)     { return ApolloAMTweak(@"GalleryView", @"Gallery View", @"square.grid.2x2"); }
+static ApolloActionMenuItem *ApolloAMItemCommentNavigator(void) { return ApolloAMTweak(@"CommentNavigator", @"Jump Button Navigation", @"arrow.down.to.line"); }
 
 // Moderator menus (kinds captured from the live sheets, signed in as a
 // moderator of r/ApolloReborn, 2026-09-17). Toggle pairs share an item.
@@ -289,7 +290,7 @@ static NSArray<ApolloActionMenuItem *> *ApolloActionMenuBuildCatalog(ApolloActio
                ApolloAMItemAuthor(), ApolloAMItemSubreddit(), ApolloAMItemCollapseKids(), ApolloAMItemSelectText(),
                ApolloAMItemShare(), ApolloAMItemShareImage(), ApolloAMItemCrosspost(), ApolloAMItemFind(),
                ApolloAMItemAward(), ApolloAMItemReport(), ApolloAMItemLive(), ApolloAMItemRemindMe(),
-               ApolloAMItemDeletedComments(), ApolloAMItemFloatingTabs() ],
+               ApolloAMItemDeletedComments(), ApolloAMItemFloatingTabs(), ApolloAMItemCommentNavigator() ],
             @[ ApolloAMItemTranslate(), ApolloAMItemEdit(), ApolloAMItemDelete(),
                ApolloAMItemNSFW(), ApolloAMItemSpoiler(), ApolloAMItemPostFlair(), ApolloAMItemMuteNotifs() ]);
     }

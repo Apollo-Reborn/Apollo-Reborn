@@ -438,6 +438,12 @@ static UIColor *LGThemedCardBackgroundColor(UITableView *sourceTable) {
 // the system reports nothing.
 static NSString *const kLGActiveIconDefaultsKey = @"ApolloLGActiveIconID";
 
+// The exact CFBundleAlternateIcons name last applied successfully: an icon's
+// own name or its refresh twin (see ApolloLGRefreshIconSuffix). The choice
+// above never carries the twin suffix; this records which of the two
+// registrations iOS holds, since alternateIconName can't say on every install.
+static NSString *const kLGAppliedIconNameDefaultsKey = @"ApolloLGAppliedIconName";
+
 typedef NS_ENUM(NSInteger, LGIconAppearanceMode) {
     LGIconAppearanceModeLight,
     LGIconAppearanceModeDark,
@@ -445,6 +451,7 @@ typedef NS_ENUM(NSInteger, LGIconAppearanceMode) {
 };
 
 static NSString *LGBaseIconIDFromAlternateIconName(NSString *name) {
+    name = ApolloLGCanonicalAlternateIconName(name);
     if ([name hasSuffix:kLGLightIconSuffix]) {
         return [name substringToIndex:name.length - kLGLightIconSuffix.length];
     }
@@ -455,6 +462,7 @@ static NSString *LGBaseIconIDFromAlternateIconName(NSString *name) {
 }
 
 static LGIconAppearanceMode LGAppearanceModeFromAlternateIconName(NSString *name) {
+    name = ApolloLGCanonicalAlternateIconName(name);
     if ([name hasSuffix:kLGLightIconSuffix]) return LGIconAppearanceModeLight;
     if ([name hasSuffix:kLGDarkIconSuffix]) return LGIconAppearanceModeDark;
     return LGIconAppearanceModeDynamic;
@@ -504,6 +512,16 @@ static void LGClearPersistedActiveIconID(void) {
     [defaults synchronize];
 }
 
+// nil (Default) clears the record.
+static void LGPersistAppliedIconName(NSString *name) {
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    if (name.length) {
+        [defaults setObject:name forKey:kLGAppliedIconNameDefaultsKey];
+    } else {
+        [defaults removeObjectForKey:kLGAppliedIconNameDefaultsKey];
+    }
+}
+
 // The iconID of the currently-applied alternate icon, or nil if Apollo's
 // (non-glass) default is active. Trusts the system when it reports a real
 // value; otherwise falls back to the iconID we last applied ourselves — see
@@ -527,7 +545,7 @@ static NSString *LGActiveAlternateIconName(void) {
         return nil;
     }
     NSString *stored = [NSUserDefaults.standardUserDefaults stringForKey:kLGActiveIconDefaultsKey];
-    NSString *system = UIApplication.sharedApplication.alternateIconName;
+    NSString *system = ApolloLGCanonicalAlternateIconName(UIApplication.sharedApplication.alternateIconName);
     // Once our setter confirms a choice, that saved value is the ground truth.
     // UIApplication can later return nil, an empty string, or even a stale
     // non-empty icon name while the Home Screen still displays the saved icon.
@@ -1102,8 +1120,10 @@ static void LGBeginPendingStandardPackSelection(LGStandardPack pack, NSInteger r
     });
 }
 
-void ApolloLGConfirmSuccessfulSystemIconChange(__unused NSString *iconName) {
+void ApolloLGConfirmSuccessfulSystemIconChange(NSString *iconName) {
     void (^commit)(void) = ^{
+        // Apollo's own setter changes which registration iOS holds too.
+        LGPersistAppliedIconName(iconName);
         LGStandardPack pack = sLGPendingStandardPack;
         NSInteger row = sLGPendingStandardPackRow;
         if (pack < 0 || pack >= LGStandardPackCount || row < 0) return;
@@ -2777,11 +2797,46 @@ static void LGSetAlternateIconName(NSString *name, void (^completion)(NSError *e
     [application setAlternateIconName:name completionHandler:completion];
 }
 
+// The picker's saved choice: a Liquid Glass icon, or an Ultra addition, which
+// is saved with its Standard pack. Never carries the refresh suffix.
+static NSString *LGSavedIconChoice(void) {
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    if ([defaults objectForKey:kLGActiveStandardPackDefaultsKey]) {
+        return [defaults stringForKey:kLGActiveStandardAddedIconIDDefaultsKey];
+    }
+    return [defaults stringForKey:kLGActiveIconDefaultsKey];
+}
+
+// The registration iOS holds by our records. Builds before the twin keys
+// only applied plain names, which the saved choice records for them.
+static NSString *LGHeldIconName(void) {
+    return [NSUserDefaults.standardUserDefaults stringForKey:kLGAppliedIconNameDefaultsKey]
+        ?: LGSavedIconChoice();
+}
+
+static BOOL LGIsHeldIcon(NSString *name) {
+    return name.length && [ApolloLGCanonicalAlternateIconName(LGHeldIconName()) isEqualToString:name];
+}
+
+// The CFBundleAlternateIcons name to apply for an icon choice. Re-applying the
+// name iOS already holds succeeds but doesn't redraw the home-screen icon, so
+// it can't repair one stuck on the generic grid. Re-applying the active icon
+// switches to its other registration instead (same artwork, see
+// ApolloLGRefreshIconSuffix).
+static NSString *LGRegistrationForIconName(NSString *name) {
+    if (!LGIsHeldIcon(name)) return name;
+    NSString *held = LGHeldIconName();
+    NSString *twin = [name stringByAppendingString:ApolloLGRefreshIconSuffix];
+    if (!LGAlternateIconRegisteredInInfoPlist(twin)) return name;
+    return [held isEqualToString:twin] ? name : twin;
+}
+
 // Finish the one-time Classics migration only after the namespaced catalog
 // key is known to be active. This keeps the picker preference and Home Screen
 // icon from disagreeing when the setter fails.
 static void LGFinishLegacyClassicsMigration(NSString *alternateName) {
     LGPersistActiveIconID(alternateName);
+    LGPersistAppliedIconName(alternateName);
     LGPersistActiveStandardPack(LGStandardPackCount);
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
     [defaults setBool:YES forKey:kLGLegacyClassicsMigrationDefaultsKey];
@@ -2796,21 +2851,22 @@ static void LGFinishLegacyClassicsMigration(NSString *alternateName) {
 // rewriting ApolloLGActiveIconID is insufficient: after that old key vanishes,
 // iOS can fall back to the primary icon while the picker shows the migrated
 // checkmark. Reapply once on the first active launch, silently, and retry on a
-// later process launch if the setter reports an error.
-static void LGMigrateLegacyClassicsSelectionIfNeeded(void) {
+// later process launch if the setter reports an error. Returns YES when it
+// asked iOS for an icon change.
+static BOOL LGMigrateLegacyClassicsSelectionIfNeeded(void) {
     static BOOL attemptedThisProcess = NO;
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-    if (attemptedThisProcess) return;
+    if (attemptedThisProcess) return NO;
 
     // A confirmed Standard-pack choice is authoritative. Several Standard
     // IDs overlap the old Classics names and must never be rewritten as LG.
     if ([defaults objectForKey:kLGActiveStandardPackDefaultsKey]) {
         [defaults setBool:YES forKey:kLGLegacyClassicsMigrationDefaultsKey];
-        return;
+        return NO;
     }
 
     NSString *stored = [defaults stringForKey:kLGActiveIconDefaultsKey];
-    NSString *system = UIApplication.sharedApplication.alternateIconName;
+    NSString *system = ApolloLGCanonicalAlternateIconName(UIApplication.sharedApplication.alternateIconName);
     NSString *source = stored.length ? stored : system;
     NSString *target = LGMigratedClassicsAlternateIconName(source);
     BOOL migrationCompleted = [defaults boolForKey:kLGLegacyClassicsMigrationDefaultsKey];
@@ -2818,7 +2874,7 @@ static void LGMigrateLegacyClassicsSelectionIfNeeded(void) {
     // A backup restore or temporary downgrade can reintroduce a genuinely old
     // ID after the marker was set. Always repair that explicit legacy state;
     // otherwise a completed migration needs no further system reconciliation.
-    if (migrationCompleted && !target.length) return;
+    if (migrationCompleted && !target.length) return NO;
 
     // An earlier build of this branch may already have rewritten the saved
     // preference without applying it. Recognize that state and reconcile it
@@ -2830,15 +2886,15 @@ static void LGMigrateLegacyClassicsSelectionIfNeeded(void) {
 
     if (!target.length) {
         [defaults setBool:YES forKey:kLGLegacyClassicsMigrationDefaultsKey];
-        return;
+        return NO;
     }
-    if (![UIApplication.sharedApplication supportsAlternateIcons]) return;
+    if (![UIApplication.sharedApplication supportsAlternateIcons]) return NO;
 
     attemptedThisProcess = YES;
     if ([system isEqualToString:target]) {
         ApolloLog(@"[LGIconPicker] Classics migration already applied: %@", target);
         LGFinishLegacyClassicsMigration(target);
-        return;
+        return NO;
     }
 
     ApolloLog(@"[LGIconPicker] migrating Classics icon %@ -> %@", source, target);
@@ -2852,6 +2908,91 @@ static void LGMigrateLegacyClassicsSelectionIfNeeded(void) {
             LGFinishLegacyClassicsMigration(target);
         });
     });
+    return YES;
+}
+
+// The app's bundle path as of the last icon check. Every install or update
+// lands in a new container, so the path changes even for sideloaded builds
+// that keep the same version strings.
+static NSString *const kLGIconCheckedInstallDefaultsKey = @"ApolloLGIconCheckedInstallPath";
+
+static void LGMarkIconCheckedForThisInstall(void) {
+    [NSUserDefaults.standardUserDefaults setObject:NSBundle.mainBundle.bundlePath
+                                            forKey:kLGIconCheckedInstallDefaultsKey];
+}
+
+// After an install or update, some devices come back with the home-screen
+// icon showing iOS's generic grid. The real art only flashes while the icon
+// is touched or the app opens and closes, re-picking the same icon doesn't
+// redraw it, and UIApplication reports no alternate icon even though one was
+// picked. When the first launch of a new install sees that, apply the saved
+// choice once under its other registration: a real icon change, so iOS draws
+// the icon again (with its usual "You have changed the icon" confirmation).
+static void LGRepairHomeScreenIconAfterUpdateIfNeeded(void) {
+    static BOOL attemptedThisProcess = NO;
+    if (attemptedThisProcess) return;
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    NSString *installPath = NSBundle.mainBundle.bundlePath;
+    if ([[defaults stringForKey:kLGIconCheckedInstallDefaultsKey] isEqualToString:installPath]) return;
+    attemptedThisProcess = YES;
+
+    UIApplication *application = UIApplication.sharedApplication;
+    // LGActiveAlternateIconName() is nil while a Standard pack is saved, which
+    // covers the Ultra additions; they're catalog icons with twins too.
+    NSString *choice = LGActiveAlternateIconName() ?: LGSavedIconChoice();
+    NSString *system = application.alternateIconName;
+    // A name from iOS means its record is intact, or the icon was changed
+    // outside the picker; either way there is nothing to repair. When it is
+    // the saved choice, take iOS's word for which registration it holds: a
+    // repair whose confirmation was never answered left no record of it.
+    if (!choice.length || [choice isEqualToString:kLGConfirmedDefaultIconMarker] ||
+        system.length || ![application supportsAlternateIcons]) {
+        if ([ApolloLGCanonicalAlternateIconName(system) isEqualToString:choice]) {
+            LGPersistAppliedIconName(system);
+        }
+        LGMarkIconCheckedForThisInstall();
+        return;
+    }
+
+    // Let the launch transition finish before iOS shows its confirmation.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        // The setter only works while active; try again on the next activation.
+        // A picker change in flight must not race this one either.
+        if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive ||
+            sLGIconChangeInProgress) {
+            attemptedThisProcess = NO;
+            return;
+        }
+        // An icon picked during the delay, or iOS reporting one after all,
+        // leaves nothing to repair.
+        if (![(LGActiveAlternateIconName() ?: LGSavedIconChoice()) isEqualToString:choice] ||
+            UIApplication.sharedApplication.alternateIconName.length) {
+            LGMarkIconCheckedForThisInstall();
+            return;
+        }
+        NSString *registration = LGRegistrationForIconName(choice);
+        // Re-applying the name iOS holds doesn't redraw the icon, and an IPA
+        // patched before the refresh twins has no other name to switch to.
+        if ([registration isEqualToString:LGHeldIconName()]) {
+            ApolloLog(@"[LGIconPicker] no refresh registration for %@; leaving the icon as is", choice);
+            LGMarkIconCheckedForThisInstall();
+            return;
+        }
+        ApolloLog(@"[LGIconPicker] new install reports no alternate icon; re-applying %@ as %@",
+                  choice, registration);
+        LGSetAlternateIconName(registration, ^(NSError *error) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (error) {
+                    ApolloLog(@"[LGIconPicker] icon repair failed; will retry next launch: %@", error);
+                    return;
+                }
+                LGPersistAppliedIconName(registration);
+                LGMarkIconCheckedForThisInstall();
+                ApolloLog(@"[LGIconPicker] icon repair applied: %@", registration);
+                [[NSNotificationCenter defaultCenter] postNotificationName:kLGChangedIconNotification object:nil];
+            });
+        });
+    });
 }
 
 // hostView is used to find a presentation context for an error alert (works
@@ -2862,9 +3003,14 @@ static void LGApplyAlternateIcon(UIView *hostView, NSString *iconID, void (^comp
         if (completion) completion(NO);
         return;
     }
-    ApolloLog(@"[LGIconPicker] requesting alternate icon=%@", iconID ?: @"(default)");
+    NSString *registration = LGRegistrationForIconName(iconID);
+    if (LGIsHeldIcon(iconID)) {
+        ApolloLog(@"[LGIconPicker] re-applying active icon=%@ as %@", iconID, registration);
+    } else {
+        ApolloLog(@"[LGIconPicker] requesting alternate icon=%@", iconID ?: @"(default)");
+    }
     __weak UIView *weakHost = hostView;
-    LGSetAlternateIconName(iconID, ^(NSError *error) {
+    LGSetAlternateIconName(registration, ^(NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (error) {
                 ApolloLogError(@"[LGIconPicker] setAlternateIconName failed: %@", error);
@@ -2878,6 +3024,7 @@ static void LGApplyAlternateIcon(UIView *hostView, NSString *iconID, void (^comp
                 return;
             }
             LGPersistActiveIconID(iconID);
+            LGPersistAppliedIconName(registration);
             if (!iconID.length || LGGroupIndexForIconID(LGBaseIconIDFromAlternateIconName(iconID)) != NSNotFound) {
                 LGPersistActiveStandardPack(LGStandardPackCount);
             }
@@ -5170,12 +5317,19 @@ static UIImage *LGActiveIconPreviewForSheets(void) {
                                                             object:nil
                                                              queue:NSOperationQueue.mainQueue
                                                         usingBlock:^(NSNotification *note) {
-            LGMigrateLegacyClassicsSelectionIfNeeded();
             NSString *system = UIApplication.sharedApplication.alternateIconName;
             NSString *persisted = [NSUserDefaults.standardUserDefaults stringForKey:kLGActiveIconDefaultsKey];
+            NSString *applied = [NSUserDefaults.standardUserDefaults stringForKey:kLGAppliedIconNameDefaultsKey];
             NSString *systemDesc = system == nil ? @"(nil)" : (system.length ? system : @"(empty, non-nil)");
             NSString *persistedDesc = persisted == nil ? @"(nil)" : (persisted.length ? persisted : @"(empty, non-nil)");
-            ApolloLog(@"[LGIconPicker] foreground check: alternateIconName=%@ persisted=%@", systemDesc, persistedDesc);
+            ApolloLog(@"[LGIconPicker] foreground check: alternateIconName=%@ persisted=%@ applied=%@",
+                      systemDesc, persistedDesc, applied ?: @"(nil)");
+            // The migration's own icon change already redraws the icon.
+            if (LGMigrateLegacyClassicsSelectionIfNeeded()) {
+                LGMarkIconCheckedForThisInstall();
+            } else {
+                LGRepairHomeScreenIconAfterUpdateIfNeeded();
+            }
             if (LGRefreshDailyFeaturedRowsIfNeeded()) {
                 LGReloadDailyFeaturedSection(sLGAppIconPickerTableView, YES);
             }

@@ -59,10 +59,11 @@
         return url ? universalLinkOrigin + "/open?url=" + encodeURIComponent(url.href) : null;
     }
 
-    // The opt-in legacy extension runs inside Apollo's own signed container,
-    // so it can hand the validated destination to Apollo's registered custom
-    // scheme directly. Keep this separate from toOpenerURL(): the manual
-    // fallback and Link Companion intentionally retain the Universal Link.
+    // Both bundled extensions run inside Apollo's own signed container, so they
+    // can hand the validated destination to Apollo's registered custom scheme
+    // directly. Keep this separate from toOpenerURL(): the manual fallback and
+    // Link Companion try the Universal Link first, and the manual fallback only
+    // switches to this after the Worker bounced that link back to Safari.
     function toApolloURL(value) {
         var url = redditURL(value);
         if (!url) {
@@ -80,12 +81,37 @@
         return "apollo://reddit.com" + path + url.search + url.hash;
     }
 
+    function hasFallbackMarker(value) {
+        try {
+            return new URL(value).searchParams.has(fallbackMarker);
+        } catch (error) {
+            return false;
+        }
+    }
+
+    // The Worker appends the marker when open.apolloreborn.app loaded in Safari
+    // instead of opening Link Companion. Strip it so the page's own Reddit
+    // destination can still be validated and handed to Apollo directly.
+    function withoutFallbackMarker(value) {
+        var url;
+        try {
+            url = new URL(value);
+        } catch (error) {
+            return null;
+        }
+
+        url.searchParams.delete(fallbackMarker);
+        return url.href;
+    }
+
     return {
         fallbackMarker: fallbackMarker,
         isRedditWebHost: isRedditWebHost,
         isRedditShortHost: isRedditShortHost,
         redditURL: redditURL,
         toOpenerURL: toOpenerURL,
-        toApolloURL: toApolloURL
+        toApolloURL: toApolloURL,
+        hasFallbackMarker: hasFallbackMarker,
+        withoutFallbackMarker: withoutFallbackMarker
     };
 });

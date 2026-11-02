@@ -14,6 +14,8 @@
 #include <stdatomic.h>
 #import <Security/Security.h>
 #import "ApolloClasses.h"
+#import "ApolloAccountCredentials.h"
+#import "ApolloWebSessionStore.h"
 #import "ApolloDeviceIdentity.h"
 #include <sys/sysctl.h>
 
@@ -359,6 +361,11 @@ static NSString *ApolloCollectLogsFiltered(BOOL aiOnly) {
         NSMutableArray<OSLogEntryLog *> *filteredEntries = [NSMutableArray array];
         for (OSLogEntryLog *entry in entries) {
             if (![entry isKindOfClass:[OSLogEntryLog class]]) continue;
+            // Persisted levels only. Info/debug lines are written for live
+            // `log stream` sessions and can carry per-cell detail; OSLogStore
+            // still hands back the ones in the in-memory buffer, so filter
+            // here instead of relying on that.
+            if (entry.level < OSLogEntryLogLevelNotice) continue;
             if (!aiOnly ||
                 [entry.category isEqualToString:@"AISummary"] ||
                 [entry.composedMessage containsString:@"[AISummary]"] ||
@@ -392,18 +399,30 @@ static NSString *ApolloCollectLogsFiltered(BOOL aiOnly) {
         if (persistentListLayout.length || persistentLogin.length) {
             [output appendString:@"===== Current session ([ApolloFix] os_log) =====\n"];
         }
-        [output appendFormat:@"%@ — %@ (%lu entries)\n\n",
+        [output appendFormat:@"%@ — %@ (%lu entries)\n",
             aiOnly ? @"Apollo AI Logs" : @"ApolloFix Logs",
             [NSDateFormatter localizedStringFromDate:[NSDate date]
                                            dateStyle:NSDateFormatterMediumStyle
                                            timeStyle:NSDateFormatterShortStyle],
             (unsigned long)filteredEntries.count];
+        [output appendString:@"Personal data masked: links show the site only, usernames are per-log tags like u/[user-3f9a], your accounts are [me], tokens and emails are removed.\n\n"];
 
         for (OSLogEntryLog *entry in filteredEntries) {
             [output appendFormat:@"[%@] %@\n", [formatter stringFromDate:entry.date], entry.composedMessage];
         }
 
-        return output;
+        // One scrub over the finished text, persistent files included (they
+        // span earlier sessions and accounts). Active account first so it is [me].
+        // The other names come from plain defaults reads (every signed-in account
+        // is pinned in the per-account credentials map; keyless ones also have a
+        // web session) rather than an account-archive decode, which would fire
+        // the -setCurrentUser: hooks from this export queue.
+        NSMutableArray<NSString *> *ownUsernames = [NSMutableArray array];
+        NSString *active = ApolloActiveAccountUsername();
+        if (active.length) [ownUsernames addObject:active];
+        [ownUsernames addObjectsFromArray:ApolloAllAccountCredentials().allKeys];
+        [ownUsernames addObjectsFromArray:ApolloWebSessionUsernames().allObjects];
+        return ApolloRedactLogExport(output, ownUsernames, NSHomeDirectory());
     }
 
     return @"Log export requires iOS 15+.";

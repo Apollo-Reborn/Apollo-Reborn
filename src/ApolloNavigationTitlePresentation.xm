@@ -1,4 +1,6 @@
 #import "ApolloDuoSplitView.h"
+#import "ApolloDuoRail.h"
+#import "ApolloDeviceGeometry.h"
 #import "ApolloNavigationTitlePresentation.h"
 #import "ApolloNavigationActions.h"
 #import "ApolloCommon.h"
@@ -61,6 +63,7 @@ static BOOL ApolloTitlePresentationAvailable(void) {
 @property (nonatomic, strong) NSLayoutConstraint *heightConstraint;
 @property (nonatomic, strong) UILayoutGuide *columnGuide;
 @property (nonatomic, strong) NSLayoutConstraint *columnLeading;
+@property (nonatomic, strong) NSLayoutConstraint *columnTrailing;
 @property (nonatomic) BOOL usesSplitColumn;
 @property (nonatomic, strong) UIView *customView;
 @property (nonatomic) CGRect customOriginalFrame;
@@ -324,6 +327,7 @@ static void ApolloTitlePresentationDetachCustom(UIView *source) {
     [self.columnGuide.owningView removeLayoutGuide:self.columnGuide];
     self.columnGuide = nil;
     self.columnLeading = nil;
+    self.columnTrailing = nil;
     self.topConstraint = nil;
     self.heightConstraint = nil;
     [self.control removeFromSuperview];
@@ -552,7 +556,8 @@ static void ApolloTitlePresentationDetachCustom(UIView *source) {
     if (!self.columnGuide) {
         self.columnGuide = [UILayoutGuide new];
         [bar addLayoutGuide:self.columnGuide];
-        [self.columnGuide.trailingAnchor constraintEqualToAnchor:bar.trailingAnchor].active = YES;
+        self.columnTrailing = [self.columnGuide.trailingAnchor constraintEqualToAnchor:bar.trailingAnchor];
+        self.columnTrailing.active = YES;
     }
     if (!self.columnLeading || self.usesSplitColumn != splitColumn) {
         self.columnLeading.active = NO;
@@ -560,6 +565,19 @@ static void ApolloTitlePresentationDetachCustom(UIView *source) {
             splitColumn ? bar.safeAreaLayoutGuide.leadingAnchor : bar.leadingAnchor];
         self.columnLeading.active = YES;
         self.usesSplitColumn = splitColumn;
+    }
+    // On the cover, UIKit keeps the bar full-width underneath the trailing
+    // system strip. Match the search field's usable header rather than the
+    // physical display midpoint. Unfolded columns retain their own policy.
+    UIEdgeInsets coverInsets = ApolloDuoUsesCoverContentInsets() && !splitColumn
+        ? ApolloDeviceChromeInsetsForView(bar) : UIEdgeInsetsZero;
+    CGFloat leading = coverInsets.left;
+    CGFloat trailing = -coverInsets.right;
+    if (fabs(self.columnLeading.constant - leading) > 0.1 ||
+        fabs(self.columnTrailing.constant - trailing) > 0.1) {
+        self.columnLeading.constant = leading;
+        self.columnTrailing.constant = trailing;
+        changed = YES;
     }
     if (self.control.superview != presentationHost) {
         [NSLayoutConstraint deactivateConstraints:self.placementConstraints];

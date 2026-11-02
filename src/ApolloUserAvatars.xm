@@ -1840,7 +1840,8 @@ static UIFont *ApolloProfileClassicNameFont(void) {
         self.aboutLabel.numberOfLines = ApolloProfileAboutCollapsedLines;
     }
     self.aboutLabel.text = aboutText;
-    ApolloLog(@"[UserAvatars] Profile username=%@ isLoggedIn=%@", username ?: @"nil", isLoggedInAccount ? @"YES" : @"NO");
+    // u/ prefix so the export scrub tags the name like every other u/ line.
+    ApolloLog(@"[UserAvatars] Profile u/%@ isLoggedIn=%@", username ?: @"(none)", isLoggedInAccount ? @"YES" : @"NO");
     // Follow / Message row: shown on someone else's real profile only — never on
     // your own account (that gets the "..." menu's Edit Profile instead) and
     // never for the [deleted] placeholder, and gated by the viewer's Actions
@@ -4496,13 +4497,13 @@ static void ApolloProfileInstallOrUpdateHeader(id viewControllerObject) {
         objc_setAssociatedObject(viewControllerObject, kApolloProfileWrappedHeaderKey, wrappedHeader, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(viewControllerObject, kApolloProfileOriginalHeaderKey, originalHeader, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         tableView.tableHeaderView = wrappedHeader;
-        ApolloLog(@"[UserAvatars] Installed profile header class=%@ vc=%p table=%p username=%@ nativeHeader=%@", className, viewControllerObject, tableView, username, originalHeader ? NSStringFromClass([originalHeader class]) : @"nil");
+        ApolloLog(@"[UserAvatars] Installed profile header class=%@ vc=%p table=%p u/%@ nativeHeader=%@", className, viewControllerObject, tableView, username, originalHeader ? NSStringFromClass([originalHeader class]) : @"nil");
     } else {
         CGRect frameBeforeLayout = wrappedHeader.frame;
         ApolloProfileLayoutWrappedHeader(wrappedHeader, header, originalHeader, width);
         if (!CGRectEqualToRect(frameBeforeLayout, wrappedHeader.frame)) {
             tableView.tableHeaderView = wrappedHeader;
-            ApolloLog(@"[UserAvatars] Resized profile header class=%@ vc=%p username=%@ width=%.1f", className, viewControllerObject, username, width);
+            ApolloLog(@"[UserAvatars] Resized profile header class=%@ vc=%p u/%@ width=%.1f", className, viewControllerObject, username, width);
         }
     }
 
@@ -4536,7 +4537,7 @@ static void ApolloProfileInstallOrUpdateHeader(id viewControllerObject) {
         if (!CGRectEqualToRect(frameBeforeCachedInfo, wrappedHeader.frame)) {
             tableView.tableHeaderView = wrappedHeader;
         }
-        ApolloLog(@"[UserAvatars] Loading profile header images class=%@ vc=%p username=%@", className, viewControllerObject, username);
+        ApolloLog(@"[UserAvatars] Loading profile header images class=%@ vc=%p u/%@", className, viewControllerObject, username);
     }
     // New (Immersive) → the melt compositor (blurred banner behind the identity).
     // Classic (Compact) → no compositor; the banner shows flat in its own region and
@@ -5579,7 +5580,7 @@ static void ApolloAvatarApplySubredditIconToSharePreview(id postInfo, NSString *
             BOOL hideUsernames = ApolloReadBoolIvar(node, "hideUsernames", NO);
             BOOL hideSubreddit = ApolloReadBoolIvar(node, "hideSubreddit", NO);
             NSString *username = ApolloUsernameFromCell(node, @"link");
-            ApolloLog(@"[UserAvatars] Share preview layout details=%d hideUsernames=%d hideSubreddit=%d username=%@ node=%p",
+            ApolloLog(@"[UserAvatars] Share preview layout details=%d hideUsernames=%d hideSubreddit=%d u/%@ node=%p",
                       includePostDetails, hideUsernames, hideSubreddit, username, node);
             // No author line without post details; no avatar when usernames
             // are hidden — the rendered text won't contain the author.

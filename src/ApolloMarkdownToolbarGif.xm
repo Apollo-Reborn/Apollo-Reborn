@@ -135,6 +135,10 @@ static void ApolloMarkdownGifCollectToolbarViewsInView(UIView *root, NSMutableAr
         (*budget)--;
         if (view.hidden || view.alpha < 0.01) continue;
         if ([view.accessibilityIdentifier isEqualToString:kApolloMarkdownGifButtonIdentifier]) continue;
+        // A message thread's reply bar never carries the markdown toolbar. On
+        // iPad it sits in the app window, where a window-wide scan would pair
+        // its photo button with unrelated labels and anchor to the wrong view.
+        if (ApolloClassMessageInputBar && [view isKindOfClass:ApolloClassMessageInputBar]) continue;
 
         NSString *label = ApolloMarkdownGifAccessibilityLabelForView(view);
         if (label.length > 0 || [view isKindOfClass:[UIControl class]]) {
@@ -1290,9 +1294,13 @@ static void ApolloMarkdownGifApplyMediaGating(UIViewController *composeControlle
     }];
 }
 
+// Controls only (toolbar buttons: "Bold", "Link", ...). A plain label's
+// accessibility label is its text, and under the composer that can be the
+// parent comment or a username; this line is exported.
 static NSString *ApolloMarkdownGifSampleLabels(NSArray<UIView *> *views, NSUInteger maxCount) {
     NSMutableArray<NSString *> *labels = [NSMutableArray array];
     for (UIView *view in views) {
+        if (![view isKindOfClass:[UIControl class]]) continue;
         NSString *label = ApolloMarkdownGifAccessibilityLabelForView(view);
         if (label.length == 0) continue;
         [labels addObject:label];

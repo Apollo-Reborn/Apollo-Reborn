@@ -16,6 +16,7 @@
 #import "ApolloUserAvatars.h"
 #import "UserDefaultConstants.h"
 #import "ApolloClasses.h"
+#import "ApolloSwiftRuntime.h"
 
 // MARK: - Tab Bar Auto-Hide Reveal Fix
 //
@@ -2395,6 +2396,19 @@ static void ApolloRestoreBarsForNavigationTransition(UINavigationController *nav
     // hidesBottomBarWhenPushed, not our Liquid Glass scroll presentation.
     if (!ApolloSupportsNativeTabBarScrollBehavior()) {
         ApolloTopBarRestoreNavigationController(navigationController);
+        // Like Liquid Glass, any push/pop brings scroll-hidden bars back. The hidden flag lives on the
+        // nav controller, so it otherwise carried into the next page (reopened subreddit: no nav bar,
+        // banner strip above the search field). The hook above mirrors this onto the tab bar.
+        if (navigationController.hidesBarsOnSwipe && navigationController.isNavigationBarHidden) {
+            ApolloLog(@"[AutoHideTabBarFix] %@: revealing scroll-hidden nav bar", reason);
+            [navigationController setNavigationBarHidden:NO animated:YES];
+            // Apollo fades its status-bar backing in while the bars are hidden and out again only from
+            // its swipe handler; left at alpha 1 it tints the top of the next page gray.
+            UIView *statusBacking = ApolloObjectIvar(navigationController, "statusBarBackgroundView");
+            if ([statusBacking isKindOfClass:[UIView class]] && statusBacking.alpha > 0.0) {
+                [UIView animateWithDuration:0.25 animations:^{ statusBacking.alpha = 0.0; }];
+            }
+        }
         return;
     }
     UITabBarController *tbc = ApolloLocateTabBarController(navigationController);
@@ -2910,6 +2924,24 @@ static void ApolloRevealBarsForScrollToTop(UIViewController *owner) {
     }
     ApolloHoldCompletedTwoGestureReveal(tbc);
 }
+
+// iOS <26: once a hide-on-swipe cycle has run, UIKit reports the navigation controller's view as using
+// the minimum safe areas (54.67pt on Dynamic Island iPhones, the legacy status bar height) and keeps doing
+// so after the bar comes back. Every bar-position and page-inset path then reads that instead of the 61pt
+// safe area, so the revealed bar and every page under it sat ~6pt high until relaunch. Report the normal
+// safe areas again while the bar is visible; UIKit keeps its own answer while the bar is hidden.
+%hook UILayoutContainerView
+
+- (BOOL)_usesMinimumSafeAreas {
+    BOOL uses = %orig;
+    if (!uses || ApolloSupportsNativeTabBarScrollBehavior()) return uses;
+    UIResponder *owner = ((UIView *)self).nextResponder;
+    if (![owner isKindOfClass:[UINavigationController class]]) return uses;
+    UINavigationController *nav = (UINavigationController *)owner;
+    return (nav.hidesBarsOnSwipe && !nav.isNavigationBarHidden) ? NO : uses;
+}
+
+%end
 
 %ctor {
     %init;

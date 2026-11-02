@@ -26,5 +26,17 @@ int main(void) {
         CGRectMake(0, 0, 390, 44), 60, 290, 12, 8);
     assert(phone.center == 195);
     assert(phone.maximumContentWidth == 150);
+
+    // Folded Duo's physical bar extends under an 84pt reserved strip. Its
+    // title must center in the 382pt usable header, not at physical x233.
+    ApolloNavigationTitleGeometry cover = ApolloNavigationTitleCenteredGeometry(
+        CGRectMake(0, 0, 382, 44), 0, 382, 12, 8);
+    assert(cover.center == 191);
+    assert(cover.maximumContentWidth == 342);
+    // A leading reservation mirrors the same usable region in RTL.
+    ApolloNavigationTitleGeometry coverRTL = ApolloNavigationTitleCenteredGeometry(
+        CGRectMake(84, 0, 382, 44), 84, 466, 12, 8);
+    assert(coverRTL.center == 275);
+    assert(coverRTL.maximumContentWidth == cover.maximumContentWidth);
     puts("Pane title geometry: sidebar occlusion, RTL and whole-bar control passed");
 }

@@ -217,6 +217,14 @@ BOOL ApolloDuoCoverChromeIsActive(void) {
     return ApolloDuoCoverShouldApplyForTabs(tabs);
 }
 
+BOOL ApolloDuoUsesCoverContentInsets(void) {
+    UITabBarController *tabs = (id)ApolloMainTabBarController();
+    return ApolloDeviceIsDuo()
+        && UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone
+        && [tabs isKindOfClass:UITabBarController.class] && tabs.isViewLoaded
+        && !ApolloDuoSplitIsUnfolded();
+}
+
 static BOOL ApolloDuoCoverClassLooksLikeComments(Class cls) {
     const char *name = class_getName(cls);
     return name && strstr(name, "CommentsViewController");
@@ -268,12 +276,53 @@ void ApolloDuoCoverAdjustJumpButton(UIViewController *comments) {
     if (!comments || !ApolloDuoCoverClassLooksLikeComments(comments.class)) return;
     BOOL coverChrome = ApolloDuoCoverChromeIsActive();
     BOOL trailingRail = ApolloDuoRailHasVisibleSideBar();
-    if ((!coverChrome && !trailingRail) || !comments.isViewLoaded) return;
+    NSString *position = [NSUserDefaults.standardUserDefaults stringForKey:@"CommentJumpButtonPosition"];
+    int kind = ApolloDuoJumpButtonPositionKind(position.UTF8String);
+    if (!comments.isViewLoaded) return;
+    if (!coverChrome && !trailingRail && CGRectIsNull(ApolloDuoSplitContentFrame(comments, comments.view))) return;
 
     UIView *button = ApolloDuoCoverFindJumpButton(comments);
     if (![button isKindOfClass:[UIView class]] || !button.superview) return;
     UIView *container = button.superview;
     CGRect frame = button.frame;
+    BOOL moved = NO;
+    CGRect railFrame = CGRectNull;
+    if (trailingRail) {
+        UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
+        UIView *sideBar = nil;
+        if ([tabs isKindOfClass:[UITabBarController class]]) {
+            sideBar = tabs.tabBar;
+        }
+        if (sideBar.window) {
+            railFrame = [sideBar convertRect:sideBar.bounds toView:container];
+        }
+    }
+    // Apollo's x for each position comes from geometry a split pane does not
+    // match (the full-screen table beneath the posts column, or a narrower
+    // width for right positions). Place every position from the visible pane
+    // instead, in the button's (content) coordinates, and keep Apollo's Y.
+    CGRect pane = ApolloDuoSplitContentFrame(comments, container);
+    BOOL split = !CGRectIsNull(pane) && CGRectGetWidth(pane) > 0.0;
+    if (split) {
+        // Book posture: the divider can rest at or inside the fold, so the
+        // pane's leading edge is the hinge. Keep every position past it.
+        CGRect fold = ApolloDuoActiveVerticalDivision(container);
+        CGFloat leading = ApolloDuoJumpButtonPaneAfterFold(CGRectGetMinX(pane), CGRectGetWidth(pane), !CGRectIsNull(fold),
+                                                           CGRectGetMinX(fold), CGRectGetMaxX(fold));
+        pane.size.width -= leading - CGRectGetMinX(pane);
+        pane.origin.x = leading;
+    }
+    CGFloat paneX = ApolloDuoJumpButtonPaneX(kind, split, CGRectGetMinX(pane), CGRectGetWidth(pane),
+                                             !CGRectIsNull(railFrame), CGRectGetMinX(railFrame),
+                                             CGRectGetWidth(frame), CGRectGetMinX(frame));
+    if (fabs(paneX - CGRectGetMinX(frame)) > 0.5) {
+        frame.origin.x = paneX;
+        moved = YES;
+    }
+    if (!coverChrome && !trailingRail) {
+        if (moved) button.frame = frame;
+        return;
+    }
     // The button is a child of ASTableView. Its frame is in *content*
     // coordinates, while bounds.origin tracks scrolling. Using height alone
     // clamps the native contentOffset-adjusted Y back to a fixed content Y,
@@ -284,19 +333,10 @@ void ApolloDuoCoverAdjustJumpButton(UIViewController *comments) {
         limitX -= (CGFloat)ApolloDuoCoverPillWidth;
         limitY -= (CGFloat)ApolloDuoCoverPillBottom;
     }
-    if (trailingRail) {
-        UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
-        UIView *sideBar = nil;
-        if ([tabs isKindOfClass:[UITabBarController class]]) {
-            sideBar = tabs.tabBar;
-        }
-        if (sideBar.window) {
-            CGRect railFrame = [sideBar convertRect:sideBar.bounds toView:container];
-            // Match the 15pt gap used by Duo settings rows and profile cards.
-            limitX = MIN(limitX, CGRectGetMinX(railFrame) - 15.0);
-        }
+    if (!CGRectIsNull(railFrame)) {
+        // Match the 15pt gap used by Duo settings rows and profile cards.
+        limitX = MIN(limitX, CGRectGetMinX(railFrame) - (CGFloat)ApolloDuoJumpButtonRailGap);
     }
-    BOOL moved = NO;
     if (CGRectGetMaxX(frame) > limitX + 0.5) {
         frame.origin.x -= (CGRectGetMaxX(frame) - limitX);
         moved = YES;
@@ -305,8 +345,11 @@ void ApolloDuoCoverAdjustJumpButton(UIViewController *comments) {
         frame.origin.y -= (CGRectGetMaxY(frame) - limitY);
         moved = YES;
     }
-    if (frame.origin.x < CGRectGetMinX(container.bounds)) {
-        frame.origin.x = CGRectGetMinX(container.bounds);
+    // The clamps must not push the button behind the posts column.
+    CGFloat minX = split ? MAX(CGRectGetMinX(container.bounds), CGRectGetMinX(pane))
+                         : CGRectGetMinX(container.bounds);
+    if (frame.origin.x < minX) {
+        frame.origin.x = minX;
         moved = YES;
     }
     if (frame.origin.y < CGRectGetMinY(container.bounds)) {

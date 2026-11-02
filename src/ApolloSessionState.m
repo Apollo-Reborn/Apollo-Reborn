@@ -67,6 +67,14 @@ BOOL ApolloSessionStateFeedURLMatchesSavedRoute(NSString *candidateURL, NSString
            [candidateURL caseInsensitiveCompare:savedURL] == NSOrderedSame;
 }
 
+NSUInteger ApolloSessionStateBuiltInFeedIndex(NSString *savedURL) {
+    NSArray<NSString *> *parts = [ApolloSessionRedditComponents(savedURL).path pathComponents];
+    if (parts.count != 3 || ![parts[1] isEqualToString:@"r"]) return NSNotFound;
+    if ([parts[2] caseInsensitiveCompare:@"popular"] == NSOrderedSame) return 1;
+    if ([parts[2] caseInsensitiveCompare:@"all"] == NSOrderedSame) return 2;
+    return NSNotFound;
+}
+
 NSString *ApolloSessionStatePreferredAccountScope(NSString *persistedScope,
                                                    NSString *liveScope,
                                                    BOOL preferLiveScope) {

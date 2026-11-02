@@ -11,6 +11,26 @@
 // image's declared command count before walking its header at startup.
 enum { ApolloMaximumMachOLoadCommandBytes = 1024 * 1024 };
 
+// Shared identity guard for native-code hooks; SDK/packaging changes preserve LC_UUID.
+static inline bool ApolloMachOHasUUID(const struct mach_header *image, const uint8_t expected[16]) {
+    if (!image || image->magic != MH_MAGIC_64 || image->cputype != CPU_TYPE_ARM64 ||
+        image->sizeofcmds > ApolloMaximumMachOLoadCommandBytes) return false;
+    const uint8_t *cursor = (const uint8_t *)((const struct mach_header_64 *)image + 1);
+    const uint8_t *end = cursor + image->sizeofcmds;
+    for (uint32_t i = 0; i < image->ncmds; i++) {
+        if ((size_t)(end - cursor) < sizeof(struct load_command)) return false;
+        const struct load_command *command = (const void *)cursor;
+        if (command->cmdsize < sizeof(*command) || command->cmdsize > (size_t)(end - cursor) ||
+            (command->cmdsize & 7) != 0) return false;
+        if (command->cmd == LC_UUID) {
+            return command->cmdsize >= sizeof(struct uuid_command) &&
+                memcmp(((const struct uuid_command *)command)->uuid, expected, 16) == 0;
+        }
+        cursor += command->cmdsize;
+    }
+    return false;
+}
+
 // Reads a mapped Mach-O header and its load-command bytes, not a file's whole
 // contents. The explicit extent also lets host tests exercise truncated or
 // malformed commands without reading past their fixture. Filetype is

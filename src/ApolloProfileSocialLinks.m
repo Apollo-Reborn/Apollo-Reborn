@@ -243,7 +243,7 @@ static void ApolloSLRequestFaviconForHost(NSString *host, void (^completion)(UII
         // rows and the header badges all render at a consistent size/weight regardless
         // of each favicon's native pixel size or internal transparent padding.
         UIImage *normalized = image ? ApolloSLNormalizedFavicon(image) : nil;
-        ApolloLog(@"[SocialLinks][perf] favicon %@ %@ in %.2fs", key,
+        ApolloLog(@"[SocialLinks][perf] favicon (%@) %@ in %.2fs", ApolloSLTypeForHost(key),
                   normalized ? @"loaded" : @"failed", CFAbsoluteTimeGetCurrent() - t0);
         dispatch_async(dispatch_get_main_queue(), ^{
             if (normalized) [ApolloSLFaviconCache() setObject:normalized forKey:key];
@@ -321,13 +321,15 @@ static NSArray<ApolloSocialLink *> *ApolloSLLinksFromJSON(NSArray *raw, NSUInteg
     return links;
 }
 
-// `host "title", ...` for log lines, so a result shows exactly what the band
-// will render (a scraped footer line is obvious at a glance).
+// Link TYPES only ("instagram, twitter, custom"). A link's title is usually the
+// person's handle or real name and its URL is their profile, and exported logs
+// are posted publicly with bug reports. Reddit's own hosts stay readable: a
+// scraped footer/legal link (redditinc.com) is the bug this line exists to spot.
 static NSString *ApolloSLLinksSummary(NSArray<ApolloSocialLink *> *links) {
     NSMutableArray<NSString *> *parts = [NSMutableArray array];
     for (ApolloSocialLink *link in links) {
-        NSString *title = link.title.length > 32 ? [[link.title substringToIndex:32] stringByAppendingString:@"…"] : (link.title ?: @"");
-        [parts addObject:[NSString stringWithFormat:@"%@ \"%@\"", link.url.host ?: link.urlString, title]];
+        NSString *host = link.url.host.lowercaseString ?: @"";
+        [parts addObject:[host containsString:@"reddit"] ? host : ApolloSLTypeForHost(host.length ? host : link.urlString)];
     }
     return [parts componentsJoinedByString:@", "];
 }
@@ -941,15 +943,15 @@ static NSTimeInterval const kApolloSLWebMinTimeForNone  = 4.0;
         } else if (ss.polls == 4 || ss.polls == 10) {
             // Still waiting on profile content — say what we're looking at (bare
             // consent-gate shell? challenge page?) so a stuck state is diagnosable.
-            ApolloLog(@"[SocialLinks][web] u/%@ waiting on profile content (poll#%d %.1fs ready=%@ shell=%d anchors=%@ title=\"%@\")",
-                      ss.username, ss.polls, elapsed, ready, [j[@"shell"] boolValue], j[@"total"], title);
+            ApolloLog(@"[SocialLinks][web] u/%@ waiting on profile content (poll#%d %.1fs ready=%@ shell=%d anchors=%@ title=%@)",
+                      ss.username, ss.polls, elapsed, ready, [j[@"shell"] boolValue], j[@"total"], ApolloLogPageTitleKind(title));
         }
 
         if (elapsed >= kApolloSLWebPollTimeout) {
             // Saw the real profile but no links → cache "none" (don't re-scrape every visit).
             // Never reached the profile (stuck on interstitial / load failure) → nil so it retries.
-            ApolloLog(@"[SocialLinks][web] u/%@ timed out (ready=%@ sawProfile=%d title=\"%@\")",
-                      ss.username, ready, ss.sawProfile, title);
+            ApolloLog(@"[SocialLinks][web] u/%@ timed out (ready=%@ sawProfile=%d title=%@)",
+                      ss.username, ready, ss.sawProfile, ApolloLogPageTitleKind(title));
             [ss finish:(ss.sawProfile ? @[] : nil)];
             return;
         }
@@ -1728,7 +1730,7 @@ static void ApolloSocialLinkOpenURL(NSURL *url, UIViewController *opener) {
 - (void)apollo_pillTapped:(UITapGestureRecognizer *)gesture {
     ApolloSLPillView *pill = (ApolloSLPillView *)gesture.view;
     if (![pill isMemberOfClass:[ApolloSLPillView class]] || !pill.link) return;
-    ApolloLog(@"[SocialLinks] open link %@", pill.link.urlString);
+    ApolloLog(@"[SocialLinks] open %@ link", ApolloSLTypeForHost(pill.link.url.host ?: pill.link.urlString));
     ApolloSocialLinkOpenURL(pill.link.url, self.hostViewController);
 }
 

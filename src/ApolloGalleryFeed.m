@@ -5,6 +5,7 @@
 #import "ApolloTagFilters.h"
 #import "ApolloCommon.h"
 #import "ApolloHostedVideo.h"
+#import "ApolloMediaMetadata.h"
 #import "ApolloState.h"
 #import "ApolloWebJSON.h"
 #import "ApolloWebSessionStore.h"
@@ -1059,6 +1060,8 @@ static CGFloat const kApolloGalleryThumbnailTargetWidth = 640.0;
     NSDictionary *metadata = ApolloGalleryDict(post[@"media_metadata"]);
     NSArray *order = ApolloGalleryArray(ApolloGalleryDict(post[@"gallery_data"])[@"items"]);
     if (metadata.count == 0 || order.count == 0) return @[];
+    // Galleries posted through Reddit's API list every photo as "failed" (#1587).
+    metadata = ApolloRepairFailedRedditGalleryMetadata(metadata, order, ApolloGalleryString(post[@"thumbnail"]), nil) ?: metadata;
 
     NSMutableArray<ApolloGalleryItem *> *items = [NSMutableArray array];
     for (id entry in order) {

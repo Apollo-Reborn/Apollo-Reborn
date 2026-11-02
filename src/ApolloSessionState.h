@@ -39,6 +39,11 @@ FOUNDATION_EXPORT BOOL
 ApolloSessionStateFeedURLMatchesSavedRoute(NSString * _Nullable candidateURL,
                                            NSString * _Nullable savedURL);
 
+// Popular and All are saved as r/popular and r/all routes, but restoring them
+// must reopen Apollo's built-in feed rather than a subreddit page of that name.
+// Returns the feed shortcut index (1 Popular, 2 All) or NSNotFound.
+FOUNDATION_EXPORT NSUInteger ApolloSessionStateBuiltInFeedIndex(NSString * _Nullable savedURL);
+
 // Account-ready notifications expose the coherent live selection before the
 // defaults mirror necessarily catches up. Lifecycle-only callbacks retain the
 // persisted identity as their primary signal.

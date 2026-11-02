@@ -49,6 +49,10 @@ void ApolloDuoRailPinSectionIndex(UITableView *tableView);
 /// YES on the compact Duo cover display. Regular iPhones return NO.
 BOOL ApolloDuoCoverChromeIsActive(void);
 
+/// Cover content geometry, including when UIKit reports a regular width or
+/// exposes only the active UIScreen. Uses Duo capability and live fold size.
+BOOL ApolloDuoUsesCoverContentInsets(void);
+
 /// Keep the comments jump button clear of Duo's system chrome and tab rail.
 void ApolloDuoCoverAdjustJumpButton(UIViewController *comments);
 

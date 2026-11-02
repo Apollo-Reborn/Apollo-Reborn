@@ -26,6 +26,8 @@
 #import "settings/ApolloAISettingsViewController.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloReduceRateLimiting.h"
+#import "ApolloWebJSONRouteUpdates.h"
+#import "settings/ApolloKeylessRouteStatusViewController.h"
 #import "ApolloKagiSearch.h"         // Kagi Session Link (Search tab's Kagi mode)
 #import "ApolloKagiSearchParsing.h"  // ApolloKagiNormalizeSessionToken()
 #import "ApolloAccountCredentials.h"
@@ -258,6 +260,12 @@ static UIImage *ApolloAboutGitHubMark(UIImage *artwork) {
 }
 
 static NSString *ApolloIPadPaneLayoutSettingDetail(void) {
+    if (!ApolloPaneLayoutSupported()) {
+        // Standard builds can't switch glass on, so point at the right build.
+        return ApolloLiquidGlassCanToggle()
+            ? @"Requires Liquid Glass. Turn it on under Interface \u2192 Appearance, then reopen Apollo."
+            : @"Requires the Liquid Glass version of Apollo Reborn.";
+    }
     BOOL desired = [NSUserDefaults.standardUserDefaults boolForKey:UDKeyIPadPaneLayout];
     BOOL active = ApolloPaneLayoutActive();
     if (desired != active) {
@@ -265,7 +273,7 @@ static NSString *ApolloIPadPaneLayoutSettingDetail(void) {
             ? @"Will turn on after Apollo quits and reopens. The current single-column layout remains active until then."
             : @"Will turn off after Apollo quits and reopens. The current iPad Layout remains active until then.";
     }
-    return @"Beta on iPadOS 18 or newer. Keep favourites in the sidebar and read posts and comments side by side. You can switch back anytime. Reopen Apollo to apply changes.";
+    return @"Beta on iPadOS 26 or newer. Keep favourites in the sidebar and read posts and comments side by side. You can switch back anytime. Reopen Apollo to apply changes.";
 }
 
 @interface ApolloFeedShortcutsPreviewState : NSObject
@@ -1193,7 +1201,7 @@ typedef NS_ENUM(NSInteger, Tag) {
                                          push:(UIViewController * (^)(void))makeVC {
     __weak typeof(self) weakSelf = self;
     NSString *reuseID = [@"Cell_Hub_" stringByAppendingString:rowID];
-    return [ApolloSettingsRow customRowWithID:rowID
+    ApolloSettingsRow *navigationRow = [ApolloSettingsRow customRowWithID:rowID
                                          cell:^UITableViewCell *(UITableView *tableView, __unused ApolloSettingsRow *row) {
         UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:reuseID];
         if (!cell) {
@@ -1220,6 +1228,17 @@ typedef NS_ENUM(NSInteger, Tag) {
             [weakSelf presentViewController:navigation animated:YES completion:nil];
         }
     }];
+    if (!IsLiquidGlass() && !subtitle) {
+        // UIKit self-sizes these multiline-label navigation cells to 52pt
+        // even when their title fits one line. Match classic native rows,
+        // measuring the title so larger text can still grow instead of clip.
+        __weak ApolloSettingsRow *weakRow = navigationRow;
+        navigationRow.height = ^CGFloat {
+            return ApolloSettingsClassicRowHeight(weakSelf.tableView, title, nil,
+                                                  weakRow.iconSystemName != nil, 24.0);
+        };
+    }
+    return navigationRow;
 }
 
 // Compact disclosure row for settings hubs where the current value belongs on
@@ -1419,6 +1438,15 @@ typedef NS_ENUM(NSInteger, Tag) {
     backup.configure = ^(UITableViewCell *cell) {
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     };
+    if (!IsLiquidGlass()) {
+        // This configure block only adds a chevron; it does not need the
+        // automatic sizing reserved for custom cell layouts in the form.
+        __weak ApolloSettingsRow *weakBackup = backup;
+        backup.height = ^CGFloat {
+            return ApolloSettingsClassicRowHeight(weakSelf.tableView, @"Backup Settings", nil,
+                                                  weakBackup.iconSystemName != nil, 24.0);
+        };
+    }
 
     ApolloSettingsRow *restore =
         [ApolloSettingsRow buttonRowWithID:@"data.restore"
@@ -1842,6 +1870,18 @@ typedef NS_ENUM(NSInteger, Tag) {
                                   onSelect:nil];
     reduceRateLimiting.visible = ^BOOL { return sWebJSONEnabled; };
 
+    // Which routes API-key-free reads are taking, what Reddit has blocked
+    // since launch, and the Use Route Updates switch
+    // (ApolloKeylessRouteStatusViewController).
+    ApolloSettingsRow *routeStatus =
+        [ApolloSettingsRow disclosureRowWithID:@"api.routeStatus"
+                                         title:@"Routes"
+                                        detail:^NSString *{ return ApolloWebJSONRouteStatusHeadline(); }
+                                          push:^UIViewController *{
+            return [[ApolloKeylessRouteStatusViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+        }];
+    routeStatus.visible = ^BOOL { return sWebJSONEnabled; };
+
     // Modern Reddit Chat / Moderator Mail. Both work for API-key and
     // API-key-free accounts alike, so both are a plain choice that stays
     // switchable for everyone. These preferences are app-wide, like the rest of
@@ -1877,7 +1917,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 
     return [ApolloSettingsSection sectionWithTitle:@"Experimental"
                                             footer:@"Sign in to reddit.com instead of using API keys."
-                                              rows:@[ webJSON, webSessionLogin, reduceRateLimiting, modernChat, modernModmail ]];
+                                              rows:@[ webJSON, webSessionLogin, reduceRateLimiting, routeStatus, modernChat, modernModmail ]];
 }
 
 - (ApolloSettingsSection *)buildAPIKeysExtrasSection {
@@ -2061,9 +2101,15 @@ typedef NS_ENUM(NSInteger, Tag) {
                                   onToggle:^(UISwitch *sender) { [weakSelf devvitFeedPostsSwitchToggled:sender]; }];
     devvitFeedPosts.visible = ^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyDevvitInteractivePosts]; };
 
+    ApolloSettingsRow *restoreReadingSession =
+        [ApolloSettingsRow switchRowWithID:@"media.restoreReadingSession"
+                                     title:@"Restore Reading Session"
+                                      isOn:^BOOL { return sRestoreReadingSession; }
+                                  onToggle:^(UISwitch *sender) { [weakSelf restoreReadingSessionSwitchToggled:sender]; }];
+
     return [ApolloSettingsSection sectionWithTitle:@"Feed"
-                                            footer:@"Feed Video Scrubber: drag the bar under a feed video to scrub it.\n\nSmoother Video Scrolling: prepares feed videos in the background and lets video posts finish drawing right after they scroll in instead of holding the frame for them. Turn off to get Apollo's original behavior back.\n\nForget Forward Swipe After Scrolling: once you've scrolled a few posts on, a forward swipe won't reopen the post you came back from.\n\nLive Interactive Posts: shows live scores, polls, brackets and other interactive posts instead of placeholder text. Show in Feed adds them to the feed as well as comments."
-                                              rows:@[ textPostThumbnails, infoRow, feedScrubber, videoScrollSmoothing, forwardSwipeForget, blockAnnouncements, devvitPosts, devvitFeedPosts ]];
+                                            footer:@"Feed Video Scrubber: drag the bar under a feed video to scrub it.\n\nSmoother Video Scrolling: prepares feed videos in the background and lets video posts finish drawing right after they scroll in instead of holding the frame for them. Turn off to get Apollo's original behavior back.\n\nForget Forward Swipe After Scrolling: once you've scrolled a few posts on, a forward swipe won't reopen the post you came back from.\n\nLive Interactive Posts: shows live scores, polls, brackets and other interactive posts instead of placeholder text. Show in Feed adds them to the feed as well as comments.\n\nRestore Reading Session: after iOS evicts Apollo, reopen the last feed, post and reading position on the next normal launch. Turn it off to delete the saved session immediately."
+                                              rows:@[ textPostThumbnails, infoRow, feedScrubber, videoScrollSmoothing, forwardSwipeForget, blockAnnouncements, devvitPosts, devvitFeedPosts, restoreReadingSession ]];
 }
 
 - (ApolloSettingsSection *)buildPostsFloatingTabsSection {
@@ -2364,8 +2410,8 @@ typedef NS_ENUM(NSInteger, Tag) {
             UITableViewCell *cell = [weakSelf switchCellWithIdentifier:@"Cell_Gen_IPadPaneLayout"
                                                                  label:@"iPad Layout"
                                                                 detail:ApolloIPadPaneLayoutSettingDetail()
-                                                                    on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyIPadPaneLayout]
-                                                               enabled:YES
+                                                                    on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyIPadPaneLayout] && ApolloPaneLayoutSupported()
+                                                               enabled:ApolloPaneLayoutSupported()
                                                                 action:@selector(iPadPaneLayoutSwitchToggled:)];
             UILabel *title = [cell.contentView viewWithTag:7001];
             title.attributedText = ApolloIPadLayoutBetaTitle(title.font, weakSelf.traitCollection);
@@ -2375,7 +2421,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         }
                                   onSelect:nil];
     iPadPaneLayout.visible = ^BOOL {
-        return ApolloPaneLayoutSupported();
+        return ApolloPaneLayoutDeviceSupported();
     };
 
     // Overrides the top scroll-edge glass under the nav bar (iOS 26+). Liquid
@@ -2684,12 +2730,6 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 - (ApolloSettingsSection *)buildMediaBrowsingSection {
     __weak typeof(self) weakSelf = self;
 
-    ApolloSettingsRow *restoreReadingSession =
-        [ApolloSettingsRow switchRowWithID:@"media.restoreReadingSession"
-                                     title:@"Restore Reading Session"
-                                      isOn:^BOOL { return sRestoreReadingSession; }
-                                  onToggle:^(UISwitch *sender) { [weakSelf restoreReadingSessionSwitchToggled:sender]; }];
-
     ApolloSettingsRow *feedGalleries =
         [ApolloSettingsRow switchRowWithID:@"media.feedGalleryCarousel"
                                      title:@"Swipe Through Feed Galleries"
@@ -2722,8 +2762,8 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                   onToggle:^(UISwitch *sender) { [weakSelf galleryAutoplayGIFsSwitchToggled:sender]; }];
 
     return [ApolloSettingsSection sectionWithTitle:@"Browsing"
-                                            footer:@"Restore Reading Session: after iOS evicts Apollo, reopen the last feed, post and reading position on the next normal launch. Turn it off to delete the saved session immediately.\n\nSwipe Through Feed Galleries: page through a gallery post's images without leaving the feed.\n\nSwipe Past Gallery to Navigate: at the first or last image, keep swiping to use your normal post swipes (vote, save, back or forward) instead of bouncing. From any image, a swipe that starts at the screen edge goes back or forward. Off by default.\n\nSwipe Up for Comments: in the fullscreen media viewer, swipe up or tap the comments button to open comments over the media. Off by default.\n\nPlay Videos / GIFs in Gallery View: video and GIF tiles play silently while they're on screen; tap one for the full-size viewer with sound. Paused in Low Power Mode."
-                                              rows:@[ restoreReadingSession, feedGalleries, edgeSwipeNav, swipeComments, galleryAutoplayVideos, galleryAutoplayGIFs ]];
+                                            footer:@"Swipe Through Feed Galleries: page through a gallery post's images without leaving the feed.\n\nSwipe Past Gallery to Navigate: at the first or last image, keep swiping to use your normal post swipes (vote, save, back or forward) instead of bouncing. From any image, a swipe that starts at the screen edge goes back or forward. Off by default.\n\nSwipe Up for Comments: in the fullscreen media viewer, swipe up or tap the comments button to open comments over the media. Off by default.\n\nPlay Videos / GIFs in Gallery View: video and GIF tiles play silently while they're on screen; tap one for the full-size viewer with sound. Paused in Low Power Mode."
+                                              rows:@[ feedGalleries, edgeSwipeNav, swipeComments, galleryAutoplayVideos, galleryAutoplayGIFs ]];
 }
 
 // NSFW Media. Lives here rather than in Apollo's native Filters & Blocks screen:
