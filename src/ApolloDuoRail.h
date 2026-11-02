@@ -8,10 +8,6 @@ BOOL ApolloDuoRailHasVisibleSideBar(void);
 /// Live Duo mode for the app window: Phone / Closed / Open.
 int ApolloDuoCurrentMode(void);
 
-/// Posted (object: the main tab bar controller) when ApolloDuoRailSync sees
-/// the cached mode change, e.g. folding or unfolding.
-extern NSNotificationName const ApolloDuoModeDidChangeNotification;
-
 /// Device capability independent of pose, visible bars, and Liquid Glass.
 /// Main-thread callers update it; background callers only read the last result.
 BOOL ApolloDuoDeviceDetected(void);

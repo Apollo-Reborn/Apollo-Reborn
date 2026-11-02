@@ -562,59 +562,6 @@ static UIImage *ApolloNativeActionMenuSizedIcon(UIImage *image) {
     return [resized imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
 }
 
-// The opaque bounds of `image`, in points. Some option-* assets carry wide
-// transparent margins, so fitting the canvas alone leaves the glyph small.
-static CGRect ApolloNativeActionMenuOpaqueBounds(UIImage *image) {
-    CGImageRef cg = image.CGImage;
-    CGRect full = CGRectMake(0.0, 0.0, image.size.width, image.size.height);
-    if (!cg) return full;
-    size_t width = CGImageGetWidth(cg), height = CGImageGetHeight(cg);
-    if (width == 0 || height == 0 || width > 512 || height > 512) return full;
-    NSMutableData *pixels = [NSMutableData dataWithLength:width * height];
-    CGContextRef context = CGBitmapContextCreate(pixels.mutableBytes, width, height, 8, width, NULL,
-                                                 (CGBitmapInfo)kCGImageAlphaOnly);
-    if (!context) return full;
-    CGContextDrawImage(context, CGRectMake(0, 0, width, height), cg);
-    CGContextRelease(context);
-    const uint8_t *alpha = (const uint8_t *)pixels.bytes;
-    size_t minX = width, minY = height, maxX = 0, maxY = 0;
-    for (size_t y = 0; y < height; y++) {
-        for (size_t x = 0; x < width; x++) {
-            if (alpha[y * width + x] < 8) continue;
-            minX = MIN(minX, x); maxX = MAX(maxX, x);
-            minY = MIN(minY, y); maxY = MAX(maxY, y);
-        }
-    }
-    if (minX > maxX || minY > maxY) return full;
-    CGFloat scale = image.scale > 0.0 ? image.scale : 1.0;
-    // Bitmap rows run top-down here, matching UIKit's coordinate space.
-    return CGRectMake(minX / scale, minY / scale, (maxX - minX + 1) / scale, (maxY - minY + 1) / scale);
-}
-
-UIImage *ApolloNativeActionMenuAssetIcon(NSString *assetName, CGFloat side) {
-    return ApolloNativeActionMenuFittedIcon([UIImage imageNamed:assetName], side);
-}
-
-UIImage *ApolloNativeActionMenuFittedIcon(UIImage *image, CGFloat side) {
-    CGRect glyph = image ? ApolloNativeActionMenuOpaqueBounds(image) : CGRectZero;
-    if (glyph.size.width <= 0.0 || glyph.size.height <= 0.0) return ApolloNativeActionMenuSizedIcon(image);
-    // Unlike the native rows' helper, trim the transparent margin and scale UP:
-    // option-moderator's shield otherwise reads visibly smaller than its
-    // neighbors. Fit the glyph to a `side`-point box.
-    CGFloat scale = MIN(side / glyph.size.width, side / glyph.size.height);
-    CGRect drawRect = CGRectMake((side - glyph.size.width * scale) / 2.0 - glyph.origin.x * scale,
-                                 (side - glyph.size.height * scale) / 2.0 - glyph.origin.y * scale,
-                                 image.size.width * scale, image.size.height * scale);
-    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
-    format.opaque = NO;
-    format.scale = MAX(image.scale, UIScreen.mainScreen.scale);
-    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(side, side) format:format];
-    UIImage *fitted = [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
-        [[image imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal] drawInRect:drawRect];
-    }];
-    return [fitted imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-}
-
 static UIImage *ApolloNativeActionDefaultImage(uint16_t actionKind) {
     NSUInteger count = sizeof(kApolloNativeActionDefaultAssetNames) / sizeof(kApolloNativeActionDefaultAssetNames[0]);
     if (actionKind >= count) return nil;
@@ -901,6 +848,7 @@ static NSInteger ApolloNativeActionMenuRowForActionKind(id actionController,
 }
 
 static BOOL sApolloNativeCapturingController;
+static BOOL sApolloNativeCapturingMenuContext;
 static id sApolloNativeCapturedController;
 
 id ApolloNativeActionMenuCaptureController(UIView *source, dispatch_block_t build) {
@@ -908,12 +856,57 @@ id ApolloNativeActionMenuCaptureController(UIView *source, dispatch_block_t buil
     sApolloNativeCapturingController = YES;
     sApolloNativeCapturedController = nil;
     @try { build(); }
-    @finally { sApolloNativeCapturingController = NO; }
+    @finally {
+        sApolloNativeCapturingController = NO;
+        sApolloNativeCapturingMenuContext = NO;
+    }
     id controller = sApolloNativeCapturedController;
     sApolloNativeCapturedController = nil;
     if (controller) objc_setAssociatedObject(controller, &kApolloNativeActionMenuSourceViewKey,
         source, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return controller;
+}
+
+id ApolloNativeActionMenuCaptureMenuController(UIView *source, dispatch_block_t build) {
+    if (sApolloNativeCapturingController) return nil;
+    sApolloNativeCapturingMenuContext = YES;
+    return ApolloNativeActionMenuCaptureController(source, build);
+}
+
+// Some sheets come one run-loop turn after their row's tap (Sort by Top's time
+// ranges): keep capturing, checking every 50 ms for up to 300 ms.
+static void ApolloNativeActionMenuFinishLateCapture(UIView *source, NSUInteger attempt, void (^done)(id controller)) {
+    id controller = sApolloNativeCapturedController;
+    if (!controller && attempt < 6) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            ApolloNativeActionMenuFinishLateCapture(source, attempt + 1, done);
+        });
+        return;
+    }
+    sApolloNativeCapturingController = NO;
+    sApolloNativeCapturingMenuContext = NO;
+    sApolloNativeCapturedController = nil;
+    if (controller) objc_setAssociatedObject(controller, &kApolloNativeActionMenuSourceViewKey,
+        source, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    done(controller);
+}
+
+void ApolloNativeActionMenuCaptureLateMenuController(UIView *source, dispatch_block_t build,
+                                                     void (^done)(id _Nullable controller)) {
+    if (sApolloNativeCapturingController || !source.window || !build || !done) {
+        if (done) done(nil);
+        return;
+    }
+    sApolloNativeCapturingController = YES;
+    sApolloNativeCapturingMenuContext = YES;
+    sApolloNativeCapturedController = nil;
+    @try { build(); }
+    @catch (NSException *exception) {
+        sApolloNativeCapturingController = NO;
+        sApolloNativeCapturingMenuContext = NO;
+        @throw;
+    }
+    ApolloNativeActionMenuFinishLateCapture(source, 0, done);
 }
 
 BOOL ApolloNativeActionMenuHasAction(id controller, uint16_t kind) {
@@ -928,6 +921,9 @@ void ApolloNativeActionMenuInvokeAction(id controller, uint16_t kind) {
 static BOOL ApolloNativeActionMenuPerformPendingDirectAction(id actionController) {
     if (sApolloNativeCapturingController &&
         [actionController isKindOfClass:ApolloClassActionController]) {
+        // The tap hook that armed this sheet's context disarms it once the
+        // handler returns, before the captured menu is built: claim it now.
+        if (sApolloNativeCapturingMenuContext) ApolloActionMenuCaptureContextForController(actionController);
         sApolloNativeCapturedController = actionController;
         return YES;
     }
@@ -1993,7 +1989,9 @@ static UIViewController *ApolloNativeActionMenuTopMostPresenter(UIViewController
 }
 
 UIMenu *ApolloNativeActionMenuBuildCaptured(id controller) {
-    return ApolloNativeActionMenuBuildMenu(controller, NO);
+    // A sheet Apollo flags moderator-only keeps the moderator styling, and its
+    // page-opening rows wait for the menu to close, as when presented.
+    return ApolloNativeActionMenuBuildMenu(controller, ApolloNativeActionMenuActionControllerIsModeratorOnly(controller));
 }
 
 BOOL ApolloNativeActionMenuPresentCaptured(UIMenu *menu, UIView *source, id controller, dispatch_block_t didEnd) {

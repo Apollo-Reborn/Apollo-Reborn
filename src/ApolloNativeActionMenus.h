@@ -12,6 +12,14 @@ __BEGIN_DECLS
 // Media menus reuse its original action handlers rather than reconstructing
 // Apollo's saving/sharing pipeline. The controller owns the captured handlers.
 id _Nullable ApolloNativeActionMenuCaptureController(UIView *source, dispatch_block_t build);
+// The same for a ••• style sheet shown as a submenu: the sheet also claims the
+// menu context its tap armed (saved layout, moderator follow-up), which the
+// tap disarms before the captured menu is built.
+id _Nullable ApolloNativeActionMenuCaptureMenuController(UIView *source, dispatch_block_t build);
+// The same for a sheet Apollo opens a moment after `build` returns. `done`
+// runs on the main queue, once, with the sheet or nil.
+void ApolloNativeActionMenuCaptureLateMenuController(UIView *source, dispatch_block_t build,
+                                                     void (^done)(id _Nullable controller));
 BOOL ApolloNativeActionMenuHasAction(id controller, uint16_t kind);
 void ApolloNativeActionMenuInvokeAction(id controller, uint16_t kind);
 UIMenu *_Nullable ApolloNativeActionMenuBuildCaptured(id controller);
@@ -28,11 +36,6 @@ BOOL ApolloNativeActionMenuPresentCapturedAtPoint(UIMenu *menu, UIView *source, 
 // UIContextMenuInteraction gestures already supply their own feedback.
 void ApolloNativeActionMenuPreviewFeedback(UIView *source, CGPoint point);
 void ApolloNativeActionMenuAnchorMediaConfiguration(UIContextMenuConfiguration *configuration, CGPoint point);
-// One of Apollo's option-* menu assets, trimmed of transparent margins and
-// fitted to a `side`-point box.
-UIImage *_Nullable ApolloNativeActionMenuAssetIcon(NSString *assetName, CGFloat side);
-// The same for any image, e.g. a bar button's glyph shown as a menu row.
-UIImage *_Nullable ApolloNativeActionMenuFittedIcon(UIImage *_Nullable image, CGFloat side);
 
 // Runs `action` after the tweak-owned Liquid Glass context menu that was built
 // from `actionController` has completely dismissed. Returns NO when the

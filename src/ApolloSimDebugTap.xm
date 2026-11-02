@@ -34,7 +34,6 @@
 #import "ApolloLinkPreviewFetcher.h"
 #import "ApolloProfileEditorWebViewController.h"
 #import "ApolloTranslation.h"
-#import "ApolloNavigationActions.h"
 #import "ApolloWebTextDecoding.h"
 #import "ApolloState.h"
 #import "ApolloTextureDecls.h"
@@ -1808,14 +1807,14 @@ static UIViewController *ApolloSimDebugTrailingItemsOwner(UIViewController *cont
     return controller.navigationItem.rightBarButtonItems.count ? controller : nil;
 }
 
-// "railprobe" logs every bar button view in the window (frame, labels, and
-// the identifier of the bar item it shows) and the rail page's trailing items.
+// "railprobe" logs every bar button view in the window (frame, labels and
+// identifier) and the rail page's trailing items.
 static void ApolloSimDebugProbeRailView(UIView *view) {
     if ([NSStringFromClass(view.class) isEqualToString:@"_UIButtonBarButton"]) {
         CGRect frame = [view convertRect:view.bounds toView:nil];
-        ApolloLog(@"[SimDebugTap] railprobe %@ label=%@ id=%@ item-id=%@ hidden=%d alpha=%.2f",
+        ApolloLog(@"[SimDebugTap] railprobe %@ label=%@ id=%@ hidden=%d alpha=%.2f",
                   NSStringFromCGRect(frame), view.accessibilityLabel, view.accessibilityIdentifier,
-                  ApolloNavigationActionsBarButtonIdentifier(view), view.hidden, view.alpha);
+                  view.hidden, view.alpha);
     }
     for (UIView *subview in view.subviews) ApolloSimDebugProbeRailView(subview);
 }
@@ -1832,6 +1831,10 @@ static void ApolloSimDebugPadRail(NSInteger count) {
         UIBarButtonItem *pad = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"circle"]
                                                                 style:UIBarButtonItemStylePlain target:nil action:nil];
         pad.accessibilityIdentifier = @"ApolloSimRailPad";
+        pad.title = [NSString stringWithFormat:@"Test space %ld", (long)index + 1];
+#if __IPHONE_OS_VERSION_MAX_ALLOWED >= 270000
+        if (@available(iOS 27.0, *)) pad.visibilityPriority = UIBarButtonItemVisibilityPriorityHigh + 1;
+#endif
         [items insertObject:pad atIndex:0];
     }
     [item setRightBarButtonItems:items animated:NO];
@@ -2749,10 +2752,6 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
                 }
             }
             [out writeToFile:@"/tmp/apollofix-railmethods.txt" atomically:YES encoding:NSUTF8StringEncoding error:nil];
-            return;
-        }
-        if ([contents hasPrefix:@"railreset"]) {
-            ApolloNavigationActionsDuoRailResetFolds();
             return;
         }
         if ([contents hasPrefix:@"railpad"]) {

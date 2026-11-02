@@ -11,16 +11,6 @@ UIView *ApolloNavigationActionsMenuSourceView(UIView *action);
 // YES while the trailing Duo rail publishes `button` (a control inside Apollo's
 // composite actions) as one of its generated native items.
 BOOL ApolloNavigationActionsDuoMirrorsButton(UINavigationItem *item, UIView *button);
-// YES while the Duo rail shows only More for `item` and offers Translation's
-// globe as a row in it instead of as a rail item.
-BOOL ApolloNavigationActionsDuoRailHostsGlobe(UINavigationItem *item);
-// The Duo rail may have been laid out again: check it for UIKit's overflow.
-// Coalesced, so calling it from a layout callback is safe.
-void ApolloNavigationActionsDuoRailLayoutChanged(void);
-// Puts every visible page's rail buttons back, then re-checks for overflow.
-void ApolloNavigationActionsDuoRailResetFolds(void);
-// The accessibility identifier of the bar item a bar button view shows.
-NSString *ApolloNavigationActionsBarButtonIdentifier(UIView *button);
 
 // Defers measurement, so calling from a layout callback is safe.
 void ApolloNavigationActionsRefresh(UINavigationBar *navigationBar);
