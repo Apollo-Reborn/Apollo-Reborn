@@ -1,6 +1,7 @@
 #import "ipad/ApolloPaneChrome.h"
 #import "ApolloImmersiveHeaderBackground.h"
 #import "ApolloDuoSplitView.h"
+#import "ApolloDuoRail.h"
 
 #import <CoreImage/CoreImage.h>
 #import <QuartzCore/QuartzCore.h>
@@ -16,6 +17,8 @@ static CGFloat const ApolloImmersiveBackdropBlurSigma = 28.0;
 // Height of the alpha feather at the sharp banner's bottom edge, where it
 // melts into the blurred backdrop instead of ending in a hard seam.
 static CGFloat const ApolloImmersiveSharpFeatherHeight = 44.0;
+// Soft trailing edge for a banner that stops short of the extended backdrop.
+static CGFloat const ApolloImmersiveTrailingTipWidth = 4.0;
 
 static BOOL ApolloImmersiveColorProvidesSurface(UIColor *color, UITraitCollection *traits) {
     if (!color) return NO;
@@ -336,6 +339,7 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
 @property(nonatomic, strong) ApolloTopAnchoredImageView *sharpView;
 @property(nonatomic, strong) CAGradientLayer *sharpFeatherMask;
 @property(nonatomic, strong) CAGradientLayer *chromeScrimLayer;
+@property(nonatomic, strong) CAGradientLayer *trailingTipMask;
 @property(nonatomic, strong) UIColor *pageColor;
 @property(nonatomic, strong) UIImage *sourceBanner;
 @property(nonatomic, copy) NSString *sourceBannerKey;
@@ -506,6 +510,23 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
         contentFrame.origin.x = CGRectGetMinX(column);
         contentFrame.size.width = CGRectGetWidth(column);
     }
+    // Closed Duo cover: the table runs under the trailing rail and status bar.
+    // The sharp banner stays in the safe area, centered under the icon; the
+    // blurred continuation and its fade run on to the trailing screen edge.
+    CGFloat ambientExtension = 0.0;
+    UIView *hostView = self.contentViewController.viewIfLoaded;
+    if (!self.usesProfileHero && CGRectIsNull(column) && hostView.window && ApolloDuoRailHasVisibleSideBar()) {
+        UIEdgeInsets safe = hostView.safeAreaInsets;
+        CGRect safeColumn = [self convertRect:UIEdgeInsetsInsetRect(hostView.bounds, UIEdgeInsetsMake(0, safe.left, 0, safe.right))
+                                     fromView:hostView];
+        CGFloat left = MAX(CGRectGetMinX(contentFrame), CGRectGetMinX(safeColumn));
+        CGFloat right = MIN(CGRectGetMaxX(contentFrame), CGRectGetMaxX(safeColumn));
+        if (right - left > 0.0) {
+            contentFrame.origin.x = left;
+            contentFrame.size.width = right - left;
+            ambientExtension = MAX(0.0, fullWidth - right);
+        }
+    }
     CGFloat width = contentFrame.size.width;
     CGFloat totalHeight = MAX(1.0, self.bounds.size.height);
     CGFloat regionHeight = MIN(self.regionHeight, totalHeight);
@@ -541,7 +562,7 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
 
-    self.backdropView.frame = CGRectMake(0.0, 0.0, width, extendedHeight);
+    self.backdropView.frame = CGRectMake(0.0, 0.0, width + ambientExtension, extendedHeight);
 
     // Use a shallow, width-derived hero rather than filling chrome + the
     // entire identity header. This keeps the crop independent of collapsing
@@ -576,6 +597,21 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
         self.sharpFeatherMask.locations = @[@0.0, @0.40, @0.55, @0.64, @0.72, @0.84, @0.98, @1.0];
     }
     self.sharpFeatherMask.frame = self.sharpClip.bounds;
+    if (ambientExtension > 0.0) {
+        if (!self.trailingTipMask) {
+            self.trailingTipMask = [CAGradientLayer layer];
+            self.trailingTipMask.startPoint = CGPointMake(0.0, 0.5);
+            self.trailingTipMask.endPoint = CGPointMake(1.0, 0.5);
+            self.trailingTipMask.colors = @[(id)UIColor.whiteColor.CGColor,
+                                            (id)UIColor.whiteColor.CGColor,
+                                            (id)UIColor.clearColor.CGColor];
+        }
+        self.trailingTipMask.frame = self.sharpView.bounds;
+        self.trailingTipMask.locations = @[@0.0, @(MAX(0.0, 1.0 - ApolloImmersiveTrailingTipWidth / width)), @1.0];
+        if (self.sharpView.layer.mask != self.trailingTipMask) self.sharpView.layer.mask = self.trailingTipMask;
+    } else if (self.sharpView.layer.mask) {
+        self.sharpView.layer.mask = nil;
+    }
     self.sharpView.anchorsTop = self.usesProfileHero;
 
     // The veil starts fully clear beneath the sharp banner, reaches a strong
@@ -630,12 +666,12 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
                                    (id)[pageColor colorWithAlphaComponent:self.usesProfileHero ? 0.06 : 0.38].CGColor,
                                    (id)[pageColor colorWithAlphaComponent:0.0].CGColor];
     }
-    self.veilLayer.frame = self.contentContainer.bounds;
+    self.veilLayer.frame = CGRectMake(0.0, 0.0, width + ambientExtension, totalHeight);
     self.veilLayer.colors = self.cachedVeilColors;
     self.veilLayer.locations = @[@0.0, @(locSeam), @(locWash), @(locDeep), @(locEnd), @1.0];
 
     CGFloat scrimHeight = MIN(totalHeight, self.topInset + 32.0);
-    self.chromeScrimLayer.frame = CGRectMake(0.0, 0.0, width, MAX(1.0, scrimHeight));
+    self.chromeScrimLayer.frame = CGRectMake(0.0, 0.0, width + ambientExtension, MAX(1.0, scrimHeight));
     self.chromeScrimLayer.colors = self.cachedScrimColors;
     self.chromeScrimLayer.locations = @[@0.0, @0.55, @1.0];
 
