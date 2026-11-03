@@ -1698,6 +1698,57 @@ static CGRect ApolloDuoPostsDetailPane(ApolloDuoSplitState *state) {
     return CGRectIntersection(surface.bounds, [surface convertRect:pane fromView:detail]);
 }
 
+// Text in a Texture node is drawn into its layer's contents, and redrawn in
+// the background at a new width. A column resize animates that layer's own
+// bounds and position from the old width, stretching whichever drawing is
+// showing: squashed while a column widens, enlarged while it narrows. Drop
+// those animations so each text layer takes its final layout in its row at
+// once; the rows and columns around it still animate.
+static void ApolloDuoCollectTextLayers(CALayer *layer, NSMutableArray<CALayer *> *out) {
+    if (!layer || layer.hidden) return;
+    id node = [layer respondsToSelector:@selector(asyncdisplaykit_node)]
+        ? ((id (*)(id, SEL))objc_msgSend)(layer, @selector(asyncdisplaykit_node)) : nil;
+    if ((ApolloClassASTextNode && [node isKindOfClass:ApolloClassASTextNode])
+        || (ApolloClassASTextNode2 && [node isKindOfClass:ApolloClassASTextNode2])) {
+        [out addObject:layer];
+        return;
+    }
+    for (CALayer *sublayer in layer.sublayers) ApolloDuoCollectTextLayers(sublayer, out);
+}
+
+static void ApolloDuoHoldTextLayout(NSArray<UIView *> *roots) {
+    NSMutableArray<CALayer *> *text = [NSMutableArray array];
+    for (UIView *root in roots) ApolloDuoCollectTextLayers(root.layer, text);
+    NSUInteger held = 0;
+    for (CALayer *layer in text) {
+        for (NSString *key in layer.animationKeys) {
+            CAAnimation *animation = [layer animationForKey:key];
+            NSString *path = [animation isKindOfClass:CAPropertyAnimation.class] ? ((CAPropertyAnimation *)animation).keyPath : nil;
+            if ([key isEqualToString:@"ApolloDuoPostsGeometry"] || [path hasPrefix:@"bounds"] || [path hasPrefix:@"position"]) {
+                [layer removeAnimationForKey:key];
+                held++;
+            }
+        }
+    }
+    // Texture redraws text at its new width in the background, which leaves
+    // a frame or two of the old drawing stretched to the new bounds. Draw the
+    // resized ones now instead.
+    SEL drawNow = @selector(recursivelyEnsureDisplaySynchronously:);
+    NSUInteger drawn = 0;
+    for (CALayer *layer in text) {
+        id contents = layer.contents;
+        if (!contents || CFGetTypeID((__bridge CFTypeRef)contents) != CGImageGetTypeID()) continue;
+        CGFloat width = CGRectGetWidth(layer.bounds) * layer.contentsScale;
+        if (fabs((CGFloat)CGImageGetWidth((__bridge CGImageRef)contents) - width) < 2) continue;
+        id node = ((id (*)(id, SEL))objc_msgSend)(layer, @selector(asyncdisplaykit_node));
+        if (![node respondsToSelector:drawNow]) continue;
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(node, drawNow, YES);
+        drawn++;
+    }
+    if (held || drawn) ApolloLog(@"[DuoSplit] held %lu text animations, redrew %lu of %lu text layers",
+                                 (unsigned long)held, (unsigned long)drawn, (unsigned long)text.count);
+}
+
 @interface ApolloDuoPostsGeometry : NSObject
 @property(nonatomic, weak) UIView *view;
 @property(nonatomic, weak) UIView *parent;
@@ -2015,6 +2066,27 @@ static void ApolloDuoCommentsScheduleLayoutControl(UIViewController *controller)
 // A split toggle changes only the width of an already open comments page.
 // Both native column controllers stay attached; UIKit owns their divider,
 // clipping, safe areas, and the disappearance/reappearance of the feed.
+// Moving the thread between its own column and the feed's stack rebuilds
+// both navigation bars in one pass: for a frame the title sits at the bar's
+// leading edge and the bar items swap columns. Hold a picture of the bars
+// over that handoff and fade it out once the new ones are laid out.
+static void ApolloDuoCoverBarHandoff(ApolloDuoSplitState *state, NSTimeInterval fade) {
+    UIView *surface = state.host.view;
+    UINavigationBar *bar = state.feed.navigationBar;
+    if (!surface.window || !bar.window || UIAccessibilityIsReduceMotionEnabled()) return;
+    CGFloat bottom = CGRectGetMaxY([bar convertRect:bar.bounds toView:surface]);
+    if (bottom <= 0) return;
+    CGRect band = CGRectMake(0, 0, CGRectGetWidth(surface.bounds), MIN(bottom, CGRectGetHeight(surface.bounds)));
+    UIView *cover = [surface resizableSnapshotViewFromRect:band afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero];
+    if (!cover) return;
+    cover.frame = band;
+    cover.userInteractionEnabled = NO;
+    [surface insertSubview:cover belowSubview:state.host.listDismiss];
+    [UIView animateWithDuration:fade delay:0.03 options:UIViewAnimationOptionCurveEaseOut
+                     animations:^{ cover.alpha = 0; }
+                     completion:^(__unused BOOL finished) { [cover removeFromSuperview]; }];
+}
+
 static void ApolloDuoPostsToggleSplit(ApolloDuoSplitState *state) {
     if (!state.feed || state.changing || state.postsTogglingSplit
         || state.feed.transitionCoordinator || state.secondary.transitionCoordinator) return;
@@ -2066,15 +2138,26 @@ static void ApolloDuoPostsToggleSplit(ApolloDuoSplitState *state) {
     void (^updateColumns)(void) = ^{
         ApolloDuoPostsSyncColumnsWithAnimation(state, animate);
         commitTables();
+        if (animate) ApolloDuoHoldTextLayout(@[state.feed.view, state.secondary.view]);
     };
     void (^finish)(void) = ^{
         state.postsTogglingSplit = NO;
         // Hiding the primary has completed. Rejoin the stacks at the same
         // full-width geometry so subsequent Back uses Apollo's own animator.
         if (state.feed && state.split) {
+            if (animate && !state.host.postsSplitEnabled && state.secondary.viewControllers.count > 1)
+                ApolloDuoCoverBarHandoff(state, 0.2);
             [UIView performWithoutAnimation:^{
                 ApolloDuoPostsSyncColumns(state);
                 commitTables();
+                // The rail's Back is UIKit's floating copy of one navigation
+                // bar, adopted while the thread had its own column. Once the
+                // feed takes the thread back onto its stack, re-show the
+                // feed's bar so the rail adopts it instead of the detached one.
+                if (!state.host.postsSplitEnabled && state.feed.viewControllers.count > 1 && !state.feed.navigationBarHidden) {
+                    [state.feed setNavigationBarHidden:YES animated:NO];
+                    [state.feed setNavigationBarHidden:NO animated:NO];
+                }
             }];
         }
         ApolloDuoSplitScheduleUpdate();
@@ -2242,6 +2325,7 @@ static void ApolloDuoPostsSetDetailFromDrag(ApolloDuoSplitState *state, UIViewCo
     [CATransaction begin];
     [CATransaction setCompletionBlock:^{ ApolloDuoSplitScheduleUpdate(); }];
     ApolloDuoPostsAnimateGeometry(feedGeometry, state.feed.view, surface, 0.32);
+    ApolloDuoHoldTextLayout(@[state.feed.view]);
     if (entering) {
         // Use the live navigation surface so async comment/media updates
         // remain visible throughout the first push.
