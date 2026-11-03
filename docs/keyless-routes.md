@@ -36,13 +36,19 @@ Every other combination works the same way (`old-dotjson`, `oauth-r-all+bearer`,
 
 | Entry | Routes |
 |---|---|
-| `GET /api/info`, `GET` and `POST /api/morechildren` | `www-dotjson`, `old` |
+| `GET /api/info` | `www-dotjson`, `old` |
+| `GET` and `POST /api/morechildren` | `oauth`, `www-dotjson`, `old` |
 | `GET /search`, `/subreddits/search`, `/r/*/search`, `/r/+/search` | `oauth`, `old` |
 | `GET /r/all`, `GET /r/all/*` | `oauth`, `api`, `old` |
+| `GET /hot`, `/new`, `/rising`, and the same sorts under `/r/*/` and `/r/+/` | `oauth`, `www` |
 
 Search: www blocks post search for the cookie. `oauth.reddit.com` blocks it for tokens issued to Reddit's desktop web client (`cid` `0R-WAMhuoo-MyQ`), which includes the `token_v2` cookie, but accepts tokens minted for the mobile client. Search doesn't need either: `oauth` and `old` both served it signed in to the cookie alone on 2026-10-27 (tested on one account). Of the cookie, `reddit_session` is what matters; `token_v2` isn't needed, and a stale one doesn't break the request. `/r/*/search` is a community search; `/r/+/search` is Apollo's multireddit search, which joins the subreddits with `+` (`/r/a+b+c/search`). Apollo never uses Reddit's `/user/<name>/m/<multi>/search` form.
 
 `/r/all`: www answers every path under `/r/all` with its block page, with the cookie and signed out alike (since 2026-10-27), while `/r/popular`, single subreddits (`r/allergies` too) and `+` lists still load there. Apollo's front page asks for `/r/All/best.json?api_type=json&limit=12&raw_json=1` (keys are matched lowercased, so the capital A doesn't matter). `GET /r/all` covers the bare path and `GET /r/all/*` every sort, and both cover r/all's filter forms (see Patterns). `oauth`, `api` and `old` all served r/all listings signed in to the cookie (tested on 2026-10-27 and 2026-10-28: posts the account had saved or voted on came back marked), and without the cookie none did: oauth and api refused, and old redirected to its login page. api's listings carry the same image fields as www's feeds. `api` needs the `.json` the app always sends for listings; without it, api.reddit.com redirects to www's home page.
+
+hot, new and rising: since 2026-11-03, www, old and api all answer these sorts with the block page, for the front page (`/hot`), single subreddits and `+` lists, while `best`, `top` and `controversial`, and multireddits under `/user/<name>/m/<multi>/`, still load on www. `oauth` serves them signed in to the cookie. `www` comes second so the feed recovers by itself if Reddit reopens www and closes oauth. These entries name each sort, so they beat a file entry like `/r/+/*` for `/r/a+b/hot`; to move one, name the sort (`GET /r/+/hot`).
+
+`/api/morechildren`: since 2026-11-03, `www-dotjson` and `old` answer it with the block page (with and without the slash before `.json`), while `oauth.reddit.com/api/morechildren.json` serves it, so `oauth` comes first.
 
 ## Format
 
