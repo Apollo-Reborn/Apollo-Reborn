@@ -2389,6 +2389,8 @@ static void ApolloSubredditInstallAmbient(UIViewController *viewController, UITa
     }
     ambient.contentViewController = viewController;
     ambient.frame = tableView.bounds;
+    // Its artwork column can change without a frame change (closed Duo rail).
+    [ambient setNeedsLayout];
     header.bannerImageView.alpha = ApolloSubredditFadedBannerAlpha;
     ApolloSubredditSyncAmbient(header);
     ApolloSubredditUpdateAmbientScroll(viewController, tableView);
@@ -2680,6 +2682,13 @@ static BOOL ApolloSubredditNeedsInstall(UIViewController *viewController) {
     CGRect content = ApolloSubredditHeaderContentRect(tableView, viewController, width);
     if (fabs(header.frame.origin.x - content.origin.x) > 0.5 ||
         fabs(header.frame.size.width - content.size.width) > 0.5) return YES;
+    // A settings change can lay the header out offscreen, where the closed Duo
+    // safe column isn't measurable. Relayout once it's back in the window.
+    if (header.window) {
+        CGRect banner = [header apollo_identityForWidth:CGRectGetWidth(header.bounds)].bannerFrame;
+        if (fabs(CGRectGetMinX(header.bannerImageView.frame) - CGRectGetMinX(banner)) > 0.5 ||
+            fabs(CGRectGetWidth(header.bannerImageView.frame) - CGRectGetWidth(banner)) > 0.5) return YES;
+    }
 
     ApolloImmersiveHeaderBackgroundView *ambient = objc_getAssociatedObject(viewController, kApolloSubredditAmbientViewKey);
     BOOL hasAmbient = ambient != nil;
@@ -3012,6 +3021,9 @@ static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewControlle
             tableView.tableHeaderView = wrappedHeader;
             objc_setAssociatedObject(tableView, kApolloSubredditRewrapInProgressKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
+        // Same frame can still need a new inner column (offscreen layout).
+        [header setNeedsLayout];
+        [header layoutIfNeeded];
     }
     // New gets the melt/ambient backdrop. Classic keeps the same Apollo Reborn
     // header content flat/compact, while Native mode tears the wrapper down
