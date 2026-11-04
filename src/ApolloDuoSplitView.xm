@@ -15,6 +15,7 @@
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
 #import "ApolloDuoRail.h"
+#import "ApolloNativeActionMenus.h"
 #import "ApolloDuoCompatibility.h"
 #import "ApolloDuoRailLayout.h"
 #import "ApolloDuoUIKitCompatibility.h"
@@ -1752,10 +1753,22 @@ static char kApolloDuoCommentsLayoutKey, kApolloDuoCommentsLayoutPendingKey;
 @interface ApolloDuoCommentsLayoutControl : NSObject <ApolloDuoLayoutControl>
 @property(nonatomic, weak) UIViewController *controller;
 @property(nonatomic, strong) UIBarButtonItem *item;
+@property(nonatomic, strong) UIBarButtonItem *replyItem;
 - (void)update;
 - (void)toggle;
+- (void)reply;
 @end
 static NSMapTable<UINavigationItem *, ApolloDuoCommentsLayoutControl *> *sDuoCommentsLayoutOwners;
+
+static NSString *const kApolloDuoCommentsReplyID = @"ApolloDuoCommentsReply";
+
+// The side rail has room for Reply, so it can sit there instead of only in •••.
+// It runs the ••• menu's own Reply action (kind 12), so Apollo's composer,
+// account and lock rules apply unchanged.
+static BOOL ApolloDuoCommentsShowsReply(UIViewController *controller) {
+    return sDuoRailReplyButton && ApolloDeviceIsDuo() && ApolloDuoRailHasVisibleSideBar()
+        && [controller respondsToSelector:NSSelectorFromString(@"moreOptionsBarButtonItemTappedWithSender:")];
+}
 
 static BOOL ApolloDuoCommentsShowsLayoutControl(UIViewController *controller) {
     if (!ApolloDuoSplitIsUnfolded() || ApolloDuoSplitIsUnfoldedPortrait()) return NO;
@@ -1770,8 +1783,12 @@ NSArray<UIBarButtonItem *> *ApolloDuoCommentsLayoutItems(UINavigationItem *item,
     if (!control) return items;
     NSMutableArray *result = [NSMutableArray array];
     if (ApolloDuoCommentsShowsLayoutControl(control.controller)) [result addObject:control.item];
-    for (UIBarButtonItem *candidate in items)
-        if (![candidate.accessibilityIdentifier isEqualToString:kApolloDuoCommentsLayoutID]) [result addObject:candidate];
+    if (control.replyItem && ApolloDuoCommentsShowsReply(control.controller)) [result addObject:control.replyItem];
+    for (UIBarButtonItem *candidate in items) {
+        NSString *identifier = candidate.accessibilityIdentifier;
+        if (![identifier isEqualToString:kApolloDuoCommentsLayoutID] && ![identifier isEqualToString:kApolloDuoCommentsReplyID])
+            [result addObject:candidate];
+    }
     return result;
 }
 
@@ -1780,6 +1797,12 @@ NSArray<UIBarButtonItem *> *ApolloDuoCommentsLayoutItems(UINavigationItem *item,
 - (void)toggle {
     if (ApolloDuoCommentsShowsLayoutControl(self.controller))
         ApolloDuoToggleVisibleFeedLayout(self.controller, self.item.enabled);
+}
+- (void)reply {
+    UIViewController *controller = self.controller;
+    if (!controller.viewIfLoaded.window) return;
+    BOOL opened = ApolloNativeActionMenuInvokePostsAction(controller, controller.view, 12);
+    ApolloLog(@"[DuoSplit] rail Reply opened=%d", opened);
 }
 - (void)update {
     [self updateFeedLayoutButton];
@@ -1792,7 +1815,7 @@ NSArray<UIBarButtonItem *> *ApolloDuoCommentsLayoutItems(UINavigationItem *item,
 
 static void ApolloDuoCommentsUpdateLayoutControl(UIViewController *controller) {
     ApolloDuoCommentsLayoutControl *control = objc_getAssociatedObject(controller, &kApolloDuoCommentsLayoutKey);
-    if (!control && !ApolloDuoCommentsShowsLayoutControl(controller)) return;
+    if (!control && !ApolloDuoCommentsShowsLayoutControl(controller) && !ApolloDuoCommentsShowsReply(controller)) return;
     if (!control) {
         control = [ApolloDuoCommentsLayoutControl new];
         control.controller = controller;
@@ -1809,6 +1832,16 @@ static void ApolloDuoCommentsUpdateLayoutControl(UIViewController *controller) {
             control.item.sharesBackground = NO;
         }
         if (@available(iOS 27.1, *)) control.item.axisBehavior = UIBarButtonItemAxisBehaviorHorizontalOnly;
+        control.replyItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"arrowshape.turn.up.left"]
+            style:UIBarButtonItemStylePlain target:control action:@selector(reply)];
+        control.replyItem.title = @"Reply";
+        control.replyItem.accessibilityLabel = @"Reply";
+        control.replyItem.accessibilityIdentifier = kApolloDuoCommentsReplyID;
+        control.replyItem.tintColor = ApolloNavigationChromeColor();
+        if (@available(iOS 26.0, *)) {
+            control.replyItem.hidesSharedBackground = NO;
+            control.replyItem.sharesBackground = NO;
+        }
         objc_setAssociatedObject(controller, &kApolloDuoCommentsLayoutKey, control, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         if (!sDuoCommentsLayoutOwners) sDuoCommentsLayoutOwners = [NSMapTable weakToWeakObjectsMapTable];
         [sDuoCommentsLayoutOwners setObject:control forKey:controller.navigationItem];
@@ -1820,7 +1853,7 @@ static void ApolloDuoCommentsUpdateLayoutControl(UIViewController *controller) {
 static void ApolloDuoCommentsScheduleLayoutControl(UIViewController *controller) {
     ApolloDuoCommentsLayoutControl *control = objc_getAssociatedObject(controller, &kApolloDuoCommentsLayoutKey);
     if (objc_getAssociatedObject(controller, &kApolloDuoCommentsLayoutPendingKey)
-        || (!control && !ApolloDuoCommentsShowsLayoutControl(controller))) return;
+        || (!control && !ApolloDuoCommentsShowsLayoutControl(controller) && !ApolloDuoCommentsShowsReply(controller))) return;
     objc_setAssociatedObject(controller, &kApolloDuoCommentsLayoutPendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     __weak UIViewController *weakController = controller;
     dispatch_async(dispatch_get_main_queue(), ^{

@@ -2506,13 +2506,26 @@ typedef NS_ENUM(NSInteger, Tag) {
                 });
         }];
 
+    ApolloSettingsRow *duoRailReply =
+        [ApolloSettingsRow switchRowWithID:@"interface.duoRailReply"
+                                     title:@"Reply Button in Side Rail"
+                                      isOn:^BOOL { return sDuoRailReplyButton; }
+                                  onToggle:^(UISwitch *sender) {
+            sDuoRailReplyButton = sender.isOn;
+            [NSUserDefaults.standardUserDefaults setBool:sender.isOn forKey:UDKeyDuoRailReplyButton];
+        }];
+    duoRailReply.visible = ^BOOL { return ApolloDuoUsesAdaptiveBars(); };
+
     NSString *footer = @"Return Button restores your scroll position after a status bar tap.";
     if (IsLiquidGlass()) {
         footer = [footer stringByAppendingString:@" Group navigation buttons under •••. Tap to expand."];
     }
+    if (ApolloDuoUsesAdaptiveBars()) {
+        footer = [footer stringByAppendingString:@"\n\nReply Button in Side Rail: on iPhone Duo, threads show Reply beside the other actions in the side rail instead of only in the ••• menu."];
+    }
     return [ApolloSettingsSection sectionWithTitle:@"Display & Navigation"
                                             footer:footer
-                                              rows:@[ scrollReturnButton, trueBlackKeyboard, collapseActions, centerBetween, iPadPaneLayout, scrollEdgeEffect ]];
+                                              rows:@[ scrollReturnButton, trueBlackKeyboard, collapseActions, centerBetween, iPadPaneLayout, scrollEdgeEffect, duoRailReply ]];
 }
 
 // Display order differs from stored values; Blur is optional, while Hidden
