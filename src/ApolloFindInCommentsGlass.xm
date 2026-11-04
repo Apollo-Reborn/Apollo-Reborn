@@ -48,7 +48,11 @@
 //   - Apollo's own session side effects that still make sense: the floating
 //     comment-jump button hides while a search is live, the keyboard dismisses
 //     on drag (Apollo resigned its field once a drag reached 200pt/s), the
-//     query survives a push and comes back with the bar text + navigator.
+//     query survives a push and comes back with the bar text + navigator;
+//   - Apollo's own ways into a search open the native bar: the hardware-
+//     keyboard shortcut, and the ••• menu's Find in Comments row. The row also
+//     runs Apollo's keyboard-docked presentation, which is kept out (see
+//     "Apollo's own way in").
 //
 // Ending a search (the native round-glass cancel, or the field's clear button
 // on a restored query) drives an empty query — the rebuild's own "< 2
@@ -310,6 +314,7 @@ static CGFloat FGCountReservedWidth(UIView *field) {
 @property (nonatomic, assign) BOOL transitioning;   // between viewWillDisappear and viewDidAppear
 @property (nonatomic, strong) NSNumber *savedKeyboardDismissMode;
 @property (nonatomic, strong) NSNumber *savedJumpButtonAlpha;
+- (void)beginSearch;
 @end
 
 // The bridge whose Apollo call is running: the node setter hook hands the
@@ -330,6 +335,14 @@ static ApolloFindInCommentsGlassBridge *FGBridge(UIViewController *vc, BOOL crea
 static ApolloFindInCommentsGlassBridge *FGBridgeOwningNavItem(UINavigationItem *navItem) {
     ApolloFindGlassWeakBox *box = objc_getAssociatedObject(navItem, kFGNavItemOwnerKey);
     return box.object;
+}
+
+void ApolloFindInCommentsTrackSelection(UIViewController *vc, dispatch_block_t selection) {
+    [FGBridge(vc, YES) runApolloSelection:selection];
+}
+
+void ApolloFindInCommentsRestoreHighlights(UIViewController *vc) {
+    [FGBridge(vc, NO) restoreHighlights];
 }
 
 id ApolloFindInCommentsGlassBridgeForController(UIViewController *vc) {
@@ -372,7 +385,7 @@ CGRect ApolloFindInCommentsGlassTrailingFrame(UINavigationItem *navItem, UIView 
 
 static UIScrollView *FGTableForVC(UIViewController *vc) {
     id tableNode = ApolloObjectIvar(vc, "tableNode");
-    UIView *tv = [tableNode respondsToSelector:@selector(view)] ? [tableNode view] : nil;
+    UIView *tv = ApolloNodeView(tableNode);
     return [tv isKindOfClass:[UIScrollView class]] ? (UIScrollView *)tv : nil;
 }
 
@@ -622,6 +635,17 @@ static NSArray<UIView *> *FGCustomViews(NSArray<UIBarButtonItem *> *items) {
     ApolloLog(@"[FindGlass] search ended (hadQuery=%d)", (int)hadQuery);
 }
 
+// Open the native search and put the cursor in it, as a tap on the bar does:
+// Apollo's own ways into Find in Comments (the menu row, Cmd-F) land here.
+// Activation shows the bar wherever the thread is scrolled; the delegate's
+// begin-editing installs the navigator.
+- (void)beginSearch {
+    UISearchController *sc = self.commentsVC.navigationItem.searchController;
+    if (!sc) return;
+    if (!sc.active) sc.active = YES;
+    [sc.searchBar becomeFirstResponder];
+}
+
 - (void)previousTapped:(id)sender {
     UIViewController *vc = self.commentsVC;
     if (!vc) return;
@@ -792,6 +816,80 @@ void ApolloFindInCommentsGlassViewWillDisappear(UIViewController *vc) {
     bridge.transitioning = YES;
 }
 
+// MARK: - Apollo's own way in (the Find in Comments row)
+//
+// The ••• menu's Find in Comments row (Action kind 57, built in sub_100727984)
+// runs a single closure, sub_100716960 in Apollo 1.15.11: focus the search
+// field, run the keyboard-docked presentation (sub_1002bea0c), hide the
+// comment-jump button. The field refuses focus while the native bar is
+// attached (ApolloSearchNativeBar.xm), so the row did nothing visible (#1444),
+// yet the presentation still ran and left the thread half in Apollo's search
+// mode:
+//   - isSearching set, which switches Apollo's layout to its search-active
+//     shape: scrolling back to the top then parks the native bar part way
+//     collapsed (37 of 54pt, an empty capsule) until it is tapped;
+//   - the list's refresh control detached into priorRefreshControl, for a
+//     dismiss that never comes;
+//   - the jump button hidden for good, the hidden toolbar re-framed.
+//
+// The closure's first step is the field's focus request, so the native bar
+// opens from there, as a tap on it would. The presentation runs next. Its
+// guard reads five toolbar ivars, then asks the controller for its
+// navigationController before it writes anything; answering exactly that
+// message with nil returns it untouched. The answer is armed only when the
+// rest of that guard holds, so the next navigationController message to this
+// controller IS the guard's: nothing between the field hook's return and it
+// sends one (the closure releases the field and reloads its weak self). An
+// unused answer is dropped on the next main-queue turn.
+
+// The controller whose next navigationController message is the docked
+// presentation's guard. Compared, never messaged.
+static void *sFGSkipDockedPresentationFor = NULL;
+
+// sub_1002bea0c's guard, in its order.
+static BOOL FGDockedPresentationWouldRun(UIViewController *vc) {
+    return ApolloObjectIvar(vc, "upperToolbar") && ApolloObjectIvar(vc, "searchTextField") &&
+           ApolloObjectIvar(vc, "dismissSearchBarButton") && ApolloObjectIvar(vc, "nextResultButton") &&
+           ApolloObjectIvar(vc, "previousResultButton") && vc.navigationController.navigationBar != nil;
+}
+
+void ApolloFindInCommentsGlassApolloFieldFocusRequested(UIViewController *vc) {
+    ApolloFindInCommentsGlassBridge *bridge = FGBridge(vc, NO);
+    if (!bridge || !vc.navigationItem.searchController) return;
+    // Apollo re-focusing a search of its own (its return-to-screen restore)
+    // presents nothing after the focus; it only runs while isSearching is set,
+    // which nothing on this screen sets once the row is handled here.
+    if (ApolloReadBoolIvar(vc, "isSearching", NO)) return;
+    UIView *jump = FGJumpButton(vc);
+    CGFloat jumpAlpha = jump.alpha;
+    [bridge beginSearch];
+    BOOL skip = FGDockedPresentationWouldRun(vc);
+    ApolloLog(@"[FindGlass] Find in Comments row: opened the native bar (editing=%d, docked presentation %@)",
+              (int)bridge.navigatorInstalled, skip ? @"skipped" : @"not running");
+    // The row hides the jump button next. A search that started hides and
+    // restores it itself (begin-editing above saved its alpha first); if the
+    // bar could not take focus, nothing else would bring the button back.
+    void *armed = (__bridge void *)vc;
+    __weak UIView *weakJump = jump;
+    __weak ApolloFindInCommentsGlassBridge *weakBridge = bridge;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (sFGSkipDockedPresentationFor == armed) {
+            // Tripwire: the presentation never asked (Apollo's closure changed?).
+            sFGSkipDockedPresentationFor = NULL;
+            ApolloLog(@"[FindGlass] docked presentation never ran its guard; dropped the skip");
+        }
+        ApolloFindInCommentsGlassBridge *strongBridge = weakBridge;
+        UIView *button = weakJump;
+        if (button && strongBridge && !strongBridge.navigatorInstalled &&
+            !strongBridge.savedJumpButtonAlpha && button.alpha < 0.01) {
+            button.alpha = jumpAlpha;
+        }
+    });
+    // Last: from here on, nothing may message the controller before the
+    // presentation's guard does.
+    if (skip) sFGSkipDockedPresentationFor = armed;
+}
+
 // MARK: - Hooks
 
 // Apollo rebuilds its trailing items on various events (the moderator button
@@ -820,19 +918,30 @@ void ApolloFindInCommentsGlassViewWillDisappear(UIViewController *vc) {
 
 %end
 
+%hook _TtC6Apollo22CommentsViewController
+
 // The hardware-keyboard shortcut (Cmd-F) focuses Apollo's field directly and
 // runs its dock-to-keyboard presentation without going through the delegate.
 // With the native bar attached, route it to the palette instead.
-%hook _TtC6Apollo22CommentsViewController
-
 - (void)searchCommentsKeyCommandSelected {
-    UISearchController *sc = self.navigationItem.searchController;
-    if (sc && FGBridge(self, NO)) {
-        if (!sc.active) sc.active = YES;
-        [sc.searchBar becomeFirstResponder];
+    ApolloFindInCommentsGlassBridge *bridge = FGBridge(self, NO);
+    if (bridge && self.navigationItem.searchController) {
+        [bridge beginSearch];
         return;
     }
     %orig;
+}
+
+// The docked presentation's guard (see "Apollo's own way in"): one nil answer,
+// armed by the field hook for exactly this message.
+- (UINavigationController *)navigationController {
+    if (sFGSkipDockedPresentationFor && sFGSkipDockedPresentationFor == (__bridge void *)self &&
+        NSThread.isMainThread) {
+        sFGSkipDockedPresentationFor = NULL;
+        ApolloLog(@"[FindGlass] kept Apollo's keyboard-docked find bar out");
+        return nil;
+    }
+    return %orig;
 }
 
 %end

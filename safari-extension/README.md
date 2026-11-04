@@ -23,13 +23,19 @@ avoids races with Link Companion while retaining a deterministic recovery path.
 - The anchor targets
   `https://open.apolloreborn.app/open?url=<encoded-reddit-url>`, retaining a
   real user gesture for the Universal Link.
+- If the page carries the Worker's one-shot fallback marker, that Universal
+  Link already came back to Safari (Link Companion is not installed, or iOS is
+  set to open `open.apolloreborn.app` in Safari). Offering it again would only
+  reload the page, so for the rest of that page the anchor targets
+  `apollo://reddit.com/...` instead, the same direct route Legacy uses, and iOS
+  asks before switching to Apollo.
 - Updates the anchor when Reddit navigates as a single-page application.
 - Never calls `window.stop()`, `location.replace()`/`assign()`, or synthetic
   click APIs; never rewrites page links; and performs no network requests.
 - Requests neither All Websites access nor WebExtension storage permission.
 - Rejects Reddit roots, host-suffix attacks, credentialed/custom-port URLs,
-  media CDN hosts, malformed `redd.it` paths, and the Worker's one-shot
-  fallback marker.
+  media CDN hosts, and malformed `redd.it` paths, including after the
+  fallback marker is stripped.
 
 The popup has no toggle. It only explains that Link Companion owns automatic
 opening and this extension is the manual recovery path.
@@ -73,4 +79,6 @@ node --test safari-extension/link-utils.test.js safari-extension/content.test.js
 The test suite executes the content script in a stub document and verifies that
 the manual extension never navigates, the legacy extension does navigate when
 enabled through the direct Apollo scheme, both handle the Worker fallback
-marker, and both manifests remain Reddit-only.
+marker (the manual button switches to the direct Apollo scheme for the rest of
+that page instead of offering the bounced link again), and both manifests
+remain Reddit-only.

@@ -529,7 +529,9 @@ static ApolloActionMenuSlotState *ApolloActionMenuSlotsForController(id controll
     state.context = context;
     objc_setAssociatedObject(controller, kApolloActionMenuSlotStateKey, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (matched.count > 0) {
-        ApolloLog(@"[ActionMenu] %lu spec(s) matched '%@': %@", (unsigned long)matched.count, menuTitle,
+        // No menuTitle: like the catalogue line below, a sheet title can carry
+        // a username, subreddit, post title or link.
+        ApolloLog(@"[ActionMenu] %lu spec(s) matched (context %@): %@", (unsigned long)matched.count, context ?: @"(none)",
                   [matched valueForKey:@"identifier"]);
     }
     {
@@ -689,23 +691,20 @@ static UITableViewCell *ApolloActionMenuCaptureDonorSnapshot(UITableViewCell *re
     return snapshot;
 }
 
-// Style captured from the donor (Apollo's own row-0 cell — custom-drawn icon +
-// accent-tinted label at its own insets, so a stock UITableViewCell.textLabel
-// would land in the wrong place with the wrong color) and applied to `cell`.
+// Capture typography and geometry from Apollo's row 0. Its color belongs to
+// that action: a leading Moderator row is green, and must not turn unrelated
+// injected actions green as well.
 static void ApolloActionMenuConfigureRowCell(ApolloActionMenuRowCell *cell, NSString *title,
-                                             UIImage *image, UITableViewCell *donor) {
-    UIColor *titleColor = nil;
+                                             UIImage *image, UITableViewCell *donor, ApolloActionMenuSpec *spec) {
     UIFont *titleFont = nil;
     NSTextAlignment alignment = NSTextAlignmentLeft;
     CGRect titleFrame = CGRectZero;
     CGRect iconFrame = CGRectZero;
-    UIColor *iconTint = nil;
 
     if ([donor isKindOfClass:[UITableViewCell class]]) {
         [donor layoutIfNeeded];
         UILabel *label = (UILabel *)ApolloActionMenuFirstSubviewOfClass(donor, [UILabel class], YES);
         if (label) {
-            titleColor = label.textColor;
             titleFont = label.font;
             alignment = label.textAlignment;
             titleFrame = [label convertRect:label.bounds toView:donor];
@@ -713,20 +712,19 @@ static void ApolloActionMenuConfigureRowCell(ApolloActionMenuRowCell *cell, NSSt
         UIImageView *icon = (UIImageView *)ApolloActionMenuFirstSubviewOfClass(donor, [UIImageView class], NO);
         if (icon && icon.bounds.size.width > 1.0) {
             iconFrame = [icon convertRect:icon.bounds toView:donor];
-            iconTint = icon.tintColor;
         }
     }
 
-    // The accent is the right last resort: Apollo tints these rows with the
-    // theme accent, so it matches even when the donor capture came up empty.
-    UIColor *tint = titleColor ?: ApolloThemeAccentColor() ?: UIColor.labelColor;
+    UIColor *tint = spec.legacyDestructive ? UIColor.systemRedColor
+        : spec.legacyModerator ? ApolloModeratorColor()
+        : (ApolloThemeAccentColor() ?: UIColor.labelColor);
 
     cell.apolloTitleLabel.text = title;
     cell.apolloTitleLabel.textColor = tint;
     cell.apolloTitleLabel.font = titleFont ?: [UIFont systemFontOfSize:17.0];
     cell.apolloTitleLabel.textAlignment = alignment;
     cell.apolloIconView.image = image;
-    cell.apolloIconView.tintColor = iconTint ?: tint;
+    cell.apolloIconView.tintColor = tint;
     cell.apolloTitleFrame = titleFrame;
     cell.apolloIconFrame = iconFrame;
     cell.accessibilityLabel = title;
@@ -1186,7 +1184,7 @@ static void ApolloActionMenuInstallWillSelect(void) {
 
     ApolloActionMenuRowCell *cell = [[ApolloActionMenuRowCell alloc] initWithStyle:UITableViewCellStyleDefault
                                                                     reuseIdentifier:spec.identifier];
-    ApolloActionMenuConfigureRowCell(cell, title, image, donor);
+    ApolloActionMenuConfigureRowCell(cell, title, image, donor, spec);
     return cell;
 }
 

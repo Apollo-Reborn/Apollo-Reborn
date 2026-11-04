@@ -143,6 +143,8 @@ NSString *ApolloBarkNotificationIconURLString(void) {
 }
 
 BOOL ApolloBarkNoteSelectedIconName(NSString *name) {
+    // The refresh registration is the same icon under a second name.
+    name = ApolloLGCanonicalAlternateIconName(name);
     // Static Liquid Glass appearance choices are separate alternate-icon
     // assets, but Bark hosts one notification PNG per underlying design.
     // Normalize those internal asset suffixes before persisting the URL key.

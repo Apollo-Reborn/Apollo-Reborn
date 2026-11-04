@@ -3,6 +3,20 @@
 #import <os/log.h>
 #import <Security/SecBase.h>
 #import <objc/message.h>
+#import "ApolloLogRedaction.h"
+
+/// The backing `UIView` of an ASDisplayNode-like object, or nil if it has none.
+///
+/// Texture's node classes have no headers here, so call sites used to message an
+/// `id` directly. That does not compile for Mac Catalyst: UIKit's umbrella there
+/// reaches AppKit (via NSToolbar+UIKitAdditions.h), so a bare `-view` on `id`
+/// resolves to NSViewController's declaration and yields `NSView *`, which is a
+/// hard error under ARC. Naming the signature at the call site keeps one
+/// definition of "ask a node for its view" for every platform.
+static inline UIView *ApolloNodeView(id node) {
+    if (![node respondsToSelector:@selector(view)]) return nil;
+    return ((UIView *(*)(id, SEL))objc_msgSend)(node, @selector(view));
+}
 
 @class CASpringAnimation;
 
@@ -26,8 +40,9 @@
 //
 // The in-memory levels have no wrapper: call os_log_info / os_log_debug
 // directly with ApolloFixLog() and a C-literal format that starts with
-// "[ApolloFix] [Tag] ". They never reach exports and belong to chatty call
-// sites and hot paths (per cell, per layout pass, per scroll tick, per touch).
+// "[ApolloFix] [Tag] ". The exporter drops them (it keeps Notice and up), and
+// they belong to chatty call sites and hot paths (per cell, per layout pass,
+// per scroll tick, per touch).
 // Debug is off unless something asks for it (log stream --level debug, log
 // config, a profile), and Apple's macros check the level before touching the
 // arguments, so a disabled debug line costs one os_log_type_enabled call and
@@ -37,6 +52,13 @@
 // os_log_error directly too. In every direct call each dynamic string or
 // object needs %{public}@ / %{public}s, or it is <private> in exports;
 // integers, floats, bools and %p are public by default.
+//
+// Exports are shared publicly (bug reports become GitHub issues). The exporter
+// masks URLs, u/ names, the signed-in accounts and token-shaped values
+// (ApolloLogRedaction.h), but it cannot recognise free text. Never log a
+// secret, message/comment/post text, a title, a search query, a prompt or a
+// handle: log its length, a count, a bool, the host, or error domain + code
+// (not `%@` of an NSError, whose userInfo carries the failing URL).
 #define ApolloLog(fmt, ...) ApolloLogEmit(OS_LOG_TYPE_DEFAULT, @"[ApolloFix] " fmt, ##__VA_ARGS__)
 #define ApolloLogError(fmt, ...) ApolloLogEmit(OS_LOG_TYPE_ERROR, @"[ApolloFix] " fmt, ##__VA_ARGS__)
 #define ApolloLogFault(fmt, ...) ApolloLogEmit(OS_LOG_TYPE_FAULT, @"[ApolloFix] " fmt, ##__VA_ARGS__)
@@ -97,6 +119,10 @@ NSURLSessionDataTask *ApolloStartBoundedDataRequest(
 BOOL IsLiquidGlass(void);
 // Build/runtime capability, independent of the selected appearance.
 BOOL ApolloLiquidGlassCanToggle(void);
+// Hardware capability, decided once before any %ctor: YES only on a device
+// with more than one built-in logical display (iPhone Duo, iOS 27+). Duo-only
+// hook groups install only when this is YES, so regular phones never run them.
+BOOL ApolloDeviceIsDuo(void);
 
 NSURL *ApolloURLByConvertingResolvedURLToApolloScheme(NSURL *url);
 BOOL ApolloRouteResolvedURLViaApolloScheme(NSURL *resolvedURL);
@@ -184,6 +210,7 @@ void ApolloPresentWebURLFromViewController(UIViewController *presenter, NSURL *u
 // subreddit/user views). Returns NO if the handler is unavailable — fall back to
 // ApolloPresentWebURLFromViewController.
 BOOL ApolloRouteURLThroughApp(NSURL *url);
+BOOL ApolloRouteURLThroughAppInScene(NSURL *url, UIWindowScene *scene);
 
 // Returns all UIWindows across every connected UIWindowScene.
 // Use instead of the deprecated UIApplication.windows property.
@@ -217,11 +244,66 @@ void ApolloNavigationTitleGlassSetContentAlpha(UIView *contentView, CGFloat alph
 void ApolloNavigationTitleGlassRefreshNavigationBar(UINavigationBar *bar);
 // YES through interactive push/pop setup and UIKit's completion cleanup (Liquid Glass only).
 BOOL ApolloNavTransitionInFlight(void);
+// Finish a running, noninteractive Apollo pop so another Posts tap can act now.
+// Never takes control of a finger-driven transition or a push.
+BOOL ApolloFinishNavigationPopForPostsTap(UINavigationController *navigationController);
 
 // Apollo's main ApolloTabBarController, found via the scene/app delegate's
 // tabBarController ivar or by walking window root VCs. Returns nil while the
 // UI is still coming up (e.g. cold launch from a URL) — callers should retry.
 UIViewController *ApolloMainTabBarController(void);
+
+// Scene-scoped form for actions that originate from a UIScene callback or a
+// view already attached to a window. Passing nil uses the same deterministic
+// foreground/key-scene selection as ApolloMainTabBarController().
+UIViewController *ApolloMainTabBarControllerForScene(UIWindowScene *scene);
+
+// The navigation controller holding a tab's root stack.
+//
+// In the stock layout this is the identity function — a UITabBarController's
+// child IS the navigation controller. With the experimental iPad pane layout
+// active (src/ipad/), that child is a UISplitViewController instead, and this
+// unwraps it to the primary column's navigation controller.
+//
+// Use this anywhere you would have written `tabBarController.viewControllers[i]`
+// or `tabBarController.selectedViewController` and then cast to
+// UINavigationController. Returns nil when there is no navigation controller to
+// find. Safe on iPhone, where it can only ever take the identity path.
+UINavigationController *ApolloNavigationControllerForTabChild(UIViewController *child);
+
+// Every navigation controller inside a tab child, primary column first: one
+// element in the stock layout, up to two with the pane layout. For callers that
+// WALK stacks looking for a particular controller, rather than picking one to
+// push onto — those would otherwise miss whatever sits in the detail column.
+NSArray<UINavigationController *> *ApolloAllNavigationControllersForTabChild(UIViewController *child);
+
+// The column a "what is the user looking at" walk should descend into.
+//
+// Every recursive visible-controller finder in the tweak knows how to unwrap a
+// navigation controller and a tab bar controller; without this, a split view
+// controller falls through and the walk stops on the container itself, which is
+// never a content screen. Returns the detail column when it holds real content,
+// otherwise the primary column.
+//
+// ApolloCommon deliberately does not import src/ipad/: the pane controller
+// answers `apollo_preferredContentColumnController`, and this falls back to a
+// positional lookup for any other split view controller.
+UIViewController *ApolloContentColumnForSplitViewController(UISplitViewController *split);
+
+// YES when `ancestor` is `descendant`, or contains it anywhere in its view
+// controller containment tree.
+BOOL ApolloViewControllerContains(UIViewController *ancestor, UIViewController *descendant);
+
+// Selects the tab that contains `descendant`, and returns whether one was found.
+//
+// Use instead of assigning `tabBarController.selectedViewController` directly
+// whenever the controller you have is a navigation controller you found inside
+// a tab. In the stock layout the tab's child IS that navigation controller, so
+// the two are equivalent; under the iPad pane layout the child is a split view
+// controller and the direct assignment silently does nothing, because the
+// navigation controller is no longer in `viewControllers`.
+BOOL ApolloSelectTabContainingViewController(UITabBarController *tabBarController,
+                                             UIViewController *descendant);
 
 // Returns YES for Apple's out-of-process share/compose controllers that the
 // tweak must never traverse or mutate. Their class names end in

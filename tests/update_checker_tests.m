@@ -250,6 +250,8 @@ static NSString *const UDKeyLastSeenWhatsNewVersion = @"LastSeenWhatsNewVersion"
 #define dispatch_async FixtureDispatchAsync
 #define dispatch_time FixtureDispatchTime
 #define dispatch_after FixtureDispatchAfter
+static BOOL sSetupBlocksLaunchPrompts;
+static BOOL ApolloSetupAssistantBlocksLaunchPrompts(void) { return sSetupBlocksLaunchPrompts; }
 // INSERT_PRODUCTION_CHECKER
 #undef NSURLSession
 #undef NSTimer
@@ -383,6 +385,19 @@ static void TestDeferredPrompt(void) {
     ApolloUpdateCheckIfNeeded();
     Advance(30);
     CHECK(sSheets.count == 1, @"same version prompts at most once per launch");
+}
+
+static void TestSetupDeferredPrompt(void) {
+    sSetupBlocksLaunchPrompts = YES;
+    ApolloUpdateCheckIfNeeded();
+    Complete(@"3.9.1");
+    Advance(30);
+    CHECK(sSheets.count == 0, @"automatic update waits while setup owns launch prompts");
+    sSetupBlocksLaunchPrompts = NO;
+    ApolloUpdateCheckIfNeeded();
+    Advance(0);
+    CHECK(sRequests.count == 1, @"finishing setup reuses the fetched update");
+    CHECK(sSheets.count == 1, @"automatic update is available after setup releases launch prompts");
 }
 
 static void TestInactive(void) {
@@ -535,6 +550,7 @@ int main(int argc, const char *argv[]) {
             @"cadence": ^{ TestCadence(); }, @"active-timer": ^{ TestActiveTimer(); },
             @"failure-backoff": ^{ TestFailureBackoff(); }, @"manual-share": ^{ TestManualSharing(); },
             @"manual-joins-auto": ^{ TestManualJoinsAutomatic(); }, @"manual-inactive": ^{ TestManualInactive(); },
+            @"setup-deferred": ^{ TestSetupDeferredPrompt(); },
             @"prompt-deferred": ^{ TestDeferredPrompt(); }, @"inactive": ^{ TestInactive(); },
             @"opt-out": ^{ TestOptOut(); }, @"skip": ^{ TestSkip(); }, @"cached-relaunch": ^{ TestCachedRelaunch(); },
             @"later": ^{ TestLater(); }, @"later-relaunch": ^{ TestLaterRelaunch(); }, @"later-newer": ^{ TestLaterNewer(); },

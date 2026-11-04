@@ -59,6 +59,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloDuoSplitView.h"
 #import "ApolloSearchLandingViewController.h"
 #import "ApolloSearchRecents.h"
 #import "ApolloSearchLandingPreferences.h"
@@ -439,7 +440,8 @@ static void ApolloSearchTabSetLandingVisible(UIViewController *vc, BOOL show) {
 
 static void ApolloSearchTabOpenSubreddit(UIViewController *vc, NSString *name) {
     UITableView *table = ApolloSearchTabTableView(vc);
-    if (!vc.viewIfLoaded.window || !name.length || !ApolloSearchTabIsDefaultState(vc) ||
+    if (ApolloDuoSplitIsResizing() ||
+        !vc.viewIfLoaded.window || !name.length || !ApolloSearchTabIsDefaultState(vc) ||
         vc.navigationController.transitionCoordinator || vc.presentedViewController) return;
     [ApolloSearchTabSearchBar(vc) resignFirstResponder];
     NSArray<NSString *> *trending = ApolloSearchTabCopyTrending(vc);
@@ -508,7 +510,8 @@ static void ApolloSearchTabUpdateLanding(UIViewController *vc) {
         landing.selectRandom = ^(BOOL nsfw) {
             UIViewController *controller = weakVC;
             UITableView *table = ApolloSearchTabTableView(controller);
-            if (!controller.viewIfLoaded.window || !ApolloSearchTabIsDefaultState(controller) ||
+            if (ApolloDuoSplitIsResizing() ||
+                !controller.viewIfLoaded.window || !ApolloSearchTabIsDefaultState(controller) ||
                 controller.navigationController.transitionCoordinator) return;
             [ApolloSearchTabSearchBar(controller) resignFirstResponder];
             [table.delegate tableView:table didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:nsfw ? 1 : 0 inSection:3]];

@@ -140,7 +140,8 @@ static void ApolloHideModAddHidden(NSString *name) {
     NSMutableArray *list = [ApolloHideModHiddenList() mutableCopy];
     [list addObject:name];
     ApolloHideModSetHiddenList(list);
-    ApolloLog(@"[HideModSubs] hid subreddit %@", name);
+    // No names: the set of subreddits someone moderates identifies them.
+        ApolloLog(@"[HideModSubs] hid a moderated subreddit");
 }
 
 static void ApolloHideModRemoveHidden(NSString *name) {
@@ -152,7 +153,7 @@ static void ApolloHideModRemoveHidden(NSString *name) {
     }
     if (list.count != before) {
         ApolloHideModSetHiddenList(list);
-        ApolloLog(@"[HideModSubs] unhid subreddit %@", name);
+        ApolloLog(@"[HideModSubs] unhid a moderated subreddit");
     }
 }
 
@@ -546,7 +547,7 @@ static void ApolloHideModDecorateCell(UIViewController *viewController, UITableV
         ApolloHideModAnimateControl(button, ApolloHideModTableView(viewController), YES);
     }
 
-    ApolloLog(@"[HideModSubs] decorated moderator row '%@' hidden=%d", name, (int)hidden);
+    ApolloLog(@"[HideModSubs] decorated moderator row hidden=%d", (int)hidden);
 }
 
 // MARK: - Subreddits list hooks
@@ -746,7 +747,7 @@ static void ApolloHideModDecorateCell(UIViewController *viewController, UITableV
     if (view) {
         ApolloHideModDecorateCell((UIViewController *)self, (UITableViewCell *)view, YES, YES, name, NO);
     }
-    ApolloLog(@"[HideModSubs] toggled '%@' -> hidden=%d", name, (int)!wasHidden);
+    ApolloLog(@"[HideModSubs] toggled a moderated subreddit -> hidden=%d", (int)!wasHidden);
 }
 
 %end

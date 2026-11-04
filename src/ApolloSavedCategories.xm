@@ -16,11 +16,15 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloGallerySource.h"
+#import "ApolloGalleryViewController.h"
 #import "ApolloSavedItemsDeduplicator.h"
 #import "ApolloSwiftRuntime.h"
+#import "ApolloThemeRuntime.h"
 
 @class RDKPagination;
 typedef void (^ApolloSavedItemsCompletion)(NSArray *items, RDKPagination *pagination, NSError *error);
+static NSString *const ApolloSavedListingDidLoadNotification = @"ApolloSavedListingDidLoadNotification";
 
 // MARK: - Saved-list refresh de-duplication
 
@@ -46,6 +50,14 @@ typedef void (^ApolloSavedItemsCompletion)(NSArray *items, RDKPagination *pagina
                       (unsigned long)(items.count - deduplicated.count));
         }
         completion(deduplicated, responsePagination, error);
+        if (!error) {
+            // Let the native completion publish its array/cursor first. Warm
+            // Gallery's first screen while the user is still browsing Saved.
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [[NSNotificationCenter defaultCenter] postNotificationName:ApolloSavedListingDidLoadNotification
+                                                                    object:nil];
+            });
+        }
     };
     return %orig(category, pagination, deduplicatingCompletion);
 }
@@ -110,7 +122,77 @@ static void sortActionControllerCategories(id actionController) {
 
 static BOOL sSortNextActionController = NO;
 
+// Keep Apollo's category item as the anchor, preserving any other navigation
+// actions. Install once per controller and restore only if Apollo rebuilds its
+// items on return; never change navigation geometry from a layout callback.
+static char kApolloSavedGalleryButtonKey;
+static void ApolloInstallSavedGalleryButton(UIViewController *controller) {
+    UIBarButtonItem *categoryButton = ApolloObjectIvar(controller, "savedCategoriesBarButtonItem");
+    if (![categoryButton isKindOfClass:UIBarButtonItem.class]) return;
+    UINavigationItem *navigationItem = controller.navigationItem;
+    BOOL onLeft = [navigationItem.leftBarButtonItems containsObject:categoryButton];
+    NSArray<UIBarButtonItem *> *existing = onLeft
+        ? navigationItem.leftBarButtonItems : navigationItem.rightBarButtonItems;
+    NSUInteger categoryIndex = [existing indexOfObjectIdenticalTo:categoryButton];
+    if (!existing || categoryIndex == NSNotFound) return;
+
+    UIBarButtonItem *galleryButton = objc_getAssociatedObject(controller, &kApolloSavedGalleryButtonKey);
+    if (!galleryButton) {
+        galleryButton = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"square.grid.2x2"]
+            style:UIBarButtonItemStylePlain target:controller action:@selector(apollo_savedGalleryTapped:)];
+        galleryButton.accessibilityLabel = @"Gallery View";
+        galleryButton.accessibilityIdentifier = @"ApolloSavedGallery";
+        objc_setAssociatedObject(controller, &kApolloSavedGalleryButtonKey, galleryButton,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    galleryButton.tintColor = ApolloThemeAccentColor() ?: controller.view.tintColor;
+    if ([existing containsObject:galleryButton]) return;
+    NSMutableArray<UIBarButtonItem *> *buttons = [existing mutableCopy];
+    [buttons insertObject:galleryButton atIndex:categoryIndex + 1];
+    if (onLeft) navigationItem.leftBarButtonItems = buttons;
+    else navigationItem.rightBarButtonItems = buttons;
+    ApolloLog(@"[SavedGallery] installed gallery button beside categories");
+}
+
+static void ApolloPrepareVisibleSavedGallery(UIViewController *controller) {
+    if (!controller.viewIfLoaded.window || controller.navigationController.topViewController != controller) return;
+    ApolloGalleryPrepareSource(controller);
+}
+
 %hook _TtC6Apollo32SavedPostsCommentsViewController
+
+- (void)viewDidLoad {
+    ApolloGalleryBindSavedSourceToCurrentAccount((UIViewController *)self);
+    %orig;
+    ApolloInstallSavedGalleryButton((UIViewController *)self);
+    [[NSNotificationCenter defaultCenter] addObserver:self
+        selector:@selector(apollo_prepareSavedGallery:)
+        name:ApolloSavedListingDidLoadNotification object:nil];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
+    ApolloInstallSavedGalleryButton((UIViewController *)self);
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    ApolloPrepareVisibleSavedGallery((UIViewController *)self);
+}
+
+%new
+- (void)apollo_prepareSavedGallery:(NSNotification *)notification {
+    ApolloPrepareVisibleSavedGallery((UIViewController *)self);
+}
+
+%new
+- (void)apollo_savedGalleryTapped:(id)sender {
+    // Read at tap time: the category picker can change the current filter
+    // without recreating the Saved controller or its navigation items.
+    NSString *category = ApolloReadSwiftStringIvar(self, "filteredSaveCategory");
+    [ApolloGalleryViewController presentGalleryForSavedCategory:category
+                                           fromViewController:(UIViewController *)self];
+}
 
 - (void)savedCategoriesButtonTappedWithSender:(id)sender {
     sSortNextActionController = YES;

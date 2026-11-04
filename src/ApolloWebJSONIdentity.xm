@@ -68,6 +68,9 @@
 #import <objc/message.h>
 
 #import "ApolloWebJSON.h"
+#import "ApolloWebJSONRoutes.h"
+#import "ApolloToast.h"
+#import "ApolloWebJSONRouteUpdates.h"
 #import "ApolloState.h"
 #import "ApolloCommon.h"
 #import "ApolloUserProfileCache.h"
@@ -98,6 +101,13 @@
 // The request chokepoint every get/post/put/deletePath: call funnels into.
 - (id)taskWithMethod:(NSString *)method path:(NSString *)path parameters:(id)parameters
           completion:(void (^)(NSHTTPURLResponse *, id, NSError *))completion;
+@end
+
+// Headers/ObjC/RDKUser.h — the two properties the subscription-walk guard
+// below reads and hooks.
+@interface RDKUser : NSObject
+@property (nonatomic, copy) NSString *username;
+@property (nonatomic, copy) NSArray *subscribedSubreddits;
 @end
 
 // ~100 years, so Apollo never considers the token expired and never tries to
@@ -894,10 +904,17 @@ static id ApolloWebJSONThingProperty(id thing, SEL selector) {
 %end
 
 // The web-session account ApolloWebJSONRewriteRequest will attribute a request
-// from `client` to: the same resolution, run on the client's credential because
-// the request doesn't exist yet. nil for an OAuth account.
+// from `client` to, before its request exists or it has installed a credential.
+// Resolve its own identity first, then the bearer's owner for anonymous clients.
+// nil for an OAuth account.
 static NSString *ApolloWebJSONWebSessionUsernameForClient(RDKClient *client) {
     if (!client || !sWebJSONEnabled) return nil;
+    // A newly restored client may not have installed its synthetic credential
+    // yet. Its first moderator request still needs a bearer before the
+    // transport runs.
+    // Resolve named clients from their own identity, never the active account.
+    NSString *username = ApolloWebJSONClientUsername(client);
+    if (username.length > 0) return ApolloWebSessionFor(username) ? username : nil;
     id credential = [client respondsToSelector:@selector(authorizationCredential)] ? [client authorizationCredential] : nil;
     return ApolloWebJSONWebSessionUsernameForBearer(ApolloWebJSONCredentialTokenString(credential));
 }
@@ -907,11 +924,163 @@ static NSString *ApolloWebJSONWebSessionUsernameForClient(RDKClient *client) {
 // returns.
 static __thread BOOL sApolloWebJSONResendingAfterWebBearerMint = NO;
 
+// Route fallback for API-Key-Free reads www.reddit.com refuses at their usual
+// path (ApolloWebJSONRoutes.m). When a route answers with Reddit's block page,
+// the RDKClient hook below sends the same call again, marked with the routes
+// already tried so the rewrite picks another. The resend sets
+// sApolloWebJSONRoutesTriedForSend around its synchronous
+// -taskWithMethod:path:parameters:completion: call; the hook reads it on entry
+// and holds it in sApolloWebJSONRoutesTriedToStamp while RedditKit builds the
+// request, which it does on the same thread before returning (-[RDKClient
+// taskWithMethod:path:parameters:completion:] at 0x10000902c serializes the
+// request and calls -dataTaskWithRequest:completionHandler: on itself), so
+// -dataTaskWithRequest:completionHandler: can mark it for the rewrite.
+static __thread NSUInteger sApolloWebJSONRoutesTriedForSend = 0;
+static __thread NSUInteger sApolloWebJSONRoutesTriedToStamp = 0;
+
+// When every route for a read is blocked or on cooldown, the screen behind it
+// fails without saying why (the Inbox without its reply parents, "more replies"
+// doing nothing). Says so once per launch, with the one thing that avoids it.
+static void ApolloWebJSONShowRoutesBlockedToastOnce(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ApolloShowToastWithStyle(@"Reddit Blocked This Request",
+                                     @"Adding your own API key in Settings avoids it",
+                                     ApolloToastStyleError, @"exclamationmark.triangle");
+        });
+    });
+}
+
+// Once per launch per method, path and outcome, so a report's log shows a
+// route falling back without a line for every lookup. Any thread.
+static void ApolloWebJSONLogRouteOutcomeOnce(NSString *method, NSString *path, NSString *message) {
+    static NSMutableSet<NSString *> *logged;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ logged = [NSMutableSet set]; });
+    NSString *key = [NSString stringWithFormat:@"%@ %@ %@", method, path.lowercaseString, message];
+    @synchronized (logged) {
+        if ([logged containsObject:key]) return;
+        [logged addObject:key];
+    }
+    ApolloLog(@"[WebJSON] %@ %@: %@", method, path, message);
+}
+
+#pragma mark - Subscription walk (API-Key-Free)
+
+// The path with any query and leading slashes dropped, lowercased.
+static NSString *ApolloWebJSONBarePath(NSString *path) {
+    if (![path isKindOfClass:[NSString class]]) return @"";
+    NSString *p = [path.lowercaseString componentsSeparatedByString:@"?"].firstObject ?: @"";
+    while ([p hasPrefix:@"/"]) p = [p substringFromIndex:1];
+    return p;
+}
+
+// AccountManager loads an account's subscriptions page by page: the first
+// GET subreddits/mine/subscriber.json asks for limit=100, but every later
+// page is built from the listing's own `after` by +[RDKPagination
+// paginationFromListingResponse:], whose -init leaves limit at 25, so Reddit
+// serves 25 per page. On an OAuth account's 1,000-request budget that goes unnoticed;
+// a web session gets roughly 100 requests per ten minutes, and the reporter
+// of issue #1409 (1,900+ subscriptions) spent ~80 of them on the launch walk
+// alone and was refused 43 seconds in. Ask for Reddit's maximum on every page
+// of the account listings instead: the walk follows `after`, so the page size
+// changes nothing else. Returns `parameters` unchanged for anything that isn't
+// a web-session account's GET of subreddits/mine/<where>.
+static id ApolloWebJSONParametersForAccountRead(NSString *username, NSString *method, NSString *path, id parameters) {
+    if (username.length == 0 || ![method.uppercaseString isEqualToString:@"GET"]) return parameters;
+    if (![ApolloWebJSONBarePath(path) hasPrefix:@"subreddits/mine/"]) return parameters;
+    if (parameters && ![parameters isKindOfClass:[NSDictionary class]]) return parameters;
+    id limit = ((NSDictionary *)parameters)[@"limit"];
+    BOOL limitIsNumeric = [limit isKindOfClass:[NSString class]] || [limit isKindOfClass:[NSNumber class]];
+    if (limitIsNumeric && [limit integerValue] >= 100) return parameters;
+    NSMutableDictionary *raised = parameters ? [parameters mutableCopy] : [NSMutableDictionary dictionary];
+    raised[@"limit"] = @"100";
+    ApolloLog(@"[WebJSON] Asking for 100 per page on GET %@ for u/%@ (was %@)",
+              path, username, limitIsNumeric ? limit : @"Reddit's default of 25");
+    return [raised copy];
+}
+
+static BOOL ApolloWebJSONRequestIsSubscriptionWalk(NSString *method, NSString *path) {
+    return [method.uppercaseString isEqualToString:@"GET"]
+        && [ApolloWebJSONBarePath(path) hasPrefix:@"subreddits/mine/subscriber"];
+}
+
+// A walk cut short still reaches AccountManager's completion, which replaces
+// RDKUser.subscribedSubreddits with the pages it had: in issue #1409's log one
+// refused page (HTTP 429, the session's budget spent) turned 1,935 subscriptions
+// into 947, and the sidebar stayed that way until a later walk got through.
+// Noted when a page of the walk fails, in the same completion chain that sets
+// the list (RedditKit's block and AccountManager's closure run synchronously
+// from it), and consumed by the setter hook below: a shorter list arriving
+// right after a failed page is the cut-short walk, so the account keeps the
+// list it had. Lowercased username and the time the page failed, under the
+// lock; the window is short so an unrelated shorter list later (an
+// unsubscribe from Apollo's own code) is never held back.
+static NSObject *ApolloWebJSONSubscriptionWalkLock(void) {
+    static NSObject *lock;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [NSObject new]; });
+    return lock;
+}
+static NSString *sApolloWebJSONFailedWalkUser;
+static NSTimeInterval sApolloWebJSONFailedWalkAt;
+static const NSTimeInterval kApolloWebJSONFailedWalkWindow = 3.0;
+
+static void ApolloWebJSONNoteSubscriptionWalkFailed(NSString *username, NSHTTPURLResponse *response, NSError *error) {
+    if (username.length == 0) return;
+    @synchronized (ApolloWebJSONSubscriptionWalkLock()) {
+        sApolloWebJSONFailedWalkUser = username.lowercaseString;
+        sApolloWebJSONFailedWalkAt = [NSDate timeIntervalSinceReferenceDate];
+    }
+    ApolloLog(@"[WebJSON] A page of u/%@'s subscription refresh failed (HTTP %ld%@); keeping the list it had if the refresh stops here",
+              username, (long)response.statusCode, error ? [@", " stringByAppendingString:error.localizedDescription ?: @"error"] : @"");
+}
+
+// YES when `list` is the remainder of a walk that just failed for this user
+// and the current list is longer: the caller keeps the current list.
+static BOOL ApolloWebJSONKeepSubscriptionListAfterFailedWalk(RDKUser *user, NSArray *list) {
+    NSString *failedUser = nil;
+    @synchronized (ApolloWebJSONSubscriptionWalkLock()) {
+        if (sApolloWebJSONFailedWalkUser &&
+            [NSDate timeIntervalSinceReferenceDate] - sApolloWebJSONFailedWalkAt <= kApolloWebJSONFailedWalkWindow) {
+            failedUser = sApolloWebJSONFailedWalkUser;
+        }
+    }
+    if (!failedUser) return NO;
+    NSString *username = user.username.lowercaseString;
+    NSArray *current = user.subscribedSubreddits;
+    NSString *declined = nil;
+    if (username.length > 0 && ![username isEqualToString:failedUser]) declined = [@"another account: u/" stringByAppendingString:username];
+    else if (![current isKindOfClass:[NSArray class]] || current.count == 0) declined = @"no list to keep";
+    else if ([list isKindOfClass:[NSArray class]] && list.count >= current.count) declined = @"the new list is not shorter";
+    if (declined) {
+        ApolloLog(@"[WebJSON] Subscription list set after u/%@'s failed page, letting it through (%@: %lu -> %lu)",
+                  failedUser, declined, (unsigned long)current.count, (unsigned long)[list isKindOfClass:[NSArray class]] ? list.count : 0);
+        return NO;
+    }
+    @synchronized (ApolloWebJSONSubscriptionWalkLock()) {
+        sApolloWebJSONFailedWalkUser = nil;
+    }
+    ApolloLog(@"[WebJSON] Kept u/%@'s %lu subscriptions: the refresh stopped after %lu because a page failed",
+              failedUser, (unsigned long)current.count, (unsigned long)[list isKindOfClass:[NSArray class]] ? list.count : 0);
+    return YES;
+}
+
+%hook RDKUser
+- (void)setSubscribedSubreddits:(NSArray *)list {
+    if (ApolloWebJSONKeepSubscriptionListAfterFailedWalk(self, list)) return;
+    %orig;
+}
+%end
+
 // Validate at the request completion boundary, where the original endpoint
 // survives redirects and every serializer/cache path has already finished.
 %hook RDKClient
 - (id)taskWithMethod:(NSString *)method path:(NSString *)path parameters:(id)parameters
     completion:(void (^)(NSHTTPURLResponse *, id, NSError *))completion {
+    NSUInteger routesTried = sApolloWebJSONRoutesTriedForSend;
+    sApolloWebJSONRoutesTriedForSend = 0;
     if (!completion) return %orig;
     // OAuth-only moderator endpoints (removal reasons, modactions) go to
     // oauth.reddit.com with the account's web bearer (ApolloWebJSONRewriteRequest),
@@ -948,7 +1117,54 @@ static __thread BOOL sApolloWebJSONResendingAfterWebBearerMint = NO;
     NSString *requestPath = [path copy];
     NSString *username = ApolloWebJSONShouldActForClient(self) ? ApolloWebJSONClientUsername(self) : nil;
     ApolloWebJSONCheckAccountSession(username);
+    // API-Key-Free account listings: 100 per page (ApolloWebJSONParametersForAccountRead).
+    parameters = ApolloWebJSONParametersForAccountRead(username, requestMethod, requestPath, parameters);
+    RDKClient *client = self;
+    id sentParameters = parameters;
     void (^wrapped)(NSHTTPURLResponse *, id, NSError *) = ^(NSHTTPURLResponse *response, id object, NSError *error) {
+        // A read that has another route gets sent again on it, at most once per
+        // route, and only the last answer reaches the caller. Writes never get
+        // here (ApolloWebJSONRouteRequestMayRetry). A bearer route's 401 is a
+        // refusal of its minted bearer, which ApolloWebJSONNoteResponse has
+        // dropped, so it moves on too.
+        NSInteger usedRoute = response ? ApolloWebJSONRouteFromURL(response.URL) : -1;
+        BOOL bearerRefused = usedRoute >= 0 && response.statusCode == 401
+            && ApolloWebJSONRouteGetAuth((ApolloWebJSONRoute)usedRoute) == ApolloWebJSONRouteAuthBearer;
+        // A refusal is the block page or, on old.reddit.com, Old Reddit's
+        // sign-in gate (a 200 HTML page RedditKit can't read).
+        if (username && sWebJSONEnabled && (ApolloWebJSONRouteResponseIsRefusal(response) || bearerRefused)
+            && ApolloWebJSONRouteRequestMayRetry(requestMethod, requestPath)) {
+            NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+            // The response URL carries the route the rewrite stamped; without it,
+            // the route the rewrite would have picked.
+            if (usedRoute < 0) usedRoute = ApolloWebJSONRouteChoose(username, requestMethod, requestPath, routesTried, now);
+            NSUInteger tried = routesTried | (usedRoute >= 0 ? (1u << usedRoute) : 0);
+            NSInteger next = ApolloWebJSONRouteChoose(username, requestMethod, requestPath, tried, now);
+            NSString *blockedName = usedRoute >= 0 ? ApolloWebJSONRouteName((ApolloWebJSONRoute)usedRoute) : @"?";
+            NSString *refusal = bearerRefused ? @"had its bearer refused" : @"refused the read";
+            if (next >= 0) {
+                ApolloWebJSONLogRouteOutcomeOnce(requestMethod, requestPath, [NSString stringWithFormat:
+                    @"route %@ %@, trying %@", blockedName, refusal, ApolloWebJSONRouteName((ApolloWebJSONRoute)next)]);
+                sApolloWebJSONRoutesTriedForSend = tried;
+                @try {
+                    [client taskWithMethod:requestMethod path:requestPath parameters:sentParameters completion:completion];
+                } @finally {
+                    sApolloWebJSONRoutesTriedForSend = 0;
+                }
+                return;
+            }
+            ApolloWebJSONLogRouteOutcomeOnce(requestMethod, requestPath, [NSString stringWithFormat:
+                @"route %@ %@, and every other route is blocked or cooling down", blockedName, refusal]);
+            ApolloWebJSONShowRoutesBlockedToastOnce();
+            ApolloLog(@"[WebJSON] %@", ApolloWebJSONRouteStatusSummary());
+        } else if (routesTried != 0 && usedRoute >= 0 && response.statusCode >= 200 && response.statusCode < 300) {
+            ApolloWebJSONLogRouteOutcomeOnce(requestMethod, requestPath, [NSString stringWithFormat:@"answered by route %@",
+                ApolloWebJSONRouteName((ApolloWebJSONRoute)usedRoute)]);
+        }
+        if (username && ApolloWebJSONRequestIsSubscriptionWalk(requestMethod, requestPath) &&
+            (error || response.statusCode >= 400)) {
+            ApolloWebJSONNoteSubscriptionWalkFailed(username, response, error);
+        }
         NSError *sessionError = ApolloWebJSONAccountSessionError(username);
         if (sessionError) {
             completion(response, nil, sessionError);
@@ -967,7 +1183,21 @@ static __thread BOOL sApolloWebJSONResendingAfterWebBearerMint = NO;
     // answered is shared instead of sent again (ApolloWebJSONShareAccountRead).
     ApolloWebJSONTaskCompletion send = ApolloWebJSONShareAccountRead(username, requestMethod, requestPath, parameters, wrapped);
     if (!send) return ApolloWebJSONSharedReadPlaceholderTask();
-    return %orig(method, path, parameters, send);
+    if (routesTried == 0) return %orig(method, path, parameters, send);
+    sApolloWebJSONRoutesTriedToStamp = routesTried;
+    @try {
+        return %orig(method, path, parameters, send);
+    } @finally {
+        sApolloWebJSONRoutesTriedToStamp = 0;
+    }
+}
+
+// Marks a route-fallback resend's request (see sApolloWebJSONRoutesTriedForSend).
+- (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(id)completionHandler {
+    NSUInteger tried = sApolloWebJSONRoutesTriedToStamp;
+    if (tried == 0) return %orig;
+    sApolloWebJSONRoutesTriedToStamp = 0;
+    return %orig(ApolloWebJSONRequestMarkingTriedRoutes(request, tried), completionHandler);
 }
 %end
 

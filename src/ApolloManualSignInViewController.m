@@ -192,7 +192,8 @@ static NSString *ARExtractParam(NSString *urlString, NSString *name);
                      @"shown by the helper, then try again."];
         return;
     }
-    ApolloLog(@"[ManualSignIn] completing with callback: %@", callback);
+    // Key names only: the callback carries the single-use authorization code.
+    ApolloLog(@"[ManualSignIn] completing with callback: %@", ApolloLogURL(callback));
     if (self.onComplete) self.onComplete(callback);
 }
 

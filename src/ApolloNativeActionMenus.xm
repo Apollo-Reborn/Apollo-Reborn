@@ -6,6 +6,7 @@
 #import "ApolloNativeActionMetadata.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloThemeRuntime.h"
+#import "ipad/ApolloPaneChrome.h"
 
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
@@ -669,12 +670,21 @@ static UIView *ApolloNativeActionMenuCellForGesture(UIGestureRecognizer *gesture
 
 static UIView *ApolloNativeActionMenuResolveSourceView(id sender, id owner) {
     UIView *sourceView = ApolloNativeActionMenuViewForObject(sender);
-    if (sourceView) return sourceView;
+    if (sourceView.window) return sourceView;
+
+    // UIKit detaches a rail item's view when moving it into overflow.
+    // Its still-visible overflow control is the stable presentation anchor.
+    if ([sender isKindOfClass:UIBarButtonItem.class] && [owner isKindOfClass:UIViewController.class]) {
+        if (@available(iOS 16.0, macCatalyst 16.0, *)) {
+            sourceView = ApolloNativeActionMenuViewForObject(((UIViewController *)owner).navigationItem.overflowPresentationSource);
+            if (sourceView.window) return sourceView;
+        }
+    }
 
     sourceView = ApolloNativeActionMenuViewForObject(owner);
-    if (sourceView) return sourceView;
+    if (sourceView.window) return sourceView;
 
-    return sApolloNativeActionMenuSourceView;
+    return sApolloNativeActionMenuSourceView.window ? sApolloNativeActionMenuSourceView : nil;
 }
 
 static UIView *ApolloNativeActionMenuCreateProxyAnchorView(UIView *sourceView, BOOL *removeWhenDone) {
@@ -1988,6 +1998,7 @@ static BOOL ApolloNativeActionMenuPresent(id presenter, id actionController, voi
     // Capture even on the legacy path: UIKit may defer its table/geometry
     // callbacks until after the originating tap has returned.
     ApolloActionMenuCaptureContextForController(actionController);
+    ApolloPaneCaptureMenuOwner(actionController);
     if (!ApolloNativeActionMenusEnabled()) return NO;
     if (![actionController isKindOfClass:ApolloClassActionController]) return NO;
     if (ApolloReadBoolIvar(actionController, "showKeyboardOnAppearanceForTextEntryView", NO)) return NO;
@@ -2219,10 +2230,12 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
 %hook _TtC6Apollo19PostsViewController
 - (void)moreOptionsBarButtonItemTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginCapture(sender, self);
+    UIViewController *previousPaneOwner = ApolloPaneSetMenuOwner((UIViewController *)self);
     ApolloActionMenuArmContext(ApolloActionMenuContextFeed);
     @try {
         %orig;
     } @finally {
+        ApolloPaneSetMenuOwner(previousPaneOwner);
         ApolloActionMenuDisarmContext();
         ApolloNativeActionMenuEndCapture();
     }
@@ -2249,10 +2262,12 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
 %hook _TtC6Apollo22CommentsViewController
 - (void)moreOptionsBarButtonItemTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginCapture(sender, self);
+    UIViewController *previousPaneOwner = ApolloPaneSetMenuOwner((UIViewController *)self);
     ApolloActionMenuArmContext(ApolloActionMenuContextPostDetail);
     @try {
         %orig;
     } @finally {
+        ApolloPaneSetMenuOwner(previousPaneOwner);
         ApolloActionMenuDisarmContext();
         ApolloNativeActionMenuEndCapture();
     }

@@ -20,6 +20,10 @@ NSURLRequest *ApolloRedditMaybeRewriteSubmitRequest(NSURLRequest *request);
 NSURLRequest *ApolloRedditMaybeRewriteCommentRequest(NSURLRequest *request);
 NSData *ApolloRedditSyntheticImgurAlbumResponseDataForRequest(NSURLRequest *request);
 
+// Resolve only recorded adapter-owned album links; ordinary Imgur links pass through.
+NSString *ApolloImageUploadResolveAlbumText(NSString *text);
+NSString *ApolloImageUploadResolveAlbumTextWithSelection(NSString *text, NSRange *selection);
+
 // Task identification (matches against original/current request).
 BOOL ApolloRedditIsSubmitTask(NSURLSessionTask *task);
 BOOL ApolloRedditIsCommentTask(NSURLSessionTask *task);
@@ -43,6 +47,10 @@ void ApolloRedditInstallResponseTransformerForDelegate(id delegate);
 
 // Records a Reddit media upload so comment/submit rewriting can map staged URLs to asset IDs.
 void ApolloRegisterRedditUploadedMedia(NSURL *mediaURL, NSString *assetID, NSString *mimeType, NSString *webSocketURL);
+
+// File extension this device uploaded a Reddit image asset with during this
+// launch ("jpeg", "gif", ...), or nil when it didn't upload it.
+NSString *ApolloRedditUploadedImageExtensionForAssetID(NSString *assetID);
 
 #ifdef __cplusplus
 }

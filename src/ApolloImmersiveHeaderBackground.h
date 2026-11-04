@@ -3,10 +3,21 @@
 // Shared immersive backdrop. Subreddits use the original sharp banner strip
 // below the chrome with an ambient continuation. Profiles opt into the
 // full-height artwork and appearance-specific fades via usesProfileHero.
+// Aspect-fill image view that crops above center, so profile banners show more
+// of the upper artwork (faces, titles) without pinning to the very top edge.
+@interface ApolloTopAnchoredImageView : UIImageView
+@property(nonatomic, assign) BOOL anchorsTop;
+@end
+
 @interface ApolloImmersiveHeaderBackgroundView : UIView
 
 @property(nonatomic, assign) CGFloat contentTranslation;
 @property(nonatomic, assign) BOOL usesProfileHero;
+// Optional owner for artwork confined to a split detail column. Previews omit it.
+@property(nonatomic, weak) UIViewController *contentViewController;
+// Optional horizontal occlusion for a table that extends underneath an iPad
+// sidebar. The table background stays full size; its artwork fits the column.
+@property(nonatomic, assign) UIEdgeInsets artworkInsets;
 // Unscrolled height of the sharp artwork after viewport/region clipping.
 @property(nonatomic, readonly) CGFloat sharpArtworkHeight;
 

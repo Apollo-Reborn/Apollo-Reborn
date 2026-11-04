@@ -14,6 +14,11 @@
 // the UISearchController it attaches for comments screens.
 id ApolloFindInCommentsGlassBridgeForController(UIViewController *vc);
 
+// Share the native highlight bookkeeping with the iPad UIFindInteraction
+// adapter. These only track/restore text rendering; they install no navigator.
+void ApolloFindInCommentsTrackSelection(UIViewController *vc, dispatch_block_t selection);
+void ApolloFindInCommentsRestoreHighlights(UIViewController *vc);
+
 // Placeholder for the comments search field ("Find in Comments").
 NSString *ApolloFindInCommentsGlassPlaceholder(void);
 
@@ -22,6 +27,13 @@ NSString *ApolloFindInCommentsGlassPlaceholder(void);
 void ApolloFindInCommentsGlassViewWillAppear(UIViewController *vc);
 void ApolloFindInCommentsGlassViewDidAppear(UIViewController *vc);
 void ApolloFindInCommentsGlassViewWillDisappear(UIViewController *vc);
+
+// Apollo asked its hidden search field for focus on a comments screen the
+// native bar manages: the ••• menu's Find in Comments row. Opens and focuses
+// the native bar instead, and keeps out the keyboard-docked presentation that
+// row runs next. Called from ApolloSearchNativeBar.xm's field hook, which then
+// refuses the focus.
+void ApolloFindInCommentsGlassApolloFieldFocusRequested(UIViewController *vc);
 
 // YES while the find navigator (count + up/down) owns this navigation item's
 // rightBarButtonItems. ApolloTranslation.xm's globe merge stands down then, so

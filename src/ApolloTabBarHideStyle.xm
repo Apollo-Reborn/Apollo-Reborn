@@ -4,6 +4,7 @@
 #import "ApolloCommon.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloState.h"
+#import "ApolloDuoRail.h"
 #import "ApolloTabBarHideStyle.h"
 #import "UserDefaultConstants.h"
 
@@ -79,7 +80,7 @@ NSString *ApolloTabBarHideStyleCurrentTitle(void) {
 // (currentMorphTarget != 0); re-register it with the mirrored pill frame so
 // the glass effect follows the pill.
 static void TabBarHideStyleApplyMirror(UITabBar *tabBar) {
-    if (!ApolloSupportsNativeTabBarScrollBehavior() ||
+    if (!ApolloDuoAllowsTabBarScrollHiding() || !ApolloSupportsNativeTabBarScrollBehavior() ||
         ApolloTabBarHideStyleUsesCustomPresentation(sTabBarHideStyle)) return;
     id provider = ApolloTabBarVisualProvider(tabBar);
     if (!provider) return;

@@ -24,6 +24,7 @@
 // already renders as a swipeable inline album.
 
 #import "ApolloImgChestUpload.h"
+#import "ApolloUploadAlbumCompatibility.h"
 #import "ApolloCommon.h"
 #import "ApolloState.h"
 #import <objc/runtime.h>
@@ -781,7 +782,7 @@ static void ApolloImgChestDeletePost(NSString *postID, void (^_Nullable completi
         NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
         BOOL success = !error && http.statusCode >= 200 && http.statusCode < 300;
         if (!success) {
-            ApolloLogError(@"[ImgChestUpload] delete post %@ failed status=%ld err=%@", postID, (long)http.statusCode, error.localizedDescription ?: @"nil");
+            ApolloLogError(@"[ImgChestUpload] delete post #%@ failed status=%ld err=%@", ApolloLogFingerprint(postID), (long)http.statusCode, error.localizedDescription ?: @"nil");
         }
         if (completion) completion(success);
     }] resume];
@@ -834,7 +835,9 @@ static void ApolloImgChestUploadOwnedFile(NSURL *ownedFileURL,
                                            @"mimeType": ApolloImgChestSafeMIMEType(mimeType),
                                            @"post": postID });
         [operation relinquishCleanupFile:ownedFileURL];
-        ApolloLog(@"[ImgChestUpload] uploaded %@ bytes -> post=%@ link=%@", size, postID, link.absoluteString);
+        // Fingerprints only: uploads are "hidden" posts, and the post ID or
+        // link is all anyone needs to open the image.
+        ApolloLog(@"[ImgChestUpload] uploaded %@ bytes -> post #%@", size, ApolloLogFingerprint(postID));
         completion(link, nil);
     });
 }
@@ -913,28 +916,6 @@ static BOOL ApolloImgChestIsImgurAlbumCreationRequest(NSURLRequest *request) {
         && [(request.HTTPMethod ?: @"GET") caseInsensitiveCompare:@"POST"] == NSOrderedSame;
 }
 
-// Member tokens from Apollo's album-creation body (deletehashes=a,b,c or
-// deletehashes[]=a&deletehashes[]=b, possibly percent-encoded).
-static NSArray<NSString *> *ApolloImgChestAlbumTokensFromRequest(NSURLRequest *request) {
-    NSData *body = request.HTTPBody;
-    NSString *form = body.length > 0 ? [[NSString alloc] initWithData:body encoding:NSUTF8StringEncoding] : nil;
-    if (form.length == 0) return @[];
-    NSMutableArray<NSString *> *tokens = [NSMutableArray array];
-    for (NSString *pair in [form componentsSeparatedByString:@"&"]) {
-        NSRange equals = [pair rangeOfString:@"="];
-        if (equals.location == NSNotFound) continue;
-        NSString *key = [pair substringToIndex:equals.location];
-        if (![key hasPrefix:@"deletehashes"] && ![key hasPrefix:@"ids"]) continue;
-        NSString *value = [[pair substringFromIndex:equals.location + 1] stringByRemovingPercentEncoding]
-            ?: [pair substringFromIndex:equals.location + 1];
-        for (NSString *token in [value componentsSeparatedByString:@","]) {
-            NSString *trimmed = [token stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-            if (trimmed.length > 0 && ![tokens containsObject:trimmed]) [tokens addObject:trimmed];
-        }
-    }
-    return tokens;
-}
-
 // Imgur-shaped image dictionary for a synthetic album response entry.
 static NSDictionary *ApolloImgChestSyntheticImageDictionary(NSDictionary *imageEntry) {
     NSString *link = [imageEntry[@"link"] isKindOfClass:[NSString class]] ? imageEntry[@"link"] : @"";
@@ -963,8 +944,8 @@ ApolloImgChestAlbumResponder ApolloImgChestAlbumCreationResponderForRequest(NSUR
     if (!ApolloImgChestIsImgurAlbumCreationRequest(request)) return nil;
     if (!ApolloImgChestUploadAvailable()) return nil;
 
-    NSArray<NSString *> *tokens = ApolloImgChestAlbumTokensFromRequest(request);
-    if (tokens.count < 2) return nil;
+    NSArray<NSString *> *tokens = ApolloUploadAlbumTokens(request);
+    if (tokens.count == 0) return nil;
 
     NSMutableArray<NSString *> *interimPosts = [NSMutableArray array];
     for (NSString *token in tokens) {
@@ -973,7 +954,7 @@ ApolloImgChestAlbumResponder ApolloImgChestAlbumCreationResponderForRequest(NSUR
         if (ApolloImgChestFileSize(fileURL).unsignedLongLongValue == 0) {
             // A member upload isn't ours / its file was already evicted — let the
             // request go to real Imgur rather than build a partial album.
-            ApolloLog(@"[ImgChestUpload] album token %@ has no cached file; not combining", token);
+            ApolloLog(@"[ImgChestUpload] album token #%@ has no cached file; not combining", ApolloLogFingerprint(token));
             return nil;
         }
         NSString *postID = [cached[@"post"] isKindOfClass:[NSString class]] ? cached[@"post"] : nil;
@@ -1055,8 +1036,8 @@ ApolloImgChestAlbumResponder ApolloImgChestAlbumCreationResponderForRequest(NSUR
                                                                   statusCode:200
                                                                  HTTPVersion:@"HTTP/1.1"
                                                                 headerFields:@{@"Content-Type": @"application/json"}];
-            ApolloLog(@"[ImgChestUpload] combined %lu uploads into album post=%@ link=%@",
-                      (unsigned long)tokensCopy.count, postID, postLink);
+            ApolloLog(@"[ImgChestUpload] combined %lu uploads into album post #%@",
+                      (unsigned long)tokensCopy.count, ApolloLogFingerprint(postID));
             reply(json, fake, nil);
         };
         dispatch_async(ApolloImgChestMultipartQueue(), ^{
@@ -1155,7 +1136,7 @@ void ApolloUploadRegistryHandleImgurDelete(NSURLRequest *request, ApolloImgChest
     if ([provider isEqualToString:kProviderImgChest] && postID.length > 0) {
         ApolloImgChestDeletePost(postID, ^(BOOL success) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                ApolloLog(@"[ImgChestUpload] Manage Uploads delete hash=%@ post=%@ serverDelete=%@", hash, postID, success ? @"ok" : @"failed");
+                ApolloLog(@"[ImgChestUpload] Manage Uploads delete hash #%@ post #%@ serverDelete=%@", ApolloLogFingerprint(hash), ApolloLogFingerprint(postID), success ? @"ok" : @"failed");
                 // Even if the server delete failed (already gone, revoked
                 // token), acknowledge so the entry leaves Apollo's list.
                 acknowledge();
@@ -1168,7 +1149,7 @@ void ApolloUploadRegistryHandleImgurDelete(NSURLRequest *request, ApolloImgChest
     // entries no longer exist; ImgChest entries with no registry mapping
     // (lost settings) can't be resolved to a post. Acknowledge so the list
     // entry goes away.
-    ApolloLog(@"[ImgChestUpload] Manage Uploads delete hash=%@ provider=%@ acknowledged (list removal only)",
-              hash, provider.length > 0 ? provider : @"imgchest-without-registry");
+    ApolloLog(@"[ImgChestUpload] Manage Uploads delete hash #%@ provider=%@ acknowledged (list removal only)",
+              ApolloLogFingerprint(hash), provider.length > 0 ? provider : @"imgchest-without-registry");
     acknowledge();
 }

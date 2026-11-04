@@ -30,6 +30,7 @@ void ApolloHiddenContentPresentFromProfile(UIViewController *profileViewControll
 // Saved or Comments node while preserving Apollo's section model.
 #import <objc/runtime.h>
 #import "ApolloClasses.h"
+#import "ApolloProfileRowWrapper.h"
 
 typedef struct { CGSize min; CGSize max; } ApolloHiddenSizeRange;
 @interface ASDisplayNode : NSObject
@@ -118,6 +119,7 @@ static char ApolloHiddenIconKey;
 @interface ApolloHiddenProfileTap : NSObject
 + (instancetype)shared;
 - (void)open:(UITapGestureRecognizer *)gesture;
+- (void)openFromView:(UIView *)view;
 @end
 @implementation ApolloHiddenProfileTap
 + (instancetype)shared {
@@ -128,7 +130,11 @@ static char ApolloHiddenIconKey;
 }
 - (void)open:(UITapGestureRecognizer *)gesture {
     if (gesture.state != UIGestureRecognizerStateRecognized) return;
-    for (UIResponder *responder = gesture.view; responder; responder = responder.nextResponder) {
+    ApolloProfileRowWrapperFocusRowView(gesture.view);
+    [self openFromView:gesture.view];
+}
+- (void)openFromView:(UIView *)view {
+    for (UIResponder *responder = view; responder; responder = responder.nextResponder) {
         if ([responder isKindOfClass:ApolloClassProfileViewController]) {
             ApolloHiddenContentPresentFromProfile((UIViewController *)responder);
             return;
@@ -180,6 +186,11 @@ static char ApolloHiddenIconKey;
         objc_setAssociatedObject(shortcutIcon, &ApolloHiddenIconKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         shortcutTitle.attributedText = shortcutTitle.attributedText;
         shortcutIcon.image = shortcutIcon.image;
+        // Keyboard focus can land on this row without a tap; tell the shared
+        // cell how to open it.
+        ApolloProfileRowWrapperRegisterInjectedRow(shortcut, ^(UIView *view) {
+            [[ApolloHiddenProfileTap shared] openFromView:view];
+        });
         [shortcut onDidLoad:^(ASDisplayNode *loaded) {
             UIView *view = loaded.view;
             view.accessibilityLabel = @"Hidden & Deleted";
@@ -190,8 +201,13 @@ static char ApolloHiddenIconKey;
         Class cellNodeClass = ApolloClassASCellNode;
         if (!cellNodeClass) return original;
         ASDisplayNode *wrapper = [cellNodeClass new];
+        wrapper.accessibilityLabel = insertionTitle;
         wrapper.backgroundColor = UIColor.clearColor;
         wrapper.automaticallyManagesSubnodes = YES;
+        // Expose the semantic rows before Texture lazily attaches subnodes.
+        // The Duo menu reads their native images even while these rows are hidden.
+        objc_setAssociatedObject(wrapper, NSSelectorFromString(@"apollo_profileShortcutChildren"),
+                                 @[original, shortcut], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         wrapper.layoutSpecBlock = ^id(id node, ApolloHiddenSizeRange range) {
             return [ApolloClassASStackLayoutSpec stackLayoutSpecWithDirection:0 spacing:0 justifyContent:0 alignItems:3 children:@[original, separator, shortcut]];
         };

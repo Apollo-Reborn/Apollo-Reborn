@@ -9,6 +9,8 @@
 #import "ApolloSubredditInfoCache.h"
 #import "ApolloUserProfileCache.h"
 #import "ApolloWebTextDecoding.h"
+#import "ApolloWebJSON.h"              // ApolloWebJSONOptionalReadBackoff
+#import "ApolloWebSessionStore.h"      // ApolloActiveWebSessionUsername
 
 static const NSUInteger ApolloLinkPreviewMaxHTMLBytes = 2 * 1024 * 1024;
 
@@ -732,15 +734,89 @@ static NSString *ApolloLinkPreviewBrowserUserAgent(void) {
 + (NSString *)crossrefSummaryFromMessage:(NSDictionary *)message;
 + (void)fetchCrossrefPreviewForURL:(NSURL *)url completion:(ApolloLinkPreviewCompletion)completion;
 + (void)fetchRedditInfoPreviewForURL:(NSURL *)url completion:(ApolloLinkPreviewCompletion)completion;
-+ (void)fetchRedditInfoPreviewForExactURL:(NSURL *)url completion:(ApolloLinkPreviewCompletion)completion;
++ (void)fetchRedditInfoPreviewForExactURL:(NSURL *)url completion:(void (^)(ApolloLinkPreview *preview, BOOL unknownToReddit))completion;
 + (void)fetchHTMLPreviewForURL:(NSURL *)url completion:(ApolloLinkPreviewCompletion)completion;
 + (void)fetchHTMLPreviewForURL:(NSURL *)url allowRange:(BOOL)allowRange browserFallback:(BOOL)browserFallback completion:(ApolloLinkPreviewCompletion)completion;
 @end
+
+// One refetch per URL and reason per launch for a CACHED preview the
+// staleness rules in requestPreviewForURL: want replaced. The link node
+// re-measures when a refetch stores something, and that store is judged by
+// the same rules, so without this cap a URL whose fresh answer still reads as
+// stale is fetched again on every layout pass: issue #1415 was one deleted
+// Bluesky post (the API answers 400, the fallback stores the page's generic
+// HTML, which a bsky.app post URL counts as stale) — ~950 bsky.app requests
+// and ~150 Reddit /api/info lookups in seven minutes, until Reddit refused
+// the session. The node has the same cap for its own first-pass refetch
+// (ApolloLPMarkCachedRefetchAttempted in ApolloInlineLinkPreviews).
+static BOOL ApolloLinkPreviewMarkCachedRefetchAttempted(NSURL *url, NSString *reason) {
+    NSString *key = [NSString stringWithFormat:@"%@|%@", url.absoluteString ?: @"", reason ?: @""];
+    static NSMutableSet<NSString *> *attempted;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ attempted = [NSMutableSet set]; });
+    @synchronized (attempted) {
+        if ([attempted containsObject:key]) return NO;
+        [attempted addObject:key];
+        return YES;
+    }
+}
+
+// URLs whose fetch already finished in this launch. A bot-wall or slug-title
+// card stored by this launch is the current pipeline's own answer, Reddit
+// lookup included, so a weak-cache refetch would only repeat the blocked page
+// fetch and the Reddit /api/info lookups. Every reuters/wsj link used to send
+// them all a second time, under a second after the first (issue #1573). The
+// heal is for entries cached by an earlier launch.
+static NSMutableSet<NSString *> *ApolloLinkPreviewFetchedThisLaunch(void) {
+    static NSMutableSet<NSString *> *fetched;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ fetched = [NSMutableSet set]; });
+    return fetched;
+}
+
+static void ApolloLinkPreviewNoteFetchedThisLaunch(NSURL *url) {
+    NSString *key = url.absoluteString;
+    if (key.length == 0) return;
+    NSMutableSet<NSString *> *fetched = ApolloLinkPreviewFetchedThisLaunch();
+    @synchronized (fetched) { [fetched addObject:key]; }
+}
+
+static BOOL ApolloLinkPreviewWasFetchedThisLaunch(NSURL *url) {
+    NSString *key = url.absoluteString;
+    if (key.length == 0) return NO;
+    NSMutableSet<NSString *> *fetched = ApolloLinkPreviewFetchedThisLaunch();
+    @synchronized (fetched) { return [fetched containsObject:key]; }
+}
+
+// The card for a Bluesky post the API says is gone — deleted, or on an
+// account that was deactivated, blocked, or whose handle no longer resolves.
+// Shaped as a settled bluesky-post-v2 preview (handle + one line of body) so
+// it renders as a Bluesky card and neither staleness rule asks for it again;
+// a generic HTML or Reddit-harvest answer for a bsky.app post URL would.
+static ApolloLinkPreview *ApolloBlueskyUnavailablePostPreview(NSString *actor) {
+    ApolloLinkPreview *preview = [ApolloLinkPreview new];
+    preview.siteName = @"Bluesky";
+    preview.title = @"Bluesky";
+    preview.previewKind = @"bluesky-post-v2";
+    preview.authorHandle = [actor hasPrefix:@"did:"] ? nil : actor;
+    preview.postText = @"This post is no longer available.";
+    preview.desc = preview.postText;
+    preview.fetchedAt = [NSDate date];
+    return preview;
+}
+
+// A 4xx other than 429 from the Bluesky API is an answer about the post, not
+// about the connection: NotFound for a deleted post or unknown handle,
+// InvalidRequest for a URL that can never resolve.
+static BOOL ApolloBlueskyStatusMeansGone(NSError *error, NSInteger status) {
+    return !error && status >= 400 && status < 500 && status != 429;
+}
 
 @implementation ApolloLinkPreviewFetcher
 
 + (NSString *)refetchReasonForCachedPreview:(ApolloLinkPreview *)preview url:(NSURL *)url {
     if (!preview) return nil;
+    if (ApolloLinkPreviewWasFetchedThisLaunch(url)) return nil;
     if (ApolloLinkPreviewIsCachedBotWall(preview)) return @"bot-wall";
     if (ApolloLinkPreviewIsWeakAcademicPreview(preview, url)) return @"weak-academic";
     BOOL weakGeneric = preview.imageIsFallbackIcon
@@ -774,7 +850,7 @@ static NSString *ApolloLinkPreviewBrowserUserAgent(void) {
     if (cached) {
         NSString *weakReason = [self refetchReasonForCachedPreview:cached url:url];
         BOOL staleBluesky = ApolloBlueskyPostPartsFromURL(url)
-            && (![cached.previewKind isEqualToString:@"bluesky-post-v2"] || cached.postText.length == 0);
+            && ![cached.previewKind isEqualToString:@"bluesky-post-v2"];
         BOOL staleRedditUser = ApolloRedditUsernameFromProfileURL(url).length > 0
             && ![cached.previewKind isEqualToString:@"reddit-user-profile"];
         BOOL staleRedditSubreddit = ApolloRedditSubredditFromURL(url).length > 0
@@ -788,12 +864,18 @@ static NSString *ApolloLinkPreviewBrowserUserAgent(void) {
             && [cached.previewKind isEqualToString:@"reddit-user-profile"]
             && ((redditProfileInfo && !redditProfileInfo.suspensionChecked)
                 || (ApolloBannedProfileCachedIsSuspended(redditUsername) != previewSaysBanned));
-        if (!weakReason && !staleBluesky && !staleRedditUser && !staleRedditSubreddit && !staleRedditUserSuspension) {
+        NSString *reason = weakReason ?: (staleBluesky ? @"stale-bluesky" : (staleRedditUserSuspension ? @"stale-reddit-user-suspension" : (staleRedditUser ? @"stale-reddit-user" : (staleRedditSubreddit ? @"stale-reddit-subreddit" : nil))));
+        if (!reason) {
             if (completion) completion(cached);
             return;
         }
-        ApolloLog(@"[LinkPreviews] refetching cached preview host=%@ reason=%@",
-                  logHost, weakReason ?: (staleBluesky ? @"stale-bluesky" : (staleRedditUserSuspension ? @"stale-reddit-user-suspension" : (staleRedditUser ? @"stale-reddit-user" : @"stale-reddit-subreddit"))));
+        // Once per launch; afterwards the cached entry stands, whatever the
+        // rules make of it (see ApolloLinkPreviewMarkCachedRefetchAttempted).
+        if (!ApolloLinkPreviewMarkCachedRefetchAttempted(url, reason)) {
+            if (completion) completion(cached);
+            return;
+        }
+        ApolloLog(@"[LinkPreviews] refetching cached preview host=%@ reason=%@", logHost, reason);
         if (staleRedditUserSuspension && redditUsername.length > 0) {
             [[ApolloLinkPreviewCache sharedCache] removePreviewsForRedditUsername:redditUsername];
         }
@@ -856,6 +938,7 @@ static NSString *ApolloLinkPreviewBrowserUserAgent(void) {
 }
 
 + (void)finishURL:(NSURL *)url preview:(ApolloLinkPreview *)preview {
+    ApolloLinkPreviewNoteFetchedThisLaunch(url);
     if (!preview) {
         // Negatively cache the failure so the next layout resolves from cache
         // instead of refetching. Without this, a URL that always 404s (e.g. a
@@ -1265,6 +1348,12 @@ static NSString *ApolloLinkPreviewBrowserUserAgent(void) {
             if (error || !data || httpResponse.statusCode < 200 || httpResponse.statusCode >= 300) {
                 ApolloLogError(@"[LinkPreviews] Bluesky post fetch failed host=%@ status=%ld err=%@",
                           ApolloLinkPreviewHost(url), (long)httpResponse.statusCode, error.localizedDescription);
+                if (ApolloBlueskyStatusMeansGone(error, httpResponse.statusCode)) {
+                    ApolloLog(@"[LinkPreviews] Bluesky post is gone (HTTP %ld); caching the unavailable card actor=%@",
+                              (long)httpResponse.statusCode, actor);
+                    completion(ApolloBlueskyUnavailablePostPreview(actor));
+                    return;
+                }
                 completion(nil);
                 return;
             }
@@ -1273,6 +1362,13 @@ static NSString *ApolloLinkPreviewBrowserUserAgent(void) {
             NSDictionary *thread = [json[@"thread"] isKindOfClass:[NSDictionary class]] ? json[@"thread"] : nil;
             NSDictionary *post = [thread[@"post"] isKindOfClass:[NSDictionary class]] ? thread[@"post"] : nil;
             if (![post isKindOfClass:[NSDictionary class]]) {
+                // A 200 whose thread is a notFoundPost / blockedPost stub.
+                if (thread) {
+                    ApolloLog(@"[LinkPreviews] Bluesky post is gone (%@); caching the unavailable card actor=%@",
+                              [thread[@"$type"] isKindOfClass:[NSString class]] ? thread[@"$type"] : @"no post", actor);
+                    completion(ApolloBlueskyUnavailablePostPreview(actor));
+                    return;
+                }
                 completion(nil);
                 return;
             }
@@ -1331,7 +1427,8 @@ static NSString *ApolloLinkPreviewBrowserUserAgent(void) {
             }
 
             preview.imageURL = ApolloLinkPreviewURLFromString(imageString, url);
-            ApolloLog(@"[LinkPreviews] Bluesky preview fetched handle=%@ image=%@", handle ?: actor, preview.imageURL.absoluteString.length > 0 ? @"YES" : @"NO");
+            // Not the handle: a Bluesky handle is a person (and has no u/ for the export scrub to catch).
+            ApolloLog(@"[LinkPreviews] Bluesky preview fetched handle=%@ image=%@", (handle ?: actor).length > 0 ? @"YES" : @"NO", preview.imageURL.absoluteString.length > 0 ? @"YES" : @"NO");
 
             if (avatarOnlyImage && preview.imageURL.absoluteString.length > 0) {
                 [self imageURLIsUsable:preview.imageURL completion:^(BOOL usable) {
@@ -1360,8 +1457,12 @@ static NSString *ApolloLinkPreviewBrowserUserAgent(void) {
     [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
         if (error || !data || httpResponse.statusCode < 200 || httpResponse.statusCode >= 300) {
-            ApolloLogError(@"[LinkPreviews] Bluesky handle resolve failed actor=%@ status=%ld err=%@",
-                      actor, (long)httpResponse.statusCode, error.localizedDescription);
+            ApolloLogError(@"[LinkPreviews] Bluesky handle resolve failed actor=%lu chars status=%ld err=%@",
+                      (unsigned long)actor.length, (long)httpResponse.statusCode, error.localizedDescription);
+            if (ApolloBlueskyStatusMeansGone(error, httpResponse.statusCode)) {
+                completion(ApolloBlueskyUnavailablePostPreview(actor));
+                return;
+            }
             completion(nil);
             return;
         }
@@ -1400,16 +1501,25 @@ static NSURL *ApolloLinkPreviewWWWSiblingURL(NSURL *url) {
         return;
     }
     NSURL *sibling = ApolloLinkPreviewWWWSiblingURL(url);
-    [self fetchRedditInfoPreviewForExactURL:url completion:^(ApolloLinkPreview *preview) {
-        if (preview || !sibling) {
+    [self fetchRedditInfoPreviewForExactURL:url completion:^(ApolloLinkPreview *preview, BOOL unknownToReddit) {
+        // The sibling only helps when Reddit has no submission of the exact
+        // URL. When it has some but none carries a preview, Reddit's scraper
+        // already met this site's wall; when the lookup failed (a 429, a
+        // blocked session), the sibling would fail the same way. Either way it
+        // would only spend another Reddit request (issue #1573).
+        if (preview || !sibling || !unknownToReddit) {
             completion(preview);
             return;
         }
-        [self fetchRedditInfoPreviewForExactURL:sibling completion:completion];
+        [self fetchRedditInfoPreviewForExactURL:sibling completion:^(ApolloLinkPreview *siblingPreview, __unused BOOL siblingUnknown) {
+            completion(siblingPreview);
+        }];
     }];
 }
 
-+ (void)fetchRedditInfoPreviewForExactURL:(NSURL *)url completion:(ApolloLinkPreviewCompletion)completion {
+// unknownToReddit is YES only when the lookup succeeded and Reddit has no
+// submission of this exact URL.
++ (void)fetchRedditInfoPreviewForExactURL:(NSURL *)url completion:(void (^)(ApolloLinkPreview *preview, BOOL unknownToReddit))completion {
     // Form-strict escaping: the URL goes in a query VALUE, so its own '&', '=',
     // '?' and '+' must all be percent-encoded (URLQueryAllowedCharacterSet
     // would leave them bare and truncate the lookup at the first '&').
@@ -1422,11 +1532,24 @@ static NSURL *ApolloLinkPreviewWWWSiblingURL(NSURL *url) {
     });
     NSString *escaped = [url.absoluteString stringByAddingPercentEncodingWithAllowedCharacters:valueAllowed];
     if (escaped.length == 0) {
-        completion(nil);
+        completion(nil, NO);
         return;
     }
 
     NSString *token = ApolloActiveAccountRedditBearerToken();
+    // Without a bearer this goes out on the active API-Key-Free session's
+    // cookie, and it is an optional lookup: while Reddit refuses that session
+    // (HTTP 429, ApolloWebJSONOptionalReadBackoff) it would only be refused
+    // too, and pile onto the limit.
+    if (token.length == 0) {
+        NSTimeInterval hold = ApolloWebJSONOptionalReadBackoff(ApolloActiveWebSessionUsername());
+        if (hold > 0) {
+            ApolloLog(@"[LinkPreviews] Skipping the Reddit info lookup host=%@ while Reddit rate-limits the session (%.0fs)",
+                      ApolloLinkPreviewHost(url), hold);
+            completion(nil, NO);
+            return;
+        }
+    }
     NSString *urlString = token.length > 0
         ? [@"https://oauth.reddit.com/api/info.json?raw_json=1&url=" stringByAppendingString:escaped]
         : [@"https://www.reddit.com/api/info.json?raw_json=1&url=" stringByAppendingString:escaped];
@@ -1440,7 +1563,7 @@ static NSURL *ApolloLinkPreviewWWWSiblingURL(NSURL *url) {
         if (error || !data || httpResponse.statusCode < 200 || httpResponse.statusCode >= 300) {
             ApolloLogError(@"[LinkPreviews] Reddit info lookup failed host=%@ status=%ld err=%@",
                       ApolloLinkPreviewHost(url), (long)httpResponse.statusCode, error.localizedDescription);
-            completion(nil);
+            completion(nil, NO);
             return;
         }
 
@@ -1460,7 +1583,7 @@ static NSURL *ApolloLinkPreviewWWWSiblingURL(NSURL *url) {
         if (!bestPost) {
             ApolloLog(@"[LinkPreviews] Reddit info lookup: no submission with preview host=%@ children=%lu",
                       ApolloLinkPreviewHost(url), (unsigned long)children.count);
-            completion(nil);
+            completion(nil, children != nil && children.count == 0);
             return;
         }
 
@@ -1474,12 +1597,12 @@ static NSURL *ApolloLinkPreviewWWWSiblingURL(NSURL *url) {
         }
         preview.fetchedAt = [NSDate date];
         if (preview.imageURL.absoluteString.length == 0) {
-            completion(nil);
+            completion(nil, NO);
             return;
         }
         ApolloLog(@"[LinkPreviews] Reddit info harvested preview host=%@ image=%.0fx%.0f",
                   ApolloLinkPreviewHost(url), preview.imageSize.width, preview.imageSize.height);
-        completion(preview);
+        completion(preview, NO);
     }] resume];
 }
 
@@ -1735,7 +1858,7 @@ static NSData *ApolloLinkPreviewHeadSliceOfData(NSData *data) {
         // still open for a browser-shaped client, so spend the one retry on it
         // before falling back to Crossref / Reddit-harvest / favicon.
         if (ApolloLinkPreviewIsBlockedPage(preview.title, html)) {
-            ApolloLog(@"[LinkPreviews] blocked-page sniff matched %@ title=%@", url.absoluteString, preview.title);
+            ApolloLog(@"[LinkPreviews] blocked-page sniff matched %@ title=%@", ApolloLinkPreviewHost(url), ApolloLogPageTitleKind(preview.title));
             if (!browserFallback) {
                 [self fetchHTMLPreviewForURL:url allowRange:NO browserFallback:YES completion:completion];
                 return;

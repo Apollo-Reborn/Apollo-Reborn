@@ -71,8 +71,8 @@ void ApolloAccountCredentialsSet(NSString *username, NSString *clientId, NSStrin
         @"redirectURI": redirectURI ?: @"",
     };
     ApolloSaveRawAccountCredentials(all);
-    ApolloLog(@"[AccountCredentials] Stored per-account credentials for u/%@ (clientId=%@)",
-              username, (clientId.length > 0 ? clientId : @"<empty>"));
+    ApolloLog(@"[AccountCredentials] Stored per-account credentials for u/%@ (key #%@)",
+              username, ApolloLogFingerprint(clientId));
 }
 
 void ApolloAccountCredentialsRemove(NSString *username) {
@@ -501,13 +501,14 @@ void ApolloAccountCredentialsBeginInteractiveSignIn(id credential) {
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     // Name the active account's own key too, so an exported log shows whether
-    // it differed (the #1232 trap: the sign-in used to send it).
-    ApolloLog(@"[AccountCredentials] New sign-in uses %@ (clientId=%@, redirect=%@); active account %@ keeps its own (clientId=%@)",
+    // it differed (the #1232 trap: the sign-in used to send it). Fingerprints,
+    // not the client IDs: the ID is the user's API key and exports are public.
+    ApolloLog(@"[AccountCredentials] New sign-in uses %@ (key #%@, redirect=%@); active account %@ keeps its own (key #%@)",
               usesDefault ? @"the default API key" : @"the active account's key (no default API key set)",
-              snapshot.clientId.length > 0 ? snapshot.clientId : @"<empty>",
+              ApolloLogFingerprint(snapshot.clientId),
               snapshot.redirectURI.length > 0 ? snapshot.redirectURI : defaultRedirectURI,
               active.length > 0 ? [@"u/" stringByAppendingString:active] : @"<none>",
-              activeEntry.clientId.length > 0 ? activeEntry.clientId : @"<default>");
+              activeEntry.clientId.length > 0 ? ApolloLogFingerprint(activeEntry.clientId) : @"<default>");
 }
 
 ApolloAccountCredentialEntry *ApolloInteractiveSignInCredentialsFor(id credential) {
@@ -549,12 +550,12 @@ BOOL ApolloAccountCredentialsPinInteractiveSignIn(id client, NSString *username)
     if (previous && (![previous.clientId isEqualToString:snapshot.clientId] ||
                      ![previous.clientSecret isEqualToString:snapshot.clientSecret] ||
                      ![previous.redirectURI isEqualToString:snapshot.redirectURI])) {
-        ApolloLog(@"[AccountCredentials] u/%@ signed in with clientId=%@; saved that key for it, replacing clientId=%@",
-                  username, snapshot.clientId.length > 0 ? snapshot.clientId : @"<empty>",
-                  previous.clientId.length > 0 ? previous.clientId : @"<empty>");
+        ApolloLog(@"[AccountCredentials] u/%@ signed in with key #%@; saved that key for it, replacing key #%@",
+                  username, ApolloLogFingerprint(snapshot.clientId),
+                  ApolloLogFingerprint(previous.clientId));
     } else {
-        ApolloLog(@"[AccountCredentials] u/%@ signed in with clientId=%@; saved that key for it",
-                  username, snapshot.clientId.length > 0 ? snapshot.clientId : @"<empty>");
+        ApolloLog(@"[AccountCredentials] u/%@ signed in with key #%@; saved that key for it",
+                  username, ApolloLogFingerprint(snapshot.clientId));
     }
     return YES;
 }

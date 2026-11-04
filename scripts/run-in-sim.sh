@@ -27,8 +27,8 @@
 #   scripts/run-in-sim.sh --backup my.zip # preload an Apollo settings backup (API keys + account)
 #
 # Xcode 27 / Device Hub:
-#   - The simulator GUI is now Device Hub (com.apple.dt.Devices), not Simulator.app;
-#     this script opens whichever is present.
+#   - Device Hub (com.apple.dt.Devices) is the simulator GUI for this workflow.
+#     This script never opens Simulator.app as an automatic fallback.
 #   - `--drive`'s screenshot is taken via `simctl io screenshot`, not idb — idb's
 #     screenshot RPC doesn't work against Xcode 27's iOS-27 sims. `idb ui describe-all`
 #     (the accessibility tree) is unaffected.
@@ -170,13 +170,24 @@ if [[ -f "$APP_DIR/Info.plist" ]]; then
 fi
 # Liquid Glass is an irreversible patch baked into the cached shell (SDK bump +
 # Assets.car swap), so re-prepare when the requested --glass state differs from
-# what's cached. The cached state is read from the main binary's linked SDK:
-# >= 19.0 (iOS 26) means glass is on.
+# what's cached. Glass now advertises sdk 27.1 (Duo full-bleed + IsLiquidGlass).
+# A leftover sdk 19.0 / 26.x shell still looks "glass" but letterboxes on Duo.
+# >= 19.0 means glass is on; glass also requires major.minor >= 27.1.
 if [[ -f "$APP_DIR/Apollo" ]]; then
-    CACHED_SDK_MAJOR="$(vtool -show-build "$APP_DIR/Apollo" 2>/dev/null | awk '/sdk/{split($2,v,"."); print v[1]}')"
-    CACHED_GLASS=0; [[ -n "$CACHED_SDK_MAJOR" && "$CACHED_SDK_MAJOR" -ge 19 ]] && CACHED_GLASS=1
-    if [[ "$CACHED_GLASS" != "$GLASS" ]]; then
-        log "Requested glass=$GLASS differs from prepared glass=$CACHED_GLASS — re-preparing app"
+    CACHED_SDK="$(vtool -show-build "$APP_DIR/Apollo" 2>/dev/null | awk '/sdk/{print $2; exit}')"
+    CACHED_SDK_MAJOR="${CACHED_SDK%%.*}"
+    CACHED_SDK_REST="${CACHED_SDK#*.}"
+    CACHED_SDK_MINOR="${CACHED_SDK_REST%%.*}"
+    CACHED_GLASS=0
+    [[ -n "$CACHED_SDK_MAJOR" && "$CACHED_SDK_MAJOR" -ge 19 ]] && CACHED_GLASS=1
+    CACHED_DUO=0
+    if [[ -n "$CACHED_SDK_MAJOR" && "$CACHED_SDK_MAJOR" -gt 27 ]]; then
+        CACHED_DUO=1
+    elif [[ "$CACHED_SDK_MAJOR" == 27 && "${CACHED_SDK_MINOR:-0}" -ge 1 ]]; then
+        CACHED_DUO=1
+    fi
+    if [[ "$CACHED_GLASS" != "$GLASS" || ( "$GLASS" == 1 && "$CACHED_DUO" != 1 ) ]]; then
+        log "Requested glass=$GLASS (sdk 27.1) differs from prepared glass=$CACHED_GLASS sdk=${CACHED_SDK:-none} — re-preparing app"
         FRESH_APP=1
     fi
 fi
@@ -185,16 +196,25 @@ if [[ "$FRESH_APP" == 1 || ! -d "$APP_DIR" ]]; then
     [[ -f "$BASE_IPA" ]] || die "base IPA not found at $BASE_IPA (set BASE_IPA=...)"
 
     # With --glass, prep from a Liquid-Glass-patched base produced by the canonical
-    # patch.sh --liquid-glass (SDK bump to iOS 26 + duplicate-LC_RPATH fix + Assets.car
+    # patch.sh --liquid-glass (SDK bump to 27.1 + duplicate-LC_RPATH fix + Assets.car
     # swap + CFBundleAlternateIcons metadata — the latter is what flips the tweak's
-    # icon-picker on). Cached as ./.sim/glass-base.ipa; regenerated only when the base
-    # IPA changes. The platform patch below then re-targets it at the simulator.
+    # icon-picker on). Cached as ./.sim/glass-base.ipa; regenerated when the base
+    # IPA changes or the cached bump is older than 27.1. The platform patch below
+    # then re-targets it at the simulator.
     SRC_IPA="$BASE_IPA"
     if [[ "$GLASS" == 1 ]]; then
         SRC_IPA="$WORK_DIR/glass-base.ipa"
+        GLASS_SDK_STAMP="$WORK_DIR/glass-base.sdk"
+        NEED_GLASS_BASE=0
         if [[ ! -f "$SRC_IPA" || "$BASE_IPA" -nt "$SRC_IPA" ]]; then
-            log "Generating Liquid Glass base IPA via patch.sh --liquid-glass (cached at $SRC_IPA)"
+            NEED_GLASS_BASE=1
+        elif [[ ! -f "$GLASS_SDK_STAMP" || "$(cat "$GLASS_SDK_STAMP" 2>/dev/null)" != "27.1" ]]; then
+            NEED_GLASS_BASE=1
+        fi
+        if [[ "$NEED_GLASS_BASE" == 1 ]]; then
+            log "Generating Liquid Glass base IPA via patch.sh --liquid-glass (sdk 27.1; cached at $SRC_IPA)"
             ./patch.sh "$BASE_IPA" --liquid-glass -o "$SRC_IPA"
+            echo "27.1" > "$GLASS_SDK_STAMP"
         fi
     fi
 
@@ -297,9 +317,9 @@ if ! xcrun simctl list devices booted | grep -q "$DEV"; then
     log "Booting simulator $DEV"
     xcrun simctl boot "$DEV" 2>/dev/null || true
 fi
-# Xcode 27 replaced Simulator.app with Device Hub (bundle id com.apple.dt.Devices);
-# fall back to the old name for Xcode <= 26.
-open -a "Device Hub" >/dev/null 2>&1 || open -a Simulator >/dev/null 2>&1 || true
+# Use Device Hub only. A missing GUI must not launch a different simulator app;
+# simctl can still finish preparing and launching the guest without opening it.
+open -b com.apple.dt.Devices >/dev/null 2>&1 || true
 echo "$DEV" > "$WORK_DIR/device.txt"
 
 if [[ -n "$APPEARANCE" ]]; then
@@ -315,6 +335,42 @@ fi
 # next launch instead of being shadowed by stale cached values.
 if [[ -n "$BACKUP_ZIP" ]]; then
     xcrun simctl uninstall "$DEV" "$BUNDLE_ID" >/dev/null 2>&1 || true
+fi
+
+# ----------------------------------------------------------------------------
+# 3b. Bake the tweak into the app bundle so it survives a cold launch.
+# ----------------------------------------------------------------------------
+# DYLD_INSERT_LIBRARIES (via SIMCTL_CHILD_) only applies to the single process
+# `simctl launch` spawns — environment variables belong to a process, not to an
+# app. Quitting Apollo and reopening it from the home screen therefore used to
+# give you stock Apollo with the tweak silently absent, which is easy to mistake
+# for "my change did nothing".
+#
+# So install it properly instead: drop the dylib into Frameworks/ (already an
+# rpath, and already signed as nested code) and add a real LC_LOAD_DYLIB to the
+# main binary. Then dyld loads it however the app is started — icon tap, cold
+# boot, or this script — which also matches how the device build behaves.
+#
+# The load command only needs adding once and the helper is idempotent, but the
+# dylib file itself is replaced on every run, so the app is re-signed each time.
+INJECTED=0
+BAKED_DYLIB="$APP_DIR/Frameworks/ApolloReborn.dylib"
+if cp "$DYLIB_DST" "$BAKED_DYLIB" 2>/dev/null; then
+    install_name_tool -id "@rpath/ApolloReborn.dylib" "$BAKED_DYLIB" 2>/dev/null || true
+    codesign -f -s - "$BAKED_DYLIB" >/dev/null 2>&1
+    if python3 "$(dirname "$0")/macho-add-load-dylib.py" \
+            "$APP_DIR/Apollo" "@rpath/ApolloReborn.dylib"; then
+        codesign -f -s - "$APP_DIR" >/dev/null 2>&1
+        INJECTED=1
+    fi
+fi
+
+if [[ "$INJECTED" != 1 ]]; then
+    # Not fatal: fall back to the old per-launch injection so the script still
+    # works, but say so, because the difference is invisible until you quit the
+    # app and wonder where the tweak went.
+    echo "  (could not bake the dylib into the bundle; falling back to per-launch" >&2
+    echo "   injection — the tweak will NOT survive quitting and reopening Apollo)" >&2
 fi
 
 log "Installing app"
@@ -369,12 +425,19 @@ if [[ "$DO_LOGS" == 1 ]]; then
     LOG_PID="$(cat "$WORK_DIR/logpid" 2>/dev/null || true)"
 fi
 
-log "Launching $BUNDLE_ID with ApolloReborn.dylib injected"
-DYLIB_INJECT="/tmp/ApolloRebornSim-${BUNDLE_ID//[^A-Za-z0-9_.-]/_}.dylib"
-cp "$DYLIB_DST" "$DYLIB_INJECT"
-codesign -f -s - "$DYLIB_INJECT" >/dev/null 2>&1
-SIMCTL_CHILD_DYLD_INSERT_LIBRARIES="$DYLIB_INJECT" \
+if [[ "$INJECTED" == 1 ]]; then
+    # The load command does the work; injecting as well would load the dylib
+    # twice in one process and run every %ctor twice, double-installing hooks.
+    log "Launching $BUNDLE_ID (tweak linked into the bundle)"
     xcrun simctl launch "$DEV" "$BUNDLE_ID"
+else
+    log "Launching $BUNDLE_ID with ApolloReborn.dylib injected"
+    DYLIB_INJECT="/tmp/ApolloRebornSim-${BUNDLE_ID//[^A-Za-z0-9_.-]/_}.dylib"
+    cp "$DYLIB_DST" "$DYLIB_INJECT"
+    codesign -f -s - "$DYLIB_INJECT" >/dev/null 2>&1
+    SIMCTL_CHILD_DYLD_INSERT_LIBRARIES="$DYLIB_INJECT" \
+        xcrun simctl launch "$DEV" "$BUNDLE_ID"
+fi
 
 # ----------------------------------------------------------------------------
 # 5. Optional: idb UI smoke test (accessibility tree + screenshot).

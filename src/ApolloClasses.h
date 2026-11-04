@@ -13,6 +13,7 @@
 __BEGIN_DECLS
 
 extern Class ApolloClassASBackgroundLayoutSpec;
+extern Class ApolloClassASBatchContext;
 extern Class ApolloClassASButtonNode;
 extern Class ApolloClassASCellNode;
 extern Class ApolloClassASCenterLayoutSpec;
@@ -55,6 +56,7 @@ extern Class ApolloClassCommentsHeaderCellNode;
 extern Class ApolloClassCommentsHeaderSectionController;
 extern Class ApolloClassRichMediaHeaderCellNode;
 extern Class ApolloClassCommentsViewController;
+extern Class ApolloClassMoreCommentsCellNode;
 extern Class ApolloClassCompactPostCellNode;
 extern Class ApolloClassComposePostViewController;
 extern Class ApolloClassComposeViewController;
@@ -106,12 +108,14 @@ extern Class ApolloClassRedditListTableViewCell;
 extern Class ApolloClassRedditListViewController;
 extern Class ApolloClassRichMediaNode;
 extern Class ApolloClassSaveMediaActivity;
+extern Class ApolloClassSavedPostsCommentsViewController;
 extern Class ApolloClassSearchViewController;
 extern Class ApolloClassSettingsViewController;
 extern Class ApolloClassShareAsImageViewController;
 extern Class ApolloClassSubItemTableViewCell;
 extern Class ApolloClassThickSeparatorCellNode;
 extern Class ApolloClassThinSeparatorCellNode;
+extern Class ApolloClassMessageInputBar;
 extern Class ApolloClassTranslatorViewController;
 extern Class ApolloClassUIBarBadgeView;
 extern Class ApolloClassUIButtonLabel;
@@ -122,6 +126,8 @@ extern Class ApolloClassUICornerConfiguration;
 extern Class ApolloClassUIDropShadowView;
 extern Class ApolloClassUIFloatingTabBarSelectionContainerView;
 extern Class ApolloClassUIGlassEffect;
+// UIKit._UITabBarItemPlatterView (Swift): the tab platter of the iOS 27 floating/side-rail tab bar.
+extern Class ApolloClassUITabBarItemPlatterView;
 extern Class ApolloClassUIKBKeyView;
 extern Class ApolloClassUIKBVisualEffectView;
 extern Class ApolloClassUINavigationBarHostedViewContainer;

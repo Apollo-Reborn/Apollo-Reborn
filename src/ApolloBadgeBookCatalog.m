@@ -18,6 +18,16 @@ NSString *ApolloBadgeBookResourceDirectory(void) {
         NSString *innerBundlePath = [mainBundle.bundlePath stringByAppendingPathComponent:@"ApolloReborn.bundle"];
 
         NSMutableArray<NSString *> *candidates = [NSMutableArray array];
+        // The bundle's RESOURCE path, which is the one candidate that differs
+        // between platforms: on iOS it IS the bundle root, so this duplicates
+        // the next entry and costs a single -fileExistsAtPath:; on macOS it is
+        // Contents/Resources, which is where a Mac app is allowed to keep
+        // resources and where scripts/mac/package.sh puts them. Without it the badge
+        // book is permanently disabled on Mac.
+        if (mainBundle.resourcePath.length) {
+            [candidates addObject:[mainBundle.resourcePath
+                stringByAppendingPathComponent:@"ApolloRebornResources/BadgeBook"]];
+        }
         // inject-deb-local.sh: rsync'd into <App>.app/ApolloRebornResources/
         [candidates addObject:[mainBundle.bundlePath stringByAppendingPathComponent:@"ApolloRebornResources/BadgeBook"]];
         // cyan / azule / sideload deb + run-in-sim: <App>.app/ApolloReborn.bundle/

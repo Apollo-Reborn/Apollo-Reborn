@@ -3,6 +3,7 @@
 #include <stdatomic.h>
 
 Class ApolloClassASBackgroundLayoutSpec;
+Class ApolloClassASBatchContext;
 Class ApolloClassASButtonNode;
 Class ApolloClassASCellNode;
 Class ApolloClassASCenterLayoutSpec;
@@ -45,6 +46,7 @@ Class ApolloClassCommentsHeaderCellNode;
 Class ApolloClassCommentsHeaderSectionController;
 Class ApolloClassRichMediaHeaderCellNode;
 Class ApolloClassCommentsViewController;
+Class ApolloClassMoreCommentsCellNode;
 Class ApolloClassCompactPostCellNode;
 Class ApolloClassComposePostViewController;
 Class ApolloClassComposeViewController;
@@ -96,12 +98,14 @@ Class ApolloClassRedditListTableViewCell;
 Class ApolloClassRedditListViewController;
 Class ApolloClassRichMediaNode;
 Class ApolloClassSaveMediaActivity;
+Class ApolloClassSavedPostsCommentsViewController;
 Class ApolloClassSearchViewController;
 Class ApolloClassSettingsViewController;
 Class ApolloClassShareAsImageViewController;
 Class ApolloClassSubItemTableViewCell;
 Class ApolloClassThickSeparatorCellNode;
 Class ApolloClassThinSeparatorCellNode;
+Class ApolloClassMessageInputBar;
 Class ApolloClassTranslatorViewController;
 Class ApolloClassUIBarBadgeView;
 Class ApolloClassUIButtonLabel;
@@ -112,6 +116,7 @@ Class ApolloClassUICornerConfiguration;
 Class ApolloClassUIDropShadowView;
 Class ApolloClassUIFloatingTabBarSelectionContainerView;
 Class ApolloClassUIGlassEffect;
+Class ApolloClassUITabBarItemPlatterView;
 Class ApolloClassUIKBKeyView;
 Class ApolloClassUIKBVisualEffectView;
 Class ApolloClassUINavigationBarHostedViewContainer;
@@ -136,6 +141,7 @@ static void ApolloClassesImageLoaded(const struct mach_header *header) {
 __attribute__((constructor)) static void ApolloClassesResolve(void) {
     objc_addLoadImageFunc(ApolloClassesImageLoaded);
     ApolloClassASBackgroundLayoutSpec = objc_getClass("ASBackgroundLayoutSpec");
+    ApolloClassASBatchContext = objc_getClass("ASBatchContext");
     ApolloClassASButtonNode = objc_getClass("ASButtonNode");
     ApolloClassASCellNode = objc_getClass("ASCellNode");
     ApolloClassASCenterLayoutSpec = objc_getClass("ASCenterLayoutSpec");
@@ -178,6 +184,7 @@ __attribute__((constructor)) static void ApolloClassesResolve(void) {
     ApolloClassCommentsHeaderSectionController = objc_getClass("_TtC6Apollo31CommentsHeaderSectionController");
     ApolloClassRichMediaHeaderCellNode = objc_getClass("_TtC6Apollo23RichMediaHeaderCellNode");
     ApolloClassCommentsViewController = objc_getClass("_TtC6Apollo22CommentsViewController");
+    ApolloClassMoreCommentsCellNode = objc_getClass("_TtC6Apollo20MoreCommentsCellNode");
     ApolloClassCompactPostCellNode = objc_getClass("_TtC6Apollo19CompactPostCellNode");
     ApolloClassComposePostViewController = objc_getClass("_TtC6Apollo25ComposePostViewController");
     ApolloClassComposeViewController = objc_getClass("_TtC6Apollo21ComposeViewController");
@@ -229,12 +236,14 @@ __attribute__((constructor)) static void ApolloClassesResolve(void) {
     ApolloClassRedditListViewController = objc_getClass("_TtC6Apollo24RedditListViewController");
     ApolloClassRichMediaNode = objc_getClass("_TtC6Apollo13RichMediaNode");
     ApolloClassSaveMediaActivity = objc_getClass("_TtC6Apollo17SaveMediaActivity");
+    ApolloClassSavedPostsCommentsViewController = objc_getClass("_TtC6Apollo32SavedPostsCommentsViewController");
     ApolloClassSearchViewController = objc_getClass("_TtC6Apollo20SearchViewController");
     ApolloClassSettingsViewController = objc_getClass("_TtC6Apollo22SettingsViewController");
     ApolloClassShareAsImageViewController = objc_getClass("_TtC6Apollo26ShareAsImageViewController");
     ApolloClassSubItemTableViewCell = objc_getClass("_TtC6Apollo20SubItemTableViewCell");
     ApolloClassThickSeparatorCellNode = objc_getClass("_TtC6Apollo22ThickSeparatorCellNode");
     ApolloClassThinSeparatorCellNode = objc_getClass("_TtC6Apollo21ThinSeparatorCellNode");
+    ApolloClassMessageInputBar = objc_getClass("_TtC6Apollo15MessageInputBar");
     ApolloClassTranslatorViewController = objc_getClass("_TtC6Apollo24TranslatorViewController");
     ApolloClassUIBarBadgeView = objc_getClass("_UIBarBadgeView");
     ApolloClassUIButtonLabel = objc_getClass("UIButtonLabel");
@@ -245,6 +254,7 @@ __attribute__((constructor)) static void ApolloClassesResolve(void) {
     ApolloClassUIDropShadowView = objc_getClass("UIDropShadowView");
     ApolloClassUIFloatingTabBarSelectionContainerView = objc_getClass("_UIFloatingTabBarSelectionContainerView");
     ApolloClassUIGlassEffect = objc_getClass("UIGlassEffect");
+    ApolloClassUITabBarItemPlatterView = objc_getClass("_TtC5UIKit24_UITabBarItemPlatterView");
     ApolloClassUIKBKeyView = objc_getClass("UIKBKeyView");
     ApolloClassUIKBVisualEffectView = objc_getClass("UIKBVisualEffectView");
     ApolloClassUINavigationBarHostedViewContainer = objc_getClass("_UINavigationBarHostedViewContainer");

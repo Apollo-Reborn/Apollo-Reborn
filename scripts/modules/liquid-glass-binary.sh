@@ -2,8 +2,10 @@
 # patch_liquid_glass_binary_in_app <app_bundle>
 #
 # Applies the iOS 26 Liquid Glass BINARY patches to the main app executable:
-#   * vtool build-version bump (ios 15.0 / sdk 19.0) — flips IsLiquidGlass() on,
-#     opting the app into the iOS 26 Liquid Glass UI runtime.
+#   * vtool build-version bump (ios 15.0 / sdk 27.1) — flips IsLiquidGlass() on
+#     (SDK major >= 19) and advertises iOS 27.1 so iPhone Duo stops
+#     letterboxing the guest in a phone-sized column. SDK 19.0 was enough
+#     for Liquid Glass; Duo's full-bleed canvas requires 27.1.
 #   * removal of the duplicate @executable_path/Frameworks LC_RPATH entry, which
 #     iOS 26 dyld rejects at launch.
 #
@@ -23,8 +25,8 @@ patch_liquid_glass_binary_in_app() {
         return 1
     fi
 
-    echo "vtool: bumping build version to ios 15.0 / sdk 19.0..."
-    vtool -set-build-version ios 15.0 19.0 -replace -output "$executable_path" "$executable_path"
+    echo "vtool: bumping build version to ios 15.0 / sdk 27.1..."
+    vtool -set-build-version ios 15.0 27.1 -replace -output "$executable_path" "$executable_path"
 
     echo "Checking for duplicate @executable_path/Frameworks LC_RPATH entries..."
     local rpath_count

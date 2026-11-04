@@ -101,7 +101,8 @@ static void AHVResolveStreamable(NSString *shortcode,
                                                   timeoutInterval:12.0];
     [req setValue:@"application/json" forHTTPHeaderField:@"Accept"];
     [req setValue:AHVUserAgent() forHTTPHeaderField:@"User-Agent"];
-    ApolloLog(@"[HostedVideo] streamable resolving shortcode=%@", shortcode);
+    // No IDs: a shortcode/gif ID is the video's URL, and callers log the host only on purpose.
+    ApolloLog(@"[HostedVideo] streamable resolving");
     NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req
         completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]]
@@ -144,7 +145,7 @@ static void AHVResolveRedgifs(NSString *gifID,
                                                       timeoutInterval:12.0];
     [authReq setValue:ua forHTTPHeaderField:@"User-Agent"];
     [authReq setValue:@"application/json" forHTTPHeaderField:@"Accept"];
-    ApolloLog(@"[HostedVideo] redgifs minting token for id=%@", gifID);
+    ApolloLog(@"[HostedVideo] redgifs minting token");
 
     NSURLSessionDataTask *authTask = [[NSURLSession sharedSession] dataTaskWithRequest:authReq
         completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {

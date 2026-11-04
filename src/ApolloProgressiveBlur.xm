@@ -215,7 +215,8 @@ static void ApolloProgressiveBlurUpdateForBar(UINavigationBar *bar) {
     BOOL wanted = IsLiquidGlass() &&
                   ApolloResolvedScrollEdgeEffectStyle() == ApolloScrollEdgeEffectStyleBlur &&
                   bar.window != nil &&
-                  bar.superview != nil;
+                  bar.superview != nil &&
+                  ![bar.accessibilityIdentifier isEqualToString:@"ApolloReborn.duo-sidebar-bar"];
     if (!wanted) {
         if (blurView) {
             [blurView removeFromSuperview];

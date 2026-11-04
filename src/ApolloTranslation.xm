@@ -196,6 +196,13 @@ static BOOL ApolloLibreHostIsPublicInstance(NSString *host) {
     return NO;
 }
 
+// A host for a log line: public instances by name, a self-hosted one (the
+// user's own server) as "self-hosted".
+static NSString *ApolloLibreLogHost(NSString *host) {
+    if (host.length == 0) return @"(none)";
+    return ApolloLibreHostIsPublicInstance(host) ? host : @"self-hosted";
+}
+
 // Single capability predicate for "LibreTranslate cannot work as configured":
 // a keyed public instance with no key entered. The request leg's fail-fast,
 // the cross-provider fallback chooser, and the settings screen's key warning
@@ -4115,7 +4122,7 @@ static void ApolloTranslateViaLibre(NSString *text,
             // de.libretranslate.com) turns our POST into a bodyless GET and the
             // failure surfaces as a 4xx from a URL we never configured.
             NSInteger status = [httpResponse isKindOfClass:[NSHTTPURLResponse class]] ? httpResponse.statusCode : 0;
-            ApolloLog(@"[Translation] Libre HTTP %ld finalURL=%@", (long)status, httpResponse.URL.absoluteString ?: @"(none)");
+            ApolloLog(@"[Translation] Libre HTTP %ld finalHost=%@", (long)status, ApolloLibreLogHost(httpResponse.URL.host));
             // LibreTranslate reports failures as {"error": "..."} with real,
             // user-actionable text ("Visit portal.libretranslate.com to get an
             // API key") — pass it through instead of a bare status code.
@@ -4153,7 +4160,8 @@ static void ApolloTranslateViaLibre(NSString *text,
             NSString *finalHost = httpResponse.URL.host ?: requestHost;
             NSError *deliveredError = parseError;
             if (![finalHost isEqualToString:requestHost]) {
-                ApolloLog(@"[Translation] Libre instance redirected %@ → %@ (moved or shut down)", requestHost, finalHost);
+                ApolloLog(@"[Translation] Libre instance redirected %@ → %@ (moved or shut down)",
+                          ApolloLibreLogHost(requestHost), ApolloLibreLogHost(finalHost));
                 NSString *message = [NSString stringWithFormat:@"LibreTranslate instance %@ redirected to %@ — it has moved or shut down; set a working instance URL in Translation settings", requestHost, finalHost];
                 deliveredError = [NSError errorWithDomain:@"ApolloTranslation" code:203 userInfo:@{NSLocalizedDescriptionKey: message}];
             }
@@ -8108,6 +8116,23 @@ static void ApolloApplyGlobeMergeForNavItem(UINavigationItem *navItem) {
             : (ApolloThemeAccentColor() ?: controller.viewIfLoaded.tintColor ?: UIColor.systemBlueColor));
     UIBarButtonItem *standalone = objc_getAssociatedObject(navItem, kApolloGlobeStandaloneItemKey);
 
+    // The Duo rail already mirrors the merged globe as a native item. Leave it
+    // in the composite; detaching it or adding a standalone item shows two
+    // globes and disturbs the sort slot.
+    if (!container && ApolloNavigationActionsDuoMirrorsButton(navItem, globe)) {
+        if (standalone && [navItem.rightBarButtonItems containsObject:standalone]) {
+            NSMutableArray<UIBarButtonItem *> *its = [navItem.rightBarButtonItems mutableCopy];
+            [its removeObject:standalone];
+            sApplyingGlobeMerge = YES;
+            navItem.rightBarButtonItems = its;
+            sApplyingGlobeMerge = NO;
+            ApolloLog(@"[Translation] Globe: removed standalone item; the Duo rail already mirrors the globe on '%@'",
+                      navItem.title ?: @"(untitled)");
+        }
+        objc_setAssociatedObject(navItem, kApolloGlobeStandaloneItemKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return;
+    }
+
     if (container) {
         // Prefer the merged layout — drop any standalone fallback we added.
         if (standalone) {
@@ -8177,8 +8202,8 @@ static void ApolloApplyGlobeMergeForNavItem(UINavigationItem *navItem) {
     if (!standalone) {
         standalone = [[UIBarButtonItem alloc] initWithCustomView:ApolloStandaloneGlobeView(globe)];
         objc_setAssociatedObject(navItem, kApolloGlobeStandaloneItemKey, standalone, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        ApolloLog(@"[Translation] Globe: no trailing container to merge into on '%@' - hosting as a standalone bar item",
-                  navItem.title ?: @"(untitled)");
+        ApolloLog(@"[Translation] Globe: no trailing container to merge into (title %lu chars) - hosting as a standalone bar item",
+                  (unsigned long)navItem.title.length);
     } else if (!ApolloStandaloneItemHostsGlobe(standalone, globe)) {
         standalone.customView = ApolloStandaloneGlobeView(globe);
     }
@@ -8870,15 +8895,17 @@ static BOOL ApolloPrepareTranslatedSwapForTextNode(id textNode,
         return YES;
     }
 
-    NSString *incomingPreview = incomingText.length > 60 ? [incomingText substringToIndex:60] : incomingText;
-    NSString *origPreview = originalBody.length > 60 ? [originalBody substringToIndex:60] : originalBody;
     if (ApolloTextIsSubstantiveForOwnershipCleanup(incomingText)) {
-        ApolloLog(@"[Translation/vote] prepareSwap: NO MATCH (substantive) → CLEARING ownership node=%p incoming='%@' orig='%@'",
-                  textNode, incomingPreview, origPreview);
+        // Lengths only: this line is exported, and the text is someone's comment.
+        ApolloLog(@"[Translation/vote] prepareSwap: NO MATCH (substantive) → CLEARING ownership node=%p incoming=%lu chars orig=%lu chars",
+                  textNode, (unsigned long)incomingText.length, (unsigned long)originalBody.length);
         ApolloClearTranslationOwnershipForTextNode(textNode);
     } else {
+        // Debug level (never exported); the previews are built only when it is compiled in.
         ApolloTranslationVerboseLog("[Translation/vote] prepareSwap: NO MATCH (non-substantive, keeping ownership) node=%p incoming='%{public}@' orig='%{public}@'",
-                                    textNode, incomingPreview, origPreview);
+                                    textNode,
+                                    incomingText.length > 60 ? [incomingText substringToIndex:60] : incomingText,
+                                    originalBody.length > 60 ? [originalBody substringToIndex:60] : originalBody);
     }
     return NO;
 }
@@ -10611,8 +10638,9 @@ static void ApolloFeedVCInstallGlobe(UIViewController *vc) {
         }
     }
     if (!alreadyMarked) {
-        ApolloLog(@"[Translation] InstallGlobe class=%@ ptr=%p title='%@'",
-                  NSStringFromClass([vc class]), vc, vc.navigationItem.title ?: vc.title ?: @"(none)");
+        // Title length, not the title: on a search screen it is the query.
+        ApolloLog(@"[Translation] InstallGlobe class=%@ ptr=%p title=%lu chars",
+                  NSStringFromClass([vc class]), vc, (unsigned long)(vc.navigationItem.title ?: vc.title).length);
     }
     if (sPendingVisibleFeedTitleApplied && ApolloControllerIsInTranslatedMode(vc)) {
         objc_setAssociatedObject(vc, kApolloVisibleTranslationAppliedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -11294,22 +11322,31 @@ static void ApolloReapplyTranslationOnAppResume(void) {
 }
 
 // Return the globe before UIKit measures or snapshots the restored action pill.
-static void ApolloRestoreGlobeBeforeSearchDismissal(UINavigationItem *navItem,
-                                                   NSArray<UIBarButtonItem *> *items) {
+// Returns the incoming items minus the standalone item, which is left as is:
+// setting customView on an installed item makes UIKit replace the view at its
+// OLD index, an NSRangeException when the new array is shorter (Duo controls
+// swapping four trailing items for one).
+static NSArray<UIBarButtonItem *> *ApolloRestoreGlobeBeforeSearchDismissal(UINavigationItem *navItem,
+                                                                         NSArray<UIBarButtonItem *> *items) {
     if (!IsLiquidGlass() || sApplyingGlobeMerge ||
-        [objc_getAssociatedObject(navItem, kApolloGlobeRemovalPendingKey) boolValue]) return;
+        [objc_getAssociatedObject(navItem, kApolloGlobeRemovalPendingKey) boolValue]) return items;
     UIBarButtonItem *standalone = objc_getAssociatedObject(navItem, kApolloGlobeStandaloneItemKey);
     UIButton *globe = objc_getAssociatedObject(navItem, kApolloGlobeMergeButtonKey);
     if (!globe || !ApolloStandaloneItemHostsGlobe(standalone, globe) ||
-        ![navItem.rightBarButtonItems containsObject:standalone]) return;
+        ![navItem.rightBarButtonItems containsObject:standalone]) return items;
     UIView *container = ApolloFindTrailingButtonContainerInItems(items, globe);
     if (!container ||
         ApolloNativeActionMenuOwnsNavigationSurface(ApolloNavigationActionsMenuSourceView(globe)) ||
-        ApolloNativeActionMenuOwnsNavigationSurface(ApolloNavigationActionsMenuSourceView(container))) return;
-    // Release UIKit's search adaptor before the restored strip adopts the globe.
-    standalone.customView = nil;
+        ApolloNativeActionMenuOwnsNavigationSurface(ApolloNavigationActionsMenuSourceView(container))) return items;
     objc_setAssociatedObject(navItem, kApolloGlobeStandaloneItemKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // Moving the globe only empties the standalone item's host view; the item
+    // itself leaves the bar with the array set that follows.
     [UIView performWithoutAnimation:^{ ApolloMergeGlobeIntoContainer(globe, container); }];
+    if (![items containsObject:standalone]) return items;
+    NSMutableArray<UIBarButtonItem *> *filtered = [items mutableCopy];
+    [filtered removeObject:standalone];
+    ApolloLog(@"[Translation] Globe: merged into restored container; dropped standalone item from incoming right items");
+    return filtered;
 }
 
 // Supply both search actions before the editor expands into the available gap.
@@ -11347,8 +11384,7 @@ static NSArray<UIBarButtonItem *> *ApolloSearchItemsWithGlobe(UINavigationItem *
     NSArray *prepared = ApolloSearchItemsWithGlobe(self, items);
     // Settle the button allocation first; the title capsule owns its resize.
     if (prepared != items) animated = NO;
-    items = prepared;
-    ApolloRestoreGlobeBeforeSearchDismissal(self, items);
+    items = ApolloRestoreGlobeBeforeSearchDismissal(self, prepared);
     %orig(items, animated);
     // Subreddit headers size this nav item's title against the trailing
     // cluster. The owner association makes this a small, local invalidation.
@@ -11372,7 +11408,11 @@ static NSArray<UIBarButtonItem *> *ApolloSearchItemsWithGlobe(UINavigationItem *
         [self setRightBarButtonItems:prepared animated:NO];
         return;
     }
-    ApolloRestoreGlobeBeforeSearchDismissal(self, items);
+    NSArray *restored = ApolloRestoreGlobeBeforeSearchDismissal(self, items);
+    if (restored != items) {
+        [self setRightBarButtonItems:restored animated:animated];
+        return;
+    }
     %orig(item, animated);
     if (sShowSubredditHeaders && !sApplyingGlobeMerge) ApolloSubredditRequestTitleRelayout(self);
     if (sApplyingGlobeMerge) return;

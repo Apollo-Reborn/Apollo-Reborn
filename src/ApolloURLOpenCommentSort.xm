@@ -64,6 +64,7 @@
 #import "ApolloCommon.h"
 #import "ApolloFloatingTabs.h"
 #import "ApolloPerPostCommentSort.h"
+#import "ApolloSessionRestoration.h"
 #import "ApolloState.h"
 #import "ApolloSwiftRuntime.h"
 #import "UserDefaultConstants.h"
@@ -121,6 +122,11 @@ static NSString *UCSStringProperty(id object, SEL selector) {
 // its post above even that (the screen's own last sort). `reason` names the winning rule.
 static int64_t UCSDesiredSort(id link, NSString *postID, NSString **reason) {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    int64_t restoredSort = ApolloSessionRestorationPendingCommentSortForPost(postID);
+    if (UCSIsRealSort(restoredSort)) {
+        *reason = @"Session Restore";
+        return restoredSort;
+    }
     int64_t tabSort = ApolloFloatingTabsPendingCommentSortForPost(postID);
     if (UCSIsRealSort(tabSort)) {
         *reason = @"Floating Tab";
@@ -288,18 +294,25 @@ static NSString *UCSBarePostID(NSString *identifier) {
             // use it — no second round-trip; the completion still corrects a fetch that went out on
             // something else. Live goes to the network as New, exactly as loadComments sends it, and
             // the fetch completion starts Apollo's live timer when it finds currentSort on Live.
-            int64_t tabSort = ApolloFloatingTabsPendingCommentSortForPost(postID);
-            if (UCSIsRealSort(tabSort)) {
+            int64_t openingSort = ApolloSessionRestorationPendingCommentSortForPost(postID);
+            NSString *openingReason = @"Session Restore";
+            if (!UCSIsRealSort(openingSort)) {
+                openingSort = ApolloFloatingTabsPendingCommentSortForPost(postID);
+                openingReason = @"Floating Tab";
+            }
+            if (UCSIsRealSort(openingSort)) {
                 int64_t cur = 0;
                 BOOL curSet = ApolloCommentsVCReadCurrentSort(self, &cur);
-                if (curSet && cur == tabSort) {
-                    ApolloLog(@"[URLOpenSort] %@: already on %@ (Floating Tab)", postID, ApolloCommentSortName(tabSort));
-                } else if (ApolloCommentsVCWriteCurrentSort(self, tabSort)) {
-                    ApolloLog(@"[URLOpenSort] %@: opening on %@ (Floating Tab; was %@)", postID,
-                              ApolloCommentSortName(tabSort), curSet ? ApolloCommentSortName(cur) : @"(nil)");
+                if (curSet && cur == openingSort) {
+                    ApolloLog(@"[URLOpenSort] %@: already on %@ (%@)", postID,
+                              ApolloCommentSortName(openingSort), openingReason);
+                } else if (ApolloCommentsVCWriteCurrentSort(self, openingSort)) {
+                    ApolloLog(@"[URLOpenSort] %@: opening on %@ (%@; was %@)", postID,
+                              ApolloCommentSortName(openingSort), openingReason,
+                              curSet ? ApolloCommentSortName(cur) : @"(nil)");
                 } else {
-                    ApolloLog(@"[URLOpenSort] %@: could not pre-write %@ (Floating Tab); the fetch completion will correct it",
-                              postID, ApolloCommentSortName(tabSort));
+                    ApolloLog(@"[URLOpenSort] %@: could not pre-write %@ (%@); the fetch completion will correct it",
+                              postID, ApolloCommentSortName(openingSort), openingReason);
                 }
             }
         } else {

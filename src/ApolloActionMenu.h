@@ -108,6 +108,16 @@ typedef NS_ENUM(NSInteger, ApolloActionMenuPlacement) {
 // self-dismiss while its "invoking" flag is set.
 @property (nonatomic, assign) BOOL legacyDismissesSheet;
 
+// Legacy path: render the row's title and icon in system red. Default NO uses
+// ApolloThemeAccentColor(); the donor supplies typography/geometry, not color.
+// Custom glass builders continue to set their own action attributes.
+@property (nonatomic, assign) BOOL legacyDestructive;
+
+// Legacy path: render the row in ApolloModeratorColor(), for a row that sits
+// with Apollo's own green moderator rows (PublicSticky's Notify sheet). Ignored
+// when legacyDestructive is set.
+@property (nonatomic, assign) BOOL legacyModerator;
+
 // Escape hatch for the glass path, for specs whose row can't be expressed
 // declaratively (PublicSticky clones a NATIVE UIMenuElement's title/image/
 // attributes/handler rather than building a new one, and inserts at an index it
@@ -121,6 +131,7 @@ typedef NS_ENUM(NSInteger, ApolloActionMenuPlacement) {
 @end
 
 // Register a spec. Call from a feature's %ctor, after %init.
+__BEGIN_DECLS
 void ApolloActionMenuRegister(ApolloActionMenuSpec *spec);
 
 // Customised ••• menus (Settings → Interface → Action Menus; the model lives in
@@ -198,4 +209,5 @@ NSString *_Nullable ApolloActionMenuDonorLabelText(UITableViewCell *_Nullable do
 // dismiss when the native handler dismisses it, not have that swallowed.
 void ApolloActionMenuInvokeNativeRow(id actionController, NSInteger row);
 
+__END_DECLS
 NS_ASSUME_NONNULL_END

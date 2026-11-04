@@ -958,6 +958,18 @@ static NSString *ApolloUserProfileChargedWebSessionUsername(void) {
     if (fullNames.count == 0) return;
 
     dispatch_async(self.queue, ^{
+        // Drop everyone an earlier batch already asked for first: the feed hands
+        // over a whole page each time one of its posts nears the screen (#1438),
+        // so while that page's batch is in flight most calls here add nobody new,
+        // and the credential lookups below both read the keychain.
+        NSMutableOrderedSet<NSString *> *pending = [NSMutableOrderedSet orderedSet];
+        for (NSString *fn in fullNames) {
+            if (![fn isKindOfClass:[NSString class]] || ![fn hasPrefix:@"t2_"]) continue;
+            if ([self.batchRequestedFullNames containsObject:fn]) continue;
+            [pending addObject:fn];
+        }
+        if (pending.count == 0) return;
+
         // API-Key-Free accounts have no bearer (ApolloActiveAccountRedditBearerToken
         // returns nil for them): send the batch to www.reddit.com, where the
         // chokepoint signs it in with the web session cookie. That's one request per
@@ -971,19 +983,13 @@ static NSString *ApolloUserProfileChargedWebSessionUsername(void) {
         // Nothing is marked as requested while held, so a later thread open
         // batches these authors once the budget recovers.
         if ([self holdLookupForWebSessionUsername:webSessionUsername]) return;
-        NSMutableArray<NSString *> *pending = [NSMutableArray array];
-        for (NSString *fn in fullNames) {
-            if (![fn isKindOfClass:[NSString class]] || ![fn hasPrefix:@"t2_"]) continue;
-            if ([self.batchRequestedFullNames containsObject:fn]) continue;
-            [self.batchRequestedFullNames addObject:fn];
-            [pending addObject:fn];
-        }
-        if (pending.count == 0) return;
+        [self.batchRequestedFullNames addObjectsFromArray:pending.array];
 
         // Reddit caps user_data_by_account_ids at 100 ids per request.
-        for (NSUInteger start = 0; start < pending.count; start += 100) {
-            NSRange range = NSMakeRange(start, MIN((NSUInteger)100, pending.count - start));
-            [self startBatchProfileFetchForFullNames:[pending subarrayWithRange:range] token:token];
+        NSArray<NSString *> *names = pending.array;
+        for (NSUInteger start = 0; start < names.count; start += 100) {
+            NSRange range = NSMakeRange(start, MIN((NSUInteger)100, names.count - start));
+            [self startBatchProfileFetchForFullNames:[names subarrayWithRange:range] token:token];
         }
     });
 }
@@ -1103,6 +1109,10 @@ static NSString *ApolloUserProfileChargedWebSessionUsername(void) {
 // as feed cells enter the preload range, where waiting on the queue's network
 // work would stall scrolling.
 static NSMutableDictionary<NSString *, NSString *> *sApolloAuthorFullNames;
+// t3_ post fullname -> the lowercased username -> t2_ fullname map of the whole
+// listing page it came in on (one dictionary shared by the page's posts), under
+// the same lock, so a feed cell can queue its page's authors together.
+static NSMutableDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *sApolloListingPageAuthorsByPost;
 
 - (void)noteAuthorFullNamesFromListing:(NSDictionary *)listing {
     if (![listing isKindOfClass:[NSDictionary class]]) return;
@@ -1110,6 +1120,7 @@ static NSMutableDictionary<NSString *, NSString *> *sApolloAuthorFullNames;
     NSArray *children = [data[@"children"] isKindOfClass:[NSArray class]] ? data[@"children"] : nil;
     if (children.count == 0) return;
     NSMutableDictionary<NSString *, NSString *> *found = [NSMutableDictionary dictionary];
+    NSMutableArray<NSString *> *postFullNames = [NSMutableArray array];
     for (id child in children) {
         if (![child isKindOfClass:[NSDictionary class]] || ![child[@"kind"] isEqual:@"t3"]) continue;
         NSDictionary *post = [child[@"data"] isKindOfClass:[NSDictionary class]] ? child[@"data"] : nil;
@@ -1117,13 +1128,20 @@ static NSMutableDictionary<NSString *, NSString *> *sApolloAuthorFullNames;
         NSString *fullName = [post[@"author_fullname"] isKindOfClass:[NSString class]] ? post[@"author_fullname"] : nil;
         NSString *key = [self normalizedUsername:author];
         if (key && [fullName hasPrefix:@"t2_"]) found[key] = [fullName copy];
+        NSString *postFullName = [post[@"name"] isKindOfClass:[NSString class]] ? post[@"name"] : nil;
+        if ([postFullName hasPrefix:@"t3_"]) [postFullNames addObject:[postFullName copy]];
     }
     if (found.count == 0) return;
+    NSDictionary<NSString *, NSString *> *pageAuthors = [found copy];
     @synchronized ([ApolloUserProfileCache class]) {
         if (!sApolloAuthorFullNames || sApolloAuthorFullNames.count + found.count > 4096) {
             sApolloAuthorFullNames = [NSMutableDictionary dictionary];
         }
         [sApolloAuthorFullNames addEntriesFromDictionary:found];
+        if (!sApolloListingPageAuthorsByPost || sApolloListingPageAuthorsByPost.count + postFullNames.count > 4096) {
+            sApolloListingPageAuthorsByPost = [NSMutableDictionary dictionary];
+        }
+        for (NSString *postFullName in postFullNames) sApolloListingPageAuthorsByPost[postFullName] = pageAuthors;
     }
 }
 
@@ -1133,6 +1151,22 @@ static NSMutableDictionary<NSString *, NSString *> *sApolloAuthorFullNames;
     @synchronized ([ApolloUserProfileCache class]) {
         return sApolloAuthorFullNames[key];
     }
+}
+
+- (NSArray<NSString *> *)uncachedAuthorFullNamesOnPageOfPost:(NSString *)postFullName {
+    if (![postFullName isKindOfClass:[NSString class]] || postFullName.length == 0) return nil;
+    NSDictionary<NSString *, NSString *> *pageAuthors = nil;
+    @synchronized ([ApolloUserProfileCache class]) {
+        pageAuthors = sApolloListingPageAuthorsByPost[postFullName];
+    }
+    if (pageAuthors.count == 0) return nil;
+    // Same check the feed cell makes for its own author: memory is hydrated from
+    // disk at launch, so anyone shown before needs no lookup.
+    NSMutableArray<NSString *> *uncached = [NSMutableArray arrayWithCapacity:pageAuthors.count];
+    [pageAuthors enumerateKeysAndObjectsUsingBlock:^(NSString *username, NSString *fullName, __unused BOOL *stop) {
+        if (![self cachedInfoForUsername:username].iconURL) [uncached addObject:fullName];
+    }];
+    return uncached;
 }
 
 - (UIImage *)cachedImageForURL:(NSURL *)url {

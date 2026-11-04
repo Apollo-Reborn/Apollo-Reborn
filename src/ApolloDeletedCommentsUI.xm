@@ -399,11 +399,39 @@ static BOOL ApolloDeletedCommentsCellNodeShouldShowDeletedTreatment(id cellNode)
     return ApolloDeletedCommentsTreatmentAllowedForComment(comment);
 }
 
+// Apollo's CommentCellNode has two header layouts (header builder sub_100506ea8,
+// called from -layoutSpecThatFits:). A comment that answers -isDeleted ("[deleted]"
+// author AND "[deleted]" body) or -isModeratorRemoved ("[deleted]" + "[removed]")
+// gets ONE row of [bodyNode, spacer, ageNode]: the body is drawn inline where the
+// byline would be, and the author and score nodes are not laid out at all. Every
+// other comment gets the byline row [author, score, ..., age] with the body under
+// it. Ask the model the same two questions so our layout choices always match the
+// row Apollo actually builds.
+static BOOL ApolloDeletedCommentsCommentUsesNativeDeletedRow(RDKComment *comment) {
+    if (!comment) return NO;
+    @try {
+        if ([(id)comment respondsToSelector:@selector(isDeleted)] &&
+            ((BOOL (*)(id, SEL))objc_msgSend)((id)comment, @selector(isDeleted))) return YES;
+        if ([(id)comment respondsToSelector:@selector(isModeratorRemoved)] &&
+            ((BOOL (*)(id, SEL))objc_msgSend)((id)comment, @selector(isModeratorRemoved))) return YES;
+    } @catch (__unused NSException *e) {}
+    return NO;
+}
+
 // A definitively unrecoverable placeholder has no useful author or body to show.
 // Present its complete state in Apollo's existing author row so the row stays a
 // single compact line (author/score/age/actions), both expanded and collapsed.
 // Recovered comments deliberately do NOT qualify: their restored username is
 // useful context and must remain Apollo's native collapsed byline.
+//
+// This only works when Apollo lays out the byline row. The wire patch rewrites an
+// unrecoverable placeholder's body to its reason label, which gives it that row,
+// but a placeholder classified AFTER its model was built (the archive answered
+// late: "Marked N placeholder(s) unrecoverable") keeps "[deleted]"/"[removed]" and
+// gets Apollo's deleted row instead. There the author node isn't drawn, so the
+// chip would be invisible, the emptied body would leave the row blank, and the
+// -14pt slot reclaim in -layoutSpecThatFits: would cut into the age label (#1514).
+// Those keep the inline body chip like any other placeholder.
 static BOOL ApolloDeletedCommentsCommentUsesAuthorStatusChip(RDKComment *comment) {
     NSString *fullName = ApolloDeletedCommentsFullNameForComment(comment);
     if (fullName.length == 0) return NO;
@@ -411,7 +439,8 @@ static BOOL ApolloDeletedCommentsCommentUsesAuthorStatusChip(RDKComment *comment
         ApolloDeletedCommentsClassificationForFullName(fullName, nil, nil);
     return (classification & ApolloDeletedCommentClassificationUnrecoverable) &&
            (classification & ApolloDeletedCommentClassificationPlaceholder) &&
-           !(classification & ApolloDeletedCommentClassificationRecovered);
+           !(classification & ApolloDeletedCommentClassificationRecovered) &&
+           !ApolloDeletedCommentsCommentUsesNativeDeletedRow(comment);
 }
 
 static BOOL ApolloDeletedCommentsCellNodeCanRevealRecoveredBody(id cellNode) {
@@ -2672,13 +2701,15 @@ static const void *kApolloDeletedCommentsLinkTapGestureKey = &kApolloDeletedComm
 // "links to reddit posts take you out of Apollo, into the web view"); everything else
 // opens in Apollo's web view.
 static void ApolloDeletedCommentsOpenRecoveredBodyURL(UIViewController *presenter, NSURL *url) {
-    if (!url) return;
+    UIWindowScene *scene = presenter.viewIfLoaded.window.windowScene;
+    if (!url || !scene) return;
     NSString *host = [url.host lowercaseString] ?: @"";
     BOOL isReddit = [host isEqualToString:@"redd.it"] ||
                     [host hasSuffix:@".redd.it"] ||
                     [host isEqualToString:@"reddit.com"] ||
                     [host hasSuffix:@".reddit.com"];
-    if (isReddit && ApolloRouteURLThroughApp(url)) return;
+    if (isReddit && ApolloRouteURLThroughAppInScene(
+        ApolloURLByConvertingResolvedURLToApolloScheme(url) ?: url, scene)) return;
     ApolloPresentWebURLFromViewController(presenter, url);
 }
 
@@ -3669,9 +3700,7 @@ static id __attribute__((unused)) ApolloDeletedCommentsDeletedMarkdownLayoutSpec
         ApolloDeletedCommentsClassificationForFullName(fullName, nil, nil);
     BOOL recovered = classification & ApolloDeletedCommentClassificationRecovered;
     BOOL placeholderOnly = ApolloDeletedCommentsCommentMatchesDeletedPlaceholder(comment, classification) && !recovered;
-    BOOL statusLivesInAuthorRow = (classification & ApolloDeletedCommentClassificationUnrecoverable) &&
-                                  (classification & ApolloDeletedCommentClassificationPlaceholder) &&
-                                  !recovered;
+    BOOL statusLivesInAuthorRow = ApolloDeletedCommentsCommentUsesAuthorStatusChip(comment);
     BOOL revealed = classification & ApolloDeletedCommentClassificationRevealed;
     BOOL shouldHide = ApolloDeletedCommentsFeatureActive() &&
                       sTapToRevealDeletedComments &&

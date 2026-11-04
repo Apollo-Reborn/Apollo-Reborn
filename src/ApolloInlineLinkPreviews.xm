@@ -41,6 +41,8 @@ typedef NS_ENUM(unsigned char, ApolloLinkPreviewStackAlignItems) {
     ApolloLinkPreviewStackAlignItemsStretch = 3,
 };
 
+struct CDStruct_90e057aa { CGSize min; CGSize max; };
+
 @class ASLayoutSpec;
 @class ASStackLayoutSpec;
 @class ASInsetLayoutSpec;
@@ -61,6 +63,11 @@ typedef NS_ENUM(unsigned char, ApolloLinkPreviewStackAlignItems) {
 - (void)setNeedsLayout;
 - (void)invalidateCalculatedLayout;
 - (void)onDidLoad:(void(^)(__kindof ASDisplayNode *node))body;
+- (CGRect)bounds;
+// The layout Texture last applied to the node: its size, and the size range
+// it was measured in (main thread reads).
+@property (nonatomic, readonly) CGSize calculatedSize;
+- (struct CDStruct_90e057aa)constrainedSizeForCalculatedLayout;
 // Texture ASInterfaceState bitmask: MeasureLayout=1<<0, Preload=1<<1,
 // Display=1<<2, Visible=1<<3. Thread-safe accessor (lock-guarded in Texture).
 @property (nonatomic, readonly) NSUInteger interfaceState;
@@ -96,6 +103,9 @@ typedef NS_ENUM(unsigned char, ApolloLinkPreviewStackAlignItems) {
 @property (nonatomic) CGFloat cornerRadius;
 @property (nonatomic) BOOL placeholderEnabled;
 @property (nonatomic, copy) UIColor *placeholderColor;
+// ASNetworkImageNodeDelegate (weak). Texture calls -imageNode:didLoadImage:
+// on the main thread after its own download or cache hit set the image.
+@property (nullable, nonatomic, weak) id delegate;
 @end
 
 @interface ASLayoutSpec : NSObject
@@ -126,8 +136,6 @@ typedef NS_ENUM(unsigned char, ApolloLinkPreviewStackAlignItems) {
 @interface ASBackgroundLayoutSpec : ASLayoutSpec
 + (instancetype)backgroundLayoutSpecWithChild:(id)child background:(id)background;
 @end
-
-struct CDStruct_90e057aa { CGSize min; CGSize max; };
 
 static char kApolloLinkPreviewNodesKey;
 static char kApolloLinkPreviewNodeRegisteredKey;
@@ -1513,6 +1521,34 @@ static NSCache<NSString *, NSValue *> *ApolloLPFaceRegionCache(void) {
     return cache;
 }
 
+// V26: natural h:w of every card image we have actually decoded, keyed by
+// image URL. Plenty of previews advertise no image size, and the bitmap is not
+// always in hand when a card is measured (Texture's own download lands after
+// the first pass; the bitmap cache evicts). With neither, a pass falls back to
+// the centered crop, and the next pass that does see the image re-anchors it.
+// When that next pass was a vote re-measuring the row, the photo visibly
+// jumped right after the tap (user report). Remembering the shape makes every
+// pass, and every node showing the same URL, pick the same anchor.
+static NSCache<NSString *, NSNumber *> *ApolloLPKnownImageRatioCache(void) {
+    static NSCache *cache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cache = [NSCache new];
+        cache.countLimit = 512;
+    });
+    return cache;
+}
+
+static void ApolloLPRememberImageRatio(NSString *key, CGSize imageSize) {
+    if (key.length == 0 || imageSize.width <= 1.0 || imageSize.height <= 1.0) return;
+    [ApolloLPKnownImageRatioCache() setObject:@(imageSize.height / imageSize.width) forKey:key];
+}
+
+static CGFloat ApolloLPKnownImageRatio(NSString *key) {
+    if (key.length == 0) return 0.0;
+    return [[ApolloLPKnownImageRatioCache() objectForKey:key] doubleValue];
+}
+
 static NSMutableSet<NSString *> *ApolloLPFaceScanPending(void) {
     static NSMutableSet *set;
     static dispatch_once_t once;
@@ -1592,11 +1628,12 @@ static void ApolloLPRegisterCropRefinementNode(NSString *key, ASNetworkImageNode
     }
 }
 
-static void ApolloLPSetCropAnchorY(ASNetworkImageNode *imageNode, CGFloat anchorY, BOOL redisplayIfLoaded) {
+// Returns YES when the anchor actually moved.
+static BOOL ApolloLPSetCropAnchorY(ASNetworkImageNode *imageNode, CGFloat anchorY, BOOL redisplayIfLoaded) {
     if (![imageNode respondsToSelector:@selector(setCropRect:)]
-        || ![imageNode respondsToSelector:@selector(cropRect)]) return;
+        || ![imageNode respondsToSelector:@selector(cropRect)]) return NO;
     CGRect target = CGRectMake(0.5, anchorY, 0.0, 0.0);
-    if (CGRectEqualToRect(imageNode.cropRect, target)) return;
+    if (CGRectEqualToRect(imageNode.cropRect, target)) return NO;
     imageNode.cropRect = target;
     // The setter self-redisplays only when the node is loaded AND the image is
     // larger than the bounds in points; small upscaled images miss that check,
@@ -1604,6 +1641,7 @@ static void ApolloLPSetCropAnchorY(ASNetworkImageNode *imageNode, CGFloat anchor
     if (redisplayIfLoaded && ApolloLPNetworkImageNodeHasImage(imageNode)) {
         [imageNode setNeedsDisplay];
     }
+    return YES;
 }
 
 // The faceless default: top for genuinely portrait images (that's where
@@ -1717,6 +1755,46 @@ static void ApolloLPStartFaceScanIfNeeded(NSString *key, UIImage *image, NSStrin
     });
 }
 
+// V26: a card built before its image's size was known (no size in the
+// preview metadata, bitmap not loaded yet) carries frac == 0 and the centered
+// fallback anchor. Settle the real geometry the moment a decoded image for the
+// URL shows up, instead of leaving it for whichever layout pass runs next —
+// in the feed that was often the user's vote re-measuring the row, so the
+// photo re-cropped right after the tap. Safe from any thread (the cropRect
+// accessors are locked); the explicit redraw is bounced to main.
+static void ApolloLPResolveCropGeometryForImage(ASNetworkImageNode *imageNode, NSString *key, CGSize imageSize) {
+    if (!imageNode || key.length == 0 || imageSize.width <= 1.0 || imageSize.height <= 1.0) return;
+    ApolloLPRememberImageRatio(key, imageSize);
+    NSDictionary *context = objc_getAssociatedObject(imageNode, &kApolloLinkPreviewCropContextKey);
+    if (![context[@"url"] isEqualToString:key]) return;
+    if ([context[@"frac"] doubleValue] > 0.0) return; // geometry already known
+    CGFloat boxRatio = [context[@"box"] doubleValue];
+    if (boxRatio <= 0.0) return;
+
+    CGFloat naturalRatio = imageSize.height / imageSize.width;
+    CGFloat anchorY = 0.5;
+    if (naturalRatio <= boxRatio * 1.02) {
+        // Not vertically cropped after all: keep the centered crop, stop tracking.
+        objc_setAssociatedObject(imageNode, &kApolloLinkPreviewCropContextKey, nil, OBJC_ASSOCIATION_COPY);
+    } else {
+        CGFloat visibleFrac = boxRatio / naturalRatio;
+        CGFloat defaultAnchorY = ApolloLPDefaultCropAnchorY(naturalRatio);
+        objc_setAssociatedObject(imageNode, &kApolloLinkPreviewCropContextKey,
+                                 (@{ @"url": key, @"frac": @(visibleFrac), @"default": @(defaultAnchorY),
+                                     @"box": @(boxRatio), @"natural": @(naturalRatio) }),
+                                 OBJC_ASSOCIATION_COPY);
+        NSValue *region = [ApolloLPFaceRegionCache() objectForKey:key];
+        anchorY = region ? ApolloLPCropAnchorYForFaceRegion([region CGRectValue], visibleFrac, defaultAnchorY) : defaultAnchorY;
+    }
+    if (!ApolloLPSetCropAnchorY(imageNode, anchorY, NO) || !ApolloLPNetworkImageNodeHasImage(imageNode)) return;
+    if ([NSThread isMainThread]) {
+        [imageNode setNeedsDisplay];
+    } else {
+        __weak ASNetworkImageNode *weakImageNode = imageNode;
+        dispatch_async(dispatch_get_main_queue(), ^{ [weakImageNode setNeedsDisplay]; });
+    }
+}
+
 // Tap on every point where a real UIImage becomes observable for a node
 // (Texture load noticed on a layout pass / 900ms recheck, fallback fetch
 // applied). Only nodes a card builder marked as vertically cropped carry the
@@ -1726,12 +1804,19 @@ static void ApolloLPMaybeKickFaceScanForNode(ASNetworkImageNode *imageNode, NSUR
     if (key.length == 0) return;
     NSDictionary *context = objc_getAssociatedObject(imageNode, &kApolloLinkPreviewCropContextKey);
     if (![context[@"url"] isEqualToString:key]) return;
-    // Only scan images with KNOWN tall geometry: with frac == 0 (size unknown)
-    // a face region couldn't be applied anyway, and the pass that learns the
-    // real size re-kicks with the image already in the fallback cache.
-    if ([context[@"frac"] doubleValue] <= 0.0) return;
-    // Never scan a stale previous-URL bitmap under this URL's cache key.
+    // Never scan (or take the shape of) a stale previous-URL bitmap under
+    // this URL's cache key.
     if (!ApolloLPNodeImageBelongsToURL(imageNode, key)) return;
+    // V26: the card was measured before the image's size was known; settle
+    // the anchor from this bitmap now, then scan with the real geometry.
+    if ([context[@"frac"] doubleValue] <= 0.0) {
+        ApolloLPResolveCropGeometryForImage(imageNode, key, image.size);
+        context = objc_getAssociatedObject(imageNode, &kApolloLinkPreviewCropContextKey);
+        if (![context[@"url"] isEqualToString:key]) return;
+    }
+    // Only scan images with KNOWN tall geometry: with frac == 0 a face region
+    // couldn't be applied anyway.
+    if ([context[@"frac"] doubleValue] <= 0.0) return;
     ApolloLPStartFaceScanIfNeeded(key, image, ApolloLPHost(imageURL));
 }
 
@@ -1746,18 +1831,29 @@ static void ApolloLPApplyVerticalCropAnchor(ASNetworkImageNode *imageNode, Apoll
     NSString *key = imageNode.URL.absoluteString;
     if (key.length == 0) return;
 
-    // Natural h:w — prefer the fetcher's metadata, fall back to any decoded
-    // image we already hold (covers previews whose metadata lacks a size).
+    // Natural h:w — prefer the fetcher's metadata, then the shape we saw the
+    // last time this URL decoded (V26), then any decoded image we already hold
+    // (covers previews whose metadata lacks a size).
     CGFloat naturalRatio = 0.0;
     CGSize metaSize = preview.imageSize;
     if (metaSize.width > 1.0 && metaSize.height > 1.0) {
         naturalRatio = metaSize.height / metaSize.width;
     }
-    UIImage *availableImage = ApolloLPNodeImageBelongsToURL(imageNode, key)
+    if (naturalRatio <= 0.0) naturalRatio = ApolloLPKnownImageRatio(key);
+    BOOL imageBelongsToURL = ApolloLPNodeImageBelongsToURL(imageNode, key);
+    UIImage *availableImage = imageBelongsToURL
         ? imageNode.image
         : [ApolloLPFallbackImageCache() objectForKey:key];
     if (naturalRatio <= 0.0 && availableImage.size.width > 1.0 && availableImage.size.height > 1.0) {
         naturalRatio = availableImage.size.height / availableImage.size.width;
+        // Only a bitmap that is really this URL's may teach its shape.
+        if (imageBelongsToURL) ApolloLPRememberImageRatio(key, availableImage.size);
+    }
+    if (naturalRatio <= 0.0) {
+        // Both caches evicted: this node already learned the shape for the
+        // same URL, so keep its anchor rather than falling back to centered.
+        NSDictionary *previous = objc_getAssociatedObject(imageNode, &kApolloLinkPreviewCropContextKey);
+        if ([previous[@"url"] isEqualToString:key]) naturalRatio = [previous[@"natural"] doubleValue];
     }
 
     // Known geometry, no vertical crop (wide/matching images): keep Texture's
@@ -1772,11 +1868,13 @@ static void ApolloLPApplyVerticalCropAnchor(ASNetworkImageNode *imageNode, Apoll
     }
 
     // Vertically cropped image (or size still unknown — visibleFrac == 0,
-    // where the centered default keeps the pre-V22 behavior until a real
-    // size shows up on a later pass).
+    // where the centered default holds until the first decoded bitmap settles
+    // the geometry: ApolloLPResolveCropGeometryForImage, which needs the box
+    // ratio recorded here).
     CGFloat visibleFrac = naturalRatio > 0.0 ? boxRatio / naturalRatio : 0.0;
     CGFloat defaultAnchorY = naturalRatio > 0.0 ? ApolloLPDefaultCropAnchorY(naturalRatio) : 0.5;
-    NSDictionary *context = @{ @"url": key, @"frac": @(visibleFrac), @"default": @(defaultAnchorY) };
+    NSDictionary *context = @{ @"url": key, @"frac": @(visibleFrac), @"default": @(defaultAnchorY),
+                               @"box": @(boxRatio), @"natural": @(naturalRatio) };
     objc_setAssociatedObject(imageNode, &kApolloLinkPreviewCropContextKey, context, OBJC_ASSOCIATION_COPY);
     ApolloLPRegisterCropRefinementNode(key, imageNode);
 
@@ -1794,6 +1892,16 @@ static void ApolloLPApplyVerticalCropAnchor(ASNetworkImageNode *imageNode, Apoll
         ApolloLPStartFaceScanIfNeeded(key, availableImage, host);
     }
     ApolloLPSetCropAnchorY(imageNode, anchorY, NO);
+
+    // V26: the image can land on main (ApolloLPCardImageDelegate) while this
+    // pass runs on a layout thread with the size still unknown. Main records
+    // the shape before it reads the context, and this re-read comes after this
+    // pass wrote it, so one side always sees the other: if the shape is known
+    // now, redo the pass with it (once: the shape is known on the retry) so
+    // this thread's centered fallback can't undo the anchor main settled.
+    if (visibleFrac <= 0.0 && ApolloLPKnownImageRatio(key) > 0.0) {
+        ApolloLPApplyVerticalCropAnchor(imageNode, preview, boxRatio, host);
+    }
 }
 
 static UIColor *ApolloLPBlendColor(UIColor *foreground, UIColor *background, CGFloat foregroundAlpha, UITraitCollection *traitCollection) {
@@ -2025,6 +2133,49 @@ static BOOL ApolloLPApplyCardBackgroundColor(ASDisplayNode *hostNode, ASDisplayN
     return YES;
 }
 
+// V26: card images loaded by Texture's own downloader (the common path) were
+// only noticed by the next layout pass or the 900ms recheck, so a portrait
+// image whose size the preview didn't advertise showed centered and re-cropped
+// later. Texture calls this on the main thread right after its download set
+// the image, so the crop settles as the image appears; the remember step also
+// starts the face scan right away instead of at the recheck.
+@interface ApolloLPCardImageDelegate : NSObject
++ (instancetype)sharedDelegate;
+@end
+
+@implementation ApolloLPCardImageDelegate
++ (instancetype)sharedDelegate {
+    static ApolloLPCardImageDelegate *delegate;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ delegate = [ApolloLPCardImageDelegate new]; });
+    return delegate;
+}
+
+// Texture prefers this variant: info.url is the URL the image was downloaded
+// for. The delivery is an async hop to main, so the node may have moved to a
+// different URL meanwhile; the shape is still recorded for the URL it belongs
+// to, but the node itself is only touched while it still shows that URL.
+- (void)imageNode:(ASNetworkImageNode *)imageNode didLoadImage:(UIImage *)image info:(id)info {
+    NSURL *loadedURL = [info respondsToSelector:@selector(url)] ? [info url] : nil;
+    [self apollo_imageNode:imageNode didLoadImage:image forURL:loadedURL ?: imageNode.URL];
+}
+
+- (void)imageNode:(ASNetworkImageNode *)imageNode didLoadImage:(UIImage *)image {
+    [self apollo_imageNode:imageNode didLoadImage:image forURL:imageNode.URL];
+}
+
+- (void)apollo_imageNode:(ASNetworkImageNode *)imageNode didLoadImage:(UIImage *)image forURL:(NSURL *)loadedURL {
+    NSString *key = loadedURL.absoluteString;
+    if (key.length == 0 || ![image isKindOfClass:[UIImage class]]) return;
+    if (![imageNode.URL.absoluteString isEqualToString:key]) {
+        ApolloLPRememberImageRatio(key, image.size);
+        return;
+    }
+    ApolloLPResolveCropGeometryForImage(imageNode, key, image.size);
+    ApolloLPRememberRenderedImageForURL(imageNode, loadedURL);
+}
+@end
+
 static NSString *ApolloLPBundleKey(NSURL *url, NSString *variant) {
     return [NSString stringWithFormat:@"%@|%@", url.absoluteString ?: @"", variant ?: @"default"];
 }
@@ -2053,6 +2204,9 @@ static NSDictionary *ApolloLPNodeBundleForHostUnlocked(ASDisplayNode *hostNode, 
     imageNode.cornerRadius = 8.0;
     imageNode.placeholderEnabled = YES;
     imageNode.placeholderColor = [UIColor tertiarySystemFillColor];
+    if ([imageNode respondsToSelector:@selector(setDelegate:)]) {
+        imageNode.delegate = [ApolloLPCardImageDelegate sharedDelegate];
+    }
 
     ASNetworkImageNode *avatarNode = [[imageNodeClass alloc] init];
     avatarNode.contentMode = UIViewContentModeScaleAspectFill;
@@ -2307,8 +2461,22 @@ static void ApolloLPResetTextNode(ASTextNode *textNode, NSUInteger maximumLines)
     textNode.isAccessibilityElement = YES;
 }
 
+// V26: YES while the host shows a card this module built (rich or placeholder),
+// NO while it shows Apollo's own link button. The stale-row repair below only
+// resizes rows for our cards: Apollo's button, and the inline-media pill whose
+// row InlineImages owns, keep their existing height handling. Written from
+// Texture's layout threads (atomic association), read on main.
+static char kApolloLPHostShowsCardKey;
+
+static BOOL ApolloLPHostShowsCard(ASDisplayNode *node) {
+    return node && [objc_getAssociatedObject(node, &kApolloLPHostShowsCardKey) boolValue];
+}
+
 static void ApolloLPClearHostShell(ASDisplayNode *node) {
     if (!node) return;
+    if (!ApolloLPHostShowsCard(node)) {
+        objc_setAssociatedObject(node, &kApolloLPHostShowsCardKey, (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN);
+    }
 
     NSDictionary *original = objc_getAssociatedObject(node, &kApolloLinkPreviewOriginalHostShellKey);
     if (!original) {
@@ -2336,6 +2504,9 @@ static void ApolloLPClearHostShell(ASDisplayNode *node) {
 
 static void ApolloLPRestoreHostShell(ASDisplayNode *node) {
     if (!node) return;
+    if (ApolloLPHostShowsCard(node)) {
+        objc_setAssociatedObject(node, &kApolloLPHostShowsCardKey, nil, OBJC_ASSOCIATION_RETAIN);
+    }
     NSDictionary *original = objc_getAssociatedObject(node, &kApolloLinkPreviewOriginalHostShellKey);
     if (!original) return;
 
@@ -4160,6 +4331,79 @@ static void ApolloLPScheduleOverflowHeightCheck(ASDisplayNode *node, NSString *h
     ApolloLPDeferOverflowHeightCheck(node, [host copy]);
 }
 
+// ---------------------------------------------------------------------------
+// V26: rows left at a placeholder's height (user report: "upvoting something
+// in the feed shifts the cell").
+//
+// A feed page is measured off screen in one batch, before most of its previews
+// have been fetched, so a card usually starts as a placeholder and the table
+// commits its row height from that placeholder. When the preview lands, the
+// card's subtree is not attached to its cell yet (Texture adds a cell's
+// subnodes when the cell's layout is first applied on screen), so
+// ApolloLPInvalidateHostedCell finds no cell and the climb only re-measures the
+// detached subtree: the table keeps the placeholder's row height. When the row
+// finally appears, Texture lays the final card out in place, pinned to that
+// stale frame (-_u_measureNodeWithBoundsIfNecessary: measures at the bounds
+// when the node's own latest layout doesn't match them). The card comes out a
+// few points squished (its bottom padding eaten) or stretched (an empty band
+// under the text) — too little for the 8pt overflow checks — and stays that
+// way until something else re-measures the row. A vote does (it re-colors the
+// title), so the rows below jumped by the difference right after the tap, and
+// that same re-measure was the first pass to anchor a late-loading image.
+//
+// A layout applied with a pinned height range, or at a size other than the
+// node's own, is that in-place fallback. Ask the table to re-measure the row
+// on the next main turn. Texture compares the result with the row height it is
+// presenting, so a row that is already right costs one cell measure and no
+// update. This runs as the row is first laid out, normally while it scrolls in
+// from the bottom edge, where the correction lands off screen.
+static char kApolloLPRowRepairPendingKey;
+static char kApolloLPRowRepairHistoryKey;
+
+static void ApolloLPRepairRowIfLayoutPinned(ASDisplayNode *node) {
+    // First-line bail for Apollo's own link buttons (every link when previews
+    // are off). layoutDidFinish is main-thread; the history below relies on it.
+    if (!ApolloLPHostShowsCard(node) || ![NSThread isMainThread]) return;
+    if (!node.isNodeLoaded) return;
+    if (![node respondsToSelector:@selector(constrainedSizeForCalculatedLayout)]) return;
+
+    struct CDStruct_90e057aa range = [node constrainedSizeForCalculatedLayout];
+    CGFloat boundsHeight = CGRectGetHeight(node.bounds);
+    CGFloat layoutHeight = node.calculatedSize.height;
+    // A zero-height frame is a collapsed or hidden row, never a stale card.
+    if (boundsHeight <= 1.0) return;
+    BOOL pinned = range.max.height < 100000.0 && fabs(range.max.height - range.min.height) < 0.01;
+    BOOL mismatched = fabs(layoutHeight - boundsHeight) >= 0.5;
+    if (!pinned && !mismatched) return;
+    if ([objc_getAssociatedObject(node, &kApolloLPRowRepairPendingKey) boolValue]) return;
+
+    // Convergence guard: a row whose height never settles must not re-measure
+    // forever. Three repairs per node per 10s is far beyond any real sequence
+    // (placeholder -> final is one).
+    NSTimeInterval now = CACurrentMediaTime();
+    NSMutableArray<NSNumber *> *history = objc_getAssociatedObject(node, &kApolloLPRowRepairHistoryKey);
+    if (!history) {
+        history = [NSMutableArray array];
+        objc_setAssociatedObject(node, &kApolloLPRowRepairHistoryKey, history, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    while (history.count > 0 && now - history.firstObject.doubleValue > 10.0) [history removeObjectAtIndex:0];
+    if (history.count >= 3) return;
+    [history addObject:@(now)];
+
+    objc_setAssociatedObject(node, &kApolloLPRowRepairPendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak ASDisplayNode *weakNode = node;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ASDisplayNode *liveNode = weakNode;
+        if (!liveNode) return;
+        objc_setAssociatedObject(liveNode, &kApolloLPRowRepairPendingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        BOOL handled = ApolloLPInvalidateHostedCell(liveNode);
+        NSURL *url = objc_getAssociatedObject(liveNode, &kApolloLinkPreviewURLKey);
+        ApolloLog(@"[LinkPreviews] card laid out at a stale row height host=%@ frame=%.2f layout=%.2f%@ -> row re-measure %@",
+                  ApolloLPHost(url) ?: @"?", boundsHeight, layoutHeight, pinned ? @" (pinned)" : @"",
+                  handled ? @"requested" : @"skipped (cell not hosted)");
+    });
+}
+
 static ASDisplayNode *ApolloLPNodeForViewIfPossible(UIView *view) {
     if (!view) return nil;
     SEL nodeSelectors[] = { @selector(asyncdisplaykit_node), @selector(node) };
@@ -4710,15 +4954,19 @@ static void ApolloLPRecoverMissingCardImages(ASDisplayNode *hostNode) {
     }
 }
 
-// V25: one background refetch per URL per launch for cached previews that are
-// the residue of a blocked fetch (bot-wall title, or slug-title + favicon with
-// no description — reuters/wsj-style 401s used to cache these for their whole
-// 7-day TTL, pinning the host to a compact favicon card). The stale card still
-// renders this pass; when the refetch lands something better, the DidCache
-// notification + node invalidation re-render it in place.
-static BOOL ApolloLPMarkWeakCacheRefetchAttempted(NSURL *url) {
-    NSString *key = url.absoluteString;
-    if (key.length == 0) return NO;
+// One refetch per URL and reason per launch for a cached preview this node
+// wants replaced: the V25 background heal of a blocked fetch's residue
+// (bot-wall title, or slug-title + favicon with no description —
+// reuters/wsj-style 401s used to cache these for their whole 7-day TTL,
+// pinning the host to a compact favicon card), and the first-pass refetch of
+// a cached entry that isn't the settled card for its URL kind (the stale
+// rules in layoutSpecThatFits:). Every refetch that stores something
+// re-measures the node, and the same rules judge that store, so without the
+// cap a URL whose fresh answer still reads as stale is fetched on every
+// layout pass (issue #1415). The fetcher keeps its own cap for its callers.
+static BOOL ApolloLPMarkCachedRefetchAttempted(NSURL *url, NSString *reason) {
+    if (url.absoluteString.length == 0) return NO;
+    NSString *key = [NSString stringWithFormat:@"%@|%@", url.absoluteString, reason ?: @""];
     static NSMutableSet<NSString *> *attempted;
     static dispatch_once_t once;
     dispatch_once(&once, ^{ attempted = [NSMutableSet set]; });
@@ -4729,10 +4977,12 @@ static BOOL ApolloLPMarkWeakCacheRefetchAttempted(NSURL *url) {
     }
 }
 
+// The stale card still renders this pass; when the refetch lands something
+// better, the DidCache notification + node invalidation re-render it in place.
 static void ApolloLPKickWeakCachedPreviewRefetch(NSURL *url, ApolloLinkPreview *cached) {
     NSString *weakReason = [ApolloLinkPreviewFetcher refetchReasonForCachedPreview:cached url:url];
     if (!weakReason) return;
-    if (!ApolloLPMarkWeakCacheRefetchAttempted(url)) return;
+    if (!ApolloLPMarkCachedRefetchAttempted(url, weakReason)) return;
     ApolloLog(@"[LinkPreviews] healing weak cached preview host=%@ reason=%@", ApolloLPHost(url), weakReason);
     [ApolloLinkPreviewFetcher requestPreviewForURL:url completion:^(ApolloLinkPreview *preview) {
         if (!preview || ![preview hasUsefulMetadata]) return;
@@ -4858,29 +5108,36 @@ static void ApolloLPKickWeakCachedPreviewRefetch(NSURL *url, ApolloLinkPreview *
     ApolloLPInstallContextMenuForNode((ASDisplayNode *)self, url);
 
     ApolloLinkPreview *cached = [[ApolloLinkPreviewCache sharedCache] cachedPreviewForURL:url];
-    // Match the fetcher's staleness rule: a bsky-post preview without
-    // postText renders its flattened desc as the body, so refetch it rather
-    // than reuse it forever (the render gate alone accepts handle-only).
-    if (cached && ApolloLPIsBlueskyPostURL(url) &&
-        (!ApolloLPIsBlueskyPostPreview(url, cached) || cached.postText.length == 0)) {
-        cached = nil;
-    }
-    if (cached && (ApolloLPIsRedditUserProfileURL(url) || ApolloLPIsRedditSubredditURL(url))) {
+    // A cached entry that isn't the settled card for its URL kind — a bsky.app
+    // post URL without a Bluesky post card (an older flattened-desc entry, or
+    // the page's generic HTML), a reddit user/subreddit URL without its card,
+    // without metadata, or with a stale suspension verdict — is fetched fresh
+    // once per launch: this pass renders the placeholder, like a cold URL.
+    // After that the cached entry renders as it is (ApolloLPMarkCachedRefetchAttempted).
+    NSString *staleReason = nil;
+    BOOL staleRedditUserSuspension = NO;
+    if (cached && ApolloLPIsBlueskyPostURL(url) && !ApolloLPIsBlueskyPostPreview(url, cached)) {
+        staleReason = @"stale-bluesky";
+    } else if (cached && (ApolloLPIsRedditUserProfileURL(url) || ApolloLPIsRedditSubredditURL(url))) {
         BOOL staleRedditUser = ApolloLPIsRedditUserProfileURL(url)
             && ![cached.previewKind isEqualToString:@"reddit-user-profile"];
         BOOL staleRedditSubreddit = ApolloLPIsRedditSubredditURL(url)
             && ![cached.previewKind isEqualToString:@"reddit-subreddit"];
-        BOOL staleRedditUserSuspension = ApolloLPIsRedditUserProfileURL(url)
+        staleRedditUserSuspension = ApolloLPIsRedditUserProfileURL(url)
             && ApolloLPRedditUserPreviewNeedsSuspensionRefetch(url, cached);
-        if (![cached hasUsefulMetadata] || staleRedditUser || staleRedditSubreddit || staleRedditUserSuspension) {
-            if (staleRedditUserSuspension) {
-                NSString *username = ApolloLPNormalizedRedditUsername(ApolloLPRedditUsernameFromProfileURL(url));
-                if (username.length > 0) {
-                    [[ApolloLinkPreviewCache sharedCache] removePreviewsForRedditUsername:username];
-                }
+        if (![cached hasUsefulMetadata]) staleReason = @"no-metadata";
+        else if (staleRedditUserSuspension) staleReason = @"stale-reddit-user-suspension";
+        else if (staleRedditUser) staleReason = @"stale-reddit-user";
+        else if (staleRedditSubreddit) staleReason = @"stale-reddit-subreddit";
+    }
+    if (staleReason && ApolloLPMarkCachedRefetchAttempted(url, staleReason)) {
+        if (staleRedditUserSuspension) {
+            NSString *username = ApolloLPNormalizedRedditUsername(ApolloLPRedditUsernameFromProfileURL(url));
+            if (username.length > 0) {
+                [[ApolloLinkPreviewCache sharedCache] removePreviewsForRedditUsername:username];
             }
-            cached = nil;
         }
+        cached = nil;
     }
     if (cached && [cached hasUsefulMetadata]) {
         ApolloLPKickWeakCachedPreviewRefetch(url, cached);
@@ -5125,6 +5382,8 @@ static void ApolloLPKickWeakCachedPreviewRefetch(NSURL *url, ApolloLinkPreview *
     // Fetch callbacks can precede final child frames. Check the applied layout
     // asynchronously so recovery stays outside Texture's layout stack.
     ApolloLPScheduleOverflowHeightCheck((ASDisplayNode *)self, @"layout-finished", YES);
+    // V26: a card squeezed or stretched into a stale (placeholder-era) row.
+    ApolloLPRepairRowIfLayoutPinned((ASDisplayNode *)self);
 }
 
 // V18: cards whose final content rendered while the node was detached could

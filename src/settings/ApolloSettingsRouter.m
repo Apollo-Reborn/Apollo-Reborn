@@ -1,5 +1,6 @@
 #import "ApolloSettingsShortcutsViewController.h"
 #import "ApolloSettingsRouter.h"
+#import "settings/ApolloSetupAssistant.h"
 #import "ApolloSiriSettingsViewController.h"
 
 #import <objc/message.h>
@@ -18,6 +19,7 @@
 #import "settings/ApolloLinkCompanionViewController.h"
 #import "settings/CustomAPIViewController.h"
 #import "crash/ApolloCrashReportsViewController.h"
+#import "settings/ApolloKeylessRouteStatusViewController.h"
 #import "settings/InfoRowSettingsViewController.h"
 #import "settings/InlineMediaSettingsViewController.h"
 #import "settings/SavedCategoriesViewController.h"
@@ -64,6 +66,7 @@ static void ApolloSettingsRouterEnsureRegistry(void) {
             };
 
         add(@"reborn", @"Apollo Reborn", @"Settings", ApolloSettingsInsetGrouped([CustomAPIViewController class]));
+        add(@"setup-assistant", @"Setup Assistant", @"Apollo Reborn → Setup", ^UIViewController *{ return [ApolloSetupAssistantViewController new]; });
         if (NSClassFromString(@"ApolloContentBridge")) {
             add(@"siri-spotlight", @"Siri & Spotlight", @"Apollo Reborn", ApolloSettingsInsetGrouped([ApolloSiriSettingsViewController class]));
         }
@@ -119,6 +122,7 @@ static void ApolloSettingsRouterEnsureRegistry(void) {
             return [[ApolloLinkCompanionViewController alloc] init]; // hero page, not a table
         });
         add(@"crash-reports", @"Crash Reports", @"Apollo Reborn → Privacy", ApolloSettingsInsetGrouped([ApolloCrashReportsViewController class]));
+        add(@"keyless-route-status", @"Routes", @"Apollo Reborn → Accounts & API Keys", ApolloSettingsInsetGrouped([ApolloKeylessRouteStatusViewController class]));
         add(@"theme-manager", @"Theme Manager", @"Appearance", ^UIViewController *{
             return [[ApolloThemeManagerViewController alloc] init]; // default init = hub/list mode
         });
@@ -173,12 +177,12 @@ UIViewController *ApolloSettingsRouteInstantiate(NSString *routeId) {
     return builder ? builder() : nil;
 }
 
-BOOL ApolloSettingsRouteOpenNow(NSString *routeId) {
+BOOL ApolloSettingsRouteOpenNowInScene(NSString *routeId, UIWindowScene *scene) {
     ApolloSettingsRouterEnsureRegistry();
     ApolloSettingsRouteBuilder builder = [routeId isKindOfClass:[NSString class]] ? sRouteBuilders[routeId.lowercaseString] : nil;
     if (!builder) return NO;
 
-    UIViewController *tabBarController = ApolloMainTabBarController();
+    UIViewController *tabBarController = ApolloMainTabBarControllerForScene(scene);
     if (!tabBarController) return NO;
 
     if ([tabBarController respondsToSelector:@selector(goToSettingsTab)]) {
@@ -191,9 +195,8 @@ BOOL ApolloSettingsRouteOpenNow(NSString *routeId) {
 
     if (![tabBarController isKindOfClass:UITabBarController.class]) return NO;
     UIViewController *selected = [(UITabBarController *)tabBarController selectedViewController];
-    UINavigationController *nav = [selected isKindOfClass:UINavigationController.class]
-        ? (UINavigationController *)selected
-        : selected.navigationController;
+    // Unwraps the iPad pane layout's split view controller; identity otherwise.
+    UINavigationController *nav = ApolloNavigationControllerForTabChild(selected);
     if (!nav) return NO;
 
     // A modal over the settings tab (e.g. account switcher) would swallow the
@@ -202,9 +205,17 @@ BOOL ApolloSettingsRouteOpenNow(NSString *routeId) {
         [nav dismissViewControllerAnimated:NO completion:nil];
     }
     [nav popToRootViewControllerAnimated:NO];
-    [nav pushViewController:builder() animated:YES];
+    if ([routeId.lowercaseString isEqualToString:@"setup-assistant"]) {
+        ApolloSetupAssistantPresentFrom(nav);
+    } else {
+        [nav pushViewController:builder() animated:YES];
+    }
     ApolloLog(@"[SettingsRouter] Opened route '%@'", routeId);
     return YES;
+}
+
+BOOL ApolloSettingsRouteOpenNow(NSString *routeId) {
+    return ApolloSettingsRouteOpenNowInScene(routeId, nil);
 }
 
 static void ApolloSettingsRouteOpenWithRetry(NSString *routeId, NSUInteger attempt) {

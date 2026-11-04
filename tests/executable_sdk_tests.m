@@ -66,6 +66,102 @@ static const struct mach_header *QAImageHeader(uint32_t index) { return images[i
 #undef _dyld_get_image_name
 #undef _dyld_get_image_header
 
+// UIKit is not linked into this host harness. The fake class has UIKit's
+// observed selector and ABI, and the production code performs real Objective-C
+// method replacement against it. Only class discovery and the cached design
+// getter are substituted; the ABI checks and rollback run unchanged.
+@interface _UIKitFeatures : NSObject
++ (BOOL)uncachedSolariumEnabledForCurrentDeviceIdiom;
+@end
+@implementation _UIKitFeatures
++ (BOOL)uncachedSolariumEnabledForCurrentDeviceIdiom { return YES; }
+@end
+
+@interface QAGlassWrongReturnType : NSObject
++ (NSInteger)uncachedSolariumEnabledForCurrentDeviceIdiom;
+@end
+@implementation QAGlassWrongReturnType
++ (NSInteger)uncachedSolariumEnabledForCurrentDeviceIdiom { return 1; }
+@end
+
+static Class availableGlassClass;
+static Class QAGlassClassLookup(const char *name) {
+    return strcmp(name, "_UIKitFeatures") == 0 ? availableGlassClass : Nil;
+}
+
+#define objc_lookUpClass QAGlassClassLookup
+#include "LiquidGlassRuntimeSelection.inc"
+#undef objc_lookUpClass
+
+static BOOL glassCacheValid;
+static BOOL glassCachedDesign;
+static BOOL glassVerificationSawOverride;
+static unsigned glassVerificationCalls;
+
+static BOOL QAGlassDesignEnabled(void) {
+    glassVerificationCalls++;
+    Method method = class_getClassMethod(_UIKitFeatures.class,
+        @selector(uncachedSolariumEnabledForCurrentDeviceIdiom));
+    glassVerificationSawOverride =
+        method_getImplementation(method) == (IMP)ApolloLiquidGlassDisabledForLaunch;
+    if (!glassCacheValid) {
+        glassCachedDesign = [_UIKitFeatures uncachedSolariumEnabledForCurrentDeviceIdiom];
+        glassCacheValid = YES;
+    }
+    return glassCachedDesign;
+}
+
+static void TestGlassRuntimeOverride(void) {
+    availableGlassClass = _UIKitFeatures.class;
+    Method method = ApolloLiquidGlassRuntimeSelectionMethod();
+    Check(method != NULL, @"observed UIKit BOOL class-method ABI is accepted");
+    IMP original = method_getImplementation(method);
+
+    availableGlassClass = Nil;
+    Check(ApolloLiquidGlassRuntimeSelectionMethod() == NULL, @"missing UIKit feature class is rejected");
+    Check(!ApolloLiquidGlassTryDisableRuntimeDesign(ApolloLiquidGlassRuntimeSelectionMethod(), QAGlassDesignEnabled),
+          @"missing feature class cannot install an override");
+    Check(method_getImplementation(method) == original && glassVerificationCalls == 0,
+          @"missing class leaves the real method and cached design untouched");
+
+    availableGlassClass = NSObject.class;
+    Check(ApolloLiquidGlassRuntimeSelectionMethod() == NULL, @"missing feature selector is rejected");
+
+    availableGlassClass = QAGlassWrongReturnType.class;
+    Method wrongMethod = class_getClassMethod(availableGlassClass,
+        @selector(uncachedSolariumEnabledForCurrentDeviceIdiom));
+    IMP wrongOriginal = method_getImplementation(wrongMethod);
+    Check(ApolloLiquidGlassRuntimeSelectionMethod() == NULL, @"non-BOOL return ABI is rejected");
+    Check(!ApolloLiquidGlassTryDisableRuntimeDesign(ApolloLiquidGlassRuntimeSelectionMethod(), QAGlassDesignEnabled),
+          @"incompatible ABI cannot install an override");
+    Check(method_getImplementation(wrongMethod) == wrongOriginal && glassVerificationCalls == 0,
+          @"ABI rejection does not replace or invoke the incompatible method");
+
+    availableGlassClass = _UIKitFeatures.class;
+    Check(!ApolloLiquidGlassTryDisableRuntimeDesign(method, NULL), @"missing design verifier cannot install an override");
+    Check(method_getImplementation(method) == original, @"missing verifier preserves the original implementation");
+
+    glassCacheValid = NO;
+    Check(ApolloLiquidGlassTryDisableRuntimeDesign(method, QAGlassDesignEnabled),
+          @"uncached UIKit accepts the runtime override");
+    Check(glassVerificationCalls == 1 && glassVerificationSawOverride,
+          @"verification observes the replacement before caching the design");
+    Check(glassCacheValid && !glassCachedDesign && ![_UIKitFeatures uncachedSolariumEnabledForCurrentDeviceIdiom],
+          @"successful override keeps both the cached design and class method in Standard mode");
+    method_setImplementation(method, original);
+
+    glassCacheValid = NO;
+    Check(QAGlassDesignEnabled(), @"fixture caches Glass before the late override attempt");
+    glassVerificationCalls = 0;
+    Check(!ApolloLiquidGlassTryDisableRuntimeDesign(method, QAGlassDesignEnabled),
+          @"already cached Glass reports runtime override failure");
+    Check(glassVerificationCalls == 1 && glassVerificationSawOverride,
+          @"late override is verified before rollback");
+    Check(method_getImplementation(method) == original &&
+          [_UIKitFeatures uncachedSolariumEnabledForCurrentDeviceIdiom] && glassCachedDesign,
+          @"failed verification restores the exact original IMP and leaves Glass active");
+}
+
 static uint32_t OldFirstExecutableSDK(void) {
     const struct mach_header_64 *header = NULL;
     for (uint32_t i = 0; i < imageCount; i++) {
@@ -83,8 +179,18 @@ static void TestGlassCompatibilityEligibility(void) {
     Check(!ApolloSDKSupportsLiquidGlassCompatibility(0x00130000, false), @"older OS cannot toggle glass");
     Check(ApolloSDKSupportsLiquidGlassCompatibility(0x00130000, true), @"SDK 19 glass patch supports classic mode");
     Check(ApolloSDKSupportsLiquidGlassCompatibility(0x001A0600, true), @"SDK 26 supports classic mode");
-    Check(!ApolloSDKSupportsLiquidGlassCompatibility(0x001B0000, true), @"SDK 27 ignores compatibility and must not offer toggle");
+    Check(!ApolloSDKSupportsLiquidGlassCompatibility(0x001B0000, true), @"SDK 27 cannot use the plist compatibility path");
     Check(!ApolloSDKSupportsLiquidGlassCompatibility(0x001C0000, true), @"future SDK cannot promise compatibility");
+
+    Check(ApolloSDKSupportsLiquidGlassRuntimeSelection(0x001B0100, true, 27, 1), @"Duo-stamped IPA can select a design on a regular iOS 27 phone");
+    Check(ApolloSDKSupportsLiquidGlassRuntimeSelection(0x001B0100, true, 26, 1), @"same IPA supports regular iOS 26 devices");
+    Check(!ApolloSDKSupportsLiquidGlassRuntimeSelection(0x001B0100, true, 27, 2), @"Duo always retains the system design regardless of pose or saved preference");
+    Check(!ApolloSDKSupportsLiquidGlassRuntimeSelection(0x001B0100, true, 27, 0), @"unknown display capability cannot opt out of Glass");
+    Check(!ApolloSDKSupportsLiquidGlassRuntimeSelection(0x001B0100, true, 27, -1), @"invalid display capability cannot opt out of Glass");
+    Check(!ApolloSDKSupportsLiquidGlassRuntimeSelection(0x001A0000, true, 27, 1), @"SDK 26 stays on upstream's plist path");
+    Check(!ApolloSDKSupportsLiquidGlassRuntimeSelection(0x001B0100, false, 25, 1), @"older runtime never installs the override");
+    Check(!ApolloSDKSupportsLiquidGlassRuntimeSelection(0x001C0000, true, 27, 1), @"future executable SDK requires revalidation");
+    Check(!ApolloSDKSupportsLiquidGlassRuntimeSelection(0x001B0100, true, 28, 1), @"future UIKit runtime requires revalidation");
 }
 
 static void TestImageSelection(void) {
@@ -218,11 +324,36 @@ static void TestLoadCommands(void) {
           @"ambiguous duplicate iOS build-version commands are rejected");
 }
 
+static void TestNativeImageUUID(void) {
+    struct { struct mach_header_64 header; struct uuid_command uuid; } image = {0};
+    const uint8_t expected[16] = {1,2,3,4};
+    image.header.magic = MH_MAGIC_64;
+    image.header.cputype = CPU_TYPE_ARM64;
+    image.header.ncmds = 1;
+    image.header.sizeofcmds = sizeof(image.uuid);
+    image.uuid.cmd = LC_UUID;
+    image.uuid.cmdsize = sizeof(image.uuid);
+    memcpy(image.uuid.uuid, expected, 16);
+    Check(ApolloMachOHasUUID((const void *)&image, expected), @"matching native image UUID");
+    image.uuid.uuid[0] = 9;
+    Check(!ApolloMachOHasUUID((const void *)&image, expected), @"different native image rejected");
+    image.uuid.uuid[0] = 1;
+    image.uuid.cmdsize = sizeof(struct load_command);
+    Check(!ApolloMachOHasUUID((const void *)&image, expected), @"short UUID command rejected");
+    image.uuid.cmdsize = sizeof(image.uuid) + 8;
+    Check(!ApolloMachOHasUUID((const void *)&image, expected), @"out of bounds UUID command rejected");
+    image.header.sizeofcmds = 0;
+    Check(!ApolloMachOHasUUID((const void *)&image, expected), @"missing load commands rejected");
+    Check(!ApolloMachOHasUUID(NULL, expected), @"missing image rejected");
+}
+
 int main(void) {
     @autoreleasepool {
         TestGlassCompatibilityEligibility();
+        TestGlassRuntimeOverride();
         TestImageSelection();
         TestLoadCommands();
+        TestNativeImageUUID();
         printf("PASS: %u executable SDK and Liquid Glass checks\n", checks);
     }
     return 0;

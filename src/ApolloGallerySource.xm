@@ -2,6 +2,7 @@
 #import "ApolloGalleryFeed.h"
 #import "ApolloGalleryImageLoader.h"
 #import "ApolloGalleryGridGeometry.h"
+#import "ApolloAccountCredentials.h"
 #import "ApolloClasses.h"
 #import "ApolloCommon.h"
 #import "ApolloSwiftRuntime.h"
@@ -16,9 +17,50 @@
 // changes, and never carries a token or cookie.
 static char kApolloGallerySourcePostKey;
 static char kApolloGallerySourcePreparedKey;
+static char kApolloGallerySavedSourceAccountKey;
 static const NSUInteger kApolloGallerySourceMaximumWarmThumbnails = 96;
 static const NSUInteger kApolloGallerySourceMaximumPosts = 10000;
 static const NSTimeInterval kApolloGallerySourcePreparationLifetime = 20.0;
+
+static NSUInteger ApolloGallerySavedAccountGeneration(void) {
+    static NSUInteger generation;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        for (NSString *name in @[@"com.christianselig.RedditCurrentAccountChanged",
+                                  @"com.christianselig.RedditAccountChanged"]) {
+            [[NSNotificationCenter defaultCenter] addObserverForName:name object:nil queue:nil
+                usingBlock:^(__unused NSNotification *notification) {
+                    // Invalidations are synchronous even if a notification
+                    // comes off main. A -> B -> A must not revive A's old
+                    // controller after it may have loaded B's rows in between.
+                    __atomic_add_fetch(&generation, 1, __ATOMIC_RELAXED);
+                }];
+        }
+    });
+    return __atomic_load_n(&generation, __ATOMIC_RELAXED);
+}
+
+void ApolloGalleryBindSavedSourceToCurrentAccount(UIViewController *sourceViewController) {
+    if (!NSThread.isMainThread || !sourceViewController ||
+        objc_getAssociatedObject(sourceViewController, &kApolloGallerySavedSourceAccountKey)) return;
+    NSArray *identity = @[ApolloActiveAccountUsername().lowercaseString ?: @"",
+                          ApolloActiveAccountClient() ?: NSNull.null,
+                          @(ApolloGallerySavedAccountGeneration())];
+    objc_setAssociatedObject(sourceViewController, &kApolloGallerySavedSourceAccountKey,
+                             identity, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static BOOL ApolloGallerySavedSourceMatchesCurrentAccount(UIViewController *owner) {
+    NSArray *identity = objc_getAssociatedObject(owner, &kApolloGallerySavedSourceAccountKey);
+    // Capture once before Apollo starts loading, never when Gallery is tapped:
+    // a retained Saved controller may still contain the previous user's rows.
+    // If Apollo reuses it after a switch, use a fresh request instead of ever
+    // pairing that old array/cursor with the newly active account's credentials.
+    return identity.count == 3 &&
+        [identity[2] unsignedIntegerValue] == ApolloGallerySavedAccountGeneration() &&
+        [identity[0] isEqualToString:ApolloActiveAccountUsername().lowercaseString ?: @""] &&
+        identity[1] == (ApolloActiveAccountClient() ?: NSNull.null);
+}
 
 static NSDictionary *ApolloGallerySourceCompactPost(NSDictionary *json, BOOL includeParent) {
     if (![json isKindOfClass:NSDictionary.class]) return nil;
@@ -94,9 +136,9 @@ static BOOL ApolloGallerySourcePlainObjectWord(uintptr_t word) {
     return word >= 0x100000000ULL && (word & 0xF000000000000007ULL) == 0;
 }
 
-static NSArray *ApolloGallerySourceLinks(UIViewController *owner) {
+static NSArray *ApolloGallerySourceArray(UIViewController *owner, const char *name, BOOL allowEmpty) {
     uintptr_t word = 0;
-    if (!ApolloGallerySourceReadIvarBytes(owner, "links", &word, sizeof(word)) ||
+    if (!ApolloGallerySourceReadIvarBytes(owner, name, &word, sizeof(word)) ||
         !ApolloGallerySourcePlainObjectWord(word)) return nil;
     // Array<RDKLink>'s native storage bridges to NSArray on Darwin, unlike
     // value-element buffers such as Array<AnyHashable>. Do not inspect raw
@@ -105,13 +147,17 @@ static NSArray *ApolloGallerySourceLinks(UIViewController *owner) {
     id storage = (__bridge id)(void *)word;
     if (![storage isKindOfClass:NSArray.class]) return nil;
     NSArray *links = storage;
-    if (links.count == 0 || links.count > kApolloGallerySourceMaximumPosts) return nil;
+    if ((!allowEmpty && links.count == 0) || links.count > kApolloGallerySourceMaximumPosts) return nil;
     return [links copy];
 }
 
-static BOOL ApolloGallerySourceCursor(UIViewController *owner, NSString **after) {
+static NSArray *ApolloGallerySourceLinks(UIViewController *owner) {
+    return ApolloGallerySourceArray(owner, "links", NO);
+}
+
+static BOOL ApolloGallerySourceReadCursor(UIViewController *owner, const char *name, NSString **after) {
     uintptr_t word = 0;
-    if (!ApolloGallerySourceReadIvarBytes(owner, "$__lazy_storage_$_pagination", &word, sizeof(word))) return NO;
+    if (!ApolloGallerySourceReadIvarBytes(owner, name, &word, sizeof(word))) return NO;
     if (word == 0) {
         // Initialized nil means the loaded native listing reached its end.
         if (after) *after = nil;
@@ -127,6 +173,10 @@ static BOOL ApolloGallerySourceCursor(UIViewController *owner, NSString **after)
     if (![value isKindOfClass:NSString.class] || [value length] == 0) return NO;
     if (after) *after = [value copy];
     return YES;
+}
+
+static BOOL ApolloGallerySourceCursor(UIViewController *owner, NSString **after) {
+    return ApolloGallerySourceReadCursor(owner, "$__lazy_storage_$_pagination", after);
 }
 
 static BOOL ApolloGallerySourceOptionalEnum(UIViewController *owner, const char *name, int64_t *value) {
@@ -172,6 +222,8 @@ static BOOL ApolloGallerySourceSort(UIViewController *owner, ApolloGallerySort *
 @property (nonatomic, copy) NSString *after;
 @property (nonatomic) ApolloGallerySort sort;
 @property (nonatomic) ApolloGalleryTopWindow topWindow;
+@property (nonatomic) BOOL savedFeed;
+@property (nonatomic, copy) NSString *savedCategory;
 @property (nonatomic, strong) NSMutableArray<ApolloGalleryImageRequest *> *warmRequests;
 @property (nonatomic) NSUInteger warmedItemCount;
 @end
@@ -191,22 +243,37 @@ static BOOL ApolloGallerySourceSameLinks(NSArray *left, NSArray *right) {
 }
 
 static ApolloGallerySourceSnapshot *ApolloGallerySourceSnapshotForOwner(UIViewController *owner) {
-    if (!NSThread.isMainThread || !ApolloClassPostsViewController ||
-        ![owner isKindOfClass:ApolloClassPostsViewController]) return nil;
-    NSArray *links = ApolloGallerySourceLinks(owner);
+    if (!NSThread.isMainThread) return nil;
+    BOOL saved = ApolloClassSavedPostsCommentsViewController &&
+        [owner isKindOfClass:ApolloClassSavedPostsCommentsViewController];
+    if (saved && !ApolloGallerySavedSourceMatchesCurrentAccount(owner)) return nil;
+    if (!saved && (!ApolloClassPostsViewController || ![owner isKindOfClass:ApolloClassPostsViewController])) return nil;
+    // Saved's optional array distinguishes a completed empty response from
+    // the nil array before its first response. Search uses separate storage;
+    // always snapshot the underlying Saved/category listing instead.
+    NSArray *links = saved ? ApolloGallerySourceArray(owner, "savedPostsComments", YES) : ApolloGallerySourceLinks(owner);
     NSString *after = nil;
-    ApolloGallerySort sort;
-    ApolloGalleryTopWindow window;
-    if (!links || !ApolloGallerySourceCursor(owner, &after) ||
-        !ApolloGallerySourceSort(owner, &sort, &window)) return nil;
+    ApolloGallerySort sort = ApolloGallerySortNew;
+    ApolloGalleryTopWindow window = ApolloGalleryTopWindowWeek;
+    if (!links) return nil;
+    if (saved) {
+        if (!ApolloGallerySourceReadCursor(owner, "currentPagination", &after)) return nil;
+    } else if (!ApolloGallerySourceCursor(owner, &after) || !ApolloGallerySourceSort(owner, &sort, &window)) return nil;
+    NSString *category = saved ? ApolloReadSwiftStringIvar(owner, "filteredSaveCategory") : nil;
 
     ApolloGallerySourceSnapshot *prepared = objc_getAssociatedObject(owner, &kApolloGallerySourcePreparedKey);
     BOOL reusePrepared = prepared && prepared.sort == sort && prepared.topWindow == window &&
+        prepared.savedFeed == saved &&
+        (prepared.savedCategory == category || [prepared.savedCategory isEqualToString:category]) &&
         [prepared.after ?: @"" isEqualToString:after ?: @""] &&
         ApolloGallerySourceSameLinks(prepared.links, links);
 
     NSMutableArray *children = [NSMutableArray arrayWithCapacity:links.count];
     for (id link in links) {
+        // Comments never produce gallery tiles, but their native pagination
+        // cursor still belongs to the complete mixed Saved response.
+        if (saved && ApolloClassRDKComment && [link isKindOfClass:ApolloClassRDKComment]) continue;
+        if (saved && (!ApolloClassRDKLink || ![link isKindOfClass:ApolloClassRDKLink])) return nil;
         // Archived/cold-restored models have no associated response JSON.
         // Skipping even ONE such post while inheriting the final cursor could
         // permanently omit its media, so abandon the seed as a whole.
@@ -224,6 +291,8 @@ static ApolloGallerySourceSnapshot *ApolloGallerySourceSnapshotForOwner(UIViewCo
     snapshot.after = after;
     snapshot.sort = sort;
     snapshot.topWindow = window;
+    snapshot.savedFeed = saved;
+    snapshot.savedCategory = category;
     snapshot.listing = listing;
     snapshot.warmRequests = [NSMutableArray array];
     objc_setAssociatedObject(owner, &kApolloGallerySourcePreparedKey, snapshot, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -248,7 +317,8 @@ static ApolloGallerySourceSnapshot *ApolloGallerySourceSnapshotForOwner(UIViewCo
 NSDictionary *ApolloGallerySourcePreparationState(UIViewController *sourceViewController) {
     ApolloGallerySourceSnapshot *snapshot = ApolloGallerySourceSnapshotForOwner(sourceViewController);
     if (!snapshot) return nil;
-    return @{@"listing": snapshot.listing, @"sort": @(snapshot.sort), @"window": @(snapshot.topWindow)};
+    return @{@"listing": snapshot.listing, @"sort": @(snapshot.sort), @"window": @(snapshot.topWindow),
+             @"saved": @(snapshot.savedFeed), @"category": snapshot.savedCategory ?: (id)NSNull.null};
 }
 
 void ApolloGalleryPrepareSource(UIViewController *sourceViewController) {
@@ -257,8 +327,13 @@ void ApolloGalleryPrepareSource(UIViewController *sourceViewController) {
     // This temporary feed only runs the shared media parser. It never loads a
     // listing or resolves a video host. The image loader coalesces these warm
     // requests with the visible cells when the gallery is pushed.
-    ApolloGalleryFeed *preview = [[ApolloGalleryFeed alloc] initWithHomeFeed];
-    if (![preview seedFromListing:snapshot.listing]) return;
+    ApolloGalleryFeed *preview = snapshot.savedFeed
+        ? [[ApolloGalleryFeed alloc] initWithSavedCategory:snapshot.savedCategory]
+        : [[ApolloGalleryFeed alloc] initWithHomeFeed];
+    BOOL seeded = snapshot.savedFeed
+        ? [preview seedFromSavedListing:snapshot.listing category:snapshot.savedCategory]
+        : [preview seedFromListing:snapshot.listing];
+    if (!seeded) return;
     NSArray<ApolloGalleryItem *> *items = preview.items;
     CGSize viewport = sourceViewController.viewIfLoaded.bounds.size;
     NSInteger sizeIndex = ApolloGalleryGridSavedTileSizeIndex(NSUserDefaults.standardUserDefaults);
@@ -286,7 +361,10 @@ BOOL ApolloGallerySeedFeedFromSource(ApolloGalleryFeed *feed, UIViewController *
     ApolloGallerySourceSnapshot *snapshot = ApolloGallerySourceSnapshotForOwner(sourceViewController);
     if (!snapshot || feed.sort != snapshot.sort ||
         (ApolloGallerySortUsesWindow(feed.sort) && feed.topWindow != snapshot.topWindow)) return NO;
-    BOOL seeded = [feed seedFromListing:snapshot.listing];
+    if (!snapshot.savedFeed && !feed.supportsSorting) return NO;
+    BOOL seeded = snapshot.savedFeed
+        ? [feed seedFromSavedListing:snapshot.listing category:snapshot.savedCategory]
+        : [feed seedFromListing:snapshot.listing];
     if (seeded) ApolloLog(@"[GallerySource] opened from %lu already-loaded posts (%lu media)",
                          (unsigned long)snapshot.links.count, (unsigned long)feed.items.count);
     return seeded;

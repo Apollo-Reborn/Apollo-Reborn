@@ -8,6 +8,7 @@
 
 #import "ApolloCommon.h"
 #import "ApolloPostReadState.h"
+#import "ApolloProfileRowWrapper.h"
 #import "ApolloState.h"
 #import "Tweak.h"
 #import "UserDefaultConstants.h"
@@ -1010,6 +1011,7 @@ static void ApolloRecentlyReadRegisterMenuRow(void) {
     spec.identifier = @"RecentlyReadRemove";
     spec.placement = ApolloActionMenuPlacementAppend;
     spec.legacyDismissesSheet = YES;
+    spec.legacyDestructive = YES;
     spec.matches = ^BOOL(id actionController, __unused NSString *menuTitle) {
         id link = sRecentlyReadArmedLink;
         sRecentlyReadArmedLink = nil;
@@ -1128,6 +1130,7 @@ static UIViewController *ApolloRecentlyReadOwnProfileForAdapter(id adapter) {
 @interface ApolloRecentlyReadProfileTap : NSObject
 + (instancetype)shared;
 - (void)open:(UITapGestureRecognizer *)gesture;
+- (void)openFromView:(UIView *)view;
 @end
 
 @implementation ApolloRecentlyReadProfileTap
@@ -1139,7 +1142,11 @@ static UIViewController *ApolloRecentlyReadOwnProfileForAdapter(id adapter) {
 }
 - (void)open:(UITapGestureRecognizer *)gesture {
     if (gesture.state != UIGestureRecognizerStateRecognized) return;
-    for (UIResponder *responder = gesture.view; responder; responder = responder.nextResponder) {
+    ApolloProfileRowWrapperFocusRowView(gesture.view);
+    [self openFromView:gesture.view];
+}
+- (void)openFromView:(UIView *)view {
+    for (UIResponder *responder = view; responder; responder = responder.nextResponder) {
         if ([responder isKindOfClass:ApolloClassProfileViewController]) {
             ApolloRecentlyReadPresentFromViewController((UIViewController *)responder);
             return;
@@ -1171,6 +1178,11 @@ static id (^ApolloRecentlyReadProfileRowBlock(id (^originalBlock)(void), id (^se
         objc_setAssociatedObject(rowIcon, &kRecentlyReadRowIconKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         rowTitle.attributedText = rowTitle.attributedText;
         rowIcon.image = rowIcon.image;
+        // Keyboard focus can land on this row without a tap; tell the shared
+        // cell how to open it.
+        ApolloProfileRowWrapperRegisterInjectedRow(row, ^(UIView *view) {
+            [[ApolloRecentlyReadProfileTap shared] openFromView:view];
+        });
         [row onDidLoad:^(ASDisplayNode *loaded) {
             UIView *view = loaded.view;
             view.accessibilityLabel = kRecentlyReadRowTitle;
@@ -1185,6 +1197,11 @@ static id (^ApolloRecentlyReadProfileRowBlock(id (^originalBlock)(void), id (^se
         ASDisplayNode *wrapper = [cellNodeClass new];
         wrapper.backgroundColor = UIColor.clearColor;
         wrapper.automaticallyManagesSubnodes = YES;
+        // The wrapper takes Friends' native row: keep its label, and expose
+        // both rows so the Duo portrait shortcut grid includes them.
+        wrapper.accessibilityLabel = friends;
+        objc_setAssociatedObject(wrapper, NSSelectorFromString(@"apollo_profileShortcutChildren"),
+                                 @[row, original], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         wrapper.layoutSpecBlock = ^id(__unused id node, __unused struct ApolloTextureSizeRange range) {
             return [ApolloClassASStackLayoutSpec stackLayoutSpecWithDirection:0 spacing:0 justifyContent:0 alignItems:3
                                                                      children:@[row, separator, original]];

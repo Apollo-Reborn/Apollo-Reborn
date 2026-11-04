@@ -72,8 +72,11 @@ id ApolloWebJSONFixupModeratorsResponseObject(NSURLResponse *response, id respon
 // error is already present (native completions inspect the object first).
 // A listing that comes back with no object and no error, or with an HTTP status
 // of 400 or more and no error, also becomes nil + an error: RedditKit reports
-// neither, and a feed would take it as its last page (#1420). Valid dictionary
-// responses, existing errors, writes and array-rooted endpoints pass through.
+// neither, and a feed would take it as its last page (#1420). A post-and-comments
+// read (/comments/<id>) whose result isn't an array also becomes nil + an error:
+// RedditKit indexes a dictionary there as the array and crashes (#1531).
+// Valid dictionary responses, existing errors, writes and other array-rooted
+// endpoints pass through.
 id ApolloWebJSONGuardListingTaskResponse(NSString *method, NSString *path,
                                         NSHTTPURLResponse *response, id responseObject,
                                         NSError **error);
@@ -152,6 +155,16 @@ NSString *ApolloWebJSONWebSessionUsernameForBearer(NSString *bearer);
 // (fresh token_v2, or a minted one still cached), else nil — also nil for a
 // minute after oauth.reddit.com refused it with a 401.
 NSString *ApolloWebJSONReadyWebBearer(NSString *username);
+
+// The bearer for routes with bearer auth (ApolloWebJSONRoutes.h): a bearer
+// minted for Reddit's mobile client that's already on hand, never token_v2;
+// nil when there's none.
+NSString *ApolloWebJSONReadyRouteBearer(NSString *username);
+
+// Mints `username`'s route bearer (the active web-session account when nil) in
+// the background, while an entry in effect lists a bearer route and none is on
+// hand. Returns at once; any thread.
+void ApolloWebJSONPrepareRouteBearer(NSString *username);
 
 // YES when a web-session account has no web bearer on hand and a mint is worth
 // trying now (none held off, no recent mint failure). The RedditKit request
@@ -298,6 +311,25 @@ NSURL *ApolloWebJSONProbeURL(NSURL *url);
 // JSON rewrite, no User-Agent stamping (they pick their UA deliberately).
 BOOL ApolloWebJSONURLIsProbe(NSURL *url);
 
+// `request` marked so ApolloWebJSONRewriteRequest skips the routes in
+// `triedMask` (a bit per ApolloWebJSONRoute, ApolloWebJSONRoutes.h), for a
+// resend after one got Reddit's block page. Unchanged for 0. The mark rides on
+// the URL fragment and never reaches Reddit.
+NSURLRequest *ApolloWebJSONRequestMarkingTriedRoutes(NSURLRequest *request, NSUInteger triedMask);
+
+// The ApolloWebJSONRoute a rewritten request or its response URL went by, or -1
+// when `url` wasn't rewritten for a web session.
+NSInteger ApolloWebJSONRouteFromURL(NSURL *url);
+
+#if APOLLO_SIM_BUILD
+// Sim debug bridge: send these ApolloWebJSONRoutes' requests (a bit per route)
+// where Reddit blocks them, to exercise the fallback; 0 turns it off.
+void ApolloWebJSONSimSetBlockedRoutes(NSUInteger routeMask);
+// Same, but send them with a cookie Reddit doesn't know, so old.reddit.com
+// answers with its real sign-in gate, as it does an account it won't serve.
+void ApolloWebJSONSimSetGatedRoutes(NSUInteger routeMask);
+#endif
+
 // Seconds the tweak's optional reads (author avatars, subreddit header info)
 // for `username`'s web session should wait, or 0 when they may go ahead.
 // Reddit doesn't report a web session's remaining request budget (cookie
@@ -332,6 +364,11 @@ ApolloWebJSONTaskCompletion ApolloWebJSONShareAccountRead(NSString *username, NS
 // The task handed back to a caller whose read was shared (see above). Never
 // resumed, so cancelling it can't cancel the request another caller waits on.
 NSURLSessionDataTask *ApolloWebJSONSharedReadPlaceholderTask(void);
+
+// How many times a write from this web-session account has been sent or
+// answered this launch (the count the sharing above starts over on). An answer
+// kept for longer elsewhere is stale once it moves. Any thread.
+NSUInteger ApolloWebJSONAccountWriteCount(NSString *username);
 
 // Verify the requesting web account independently of public HTTP successes.
 void ApolloWebJSONCheckAccountSession(NSString *username);

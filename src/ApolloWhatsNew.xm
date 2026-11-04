@@ -36,6 +36,7 @@
 #import "ApolloCommon.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloWhatsNew.h"
+#import "settings/ApolloSetupAssistant.h"
 #import "ApolloWhatsNewHalloween.h"
 #import "ApolloWhatsNewCatalog.gen.h"
 #import "UIWindow+Apollo.h"
@@ -96,7 +97,7 @@ static NSString *ApolloWhatsNewCurrentVersion(void);
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor systemBackgroundColor];
 
-    // 3.9.0 only: a one-off Halloween look (ApolloWhatsNewHalloween.m) with a
+    // 3.9.0 and 4.0.1 only: a Halloween look (ApolloWhatsNewHalloween.m) with a
     // pumpkin-orange accent, Count Helios in the header and a flock of bats.
     _halloween = ApolloWhatsNewHalloweenWantedForVersion(ApolloWhatsNewCurrentVersion());
 
@@ -246,8 +247,8 @@ static NSString *ApolloWhatsNewCurrentVersion(void);
     [self apollo_playBatsIfNeeded];
 }
 
-// 3.9.0 only (ApolloWhatsNewHalloween.m): a small flock of bats bursts out of
-// the header icon as the header lands. Measured after apollo_animateEntrance, whose
+// 3.9.0 and 4.0.1 only (ApolloWhatsNewHalloween.m): a small flock of bats bursts
+// out of the header icon as the header lands. Measured after apollo_animateEntrance, whose
 // animation blocks have already applied the header's final layout to the
 // model layers, so this is where the icon ends up, not where it starts.
 - (void)apollo_playBatsIfNeeded {
@@ -462,6 +463,7 @@ static NSString *ApolloWhatsNewCurrentVersion(void) {
 // A's commit, so B's re-read (plus the sheet-class check, which also covers
 // the markSeen-less debug path) makes the first chain to commit the only one.
 static void ApolloWhatsNewAttemptPresentation(NSString *headline, NSArray<NSDictionary *> *items, NSArray<NSNumber *> *remainingDelays, NSString *versionGate, void (^markSeen)(void)) {
+    if (ApolloSetupAssistantBlocksLaunchPrompts()) return;
     UIViewController *top = ApolloWhatsNewTopViewController();
     if ([top isMemberOfClass:[ApolloWhatsNewViewController class]]) {
         ApolloLog(@"[WhatsNew] A What's New sheet is already up — not stacking another.");

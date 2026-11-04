@@ -24,6 +24,12 @@ _LG_ICONS_REGISTRY="${LG_ICONS_REGISTRY:-${_LG_ASSETS_REPO_DIR}/liquid-glass/ico
 _LG_ICON_NAME="apollo"
 _LG_IPAD_ICON_FILES=("AppIcon60x60" "AppIcon76x76")
 _LG_IPHONE_ICON_FILES=("AppIcon60x60")
+# Every alternate name is also registered with this suffix, pointing at the
+# same asset. iOS can keep showing its generic grid icon for an alternate name
+# whose home-screen render failed during an app update; re-applying that name
+# changes nothing, but switching to its twin makes iOS draw the icon again.
+# Keep in sync with ApolloLGRefreshIconSuffix (src/ApolloLiquidGlassIconIDs.m).
+_LG_REFRESH_ICON_SUFFIX="__apollo_refresh"
 
 _lg_load_alternate_icons() {
     local i=0 id group
@@ -59,6 +65,7 @@ _lg_ensure_icon_metadata() {
     LG_IPHONE_ICON_FILES="$(IFS=,; echo "${_LG_IPHONE_ICON_FILES[*]}")" \
     LG_IPAD_ICON_FILES="$(IFS=,; echo "${_LG_IPAD_ICON_FILES[*]}")" \
     LG_ALT_ICONS="$(IFS=,; echo "${alt_icons[*]+"${alt_icons[*]}"}")" \
+    LG_REFRESH_SUFFIX="$_LG_REFRESH_ICON_SUFFIX" \
     python3 - <<'PY'
 import os
 import plistlib
@@ -68,6 +75,7 @@ icon_name = os.environ["LG_ICON_NAME"]
 iphone_files = [f for f in os.environ["LG_IPHONE_ICON_FILES"].split(",") if f]
 ipad_files = [f for f in os.environ["LG_IPAD_ICON_FILES"].split(",") if f]
 alt_icons = [n for n in os.environ["LG_ALT_ICONS"].split(",") if n]
+refresh_suffix = os.environ["LG_REFRESH_SUFFIX"]
 
 with open(path, "rb") as fh:
     raw = fh.read()
@@ -91,6 +99,8 @@ for icons_key, files in (("CFBundleIcons", iphone_files), ("CFBundleIcons~ipad",
     alternates = ensure_dict(icons, "CFBundleAlternateIcons")
     for name in alt_icons:
         ensure_dict(alternates, name)["CFBundleIconName"] = name
+        # Same artwork under a second name (see _LG_REFRESH_ICON_SUFFIX).
+        ensure_dict(alternates, name + refresh_suffix)["CFBundleIconName"] = name
 
 with open(path, "wb") as fh:
     plistlib.dump(root, fh, fmt=fmt)

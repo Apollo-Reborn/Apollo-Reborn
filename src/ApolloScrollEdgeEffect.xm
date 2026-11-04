@@ -1,4 +1,5 @@
 #import "ApolloCommon.h"
+#import "ApolloDuoRail.h"
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
 
@@ -134,7 +135,10 @@ static BOOL ApolloMinimizeBottomEdgeEnabled(void) {
 }
 
 static BOOL ApolloMinimizeOwnsBottomEdge(UIScrollView *scrollView) {
-    if (!scrollView.window || !ApolloMinimizeBottomEdgeEnabled()) return NO;
+    // A vertical rail can intersect a full-size list too. Only the Duo pose
+    // that supports bottom-bar hiding can own its bottom-edge visibility.
+    if (!scrollView.window || !ApolloMinimizeBottomEdgeEnabled() ||
+        !ApolloDuoAllowsTabBarScrollHiding()) return NO;
     UITabBarController *controller = nil;
     for (UIResponder *responder = scrollView; responder; responder = responder.nextResponder) {
         if ([responder isKindOfClass:UIViewController.class]) {
