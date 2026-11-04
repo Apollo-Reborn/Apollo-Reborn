@@ -11,8 +11,6 @@
 #import "ApolloDeviceDisplay.h"
 #import "ApolloDuoRail.h"
 #import "ApolloDuoVideoGeometry.h"
-#import "ApolloGalleryVideoExport.h"
-#import "ApolloSaveAllMediaItems.h"
 #import "ApolloImmersiveHeaderBackground.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloThemeRuntime.h"
@@ -193,13 +191,12 @@ static UIImage *DuoVideoSymbol(NSString *name, ApolloDuoVideoSymbolRole role) {
 - (void)toggleChrome;
 - (void)scrubBegan;
 - (void)scrubEnded;
-- (void)accessoryTapped:(id)sender;
 - (void)refreshSpeedMenu:(id)sender;
 - (void)pressDown:(id)sender;
 - (void)pressUp:(id)sender;
 @end
 
-static char kDuoVideoCoordinator, kDuoVideoOwner, kDuoVideoFrame, kDuoVideoChromeHook, kDuoVideoPlate, kDuoVideoAlpha, kDuoVideoSaving;
+static char kDuoVideoCoordinator, kDuoVideoOwner, kDuoVideoFrame, kDuoVideoChromeHook, kDuoVideoPlate, kDuoVideoAlpha;
 static void *kDuoVideoVisibility = &kDuoVideoVisibility;
 
 // A real interface, not @class: the Logos preprocessor drops forward declarations.
@@ -294,13 +291,11 @@ static void DuoVideoPanelFrame(UIView *view, CGRect frame) {
 - (void)toggleChrome;
 - (void)scrubBegan;
 - (void)scrubEnded;
-- (void)accessoryTapped:(UIButton *)sender;
 - (void)refreshSpeedMenu:(UIButton *)sender;
 - (void)resolveExtras;
 - (void)resyncSymbols;
 - (void)scheduleSymbolResync;
 - (UIMenu *)speedMenu;
-- (BOOL)saveVideoToPhotos;
 - (void)refreshTimelineTrack;
 - (void)addPlate:(ApolloDuoVideoPlateView *)plate;
 - (void)pairControl:(UIControl *)control plate:(ApolloDuoVideoPlateView *)plate;
@@ -342,7 +337,7 @@ static void DuoVideoSetOwner(UIView *view, ApolloDuoVideoCoordinator *owner) {
 
 // The long-press menu (Share Link / Download Video / Playback Speed) is built
 // by Apollo's context-menu delegate. Ask for that configuration and run its
-// action provider so the glass buttons perform the same actions.
+// action provider to learn whether this video offers Playback Speed.
 static UIContextMenuInteraction *DuoVideoMenuInteraction(UIView *view, id delegate, BOOL requireDelegate) {
     if (!view) return nil;
     for (id<UIInteraction> interaction in view.interactions) {
@@ -385,9 +380,7 @@ static UIMenu *DuoVideoNativeMenu(UIViewController *viewer) {
 static UIMenuElement *DuoVideoMenuElement(UIMenu *menu, NSString *key) {
     for (UIMenuElement *element in menu.children) {
         NSString *title = element.title ?: @"";
-        BOOL match = ([key isEqualToString:@"share"] && [title isEqualToString:@"Share Link"])
-            || ([key isEqualToString:@"download"] && [title hasPrefix:@"Download"])
-            || ([key isEqualToString:@"speed"] && [title hasPrefix:@"Playback Speed"]);
+        BOOL match = [key isEqualToString:@"speed"] && [title hasPrefix:@"Playback Speed"];
         if (match) return element;
         if ([element isKindOfClass:UIMenu.class]) {
             UIMenuElement *nested = DuoVideoMenuElement((UIMenu *)element, key);
@@ -402,7 +395,6 @@ static UIMenuElement *DuoVideoMenuElement(UIMenu *menu, NSString *key) {
 - (void)toggleChrome { [(ApolloDuoVideoCoordinator *)self.owner toggleChrome]; }
 - (void)scrubBegan { [(ApolloDuoVideoCoordinator *)self.owner scrubBegan]; }
 - (void)scrubEnded { [(ApolloDuoVideoCoordinator *)self.owner scrubEnded]; }
-- (void)accessoryTapped:(id)sender { [(ApolloDuoVideoCoordinator *)self.owner accessoryTapped:sender]; }
 - (void)refreshSpeedMenu:(id)sender { [(ApolloDuoVideoCoordinator *)self.owner refreshSpeedMenu:sender]; }
 // The plates cannot take touches (the native controls above them must), so
 // the control's own tracking drives the glass press.
@@ -416,63 +408,6 @@ static UIMenuElement *DuoVideoMenuElement(UIMenu *menu, NSString *key) {
 }
 @end
 
-
-// Save progress lives on the Download button itself: the arrow becomes a
-// spinner while the video downloads and merges, then a checkmark (or a
-// warning) for a moment before the arrow returns. No popup over the panel.
-typedef NS_ENUM(NSInteger, ApolloDuoVideoSaveState) {
-    ApolloDuoVideoSaveIdle,
-    ApolloDuoVideoSaveSaving,
-    ApolloDuoVideoSaveDone,
-    ApolloDuoVideoSaveFailed,
-};
-static void DuoVideoSetSaveState(UIButton *button, ApolloDuoVideoSaveState state) {
-    if (!button) return;
-    UIActivityIndicatorView *spinner = nil;
-    for (UIView *child in button.subviews) {
-        if ([child isKindOfClass:UIActivityIndicatorView.class]) spinner = (UIActivityIndicatorView *)child;
-    }
-    objc_setAssociatedObject(button, &kDuoVideoSaving, state == ApolloDuoVideoSaveIdle ? nil : @YES,
-                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    if (state == ApolloDuoVideoSaveSaving) {
-        if (!spinner) {
-            spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
-            spinner.color = UIColor.whiteColor;
-            spinner.userInteractionEnabled = NO;
-            spinner.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin
-                | UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin;
-            [button addSubview:spinner];
-        }
-        spinner.center = CGPointMake(CGRectGetMidX(button.bounds), CGRectGetMidY(button.bounds));
-        [spinner startAnimating];
-        // Swap the arrow out for the spinner. Hiding the image view does not
-        // hold: UIButton's layout restores its alpha, so drop the image itself.
-        [UIView transitionWithView:button duration:0.18 options:UIViewAnimationOptionTransitionCrossDissolve animations:^{
-            [button setImage:nil forState:UIControlStateNormal];
-            spinner.hidden = NO;
-        } completion:nil];
-        button.accessibilityValue = @"Saving";
-        return;
-    }
-    NSString *symbol = state == ApolloDuoVideoSaveDone ? @"checkmark"
-        : state == ApolloDuoVideoSaveFailed ? @"exclamationmark.triangle" : @"arrow.down.to.line";
-    UIImage *glyph = [DuoVideoSymbol(symbol, ApolloDuoVideoSymbolAccessory) imageWithTintColor:UIColor.whiteColor
-                                                                              renderingMode:UIImageRenderingModeAlwaysOriginal];
-    [UIView transitionWithView:button duration:0.22 options:UIViewAnimationOptionTransitionCrossDissolve animations:^{
-        [button setImage:glyph forState:UIControlStateNormal];
-        [spinner stopAnimating];
-        [spinner removeFromSuperview];
-    } completion:nil];
-    if (state == ApolloDuoVideoSaveDone || state == ApolloDuoVideoSaveFailed) {
-        [[UINotificationFeedbackGenerator new] notificationOccurred:state == ApolloDuoVideoSaveDone
-            ? UINotificationFeedbackTypeSuccess : UINotificationFeedbackTypeError];
-        if (@available(iOS 17.0, *)) {
-            [button.imageView addSymbolEffect:[NSSymbolBounceEffect effect] options:NSSymbolEffectOptions.options animated:YES];
-        }
-    }
-    button.accessibilityValue = state == ApolloDuoVideoSaveDone ? @"Saved"
-        : state == ApolloDuoVideoSaveFailed ? @"Couldn't save" : nil;
-}
 
 @implementation ApolloDuoVideoCoordinator
 - (void)rememberImage:(UIImage *)image button:(UIButton *)button state:(UIControlState)state {
@@ -782,12 +717,10 @@ static void DuoVideoSetSaveState(UIButton *button, ApolloDuoVideoSaveState state
     ApolloLog(@"[DuoVideo] video menu: %@", [titles componentsJoinedByString:@", "]);
     NSMutableArray *items = [NSMutableArray array];
     NSDictionary *wanted = @{
-        @"share": @"square.and.arrow.up",
-        @"download": @"arrow.down.to.line",
         // AVKit's playback-speed glyph; speedometer predates it (iOS 17).
         @"speed": [UIImage systemImageNamed:@"gauge.with.dots.needle.67percent"] ? @"gauge.with.dots.needle.67percent" : @"speedometer",
     };
-    for (NSString *key in @[@"share", @"download", @"speed"]) {
+    for (NSString *key in @[@"speed"]) {
         UIMenuElement *element = DuoVideoMenuElement(menu, key);
         if (!element) continue;
         [items addObject:@{@"key": key, @"title": element.title ?: @"", @"symbol": wanted[key]}];
@@ -818,28 +751,12 @@ static void DuoVideoSetSaveState(UIButton *button, ApolloDuoVideoSaveState state
         [content addSubview:button];
         [self.extraButtons addObject:button];
         [self pairControl:button plate:plate];
-        if ([item[@"key"] isEqualToString:@"speed"]) {
-            // Our own speed menu: Apollo's submenu is built for its long-press
-            // context menu and is not reliable presented from a button.
-            button.menu = [self speedMenu];
-            button.showsMenuAsPrimaryAction = YES;
-            [button addTarget:self.chromeProxy action:@selector(refreshSpeedMenu:) forControlEvents:UIControlEventTouchDown];
-        } else {
-            [button addTarget:self.chromeProxy action:@selector(accessoryTapped:) forControlEvents:UIControlEventTouchUpInside];
-            [self hookChromeControl:button scrubber:NO];
-        }
+        // Our own speed menu: Apollo's submenu is built for its long-press
+        // context menu and is not reliable presented from a button.
+        button.menu = [self speedMenu];
+        button.showsMenuAsPrimaryAction = YES;
+        [button addTarget:self.chromeProxy action:@selector(refreshSpeedMenu:) forControlEvents:UIControlEventTouchDown];
     }
-}
-- (void)accessoryTapped:(UIButton *)button {
-    if (!self.active || ![button isKindOfClass:UIButton.class]) return;
-    [self chromeTouched];
-    // Apollo's "Download Video…" opens a share sheet, which reads as the same
-    // action as Share Link. Save straight to Photos when the post has one video.
-    if ([button.accessibilityIdentifier isEqualToString:@"download"] && [self saveVideoToPhotos]) return;
-    UIMenu *menu = DuoVideoNativeMenu(self.viewer);
-    UIMenuElement *element = DuoVideoMenuElement(menu, button.accessibilityIdentifier);
-    if (![element conformsToProtocol:@protocol(UIMenuLeaf)]) return;
-    if (@available(iOS 16.0, *)) [(id<UIMenuLeaf>)element performWithSender:button target:nil];
 }
 - (void)refreshSpeedMenu:(UIButton *)button {
     if (!self.active || ![button isKindOfClass:UIButton.class]) return;
@@ -899,37 +816,6 @@ static void DuoVideoSetSaveState(UIButton *button, ApolloDuoVideoSaveState state
         [actions addObject:action];
     }
     return [UIMenu menuWithTitle:@"Playback Speed" children:actions];
-}
-- (BOOL)saveVideoToPhotos {
-    UIViewController *page = self.viewer.parentViewController;
-    id link = ApolloObjectIvar(page, "link");
-    if (!link) return NO;
-    // Galleries keep Apollo's own action: the link's video is not this page.
-    if (ApolloSaveAllMediaItemsFromLink(link, NULL).count || ApolloSaveAllMediaLinkHasCollection(link)) return NO;
-    id video = [link respondsToSelector:@selector(video)] ? ApolloSendObject(link, @selector(video)) : nil;
-    NSURL *url = ApolloSendObject(video, @selector(fallbackURL));
-    if (![url isKindOfClass:NSURL.class]) url = ApolloSendObject(video, @selector(URL));
-    if (![url isKindOfClass:NSURL.class] || [url.pathExtension.lowercaseString isEqualToString:@"m3u8"]) return NO;
-    UIButton *button = nil;
-    for (UIButton *candidate in self.extraButtons) {
-        if ([candidate.accessibilityIdentifier isEqualToString:@"download"]) button = candidate;
-    }
-    // Already saving: the spinner is the answer, never start a second save.
-    if (objc_getAssociatedObject(button, &kDuoVideoSaving)) return YES;
-    ApolloLog(@"[DuoVideo] saving video %@", url.host);
-    DuoVideoSetSaveState(button, ApolloDuoVideoSaveSaving);
-    __weak UIButton *weakButton = button;
-    ApolloGallerySaveVideoToPhotos(url, nil, ^(BOOL success, NSString *message) {
-        ApolloLog(@"[DuoVideo] save finished success=%d (%@)", success, message);
-        UIButton *strong = weakButton;
-        DuoVideoSetSaveState(strong, success ? ApolloDuoVideoSaveDone : ApolloDuoVideoSaveFailed);
-        UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification,
-                                        message ?: (success ? @"Saved to Photos" : @"Couldn't save video"));
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            DuoVideoSetSaveState(weakButton, ApolloDuoVideoSaveIdle);
-        });
-    });
-    return YES;
 }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldReceiveTouch:(UITouch *)touch {
     if (gesture != self.chromeTap) return YES;
