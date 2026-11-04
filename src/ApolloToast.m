@@ -27,6 +27,11 @@
 
 // The currently-visible toast, so a new one can dismiss it instead of stacking.
 static __weak ApolloToastView *sApolloActiveToast = nil;
+static __weak UIView *sApolloToastAnchor = nil;
+
+void ApolloToastSetAnchorView(UIView *view) {
+    sApolloToastAnchor = view;
+}
 
 static UIWindow *ApolloToastKeyWindow(void) {
     UIWindow *keyWindow = ApolloKeyWindow();
@@ -163,21 +168,33 @@ static void ApolloToastShowImpl(NSString *message, NSString *detail, ApolloToast
     }
     [row addArrangedSubview:textStack];
 
+    // Hug the content; the 190pt minimum below wins over this.
+    NSLayoutConstraint *hug = [bubble.widthAnchor constraintEqualToAnchor:row.widthAnchor constant:36.0];
+    hug.priority = UILayoutPriorityDefaultHigh;
+    hug.active = YES;
     [NSLayoutConstraint activateConstraints:@[
         [row.topAnchor constraintEqualToAnchor:bubble.topAnchor constant:11.0],
         [row.bottomAnchor constraintEqualToAnchor:bubble.bottomAnchor constant:-11.0],
-        [row.leadingAnchor constraintEqualToAnchor:bubble.leadingAnchor constant:18.0],
-        [row.trailingAnchor constraintEqualToAnchor:bubble.trailingAnchor constant:-18.0],
+        // Centered, so a short message inside the 190pt minimum bubble does not
+        // hug the leading edge.
+        [row.centerXAnchor constraintEqualToAnchor:bubble.centerXAnchor],
+        [row.leadingAnchor constraintGreaterThanOrEqualToAnchor:bubble.leadingAnchor constant:18.0],
+        [row.trailingAnchor constraintLessThanOrEqualToAnchor:bubble.trailingAnchor constant:-18.0],
 
         [bubble.centerXAnchor constraintEqualToAnchor:window.centerXAnchor],
         [bubble.heightAnchor constraintGreaterThanOrEqualToConstant:56.0],
         [bubble.widthAnchor constraintGreaterThanOrEqualToConstant:190.0],
         [bubble.leadingAnchor constraintGreaterThanOrEqualToAnchor:window.safeAreaLayoutGuide.leadingAnchor constant:18.0],
         [bubble.trailingAnchor constraintLessThanOrEqualToAnchor:window.safeAreaLayoutGuide.trailingAnchor constant:-18.0],
+    ]];
+    UIView *anchor = sApolloToastAnchor;
+    if (anchor.window == window && !anchor.hidden) {
+        [bubble.bottomAnchor constraintEqualToAnchor:anchor.topAnchor constant:-14.0].active = YES;
+    } else {
         // Clear the floating (Liquid Glass) tab bar, which sits above the home
         // indicator and is NOT reflected in the window's safe-area bottom inset.
-        [bubble.bottomAnchor constraintEqualToAnchor:window.safeAreaLayoutGuide.bottomAnchor constant:-72.0],
-    ]];
+        [bubble.bottomAnchor constraintEqualToAnchor:window.safeAreaLayoutGuide.bottomAnchor constant:-72.0].active = YES;
+    }
 
     [window layoutIfNeeded];
     bubble.layer.cornerRadius = bubble.bounds.size.height / 2.0;

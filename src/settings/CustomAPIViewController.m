@@ -1387,14 +1387,6 @@ typedef NS_ENUM(NSInteger, Tag) {
                                 push:^UIViewController * {
             return [[ApolloInterfaceSettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
         }];
-    ApolloSettingsRow *duo =
-        [self hubDisclosureRowWithID:@"feat.duo" title:@"iPhone Duo" subtitle:nil
-                                push:^UIViewController * {
-            return [[ApolloDuoSettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
-        }];
-    duo.visible = ^BOOL { return ApolloDuoDeviceDetected(); };
-    duo.iconSystemName = @"iphone.duo";
-    duo.iconTileColor = UIColor.systemIndigoColor;
     ApolloSettingsRow *linkPreviews = [self buildLinkPreviewsRow];
     ApolloSettingsRow *polls = [self buildPollsRow];
     ApolloSettingsRow *apolloAI = [self buildApolloAIRow];
@@ -1411,7 +1403,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 
     return [ApolloSettingsSection sectionWithTitle:@"Features"
                                             footer:@"Fine-tune posts, comments, media, subreddits, profile layout and the interface."
-                                              rows:@[ posts, comments, media, subreddits, profileLayout, interface_, duo,
+                                              rows:@[ posts, comments, media, subreddits, profileLayout, interface_,
                                                       linkPreviews, polls, apolloAI ]];
 }
 
@@ -3175,7 +3167,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     });
 }
 
-// Shared with the Duo page while retaining the existing contextual entrance.
+// Duo-only row on the Subreddits screen (open display panel appearance).
 - (ApolloSettingsRow *)buildDuoPanelStyleRow {
     __weak typeof(self) weakSelf = self;
     ApolloSettingsRow *panelStyle =
@@ -6206,49 +6198,5 @@ static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
 - (NSString *)apollo_screenTitle { return @"Notification Backend"; }
 - (NSArray<ApolloSettingsSection *> *)buildForm {
     return @[ [self buildNotificationBackendSection] ];
-}
-@end
-
-// A stable hardware gate keeps this page available on both Duo displays and
-// through posture changes; ordinary iPhones and iPads never index its rows.
-@implementation ApolloDuoSettingsViewController
-- (NSString *)apollo_screenTitle { return @"iPhone Duo"; }
-- (NSArray<ApolloSettingsSection *> *)buildForm {
-    if (!ApolloDuoDeviceDetected()) return @[];
-    __weak typeof(self) weakSelf = self;
-    ApolloSettingsRow *tabletop = [ApolloSettingsRow switchRowWithID:@"duo.tabletopVideo"
-        title:@"Tabletop Video Controls"
-        isOn:^BOOL { return sDuoTabletopVideoEnabled; }
-        onToggle:^(UISwitch *sender) {
-            sDuoTabletopVideoEnabled = sender.isOn;
-            [NSUserDefaults.standardUserDefaults setBool:sender.isOn forKey:UDKeyDuoTabletopVideoEnabled];
-            [NSNotificationCenter.defaultCenter postNotificationName:ApolloDuoVideoLayoutDidChangeNotification object:nil];
-        }];
-    ApolloSettingsRow *landscape = [ApolloSettingsRow valueRowWithID:@"duo.landscapeFeed"
-        title:@"Landscape Feed Layout"
-        detail:^NSString * { return sDuoLandscapeFeedLayout == 2 ? @"Focused" : @"Original"; }
-        onSelect:^{
-            ApolloSettingsPresentPicker(weakSelf, [weakSelf cellForRowID:@"duo.landscapeFeed"],
-                @"Landscape Feed Layout", @[@"Original", @"Focused"], sDuoLandscapeFeedLayout == 2 ? 1 : 0,
-                ^(NSInteger picked) {
-                    NSInteger layout = picked == 1 ? 2 : 0;
-                    if (layout == sDuoLandscapeFeedLayout) return;
-                    sDuoLandscapeFeedLayout = layout;
-                    [NSUserDefaults.standardUserDefaults setInteger:layout forKey:UDKeyDuoLandscapeFeedLayout];
-                    [weakSelf reloadRowWithID:@"duo.landscapeFeed"];
-                    [NSNotificationCenter.defaultCenter postNotificationName:@"ApolloDuoFeedLayoutDidChange" object:nil];
-                });
-        }];
-    landscape.visible = ^BOOL { return ApolloDuoUsesAdaptiveBars(); };
-    ApolloSettingsSection *openDisplay = [ApolloSettingsSection sectionWithTitle:@"Open Display"
-        footer:@"Focused centers the landscape feed in a narrower column. Subreddit Panel Style controls the open display's subreddit panel. These options also remain available from their existing controls."
-        rows:@[landscape, [self buildDuoPanelStyleRow]]];
-    openDisplay.visible = ^BOOL { return ApolloDuoUsesAdaptiveBars(); };
-    return @[
-        [ApolloSettingsSection sectionWithTitle:@"Video Playback"
-            footer:@"When enabled, partly folding the open portrait display puts fullscreen video above the fold and playback controls below it. Off by default."
-            rows:@[tabletop]],
-        openDisplay
-    ];
 }
 @end

@@ -990,7 +990,8 @@ static UIInterfaceOrientation ApolloGalleryInterfaceOrientationForDevice(UIDevic
 }
 
 - (void)apollo_updateRotationOffer {
-    if (self.isDismissing || !ApolloGallerySmartRotationLockEnabled()) {
+    // Duo's fold postures read as a sideways device, so the offer misfires there.
+    if (self.isDismissing || !ApolloGallerySmartRotationLockEnabled() || ApolloDeviceIsDuo()) {
         [self apollo_hideRotationOffer];
         return;
     }
