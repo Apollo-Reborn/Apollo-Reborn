@@ -244,6 +244,9 @@ extern BOOL sLiquidGlassEnabled;
 // dock/grow); the field stays put and results populate the feed in place. Liquid Glass only;
 // mutually exclusive with the default nav-hide mode. See ApolloSearchInPlace.xm.
 extern BOOL sKeepSearchBarInPlace;
+// UDKeyShowFeedSearchBar / UDKeyShowFindInCommentsBar (ApolloSearchNativeBar.xm).
+extern BOOL sShowFeedSearchBar;
+extern BOOL sShowFindInCommentsBar;
 // When ON (default), press-and-hold on a post info row shows the glass-slider
 // magnifier loupe: slide to pick an icon, release to activate it (upvote /
 // comments / posted / % upvoted / translation). See ApolloStatsRowTouch.xm.

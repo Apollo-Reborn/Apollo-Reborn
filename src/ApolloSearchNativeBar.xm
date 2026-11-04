@@ -1067,6 +1067,28 @@ static void NSBUpdateSearchPlacement(UIViewController *vc) {
             stacked |= ApolloDuoCurrentMode() != ApolloDuoModePhone || ApolloDuoRailHasVisibleSideBar();
         }
         NSNumber *original = objc_getAssociatedObject(item, &kNSBDuoSearchPlacementKey);
+        if (@available(iOS 26.0, *)) {
+            // Settings turned this bar off: no field under the title and no button for
+            // it either. The controller stays attached, so the ••• menu's Find in
+            // Comments can still open a search.
+            BOOL barOff = NSBIsNativeSearchCommentsVC(vc) ? !sShowFindInCommentsBar : !sShowFeedSearchBar;
+            if (barOff) {
+                if (!original) {
+                    objc_setAssociatedObject(item, &kNSBDuoSearchPlacementKey, @(item.preferredSearchBarPlacement),
+                                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                }
+                item.searchBarPlacementAllowsExternalIntegration = NO;
+                item.searchBarPlacementAllowsToolbarIntegration = NO;
+                if (item.preferredSearchBarPlacement != UINavigationItemSearchBarPlacementIntegratedButton)
+                    item.preferredSearchBarPlacement = UINavigationItemSearchBarPlacementIntegratedButton;
+                if (@available(iOS 27.0, *)) {
+                    UIBarButtonItem *button = item.searchBarPlacementBarButtonItem;
+                    if (button && !button.hidden) button.hidden = YES;
+                }
+                NSBUpdateDuoControls(vc);
+                return;
+            }
+        }
         if (stacked && !original) {
             original = @(item.preferredSearchBarPlacement);
             objc_setAssociatedObject(item, &kNSBDuoSearchPlacementKey, original, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
