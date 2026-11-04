@@ -13,7 +13,6 @@
 #import "ApolloDuoVideoGeometry.h"
 #import "ApolloGalleryVideoExport.h"
 #import "ApolloSaveAllMediaItems.h"
-#import "ApolloToast.h"
 #import "ApolloImmersiveHeaderBackground.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloThemeRuntime.h"
@@ -200,7 +199,7 @@ static UIImage *DuoVideoSymbol(NSString *name, ApolloDuoVideoSymbolRole role) {
 - (void)pressUp:(id)sender;
 @end
 
-static char kDuoVideoCoordinator, kDuoVideoOwner, kDuoVideoFrame, kDuoVideoChromeHook, kDuoVideoPlate;
+static char kDuoVideoCoordinator, kDuoVideoOwner, kDuoVideoFrame, kDuoVideoChromeHook, kDuoVideoPlate, kDuoVideoAlpha, kDuoVideoSaving;
 static void *kDuoVideoVisibility = &kDuoVideoVisibility;
 
 // A real interface, not @class: the Logos preprocessor drops forward declarations.
@@ -280,6 +279,8 @@ static void DuoVideoPanelFrame(UIView *view, CGRect frame) {
 @property (nonatomic) BOOL scheduled;
 @property (nonatomic) BOOL appeared;
 @property (nonatomic) BOOL chromeVisible;
+// Set around the coordinator's own alpha writes, which the setter hooks pass.
+@property (nonatomic) BOOL settingAlpha;
 @property (nonatomic) BOOL chromeAnimating;
 @property (nonatomic) BOOL scrubbing;
 @property (nonatomic) NSUInteger chromeGeneration;
@@ -309,6 +310,25 @@ static void DuoVideoPanelFrame(UIView *view, CGRect frame) {
 @property (nonatomic) BOOL resyncScheduled;
 @end
 
+// Who decides a native view's alpha while the panel is active. Apollo's own
+// focus/timeout fade keeps writing alpha and hidden to these views; undoing
+// those writes after the fact (KVO) made them flash mid-animation. The setter
+// hooks below substitute the panel's value instead, so nothing ever flickers.
+@interface ApolloDuoVideoAlphaBox : NSObject
+@property (nonatomic, weak) ApolloDuoVideoCoordinator *coordinator;
+@property (nonatomic) BOOL chrome; // fades with the transport; otherwise pinned visible
+@end
+@implementation ApolloDuoVideoAlphaBox
+@end
+static void DuoVideoClaimAlpha(UIView *view, ApolloDuoVideoCoordinator *owner, BOOL chrome) {
+    if (!view) return;
+    ApolloDuoVideoAlphaBox *box = objc_getAssociatedObject(view, &kDuoVideoAlpha);
+    if (box.coordinator == owner && box.chrome == chrome) return;
+    box = [ApolloDuoVideoAlphaBox new];
+    box.coordinator = owner;
+    box.chrome = chrome;
+    objc_setAssociatedObject(view, &kDuoVideoAlpha, box, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
 static ApolloDuoVideoCoordinator *DuoVideoOwner(UIView *view) {
     ApolloDuoVideoOwner *box = objc_getAssociatedObject(view, &kDuoVideoOwner);
     return box.coordinator;
@@ -396,6 +416,63 @@ static UIMenuElement *DuoVideoMenuElement(UIMenu *menu, NSString *key) {
 }
 @end
 
+
+// Save progress lives on the Download button itself: the arrow becomes a
+// spinner while the video downloads and merges, then a checkmark (or a
+// warning) for a moment before the arrow returns. No popup over the panel.
+typedef NS_ENUM(NSInteger, ApolloDuoVideoSaveState) {
+    ApolloDuoVideoSaveIdle,
+    ApolloDuoVideoSaveSaving,
+    ApolloDuoVideoSaveDone,
+    ApolloDuoVideoSaveFailed,
+};
+static void DuoVideoSetSaveState(UIButton *button, ApolloDuoVideoSaveState state) {
+    if (!button) return;
+    UIActivityIndicatorView *spinner = nil;
+    for (UIView *child in button.subviews) {
+        if ([child isKindOfClass:UIActivityIndicatorView.class]) spinner = (UIActivityIndicatorView *)child;
+    }
+    objc_setAssociatedObject(button, &kDuoVideoSaving, state == ApolloDuoVideoSaveIdle ? nil : @YES,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (state == ApolloDuoVideoSaveSaving) {
+        if (!spinner) {
+            spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+            spinner.color = UIColor.whiteColor;
+            spinner.userInteractionEnabled = NO;
+            spinner.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin
+                | UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin;
+            [button addSubview:spinner];
+        }
+        spinner.center = CGPointMake(CGRectGetMidX(button.bounds), CGRectGetMidY(button.bounds));
+        [spinner startAnimating];
+        // Swap the arrow out for the spinner. Hiding the image view does not
+        // hold: UIButton's layout restores its alpha, so drop the image itself.
+        [UIView transitionWithView:button duration:0.18 options:UIViewAnimationOptionTransitionCrossDissolve animations:^{
+            [button setImage:nil forState:UIControlStateNormal];
+            spinner.hidden = NO;
+        } completion:nil];
+        button.accessibilityValue = @"Saving";
+        return;
+    }
+    NSString *symbol = state == ApolloDuoVideoSaveDone ? @"checkmark"
+        : state == ApolloDuoVideoSaveFailed ? @"exclamationmark.triangle" : @"arrow.down.to.line";
+    UIImage *glyph = [DuoVideoSymbol(symbol, ApolloDuoVideoSymbolAccessory) imageWithTintColor:UIColor.whiteColor
+                                                                              renderingMode:UIImageRenderingModeAlwaysOriginal];
+    [UIView transitionWithView:button duration:0.22 options:UIViewAnimationOptionTransitionCrossDissolve animations:^{
+        [button setImage:glyph forState:UIControlStateNormal];
+        [spinner stopAnimating];
+        [spinner removeFromSuperview];
+    } completion:nil];
+    if (state == ApolloDuoVideoSaveDone || state == ApolloDuoVideoSaveFailed) {
+        [[UINotificationFeedbackGenerator new] notificationOccurred:state == ApolloDuoVideoSaveDone
+            ? UINotificationFeedbackTypeSuccess : UINotificationFeedbackTypeError];
+        if (@available(iOS 17.0, *)) {
+            [button.imageView addSymbolEffect:[NSSymbolBounceEffect effect] options:NSSymbolEffectOptions.options animated:YES];
+        }
+    }
+    button.accessibilityValue = state == ApolloDuoVideoSaveDone ? @"Saved"
+        : state == ApolloDuoVideoSaveFailed ? @"Couldn't save" : nil;
+}
 
 @implementation ApolloDuoVideoCoordinator
 - (void)rememberImage:(UIImage *)image button:(UIButton *)button state:(UIControlState)state {
@@ -488,6 +565,7 @@ static UIMenuElement *DuoVideoMenuElement(UIMenu *menu, NSString *key) {
     }
     [self.snapshots addObject:snapshot];
     if (visible) {
+        DuoVideoClaimAlpha(view, self, NO);
         [self.visibleViews addObject:view];
         [view addObserver:self forKeyPath:@"alpha" options:0 context:kDuoVideoVisibility];
         [view addObserver:self forKeyPath:@"hidden" options:0 context:kDuoVideoVisibility];
@@ -507,8 +585,19 @@ static UIMenuElement *DuoVideoMenuElement(UIMenu *menu, NSString *key) {
     }
     self.applying = YES;
     UIView *view = object;
-    if (view.hidden) view.hidden = NO;
-    if (view.alpha != 1) view.alpha = 1;
+    // Views without a setter hook (Texture node views) land here. Reset
+    // outside any animation and drop the fade Apollo just started, otherwise
+    // the two animations fight and the view flashes.
+    if (view.hidden || view.alpha != 1) {
+        self.settingAlpha = YES;
+        [UIView performWithoutAnimation:^{
+            view.hidden = NO;
+            view.alpha = 1;
+        }];
+        self.settingAlpha = NO;
+        [view.layer removeAnimationForKey:@"opacity"];
+        [view.layer removeAnimationForKey:@"hidden"];
+    }
     self.applying = NO;
 }
 - (void)schedule {
@@ -565,18 +654,22 @@ static UIMenuElement *DuoVideoMenuElement(UIMenu *menu, NSString *key) {
     };
     for (const char *name : names) {
         UIView *view = DuoVideoView(self.controls, name);
-        if (view) [pieces addObject:view];
+        if (!view) continue;
+        DuoVideoClaimAlpha(view, self, YES);
+        [pieces addObject:view];
     }
     return pieces;
 }
 - (void)applyChromeVisibility {
     if (!self.active || self.chromeAnimating) return;
     CGFloat alpha = self.chromeVisible ? 1 : 0;
+    self.settingAlpha = YES;
     for (UIView *piece in [self chromePieces]) {
         if (piece.alpha != alpha) piece.alpha = alpha;
         BOOL hit = [piece isKindOfClass:UIControl.class] || piece == self.airPlayTile;
         if (hit) piece.userInteractionEnabled = self.chromeVisible;
     }
+    self.settingAlpha = NO;
 }
 - (void)scheduleChromeHide {
     if (!self.active || !self.chromeVisible || self.scrubbing) return;
@@ -595,7 +688,9 @@ static UIMenuElement *DuoVideoMenuElement(UIMenu *menu, NSString *key) {
     self.chromeAnimating = YES;
     CGFloat alpha = visible ? 1 : 0;
     void (^changes)(void) = ^{
+        self.settingAlpha = YES;
         for (UIView *piece in [self chromePieces]) piece.alpha = alpha;
+        self.settingAlpha = NO;
     };
     void (^finish)(BOOL) = ^(__unused BOOL finished) {
         self.chromeAnimating = NO;
@@ -707,12 +802,19 @@ static UIMenuElement *DuoVideoMenuElement(UIMenu *menu, NSString *key) {
         ApolloDuoVideoPlateView *plate = [ApolloDuoVideoPlateView new];
         [self addPlate:plate];
         [self.extraPlates addObject:plate];
-        UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+        // Custom type with white original artwork: a system button dims its
+        // template image after presenting a menu (tint adjustment/highlight),
+        // which left the speed glyph dull once its menu closed.
+        UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
+        button.adjustsImageWhenHighlighted = NO;
+        button.tintAdjustmentMode = UIViewTintAdjustmentModeNormal;
         button.tintColor = UIColor.whiteColor;
         button.backgroundColor = UIColor.clearColor;
         button.accessibilityLabel = item[@"title"];
         button.accessibilityIdentifier = item[@"key"];
-        [button setImage:DuoVideoSymbol(item[@"symbol"], ApolloDuoVideoSymbolAccessory) forState:UIControlStateNormal];
+        UIImage *glyph = [DuoVideoSymbol(item[@"symbol"], ApolloDuoVideoSymbolAccessory) imageWithTintColor:UIColor.whiteColor
+                                                                                       renderingMode:UIImageRenderingModeAlwaysOriginal];
+        [button setImage:glyph forState:UIControlStateNormal];
         [content addSubview:button];
         [self.extraButtons addObject:button];
         [self pairControl:button plate:plate];
@@ -808,11 +910,24 @@ static UIMenuElement *DuoVideoMenuElement(UIMenu *menu, NSString *key) {
     NSURL *url = ApolloSendObject(video, @selector(fallbackURL));
     if (![url isKindOfClass:NSURL.class]) url = ApolloSendObject(video, @selector(URL));
     if (![url isKindOfClass:NSURL.class] || [url.pathExtension.lowercaseString isEqualToString:@"m3u8"]) return NO;
+    UIButton *button = nil;
+    for (UIButton *candidate in self.extraButtons) {
+        if ([candidate.accessibilityIdentifier isEqualToString:@"download"]) button = candidate;
+    }
+    // Already saving: the spinner is the answer, never start a second save.
+    if (objc_getAssociatedObject(button, &kDuoVideoSaving)) return YES;
     ApolloLog(@"[DuoVideo] saving video %@", url.host);
-    ApolloShowToastWithStyle(@"Saving Video…", nil, ApolloToastStyleInfo, nil);
+    DuoVideoSetSaveState(button, ApolloDuoVideoSaveSaving);
+    __weak UIButton *weakButton = button;
     ApolloGallerySaveVideoToPhotos(url, nil, ^(BOOL success, NSString *message) {
-        ApolloShowToastWithStyle(message ?: (success ? @"Saved to Photos" : @"Couldn't Save Video"), nil,
-                                 success ? ApolloToastStyleSuccess : ApolloToastStyleError, nil);
+        ApolloLog(@"[DuoVideo] save finished success=%d (%@)", success, message);
+        UIButton *strong = weakButton;
+        DuoVideoSetSaveState(strong, success ? ApolloDuoVideoSaveDone : ApolloDuoVideoSaveFailed);
+        UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification,
+                                        message ?: (success ? @"Saved to Photos" : @"Couldn't save video"));
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            DuoVideoSetSaveState(weakButton, ApolloDuoVideoSaveIdle);
+        });
     });
     return YES;
 }
@@ -978,8 +1093,6 @@ static UIMenuElement *DuoVideoMenuElement(UIMenu *menu, NSString *key) {
         self.timelinePlate = plate;
     }
     DuoVideoFrame(self.timelinePlate, layout.timeline);
-    // Popups (Saving Video…) sit above the timeline, clear of the transport.
-    ApolloToastSetAnchorView(self.timelinePlate);
     UIView *slider = DuoVideoView(controls, "timeSlider");
     UIView *elapsed = DuoVideoView(controls, "currentTimeLabel");
     UIView *remaining = DuoVideoView(controls, "timeRemainingLabel");
@@ -1106,7 +1219,6 @@ static UIMenuElement *DuoVideoMenuElement(UIMenu *menu, NSString *key) {
     for (UIView *piece in [self chromePieces]) [piece.layer removeAllAnimations];
     [self.timelinePlate removeFromSuperview];
     self.timelinePlate = nil;
-    ApolloToastSetAnchorView(nil);
     const char *paired[] = {"back15Button", "playPauseButton", "forward15Button", "muteUnmuteButton"};
     for (const char *name : paired) [self unpairControl:(UIControl *)DuoVideoView(self.controls, name)];
     [self.chromeCatcher removeFromSuperview];
@@ -1144,6 +1256,7 @@ static UIMenuElement *DuoVideoMenuElement(UIMenu *menu, NSString *key) {
             }
         }
         objc_setAssociatedObject(view, &kDuoVideoFrame, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(view, &kDuoVideoAlpha, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         view.backgroundColor = snapshot.background;
         view.layer.cornerRadius = snapshot.radius;
         if ([view isKindOfClass:UISlider.class]) {
@@ -1197,6 +1310,17 @@ static ApolloDuoVideoCoordinator *DuoVideoCoordinator(UIViewController *viewer, 
     return owner;
 }
 
+static void DuoVideoAlphaOverride(UIView *view, CGFloat *alpha, BOOL *hidden) {
+    ApolloDuoVideoAlphaBox *box = objc_getAssociatedObject(view, &kDuoVideoAlpha);
+    if (!box) return;
+    ApolloDuoVideoCoordinator *owner = box.coordinator;
+    if (!owner.active || owner.settingAlpha) return;
+    // Transport pieces keep Apollo's hidden state (the live label, mute on a
+    // silent clip); only the always-visible post actions are unhidden.
+    if (hidden && !box.chrome) *hidden = NO;
+    if (alpha) *alpha = box.chrome ? (owner.chromeVisible ? 1 : 0) : 1;
+}
+
 %hook _TtC6Apollo21MediaViewerController
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
@@ -1243,6 +1367,14 @@ static ApolloDuoVideoCoordinator *DuoVideoCoordinator(UIViewController *viewer, 
 %end
 
 %hook _TtC6Apollo17VideoControlsView
+- (void)setAlpha:(CGFloat)alpha {
+    DuoVideoAlphaOverride((UIView *)self, &alpha, NULL);
+    %orig(alpha);
+}
+- (void)setHidden:(BOOL)hidden {
+    DuoVideoAlphaOverride((UIView *)self, NULL, &hidden);
+    %orig(hidden);
+}
 - (void)didMoveToWindow {
     %orig;
     UIView *view = (UIView *)self;
@@ -1275,6 +1407,14 @@ static ApolloDuoVideoCoordinator *DuoVideoCoordinator(UIViewController *viewer, 
 
 
 %hook UILabel
+- (void)setAlpha:(CGFloat)alpha {
+    DuoVideoAlphaOverride((UIView *)self, &alpha, NULL);
+    %orig(alpha);
+}
+- (void)setHidden:(BOOL)hidden {
+    DuoVideoAlphaOverride((UIView *)self, NULL, &hidden);
+    %orig(hidden);
+}
 - (void)setFrame:(CGRect)frame {
     NSValue *target = objc_getAssociatedObject(self, &kDuoVideoFrame);
     %orig(target ? target.CGRectValue : frame);
@@ -1292,6 +1432,14 @@ static ApolloDuoVideoCoordinator *DuoVideoCoordinator(UIViewController *viewer, 
 %end
 
 %hook UISlider
+- (void)setAlpha:(CGFloat)alpha {
+    DuoVideoAlphaOverride((UIView *)self, &alpha, NULL);
+    %orig(alpha);
+}
+- (void)setHidden:(BOOL)hidden {
+    DuoVideoAlphaOverride((UIView *)self, NULL, &hidden);
+    %orig(hidden);
+}
 - (void)setFrame:(CGRect)frame {
     NSValue *target = objc_getAssociatedObject(self, &kDuoVideoFrame);
     %orig(target ? target.CGRectValue : frame);
@@ -1309,6 +1457,14 @@ static ApolloDuoVideoCoordinator *DuoVideoCoordinator(UIViewController *viewer, 
 %end
 
 %hook UIButton
+- (void)setAlpha:(CGFloat)alpha {
+    DuoVideoAlphaOverride((UIView *)self, &alpha, NULL);
+    %orig(alpha);
+}
+- (void)setHidden:(BOOL)hidden {
+    DuoVideoAlphaOverride((UIView *)self, NULL, &hidden);
+    %orig(hidden);
+}
 - (void)setFrame:(CGRect)frame {
     NSValue *target = objc_getAssociatedObject(self, &kDuoVideoFrame);
     %orig(target ? target.CGRectValue : frame);

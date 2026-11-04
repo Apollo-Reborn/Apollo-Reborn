@@ -27,11 +27,7 @@
 
 // The currently-visible toast, so a new one can dismiss it instead of stacking.
 static __weak ApolloToastView *sApolloActiveToast = nil;
-static __weak UIView *sApolloToastAnchor = nil;
 
-void ApolloToastSetAnchorView(UIView *view) {
-    sApolloToastAnchor = view;
-}
 
 static UIWindow *ApolloToastKeyWindow(void) {
     UIWindow *keyWindow = ApolloKeyWindow();
@@ -186,15 +182,10 @@ static void ApolloToastShowImpl(NSString *message, NSString *detail, ApolloToast
         [bubble.widthAnchor constraintGreaterThanOrEqualToConstant:190.0],
         [bubble.leadingAnchor constraintGreaterThanOrEqualToAnchor:window.safeAreaLayoutGuide.leadingAnchor constant:18.0],
         [bubble.trailingAnchor constraintLessThanOrEqualToAnchor:window.safeAreaLayoutGuide.trailingAnchor constant:-18.0],
-    ]];
-    UIView *anchor = sApolloToastAnchor;
-    if (anchor.window == window && !anchor.hidden) {
-        [bubble.bottomAnchor constraintEqualToAnchor:anchor.topAnchor constant:-14.0].active = YES;
-    } else {
         // Clear the floating (Liquid Glass) tab bar, which sits above the home
         // indicator and is NOT reflected in the window's safe-area bottom inset.
-        [bubble.bottomAnchor constraintEqualToAnchor:window.safeAreaLayoutGuide.bottomAnchor constant:-72.0].active = YES;
-    }
+        [bubble.bottomAnchor constraintEqualToAnchor:window.safeAreaLayoutGuide.bottomAnchor constant:-72.0],
+    ]];
 
     [window layoutIfNeeded];
     bubble.layer.cornerRadius = bubble.bounds.size.height / 2.0;
