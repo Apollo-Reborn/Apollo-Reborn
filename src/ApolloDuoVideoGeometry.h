@@ -15,8 +15,9 @@ typedef struct {
     CGRect scrubber;
     CGRect elapsed;
     CGRect remaining;
-    // Mute and AirPlay bookend this row. Extra slots between them are Share,
-    // Download and Playback Speed when the viewer's menu has those actions.
+    // Mute and AirPlay bookend this row. Playback Speed sits between them
+    // when the viewer's menu offers it (Share and Download already live in
+    // the post actions row below the panel).
     CGRect accessories[6];
     int accessoryCount;
 } ApolloDuoVideoControlGeometry;
