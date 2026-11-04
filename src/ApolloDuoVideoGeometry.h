@@ -15,30 +15,59 @@ typedef struct {
     CGRect scrubber;
     CGRect elapsed;
     CGRect remaining;
-    CGRect utilities[2];
+    // Mute and AirPlay bookend this row. Extra slots between them are Share,
+    // Download and Playback Speed when the viewer's menu has those actions.
+    CGRect accessories[6];
+    int accessoryCount;
 } ApolloDuoVideoControlGeometry;
 
-// All playback controls fit together as one balanced panel, including the two
-// utility tiles. Keep this independent of UIKit for narrow/short-panel tests.
-static inline bool ApolloDuoVideoMakeControlGeometry(CGSize size, ApolloDuoVideoControlGeometry *out) {
-    if (!out || !isfinite(size.width) || !isfinite(size.height)
+// Netflix-style transport for the lower panel. The timeline is a slim
+// Safari-style capsule (34pt, times at each end) above the wide skip/play tiles, and a shorter accessory row sits under
+// them. `accessories` is the number of tiles in that row (2...6). Independent
+// of UIKit for host tests. The same frames are used for Liquid Glass and
+// classic builds.
+static inline bool ApolloDuoVideoMakeControlGeometry(CGSize size, int accessories, ApolloDuoVideoControlGeometry *out) {
+    if (!out || accessories < 2 || accessories > 6
+        || !isfinite(size.width) || !isfinite(size.height)
         || size.width < 320 || size.height < 240) return false;
-    CGFloat gap = 10;
-    CGFloat width = (size.width - 2 * gap) / 3;
-    CGFloat height = fmin(154, fmax(120, fmin(size.height - 120, size.height * 0.5)));
-    CGFloat start = (size.height - height - 120) * 0.5;
-    CGFloat timelineY = start;
-    CGFloat playbackY = timelineY + 60;
-    for (int i = 0; i < 3; i++) out->playback[i] = CGRectMake(i * (width + gap), playbackY, width, height);
-    out->timeline = CGRectMake(0, timelineY, size.width, 52);
-    // Both time labels belong to the same track row, never loose beneath it.
-    CGFloat timeWidth = fmin(76, fmax(58, size.width * 0.1));
-    CGFloat sliderInset = 14 + timeWidth + 10;
-    out->scrubber = CGRectMake(sliderInset, timelineY + 4, size.width - 2 * sliderInset, 44);
-    out->elapsed = CGRectMake(14, timelineY + 14, timeWidth, 24);
-    out->remaining = CGRectMake(size.width - 14 - timeWidth, timelineY + 14, timeWidth, 24);
-    CGFloat utilityWidth = (size.width - gap) * 0.5;
-    for (int i = 0; i < 2; i++) out->utilities[i] = CGRectMake(i * (utilityWidth + gap), playbackY + height + 8, utilityWidth, 52);
+    const CGFloat side = 16, gap = 12, bottom = 8, topMin = 12, timelineH = 34, extraH = 56;
+    CGFloat maxTransport = size.height - topMin - bottom - timelineH - extraH - gap * 2;
+    if (maxTransport < 88) return false;
+    CGFloat transportH = fmin(148, maxTransport);
+    CGFloat clusterH = timelineH + gap + transportH + gap + extraH;
+    CGFloat clusterTop = (size.height - bottom - clusterH) * 0.5;
+    if (clusterTop < topMin) clusterTop = topMin;
+    CGFloat timelineY = clusterTop;
+    CGFloat transportY = timelineY + timelineH + gap;
+    CGFloat extraY = transportY + transportH + gap;
+    CGFloat inner = size.width - side * 2 - gap * 2;
+    if (inner < 180) return false;
+    // Play is the wide center tile. The two skip tiles split the rest.
+    CGFloat skipW = inner / 3.55;
+    CGFloat playW = inner - skipW * 2;
+    CGFloat x = side;
+    out->playback[0] = CGRectMake(x, transportY, skipW, transportH);
+    out->playback[1] = CGRectMake(x + skipW + gap, transportY, playW, transportH);
+    out->playback[2] = CGRectMake(x + skipW + gap + playW + gap, transportY, skipW, transportH);
+    out->timeline = CGRectMake(side, timelineY, size.width - side * 2, timelineH);
+    CGFloat timeWidth = fmin(64, fmax(58, out->timeline.size.width * 0.1));
+    const CGFloat labelPad = 14, trackGap = 10, labelH = 16;
+    CGFloat labelY = timelineY + (timelineH - labelH) * 0.5;
+    out->elapsed = CGRectMake(CGRectGetMinX(out->timeline) + labelPad, labelY, timeWidth, labelH);
+    out->remaining = CGRectMake(CGRectGetMaxX(out->timeline) - labelPad - timeWidth, labelY, timeWidth, labelH);
+    CGFloat trackX = CGRectGetMaxX(out->elapsed) + trackGap;
+    CGFloat trackW = CGRectGetMinX(out->remaining) - trackGap - trackX;
+    if (trackW < 48) return false;
+    out->scrubber = CGRectMake(trackX, timelineY, trackW, timelineH);
+    const CGFloat accGap = 10;
+    CGFloat accInner = size.width - side * 2 - accGap * (accessories - 1);
+    CGFloat accW = accInner / accessories;
+    if (accW < 44) return false;
+    out->accessoryCount = accessories;
+    for (int i = 0; i < 6; i++) out->accessories[i] = CGRectZero;
+    for (int i = 0; i < accessories; i++) {
+        out->accessories[i] = CGRectMake(side + i * (accW + accGap), extraY, accW, extraH);
+    }
     return true;
 }
 

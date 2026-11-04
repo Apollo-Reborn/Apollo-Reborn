@@ -76,6 +76,7 @@
 #import <UIKit/UIKit.h>
 #import <UIKit/UIGestureRecognizerSubclass.h>
 #import <AVFoundation/AVFoundation.h>
+#import <AVKit/AVKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 
@@ -393,6 +394,17 @@ static void CollectContextMenuInteractions(UIView *view,
     return t >= (1.0 - kRightZoneFraction);
 }
 
+- (BOOL)pointIsOnControl:(CGPoint)windowPoint {
+    UIView *root = self.recognizer.view;
+    UIWindow *window = root.window;
+    if (!window) return NO;
+    UIView *hit = [window hitTest:windowPoint withEvent:nil];
+    for (UIView *view = hit; view && view != root; view = view.superview) {
+        if ([view isKindOfClass:UIControl.class] || [view isKindOfClass:AVRoutePickerView.class]) return YES;
+    }
+    return NO;
+}
+
 #pragma mark Touch lifecycle
 
 - (void)touchDownAt:(CGPoint)windowPoint {
@@ -400,6 +412,9 @@ static void CollectContextMenuInteractions(UIView *view,
     // capture, no menu suppression, no haptic, so Apollo's normal long-press menu
     // appears everywhere. Read live so a settings change applies immediately.
     if (!sVideoHoldSpeedEnabled) { self.inZone = NO; return; }
+    // A press on a real control (Duo's tabletop transport, the speed menu
+    // button) belongs to that control: never strip its menu or speed it up.
+    if ([self pointIsOnControl:windowPoint]) { self.inZone = NO; return; }
     self.inZone = [self pointInActivationZone:windowPoint];
     // Remove the context-menu interaction the instant a right-zone touch lands, so
     // the menu can never appear for this press. Left/center is left alone → normal

@@ -27,4 +27,9 @@ void ApolloShowToast(NSString *message);
 // default SF Symbol, or nil to use it.
 void ApolloShowToastWithStyle(NSString *message, NSString *detail, ApolloToastStyle style, NSString *symbolName);
 
+// While `view` is non-nil and on screen in the toast's window, toasts sit just
+// above it instead of at the bottom edge (Duo tabletop video keeps its
+// controls clear this way). Held weakly; pass nil to clear. Main thread only.
+void ApolloToastSetAnchorView(UIView *view);
+
 __END_DECLS

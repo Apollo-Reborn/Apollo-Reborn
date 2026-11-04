@@ -11,10 +11,12 @@
 #import "ApolloDeviceDisplay.h"
 #import "ApolloDuoRail.h"
 #import "ApolloDuoVideoGeometry.h"
+#import "ApolloGalleryVideoExport.h"
+#import "ApolloSaveAllMediaItems.h"
+#import "ApolloToast.h"
+#import "ApolloImmersiveHeaderBackground.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloThemeRuntime.h"
-#import "ApolloState.h"
-#import "UserDefaultConstants.h"
 
 @interface SMScrollView : UIScrollView
 - (void)scaleToFit;
@@ -24,6 +26,24 @@
 @interface _TtC6Apollo17VideoControlsView : UIVisualEffectView
 @end
 
+// Every glyph in the panel is an SF Symbol drawn from one of three shared
+// configurations, as AVKit's tabletop transport does, so the skip, play and
+// accessory rows each read at a single optical size whatever Apollo's own
+// (differently padded) bitmap artwork looked like.
+typedef NS_ENUM(NSInteger, ApolloDuoVideoSymbolRole) {
+    ApolloDuoVideoSymbolSkip,
+    ApolloDuoVideoSymbolPlay,
+    ApolloDuoVideoSymbolAccessory,
+};
+static UIImage *DuoVideoSymbol(NSString *name, ApolloDuoVideoSymbolRole role) {
+    CGFloat points = role == ApolloDuoVideoSymbolPlay ? 34 : role == ApolloDuoVideoSymbolSkip ? 26 : 19;
+    UIImageSymbolWeight weight = role == ApolloDuoVideoSymbolAccessory ? UIImageSymbolWeightMedium : UIImageSymbolWeightSemibold;
+    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:points weight:weight
+                                                                                         scale:UIImageSymbolScaleMedium];
+    UIImage *image = [UIImage systemImageNamed:name withConfiguration:config];
+    return [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+}
+
 @interface ApolloDuoVideoRoutePicker : AVRoutePickerView
 @property (nonatomic, strong) UIImageView *glyph;
 @end
@@ -31,16 +51,19 @@
 - (void)layoutSubviews {
     [super layoutSubviews];
     // Keep the system button and its full tile-sized hit area. Its animated
-    // artwork scales with the large bounds, so draw one consistently sized
-    // glyph while retaining the native action and accessibility behavior.
+    // artwork scales with the large bounds, so draw the shared accessory
+    // symbol at its own size while retaining the native action and
+    // accessibility behavior.
     if (!self.glyph) {
-        self.glyph = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"airplayvideo"]];
-        self.glyph.contentMode = UIViewContentModeScaleAspectFit;
+        self.glyph = [[UIImageView alloc] initWithImage:DuoVideoSymbol(@"airplayvideo", ApolloDuoVideoSymbolAccessory)];
+        self.glyph.contentMode = UIViewContentModeCenter;
         self.glyph.userInteractionEnabled = NO;
         self.glyph.isAccessibilityElement = NO;
         [self addSubview:self.glyph];
     }
-    CGRect frame = CGRectMake(CGRectGetMidX(self.bounds) - 12, CGRectGetMidY(self.bounds) - 12, 24, 24);
+    CGSize glyph = self.glyph.image.size;
+    CGRect frame = CGRectMake(round(CGRectGetMidX(self.bounds) - glyph.width / 2.0),
+                              round(CGRectGetMidY(self.bounds) - glyph.height / 2.0), glyph.width, glyph.height);
     if (!CGRectEqualToRect(self.glyph.frame, frame)) self.glyph.frame = frame;
     self.glyph.tintColor = self.tintColor;
     for (UIView *child in self.subviews) {
@@ -66,10 +89,123 @@
 }
 @end
 
-static char kDuoVideoCoordinator, kDuoVideoOwner, kDuoVideoFrame;
+// Rounded backing behind a native control. The material sits behind the
+// glyph, never inside the UIButton: iOS 26 reorders a button's subviews over
+// its image. Liquid Glass uses the shared effect, which is nil on a classic
+// build; those builds keep a translucent fill in the same frame.
+//
+// The glass is shaped by its own corner radius rather than clipped by this
+// view, so the rim highlight and refraction at the edge survive (clipping
+// them is what made the tiles read as flat gray), and it is pinned to the
+// dark appearance like AVKit's chrome over video.
+@interface ApolloDuoVideoPlateView : UIView
+@property (nonatomic, strong) UIVisualEffectView *material;
+@property (nonatomic) BOOL capsule;
+@property (nonatomic) BOOL pressed;
+- (void)setPressed:(BOOL)pressed animated:(BOOL)animated;
+@end
+@implementation ApolloDuoVideoPlateView
+- (instancetype)initWithFrame:(CGRect)frame {
+    if ((self = [super initWithFrame:frame])) {
+        self.userInteractionEnabled = NO;
+        self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+        self.layer.cornerCurve = kCACornerCurveContinuous;
+        UIVisualEffect *effect = ApolloImmersiveGlassEffect(nil, 0, YES);
+        if (effect) {
+            self.backgroundColor = UIColor.clearColor;
+            UIVisualEffectView *glass = [[UIVisualEffectView alloc] initWithEffect:effect];
+            glass.userInteractionEnabled = NO;
+            glass.layer.cornerCurve = kCACornerCurveContinuous;
+            [self addSubview:glass];
+            self.material = glass;
+        } else {
+            self.clipsToBounds = YES;
+            self.backgroundColor = [UIColor colorWithWhite:1 alpha:0.14];
+        }
+    }
+    return self;
+}
+- (CGFloat)radius {
+    CGFloat side = MIN(CGRectGetWidth(self.bounds), CGRectGetHeight(self.bounds));
+    return self.capsule ? side / 2.0 : MIN(28, MAX(16, side * 0.24));
+}
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    UIVisualEffectView *glass = self.material;
+    CGFloat radius = [self radius];
+    if (glass) {
+        // Bounds/center, not frame: the press scale lives in its transform.
+        CGRect bounds = (CGRect){CGPointZero, self.bounds.size};
+        if (!CGRectEqualToRect(glass.bounds, bounds)) glass.bounds = bounds;
+        glass.center = CGPointMake(CGRectGetMidX(self.bounds), CGRectGetMidY(self.bounds));
+        if (@available(iOS 26.0, *)) {
+            glass.cornerConfiguration = [UICornerConfiguration configurationWithUniformRadius:[UICornerRadius fixedRadius:radius]];
+        } else {
+            glass.layer.cornerRadius = radius;
+        }
+    } else {
+        self.layer.cornerRadius = radius;
+    }
+}
+- (void)setPressed:(BOOL)pressed animated:(BOOL)animated {
+    if (_pressed == pressed) return;
+    _pressed = pressed;
+    void (^changes)(void) = ^{
+        if (self.material) {
+            CGFloat scale = pressed ? 0.96 : 1;
+            self.material.transform = CGAffineTransformMakeScale(scale, scale);
+            self.material.alpha = pressed ? 0.85 : 1;
+        } else {
+            self.backgroundColor = [UIColor colorWithWhite:1 alpha:pressed ? 0.24 : 0.14];
+        }
+    };
+    if (!animated) { changes(); return; }
+    [UIView animateWithDuration:pressed ? 0.12 : 0.32 delay:0 usingSpringWithDamping:pressed ? 1 : 0.6
+          initialSpringVelocity:0 options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
+                     animations:changes completion:nil];
+}
+@end
+
+// Groups every plate in one glass container so neighbouring tiles share a
+// single sampling pass and blend as AVKit's do. It spans the whole panel, so
+// it must never take a tap itself: only the AirPlay tile inside it does.
+@interface ApolloDuoVideoGlassGroup : UIVisualEffectView
+@end
+@implementation ApolloDuoVideoGlassGroup
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *hit = [super hitTest:point withEvent:event];
+    return hit == self || hit == self.contentView ? nil : hit;
+}
+@end
+
+// Weakly pairs a control with its plate; the control must not keep it alive.
+@interface ApolloDuoVideoPlateBox : NSObject
+@property (nonatomic, weak) ApolloDuoVideoPlateView *plate;
+@end
+@implementation ApolloDuoVideoPlateBox
+@end
+
+// UIControl and UIGestureRecognizer retain their targets. This proxy keeps
+// that retain from cycling back into the coordinator. The owner is typed as
+// id because Logos strips a forward @class before this interface.
+@interface ApolloDuoVideoChromeProxy : NSObject
+@property (nonatomic, weak) id owner;
+- (void)chromeTouched;
+- (void)toggleChrome;
+- (void)scrubBegan;
+- (void)scrubEnded;
+- (void)accessoryTapped:(id)sender;
+- (void)refreshSpeedMenu:(id)sender;
+- (void)pressDown:(id)sender;
+- (void)pressUp:(id)sender;
+@end
+
+static char kDuoVideoCoordinator, kDuoVideoOwner, kDuoVideoFrame, kDuoVideoChromeHook, kDuoVideoPlate;
 static void *kDuoVideoVisibility = &kDuoVideoVisibility;
-@class ApolloDuoVideoCoordinator;
-static NSHashTable<ApolloDuoVideoCoordinator *> *sDuoVideoCoordinators;
+
+// A real interface, not @class: the Logos preprocessor drops forward declarations.
+@interface ApolloDuoVideoCoordinator : NSObject
+@end
 
 // Views must not retain the coordinator (the viewer owns it).
 @interface ApolloDuoVideoOwner : NSObject
@@ -108,22 +244,34 @@ static void DuoVideoPanelFrame(UIView *view, CGRect frame) {
 @property (nonatomic, strong) UIColor *minimumTrackTint;
 @property (nonatomic, strong) UIColor *maximumTrackTint;
 @property (nonatomic, strong) UIColor *thumbTint;
+@property (nonatomic, strong) UIColor *textColor;
+@property (nonatomic, strong) UIFont *font;
+@property (nonatomic) NSTextAlignment alignment;
 @end
 @implementation ApolloDuoVideoSnapshot
 @end
 
-@interface ApolloDuoVideoCoordinator : NSObject
+@interface ApolloDuoVideoCoordinator () <UIGestureRecognizerDelegate>
 @property (nonatomic, weak) UIViewController *viewer;
 @property (nonatomic, strong) SMScrollView *scroll;
 @property (nonatomic, strong) UIVisualEffectView *controls;
 @property (nonatomic, strong) NSMutableArray<ApolloDuoVideoSnapshot *> *snapshots;
 @property (nonatomic, strong) NSMutableArray<UIView *> *visibleViews;
+@property (nonatomic, strong) NSMutableArray<ApolloDuoVideoPlateView *> *playbackPlates;
+@property (nonatomic, strong) NSMutableArray<ApolloDuoVideoPlateView *> *extraPlates;
+@property (nonatomic, strong) NSMutableArray<UIButton *> *extraButtons;
+@property (nonatomic, copy) NSArray<NSDictionary *> *extraItems;
+@property (nonatomic) BOOL extrasResolved;
 @property (nonatomic, strong) id<UIInteraction> hinge;
 @property (nonatomic, strong) UIVisualEffect *nativeEffect;
-@property (nonatomic, strong) UIView *soundTile;
-@property (nonatomic, strong) UIView *airPlayTile;
-@property (nonatomic, strong) UIView *timelineTile;
+@property (nonatomic, strong) ApolloDuoVideoPlateView *timelinePlate;
+@property (nonatomic, strong) ApolloDuoVideoGlassGroup *glassGroup;
+@property (nonatomic, strong) ApolloDuoVideoPlateView *soundTile;
+@property (nonatomic, strong) ApolloDuoVideoPlateView *airPlayTile;
 @property (nonatomic, strong) AVRoutePickerView *routePicker;
+@property (nonatomic, strong) ApolloDuoVideoChromeProxy *chromeProxy;
+@property (nonatomic, strong) UIView *chromeCatcher;
+@property (nonatomic, strong) UITapGestureRecognizer *chromeTap;
 @property (nonatomic) ApolloDuoVideoGeometry geometry;
 @property (nonatomic) CGRect nativeScrollFrame;
 @property (nonatomic) CGRect nativeControlsFrame;
@@ -131,11 +279,34 @@ static void DuoVideoPanelFrame(UIView *view, CGRect frame) {
 @property (nonatomic) BOOL applying;
 @property (nonatomic) BOOL scheduled;
 @property (nonatomic) BOOL appeared;
+@property (nonatomic) BOOL chromeVisible;
+@property (nonatomic) BOOL chromeAnimating;
+@property (nonatomic) BOOL scrubbing;
+@property (nonatomic) NSUInteger chromeGeneration;
 - (void)schedule;
 - (void)update;
 - (void)restore;
 - (void)rememberImage:(UIImage *)image button:(UIButton *)button state:(UIControlState)state;
 - (void)layoutUtilities:(ApolloDuoVideoControlGeometry)layout;
+- (void)applyTimelineTrack:(UISlider *)slider;
+- (void)chromeTouched;
+- (void)toggleChrome;
+- (void)scrubBegan;
+- (void)scrubEnded;
+- (void)accessoryTapped:(UIButton *)sender;
+- (void)refreshSpeedMenu:(UIButton *)sender;
+- (void)resolveExtras;
+- (void)resyncSymbols;
+- (void)scheduleSymbolResync;
+- (UIMenu *)speedMenu;
+- (BOOL)saveVideoToPhotos;
+- (void)refreshTimelineTrack;
+- (void)addPlate:(ApolloDuoVideoPlateView *)plate;
+- (void)pairControl:(UIControl *)control plate:(ApolloDuoVideoPlateView *)plate;
+- (void)unpairControl:(UIControl *)control;
+- (UIImage *)symbolForButton:(UIButton *)button;
+@property (nonatomic) BOOL resyncing;
+@property (nonatomic) BOOL resyncScheduled;
 @end
 
 static ApolloDuoVideoCoordinator *DuoVideoOwner(UIView *view) {
@@ -149,6 +320,83 @@ static void DuoVideoSetOwner(UIView *view, ApolloDuoVideoCoordinator *owner) {
     objc_setAssociatedObject(view, &kDuoVideoOwner, owner ? box : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
+// The long-press menu (Share Link / Download Video / Playback Speed) is built
+// by Apollo's context-menu delegate. Ask for that configuration and run its
+// action provider so the glass buttons perform the same actions.
+static UIContextMenuInteraction *DuoVideoMenuInteraction(UIView *view, id delegate, BOOL requireDelegate) {
+    if (!view) return nil;
+    for (id<UIInteraction> interaction in view.interactions) {
+        if (![interaction isKindOfClass:UIContextMenuInteraction.class]) continue;
+        UIContextMenuInteraction *menu = (UIContextMenuInteraction *)interaction;
+        if (!requireDelegate || menu.delegate == delegate) return menu;
+    }
+    for (UIView *subview in view.subviews) {
+        UIContextMenuInteraction *found = DuoVideoMenuInteraction(subview, delegate, requireDelegate);
+        if (found) return found;
+    }
+    return nil;
+}
+static UIMenu *DuoVideoNativeMenu(UIViewController *viewer) {
+    if (!viewer.isViewLoaded) return nil;
+    SEL selector = @selector(contextMenuInteraction:configurationForMenuAtLocation:);
+    if (![viewer respondsToSelector:selector]) return nil;
+    UIContextMenuInteraction *interaction = DuoVideoMenuInteraction(viewer.view, viewer, YES);
+    if (!interaction) interaction = DuoVideoMenuInteraction(viewer.view, viewer, NO);
+    UIContextMenuConfiguration *config = ((id (*)(id, SEL, id, CGPoint))objc_msgSend)(viewer, selector, interaction, CGPointZero);
+    if (![config isKindOfClass:UIContextMenuConfiguration.class]) return nil;
+    typedef UIMenu *(^DuoVideoMenuProvider)(NSArray<UIMenuElement *> *);
+    DuoVideoMenuProvider provider = nil;
+    @try { provider = (DuoVideoMenuProvider)[config valueForKey:@"actionProvider"]; }
+    @catch (__unused NSException *exception) { provider = nil; }
+    if (!provider) {
+        for (Class cls = object_getClass(config); cls && !provider; cls = class_getSuperclass(cls)) {
+            Ivar ivar = class_getInstanceVariable(cls, "_actionProvider");
+            if (!ivar) continue;
+            id raw = object_getIvar(config, ivar);
+            if (raw) provider = (DuoVideoMenuProvider)raw;
+        }
+    }
+    if (!provider) return nil;
+    Class blockClass = NSClassFromString(@"NSBlock");
+    if (blockClass && ![provider isKindOfClass:blockClass]) return nil;
+    UIMenu *menu = provider(@[]);
+    return [menu isKindOfClass:UIMenu.class] ? menu : nil;
+}
+static UIMenuElement *DuoVideoMenuElement(UIMenu *menu, NSString *key) {
+    for (UIMenuElement *element in menu.children) {
+        NSString *title = element.title ?: @"";
+        BOOL match = ([key isEqualToString:@"share"] && [title isEqualToString:@"Share Link"])
+            || ([key isEqualToString:@"download"] && [title hasPrefix:@"Download"])
+            || ([key isEqualToString:@"speed"] && [title hasPrefix:@"Playback Speed"]);
+        if (match) return element;
+        if ([element isKindOfClass:UIMenu.class]) {
+            UIMenuElement *nested = DuoVideoMenuElement((UIMenu *)element, key);
+            if (nested) return nested;
+        }
+    }
+    return nil;
+}
+
+@implementation ApolloDuoVideoChromeProxy
+- (void)chromeTouched { [(ApolloDuoVideoCoordinator *)self.owner chromeTouched]; }
+- (void)toggleChrome { [(ApolloDuoVideoCoordinator *)self.owner toggleChrome]; }
+- (void)scrubBegan { [(ApolloDuoVideoCoordinator *)self.owner scrubBegan]; }
+- (void)scrubEnded { [(ApolloDuoVideoCoordinator *)self.owner scrubEnded]; }
+- (void)accessoryTapped:(id)sender { [(ApolloDuoVideoCoordinator *)self.owner accessoryTapped:sender]; }
+- (void)refreshSpeedMenu:(id)sender { [(ApolloDuoVideoCoordinator *)self.owner refreshSpeedMenu:sender]; }
+// The plates cannot take touches (the native controls above them must), so
+// the control's own tracking drives the glass press.
+- (void)pressDown:(id)sender {
+    ApolloDuoVideoPlateBox *box = objc_getAssociatedObject(sender, &kDuoVideoPlate);
+    [box.plate setPressed:YES animated:YES];
+}
+- (void)pressUp:(id)sender {
+    ApolloDuoVideoPlateBox *box = objc_getAssociatedObject(sender, &kDuoVideoPlate);
+    [box.plate setPressed:NO animated:YES];
+}
+@end
+
+
 @implementation ApolloDuoVideoCoordinator
 - (void)rememberImage:(UIImage *)image button:(UIButton *)button state:(UIControlState)state {
     for (ApolloDuoVideoSnapshot *snapshot in self.snapshots) {
@@ -158,10 +406,61 @@ static void DuoVideoSetOwner(UIView *view, ApolloDuoVideoCoordinator *owner) {
         break;
     }
 }
+// The native play/pause and mute artwork follows the controls' own state
+// ivars, so the symbol is chosen from them rather than from Apollo's image.
+- (UIImage *)symbolForButton:(UIButton *)button {
+    UIView *controls = self.controls;
+    if (!controls) return nil;
+    if (button == DuoVideoView(controls, "back15Button")) return DuoVideoSymbol(@"gobackward.15", ApolloDuoVideoSymbolSkip);
+    if (button == DuoVideoView(controls, "forward15Button")) return DuoVideoSymbol(@"goforward.15", ApolloDuoVideoSymbolSkip);
+    if (button == DuoVideoView(controls, "playPauseButton")) {
+        BOOL paused = ApolloReadBoolIvar(controls, "isPaused", YES);
+        return DuoVideoSymbol(paused ? @"play.fill" : @"pause.fill", ApolloDuoVideoSymbolPlay);
+    }
+    if (button == DuoVideoView(controls, "muteUnmuteButton")) {
+        BOOL muted = ApolloReadBoolIvar(controls, "isMuted", YES);
+        return DuoVideoSymbol(muted ? @"speaker.slash.fill" : @"speaker.wave.2.fill", ApolloDuoVideoSymbolAccessory);
+    }
+    return nil;
+}
+// Apollo may write the image before or after flipping its state ivar.
+// Re-apply the remembered native images once the current change settles.
+- (void)scheduleSymbolResync {
+    if (self.resyncing || self.resyncScheduled) return;
+    self.resyncScheduled = YES;
+    __weak ApolloDuoVideoCoordinator *weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ApolloDuoVideoCoordinator *owner = weakSelf;
+        owner.resyncScheduled = NO;
+        [owner resyncSymbols];
+    });
+}
+- (void)resyncSymbols {
+    if (!self.active) return;
+    UIView *play = DuoVideoView(self.controls, "playPauseButton");
+    UIView *sound = DuoVideoView(self.controls, "muteUnmuteButton");
+    self.resyncing = YES;
+    for (ApolloDuoVideoSnapshot *snapshot in self.snapshots) {
+        if ((snapshot.view != play && snapshot.view != sound) || !snapshot.images) continue;
+        if (!DuoVideoOwner(snapshot.view)) continue;
+        NSDictionary *images = [snapshot.images copy];
+        for (NSNumber *state in images) {
+            id image = images[state];
+            [(UIButton *)snapshot.view setImage:image == NSNull.null ? nil : image forState:state.unsignedIntegerValue];
+        }
+    }
+    self.resyncing = NO;
+}
 - (instancetype)init {
     if ((self = [super init])) {
         _snapshots = [NSMutableArray array];
         _visibleViews = [NSMutableArray array];
+        _playbackPlates = [NSMutableArray array];
+        _extraPlates = [NSMutableArray array];
+        _extraButtons = [NSMutableArray array];
+        _chromeProxy = [ApolloDuoVideoChromeProxy new];
+        _chromeProxy.owner = self;
+        _chromeVisible = YES;
     }
     return self;
 }
@@ -180,6 +479,12 @@ static void DuoVideoSetOwner(UIView *view, ApolloDuoVideoCoordinator *owner) {
         snapshot.minimumTrackTint = slider.minimumTrackTintColor;
         snapshot.maximumTrackTint = slider.maximumTrackTintColor;
         snapshot.thumbTint = slider.thumbTintColor;
+    }
+    if ([view isKindOfClass:UILabel.class]) {
+        UILabel *label = (UILabel *)view;
+        snapshot.textColor = label.textColor;
+        snapshot.font = label.font;
+        snapshot.alignment = label.textAlignment;
     }
     [self.snapshots addObject:snapshot];
     if (visible) {
@@ -235,19 +540,301 @@ static void DuoVideoSetOwner(UIView *view, ApolloDuoVideoCoordinator *owner) {
         [self.viewer.view addInteraction:interaction];
     }
 }
+- (void)hookChromeControl:(UIControl *)control scrubber:(BOOL)scrubber {
+    if (![control isKindOfClass:UIControl.class] || objc_getAssociatedObject(control, &kDuoVideoChromeHook)) return;
+    objc_setAssociatedObject(control, &kDuoVideoChromeHook, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (scrubber) {
+        [control addTarget:self.chromeProxy action:@selector(scrubBegan) forControlEvents:UIControlEventTouchDown];
+        [control addTarget:self.chromeProxy action:@selector(scrubEnded)
+            forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel];
+    } else {
+        [control addTarget:self.chromeProxy action:@selector(chromeTouched) forControlEvents:UIControlEventTouchDown];
+    }
+}
+- (NSArray<UIView *> *)chromePieces {
+    NSMutableArray<UIView *> *pieces = [NSMutableArray array];
+    for (UIView *plate in self.playbackPlates) [pieces addObject:plate];
+    for (UIView *plate in self.extraPlates) [pieces addObject:plate];
+    for (UIButton *button in self.extraButtons) [pieces addObject:button];
+    if (self.timelinePlate) [pieces addObject:self.timelinePlate];
+    if (self.soundTile) [pieces addObject:self.soundTile];
+    if (self.airPlayTile) [pieces addObject:self.airPlayTile];
+    const char *names[] = {
+        "back15Button", "playPauseButton", "forward15Button", "muteUnmuteButton",
+        "timeSlider", "currentTimeLabel", "timeRemainingLabel", "liveBroadcastLabel"
+    };
+    for (const char *name : names) {
+        UIView *view = DuoVideoView(self.controls, name);
+        if (view) [pieces addObject:view];
+    }
+    return pieces;
+}
+- (void)applyChromeVisibility {
+    if (!self.active || self.chromeAnimating) return;
+    CGFloat alpha = self.chromeVisible ? 1 : 0;
+    for (UIView *piece in [self chromePieces]) {
+        if (piece.alpha != alpha) piece.alpha = alpha;
+        BOOL hit = [piece isKindOfClass:UIControl.class] || piece == self.airPlayTile;
+        if (hit) piece.userInteractionEnabled = self.chromeVisible;
+    }
+}
+- (void)scheduleChromeHide {
+    if (!self.active || !self.chromeVisible || self.scrubbing) return;
+    NSUInteger token = ++self.chromeGeneration;
+    __weak ApolloDuoVideoCoordinator *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        ApolloDuoVideoCoordinator *owner = weakSelf;
+        if (!owner || token != owner.chromeGeneration || !owner.active || !owner.chromeVisible || owner.scrubbing) return;
+        [owner setChromeVisible:NO animated:YES];
+    });
+}
+- (void)setChromeVisible:(BOOL)visible animated:(BOOL)animated {
+    if (!self.active) return;
+    self.chromeVisible = visible;
+    if (!visible) self.chromeGeneration++;
+    self.chromeAnimating = YES;
+    CGFloat alpha = visible ? 1 : 0;
+    void (^changes)(void) = ^{
+        for (UIView *piece in [self chromePieces]) piece.alpha = alpha;
+    };
+    void (^finish)(BOOL) = ^(__unused BOOL finished) {
+        self.chromeAnimating = NO;
+        if (!self.active) return;
+        [self applyChromeVisibility];
+    };
+    if (animated) [UIView animateWithDuration:0.22 animations:changes completion:finish];
+    else { changes(); finish(YES); }
+    if (visible) [self scheduleChromeHide];
+}
+- (void)chromeTouched {
+    if (!self.active) return;
+    if (!self.chromeVisible) {
+        [self setChromeVisible:YES animated:YES];
+        return;
+    }
+    [self scheduleChromeHide];
+}
+- (void)toggleChrome {
+    if (!self.active) return;
+    [self setChromeVisible:!self.chromeVisible animated:YES];
+}
+- (void)scrubBegan {
+    if (!self.active) return;
+    self.scrubbing = YES;
+    self.chromeGeneration++;
+    if (!self.chromeVisible) [self setChromeVisible:YES animated:YES];
+    [self refreshTimelineTrack];
+}
+- (void)refreshTimelineTrack {
+    UISlider *slider = (UISlider *)DuoVideoView(self.controls, "timeSlider");
+    if (![slider isKindOfClass:UISlider.class]) return;
+    [UIView transitionWithView:slider duration:0.18 options:UIViewAnimationOptionTransitionCrossDissolve
+                    animations:^{ [self applyTimelineTrack:slider]; } completion:nil];
+}
+- (void)scrubEnded {
+    if (!self.active) return;
+    self.scrubbing = NO;
+    [self refreshTimelineTrack];
+    [self scheduleChromeHide];
+}
+- (void)addPlate:(ApolloDuoVideoPlateView *)plate {
+    UIView *content = self.controls.contentView;
+    if (!content || !plate) return;
+    if (!self.glassGroup && plate.material) {
+        if (@available(iOS 26.0, *)) {
+            ApolloDuoVideoGlassGroup *group = [[ApolloDuoVideoGlassGroup alloc] initWithEffect:[UIGlassContainerEffect new]];
+            group.frame = content.bounds;
+            group.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+            group.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+            [content insertSubview:group atIndex:0];
+            self.glassGroup = group;
+        }
+    }
+    // The group shares the content view's bounds, so plate frames computed in
+    // content coordinates hold inside it.
+    if (self.glassGroup) [self.glassGroup.contentView addSubview:plate];
+    else [content insertSubview:plate atIndex:0];
+}
+- (void)pairControl:(UIControl *)control plate:(ApolloDuoVideoPlateView *)plate {
+    if (![control isKindOfClass:UIControl.class] || !plate) return;
+    ApolloDuoVideoPlateBox *box = objc_getAssociatedObject(control, &kDuoVideoPlate);
+    if (box.plate == plate) return;
+    if (!box) {
+        [control addTarget:self.chromeProxy action:@selector(pressDown:) forControlEvents:UIControlEventTouchDown | UIControlEventTouchDragEnter];
+        [control addTarget:self.chromeProxy action:@selector(pressUp:)
+            forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel
+                | UIControlEventTouchDragExit | UIControlEventMenuActionTriggered];
+        box = [ApolloDuoVideoPlateBox new];
+        objc_setAssociatedObject(control, &kDuoVideoPlate, box, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    box.plate = plate;
+}
+- (void)unpairControl:(UIControl *)control {
+    if (![control isKindOfClass:UIControl.class] || !objc_getAssociatedObject(control, &kDuoVideoPlate)) return;
+    [control removeTarget:self.chromeProxy action:@selector(pressDown:) forControlEvents:UIControlEventAllEvents];
+    [control removeTarget:self.chromeProxy action:@selector(pressUp:) forControlEvents:UIControlEventAllEvents];
+    objc_setAssociatedObject(control, &kDuoVideoPlate, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+- (void)resolveExtras {
+    if (self.extrasResolved) return;
+    UIView *content = self.controls.contentView;
+    if (!content) return;
+    UIMenu *menu = DuoVideoNativeMenu(self.viewer);
+    if (!menu) return;
+    self.extrasResolved = YES;
+    NSMutableArray *titles = [NSMutableArray array];
+    for (UIMenuElement *element in menu.children) if (element.title.length) [titles addObject:element.title];
+    ApolloLog(@"[DuoVideo] video menu: %@", [titles componentsJoinedByString:@", "]);
+    NSMutableArray *items = [NSMutableArray array];
+    NSDictionary *wanted = @{
+        @"share": @"square.and.arrow.up",
+        @"download": @"arrow.down.to.line",
+        // AVKit's playback-speed glyph; speedometer predates it (iOS 17).
+        @"speed": [UIImage systemImageNamed:@"gauge.with.dots.needle.67percent"] ? @"gauge.with.dots.needle.67percent" : @"speedometer",
+    };
+    for (NSString *key in @[@"share", @"download", @"speed"]) {
+        UIMenuElement *element = DuoVideoMenuElement(menu, key);
+        if (!element) continue;
+        [items addObject:@{@"key": key, @"title": element.title ?: @"", @"symbol": wanted[key]}];
+        ApolloLog(@"[DuoVideo] accessory %@ (%@)", key, element.title);
+    }
+    self.extraItems = items;
+    for (UIView *plate in self.extraPlates) [plate removeFromSuperview];
+    for (UIButton *button in self.extraButtons) [button removeFromSuperview];
+    [self.extraPlates removeAllObjects];
+    [self.extraButtons removeAllObjects];
+    for (NSDictionary *item in items) {
+        ApolloDuoVideoPlateView *plate = [ApolloDuoVideoPlateView new];
+        [self addPlate:plate];
+        [self.extraPlates addObject:plate];
+        UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+        button.tintColor = UIColor.whiteColor;
+        button.backgroundColor = UIColor.clearColor;
+        button.accessibilityLabel = item[@"title"];
+        button.accessibilityIdentifier = item[@"key"];
+        [button setImage:DuoVideoSymbol(item[@"symbol"], ApolloDuoVideoSymbolAccessory) forState:UIControlStateNormal];
+        [content addSubview:button];
+        [self.extraButtons addObject:button];
+        [self pairControl:button plate:plate];
+        if ([item[@"key"] isEqualToString:@"speed"]) {
+            // Our own speed menu: Apollo's submenu is built for its long-press
+            // context menu and is not reliable presented from a button.
+            button.menu = [self speedMenu];
+            button.showsMenuAsPrimaryAction = YES;
+            [button addTarget:self.chromeProxy action:@selector(refreshSpeedMenu:) forControlEvents:UIControlEventTouchDown];
+        } else {
+            [button addTarget:self.chromeProxy action:@selector(accessoryTapped:) forControlEvents:UIControlEventTouchUpInside];
+            [self hookChromeControl:button scrubber:NO];
+        }
+    }
+}
+- (void)accessoryTapped:(UIButton *)button {
+    if (!self.active || ![button isKindOfClass:UIButton.class]) return;
+    [self chromeTouched];
+    // Apollo's "Download Video…" opens a share sheet, which reads as the same
+    // action as Share Link. Save straight to Photos when the post has one video.
+    if ([button.accessibilityIdentifier isEqualToString:@"download"] && [self saveVideoToPhotos]) return;
+    UIMenu *menu = DuoVideoNativeMenu(self.viewer);
+    UIMenuElement *element = DuoVideoMenuElement(menu, button.accessibilityIdentifier);
+    if (![element conformsToProtocol:@protocol(UIMenuLeaf)]) return;
+    if (@available(iOS 16.0, *)) [(id<UIMenuLeaf>)element performWithSender:button target:nil];
+}
+- (void)refreshSpeedMenu:(UIButton *)button {
+    if (!self.active || ![button isKindOfClass:UIButton.class]) return;
+    [self chromeTouched];
+}
+// The viewer's Float? videoPlaybackSpeed: 4-byte value, then a flag byte that
+// is 0 for .some. Apollo applies it with setRate when playback (re)starts.
+- (float)playbackSpeed {
+    UIViewController *viewer = self.viewer;
+    Ivar ivar = viewer ? class_getInstanceVariable(object_getClass(viewer), "videoPlaybackSpeed") : NULL;
+    if (!ivar) return 1;
+    const uint8_t *base = (const uint8_t *)(__bridge void *)viewer + ivar_getOffset(ivar);
+    if (base[4] != 0) return 1;
+    float speed = 1;
+    memcpy(&speed, base, sizeof(float));
+    return speed > 0 ? speed : 1;
+}
+- (AVPlayer *)player {
+    id player = ApolloObjectIvar(self.viewer, "player");
+    if ([player isKindOfClass:AVPlayer.class]) return player;
+    UIView *container = DuoVideoView(self.viewer, "playerLayerContainerView");
+    NSMutableArray<CALayer *> *layers = container ? [NSMutableArray arrayWithObject:container.layer] : [NSMutableArray array];
+    while (layers.count) {
+        CALayer *layer = layers.firstObject;
+        [layers removeObjectAtIndex:0];
+        if ([layer isKindOfClass:AVPlayerLayer.class] && ((AVPlayerLayer *)layer).player) return ((AVPlayerLayer *)layer).player;
+        [layers addObjectsFromArray:layer.sublayers ?: @[]];
+    }
+    return nil;
+}
+- (void)setPlaybackSpeed:(float)speed {
+    UIViewController *viewer = self.viewer;
+    Ivar ivar = viewer ? class_getInstanceVariable(object_getClass(viewer), "videoPlaybackSpeed") : NULL;
+    if (!ivar) return;
+    uint8_t *base = (uint8_t *)(__bridge void *)viewer + ivar_getOffset(ivar);
+    memcpy(base, &speed, sizeof(float));
+    base[4] = 0;
+    // Like Apollo's own setter, never un-pause a paused video.
+    AVPlayer *player = [self player];
+    if (player.rate != 0) player.rate = speed;
+    ApolloLog(@"[DuoVideo] playback speed %.2fx (player=%d)", speed, player != nil);
+    for (UIButton *button in self.extraButtons) {
+        if ([button.accessibilityIdentifier isEqualToString:@"speed"]) button.menu = [self speedMenu];
+    }
+}
+- (UIMenu *)speedMenu {
+    static const float speeds[] = {2, 1.5, 1.25, 1, 0.75, 0.5, 0.25};
+    float current = [self playbackSpeed];
+    NSMutableArray<UIMenuElement *> *actions = [NSMutableArray array];
+    __weak ApolloDuoVideoCoordinator *weakSelf = self;
+    for (float speed : speeds) {
+        NSString *title = speed == 1 ? @"Normal" : [NSString stringWithFormat:@"%g\u00D7", speed];
+        UIAction *action = [UIAction actionWithTitle:title image:nil identifier:nil handler:^(__unused UIAction *sender) {
+            [weakSelf setPlaybackSpeed:speed];
+        }];
+        if (fabsf(current - speed) < 0.001f) action.state = UIMenuElementStateOn;
+        [actions addObject:action];
+    }
+    return [UIMenu menuWithTitle:@"Playback Speed" children:actions];
+}
+- (BOOL)saveVideoToPhotos {
+    UIViewController *page = self.viewer.parentViewController;
+    id link = ApolloObjectIvar(page, "link");
+    if (!link) return NO;
+    // Galleries keep Apollo's own action: the link's video is not this page.
+    if (ApolloSaveAllMediaItemsFromLink(link, NULL).count || ApolloSaveAllMediaLinkHasCollection(link)) return NO;
+    id video = [link respondsToSelector:@selector(video)] ? ApolloSendObject(link, @selector(video)) : nil;
+    NSURL *url = ApolloSendObject(video, @selector(fallbackURL));
+    if (![url isKindOfClass:NSURL.class]) url = ApolloSendObject(video, @selector(URL));
+    if (![url isKindOfClass:NSURL.class] || [url.pathExtension.lowercaseString isEqualToString:@"m3u8"]) return NO;
+    ApolloLog(@"[DuoVideo] saving video %@", url.host);
+    ApolloShowToastWithStyle(@"Saving Video…", nil, ApolloToastStyleInfo, nil);
+    ApolloGallerySaveVideoToPhotos(url, nil, ^(BOOL success, NSString *message) {
+        ApolloShowToastWithStyle(message ?: (success ? @"Saved to Photos" : @"Couldn't Save Video"), nil,
+                                 success ? ApolloToastStyleSuccess : ApolloToastStyleError, nil);
+    });
+    return YES;
+}
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldReceiveTouch:(UITouch *)touch {
+    if (gesture != self.chromeTap) return YES;
+    if (!self.chromeVisible) return YES;
+    UIView *view = touch.view;
+    while (view && view != self.controls) {
+        if ([view isKindOfClass:UIControl.class] || [view isKindOfClass:AVRoutePickerView.class]) return NO;
+        view = view.superview;
+    }
+    return YES;
+}
 - (void)layoutUtilities:(ApolloDuoVideoControlGeometry)layout {
     UIView *content = self.controls.contentView;
     if (!self.routePicker) {
-        self.soundTile = [UIView new];
-        self.soundTile.userInteractionEnabled = NO;
-        self.airPlayTile = [UIView new];
-        self.timelineTile = [UIView new];
-        self.timelineTile.userInteractionEnabled = NO;
-        for (UIView *tile in @[self.soundTile, self.airPlayTile, self.timelineTile]) {
-            tile.backgroundColor = [UIColor colorWithWhite:0.13 alpha:1];
-            tile.layer.cornerRadius = 14;
-            [content insertSubview:tile atIndex:0];
-        }
+        self.soundTile = [ApolloDuoVideoPlateView new];
+        self.airPlayTile = [ApolloDuoVideoPlateView new];
+        // The picker lives inside its tile, so that tile has to take hits.
+        // The mute tile stays behind the native button.
+        self.airPlayTile.userInteractionEnabled = YES;
+        for (ApolloDuoVideoPlateView *tile in @[self.soundTile, self.airPlayTile]) [self addPlate:tile];
         // MPVolumeView hides Apollo's original route button when it reports
         // no receiver, and its zero-size host cannot offer a useful tap area.
         // AVRoutePickerView always offers the system picker and routes the same
@@ -258,16 +845,31 @@ static void DuoVideoSetOwner(UIView *view, ApolloDuoVideoCoordinator *owner) {
         self.routePicker.activeTintColor = ApolloThemeAccentColor() ?: content.tintColor;
         self.routePicker.prioritizesVideoDevices = YES;
         [self.airPlayTile addSubview:self.routePicker];
-        ApolloLog(@"[DuoVideo] tabletop timeline panel / icon toolbar installed");
+        ApolloLog(@"[DuoVideo] tabletop glass transport installed");
     }
-    DuoVideoFrame(self.soundTile, layout.utilities[0]);
-    DuoVideoFrame(self.airPlayTile, layout.utilities[1]);
-    DuoVideoFrame(self.timelineTile, layout.timeline);
+    DuoVideoFrame(self.soundTile, layout.accessories[0]);
+    DuoVideoFrame(self.airPlayTile, layout.accessories[layout.accessoryCount - 1]);
     DuoVideoFrame(self.routePicker, self.airPlayTile.bounds);
-    UIView *sound = DuoVideoView(self.controls, "muteUnmuteButton");
-    [self remember:sound visible:YES];
+    for (UIView *child in self.routePicker.subviews) {
+        if ([child isKindOfClass:UIControl.class]) [self hookChromeControl:(UIControl *)child scrubber:NO];
+    }
+    UIButton *sound = (id)DuoVideoView(self.controls, "muteUnmuteButton");
+    [self remember:sound visible:NO];
     sound.backgroundColor = UIColor.clearColor;
-    DuoVideoPanelFrame(sound, [content convertRect:layout.utilities[0] toView:sound.superview]);
+    sound.tintColor = UIColor.whiteColor;
+    [self hookChromeControl:sound scrubber:NO];
+    [self pairControl:sound plate:self.soundTile];
+    if ([sound isKindOfClass:UIButton.class] && !DuoVideoOwner(sound)) {
+        NSArray<NSNumber *> *states = @[@(UIControlStateNormal), @(UIControlStateHighlighted), @(UIControlStateDisabled), @(UIControlStateSelected)];
+        NSMutableArray *images = [NSMutableArray array];
+        for (NSNumber *state in states) [images addObject:[sound imageForState:state.unsignedIntegerValue] ?: NSNull.null];
+        DuoVideoSetOwner(sound, self);
+        for (NSUInteger index = 0; index < states.count; index++) {
+            id image = images[index];
+            [sound setImage:image == NSNull.null ? nil : image forState:states[index].unsignedIntegerValue];
+        }
+    }
+    DuoVideoPanelFrame(sound, [content convertRect:layout.accessories[0] toView:sound.superview]);
 
     UIView *nativeRoute = DuoVideoView(self.controls, "airPlayButton");
     [self remember:nativeRoute visible:NO];
@@ -276,22 +878,89 @@ static void DuoVideoSetOwner(UIView *view, ApolloDuoVideoCoordinator *owner) {
     // Restoring clears the tag and returns its native geometry/visibility.
     DuoVideoPanelFrame(nativeRoute, CGRectZero);
 }
+// UIVisualEffectView hit-tests through itself and its content view. Hidden
+// chrome also turns the buttons off, so a tap on the black panel never reaches
+// a gesture attached to the effect view. This clear view sits behind every
+// control and receives those taps.
+- (void)installChromeCatcher {
+    UIView *content = self.controls.contentView;
+    if (!content) return;
+    if (!self.chromeCatcher) {
+        UIView *catcher = [[UIView alloc] initWithFrame:content.bounds];
+        catcher.backgroundColor = UIColor.clearColor;
+        catcher.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        [content insertSubview:catcher atIndex:0];
+        self.chromeCatcher = catcher;
+        self.chromeTap = [[UITapGestureRecognizer alloc] initWithTarget:self.chromeProxy action:@selector(toggleChrome)];
+        self.chromeTap.delegate = self;
+        [catcher addGestureRecognizer:self.chromeTap];
+    }
+    if (!CGRectEqualToRect(self.chromeCatcher.frame, content.bounds)) self.chromeCatcher.frame = content.bounds;
+    [content sendSubviewToBack:self.chromeCatcher];
+}
+// Safari's scrubber: a 6pt rounded track with no resting knob, which thickens
+// while it is dragged. The thumb stays a clear image so UISlider keeps its
+// touch target and value mapping.
+- (void)applyTimelineTrack:(UISlider *)slider {
+    static UIImage *minimumTrack, *maximumTrack, *minimumActive, *maximumActive, *thumb;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        UIImage *(^capsule)(UIColor *, CGSize) = ^UIImage *(UIColor *color, CGSize size) {
+            UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size];
+            UIImage *image = [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
+                [color setFill];
+                [[UIBezierPath bezierPathWithRoundedRect:(CGRect){CGPointZero, size} cornerRadius:size.height / 2.0] fill];
+            }];
+            CGFloat cap = floor(size.width / 2.0);
+            return [image resizableImageWithCapInsets:UIEdgeInsetsMake(0, cap, 0, cap)];
+        };
+        UIColor *rest = [UIColor colorWithWhite:1 alpha:0.25];
+        minimumTrack = capsule([UIColor colorWithWhite:1 alpha:0.9], CGSizeMake(12, 6));
+        maximumTrack = capsule(rest, CGSizeMake(12, 6));
+        minimumActive = capsule(UIColor.whiteColor, CGSizeMake(16, 10));
+        maximumActive = capsule(rest, CGSizeMake(16, 10));
+        thumb = capsule(UIColor.clearColor, CGSizeMake(14, 14));
+    });
+    BOOL active = self.scrubbing;
+    [slider setMinimumTrackImage:active ? minimumActive : minimumTrack forState:UIControlStateNormal];
+    [slider setMaximumTrackImage:active ? maximumActive : maximumTrack forState:UIControlStateNormal];
+    [slider setThumbImage:thumb forState:UIControlStateNormal];
+    [slider setThumbImage:thumb forState:UIControlStateHighlighted];
+}
 - (void)layoutControls {
     UIVisualEffectView *controls = self.controls;
     CGRect target = [self.viewer.view convertRect:self.geometry.controls toView:controls.superview];
     DuoVideoFrame(controls, target);
+    [self installChromeCatcher];
+    [self resolveExtras];
     ApolloDuoVideoControlGeometry layout;
-    if (!ApolloDuoVideoMakeControlGeometry(controls.bounds.size, &layout)) return;
+    int accessories = 2 + (int)self.extraItems.count;
+    if (!ApolloDuoVideoMakeControlGeometry(controls.bounds.size, accessories, &layout)) return;
+    UIView *content = controls.contentView;
+    if (!self.playbackPlates.count) {
+        for (int i = 0; i < 3; i++) {
+            ApolloDuoVideoPlateView *plate = [ApolloDuoVideoPlateView new];
+            [self addPlate:plate];
+            [self.playbackPlates addObject:plate];
+        }
+    }
     const char *buttons[] = {"back15Button", "playPauseButton", "forward15Button"};
     for (int i = 0; i < 3; i++) {
         UIButton *button = (id)DuoVideoView(controls, buttons[i]);
         [self remember:button visible:NO];
-        button.backgroundColor = [UIColor colorWithWhite:0.13 alpha:1];
-        button.layer.cornerRadius = 18;
+        button.backgroundColor = UIColor.clearColor;
+        button.layer.cornerRadius = 0;
+        button.tintColor = UIColor.whiteColor;
+        [self hookChromeControl:button scrubber:NO];
+        [self pairControl:button plate:self.playbackPlates[i]];
+        CGRect frame = layout.playback[i];
+        DuoVideoFrame(self.playbackPlates[i], frame);
+        DuoVideoPanelFrame(button, [content convertRect:frame toView:button.superview]);
         if (!DuoVideoOwner(button)) {
-            // Enlarge the actual native artwork. UIButton's layout resets
-            // imageView transforms, and Apollo supplies explicitly sized images
-            // that ignore preferredSymbolConfiguration on the button itself.
+            // Re-set the native artwork through the owned setImage hook, which
+            // swaps in the shared SF Symbol. UIButton's layout resets imageView
+            // transforms, and Apollo supplies explicitly sized images that
+            // ignore preferredSymbolConfiguration.
             NSArray<NSNumber *> *states = @[@(UIControlStateNormal), @(UIControlStateHighlighted), @(UIControlStateDisabled), @(UIControlStateSelected)];
             NSMutableArray *images = [NSMutableArray array];
             for (NSNumber *state in states) [images addObject:[button imageForState:state.unsignedIntegerValue] ?: NSNull.null];
@@ -301,9 +970,16 @@ static void DuoVideoSetOwner(UIView *view, ApolloDuoVideoCoordinator *owner) {
                 [button setImage:image == NSNull.null ? nil : image forState:states[index].unsignedIntegerValue];
             }
         }
-        CGRect frame = layout.playback[i];
-        DuoVideoPanelFrame(button, [controls.contentView convertRect:frame toView:button.superview]);
     }
+    if (!self.timelinePlate) {
+        ApolloDuoVideoPlateView *plate = [ApolloDuoVideoPlateView new];
+        plate.capsule = YES;
+        [self addPlate:plate];
+        self.timelinePlate = plate;
+    }
+    DuoVideoFrame(self.timelinePlate, layout.timeline);
+    // Popups (Saving Video…) sit above the timeline, clear of the transport.
+    ApolloToastSetAnchorView(self.timelinePlate);
     UIView *slider = DuoVideoView(controls, "timeSlider");
     UIView *elapsed = DuoVideoView(controls, "currentTimeLabel");
     UIView *remaining = DuoVideoView(controls, "timeRemainingLabel");
@@ -313,29 +989,39 @@ static void DuoVideoSetOwner(UIView *view, ApolloDuoVideoCoordinator *owner) {
     for (NSUInteger i = 0; i < views.count; i++) {
         UIView *view = views[i];
         [self remember:view visible:NO];
-        DuoVideoPanelFrame(view, [controls.contentView convertRect:frames[i] toView:view.superview]);
+        if ([view isKindOfClass:UILabel.class]) {
+            UILabel *label = (UILabel *)view;
+            label.textColor = [UIColor colorWithWhite:1 alpha:0.6];
+            label.font = [UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightMedium];
+            label.textAlignment = view == remaining ? NSTextAlignmentRight : NSTextAlignmentLeft;
+        }
+        DuoVideoPanelFrame(view, [content convertRect:frames[i] toView:view.superview]);
     }
     UISlider *nativeSlider = (UISlider *)slider;
     if ([nativeSlider isKindOfClass:UISlider.class]) {
-        UIColor *accent = ApolloThemeAccentColor() ?: controls.tintColor;
-        nativeSlider.minimumTrackTintColor = accent;
-        nativeSlider.maximumTrackTintColor = [UIColor colorWithWhite:0.45 alpha:1];
-        nativeSlider.thumbTintColor = accent;
+        [self hookChromeControl:nativeSlider scrubber:YES];
+        [self applyTimelineTrack:nativeSlider];
     }
     [self remember:live visible:NO];
-    if (live) DuoVideoPanelFrame(live, [controls.contentView convertRect:layout.scrubber toView:live.superview]);
+    if ([live isKindOfClass:UILabel.class]) {
+        ((UILabel *)live).textColor = UIColor.whiteColor;
+        DuoVideoPanelFrame(live, [content convertRect:layout.scrubber toView:live.superview]);
+    }
     [self layoutUtilities:layout];
+    for (NSUInteger i = 0; i < self.extraButtons.count; i++) {
+        NSInteger slot = (NSInteger)i + 1;
+        if (slot >= layout.accessoryCount - 1) break;
+        CGRect frame = layout.accessories[slot];
+        DuoVideoFrame(self.extraPlates[i], frame);
+        DuoVideoPanelFrame(self.extraButtons[i], [content convertRect:frame toView:self.extraButtons[i].superview]);
+    }
+    // Tiles are inserted at the back. Keep the catcher behind them so AirPlay
+    // and the native buttons stay the hit targets while chrome is visible.
+    [self installChromeCatcher];
+    [self applyChromeVisibility];
 }
 - (void)update {
     if (self.applying) return;
-    if (!sDuoTabletopVideoEnabled) {
-        [self restore];
-        if (self.hinge) {
-            [self.viewer.viewIfLoaded removeInteraction:self.hinge];
-            self.hinge = nil;
-        }
-        return;
-    }
     UIViewController *viewer = self.viewer;
     UIView *view = viewer.viewIfLoaded;
     [self observeHinge];
@@ -369,14 +1055,18 @@ static void DuoVideoSetOwner(UIView *view, ApolloDuoVideoCoordinator *owner) {
         self.nativeScrollFrame = scroll.frame;
         self.nativeControlsFrame = controls.frame;
         [self remember:scroll visible:NO];
+        // The controls view stays opaque so the lower panel remains black while
+        // its buttons fade. Post actions are clamped separately below.
         [self remember:controls visible:YES];
         self.nativeEffect = controls.effect;
         controls.effect = nil;
         controls.backgroundColor = UIColor.blackColor;
         controls.layer.cornerRadius = 0;
         self.active = YES;
+        self.chromeVisible = YES;
         DuoVideoSetOwner(scroll, self);
         DuoVideoSetOwner(controls, self);
+        [self scheduleChromeHide];
         // MediaPage owns post actions and Close. Keep their native positions
         // below the panel, but prevent its focus/timeout from hiding them.
         UIViewController *page = viewer.parentViewController;
@@ -409,13 +1099,34 @@ static void DuoVideoSetOwner(UIView *view, ApolloDuoVideoCoordinator *owner) {
     if (!self.active) return;
     self.applying = YES;
     self.active = NO;
+    self.chromeGeneration++;
+    self.chromeVisible = NO;
+    self.scrubbing = NO;
+    self.chromeAnimating = NO;
+    for (UIView *piece in [self chromePieces]) [piece.layer removeAllAnimations];
+    [self.timelinePlate removeFromSuperview];
+    self.timelinePlate = nil;
+    ApolloToastSetAnchorView(nil);
+    const char *paired[] = {"back15Button", "playPauseButton", "forward15Button", "muteUnmuteButton"};
+    for (const char *name : paired) [self unpairControl:(UIControl *)DuoVideoView(self.controls, name)];
+    [self.chromeCatcher removeFromSuperview];
+    self.chromeCatcher = nil;
+    self.chromeTap = nil;
+    for (UIView *plate in self.playbackPlates) [plate removeFromSuperview];
+    [self.playbackPlates removeAllObjects];
+    for (UIView *plate in self.extraPlates) [plate removeFromSuperview];
+    for (UIButton *button in self.extraButtons) [button removeFromSuperview];
+    [self.extraPlates removeAllObjects];
+    [self.extraButtons removeAllObjects];
+    self.extraItems = nil;
+    self.extrasResolved = NO;
     [self.soundTile removeFromSuperview];
     [self.airPlayTile removeFromSuperview];
-    [self.timelineTile removeFromSuperview];
     self.soundTile = nil;
     self.airPlayTile = nil;
-    self.timelineTile = nil;
     self.routePicker = nil;
+    [self.glassGroup removeFromSuperview];
+    self.glassGroup = nil;
     DuoVideoSetOwner(self.scroll, nil);
     DuoVideoSetOwner(self.controls, nil);
     for (UIView *view in self.visibleViews) {
@@ -440,6 +1151,16 @@ static void DuoVideoSetOwner(UIView *view, ApolloDuoVideoCoordinator *owner) {
             slider.minimumTrackTintColor = snapshot.minimumTrackTint;
             slider.maximumTrackTintColor = snapshot.maximumTrackTint;
             slider.thumbTintColor = snapshot.thumbTint;
+            [slider setMinimumTrackImage:nil forState:UIControlStateNormal];
+            [slider setMaximumTrackImage:nil forState:UIControlStateNormal];
+            [slider setThumbImage:nil forState:UIControlStateNormal];
+            [slider setThumbImage:nil forState:UIControlStateHighlighted];
+        }
+        if ([view isKindOfClass:UILabel.class]) {
+            UILabel *label = (UILabel *)view;
+            if (snapshot.textColor) label.textColor = snapshot.textColor;
+            if (snapshot.font) label.font = snapshot.font;
+            label.textAlignment = snapshot.alignment;
         }
         view.alpha = snapshot.alpha;
         view.hidden = snapshot.hidden;
@@ -471,7 +1192,6 @@ static ApolloDuoVideoCoordinator *DuoVideoCoordinator(UIViewController *viewer, 
     if (!owner && create) {
         owner = [ApolloDuoVideoCoordinator new];
         owner.viewer = viewer;
-        [sDuoVideoCoordinators addObject:owner];
         objc_setAssociatedObject(viewer, &kDuoVideoCoordinator, owner, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     return owner;
@@ -500,7 +1220,13 @@ static ApolloDuoVideoCoordinator *DuoVideoCoordinator(UIViewController *viewer, 
     %orig;
 }
 - (void)scrollViewTapped:(id)sender {
-    if (DuoVideoCoordinator((id)self, NO).active) return;
+    ApolloDuoVideoCoordinator *owner = DuoVideoCoordinator((id)self, NO);
+    if (owner.active) {
+        // Apollo's toggle also hides Close and the Reddit row. Own the
+        // playback fade so those stay put.
+        [owner toggleChrome];
+        return;
+    }
     %orig;
 }
 %end
@@ -600,27 +1326,37 @@ static ApolloDuoVideoCoordinator *DuoVideoCoordinator(UIViewController *viewer, 
 - (void)setImage:(UIImage *)image forState:(UIControlState)state {
     ApolloDuoVideoCoordinator *owner = DuoVideoOwner((UIView *)self);
     if (owner.active) {
-        [owner rememberImage:image button:(UIButton *)self state:state];
-        if (image && image.size.width > 0 && image.size.height > 0) {
-            CGSize size = CGSizeMake(48 * image.size.width / image.size.height, 48);
-            UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size];
-            UIImage *source = image;
-            image = [[renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
-                [source drawInRect:(CGRect){CGPointZero, size}];
-            }] imageWithRenderingMode:source.renderingMode];
-        }
+        // Remember Apollo's artwork for restore, then draw the shared symbol.
+        if (!owner.resyncing) [owner rememberImage:image button:(UIButton *)self state:state];
+        UIImage *symbol = image ? [owner symbolForButton:(UIButton *)self] : nil;
+        if (symbol) image = symbol;
+        [owner scheduleSymbolResync];
     }
     %orig(image, state);
 }
 %end
 
+// Apollo's Smart Rotation Lock offers "Tap to Rotate Video" from CoreMotion.
+// On Duo, folding and tabletop postures read as a sideways device, so the
+// offer keeps appearing over the video. Keep the button hidden on Duo only.
+%hook _TtC6Apollo22RotationOfferingButton
+- (void)setHidden:(BOOL)hidden {
+    %orig(YES);
+}
+- (void)setAlpha:(CGFloat)alpha {
+    %orig(0);
+}
+- (void)didMoveToWindow {
+    %orig;
+    UIView *view = (UIView *)self;
+    view.hidden = YES;
+    view.userInteractionEnabled = NO;
+    view.isAccessibilityElement = NO;
+}
+%end
+
 %ctor {
     if (!ApolloDeviceIsDuo()) return;
-    sDuoVideoCoordinators = [NSHashTable weakObjectsHashTable];
-    [NSNotificationCenter.defaultCenter addObserverForName:ApolloDuoVideoLayoutDidChangeNotification
-        object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {
-            for (ApolloDuoVideoCoordinator *owner in sDuoVideoCoordinators.allObjects) [owner schedule];
-        }];
     %init;
     ApolloLog(@"[DuoVideo] tabletop video hooks installed");
 }

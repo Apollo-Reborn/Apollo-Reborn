@@ -81,7 +81,6 @@ BOOL sTabBarSwipeNavigation = NO;   // opt-in (default OFF via registerDefaults,
 NSInteger sDuoLandscapeFeedLayout = 0;
 BOOL sDuoSubredditPanelGlassEnabled = NO;
 BOOL sSubredditSwitcherSheetEnabled = NO;
-BOOL sDuoTabletopVideoEnabled = NO;
 BOOL sIPadPaneLayout = NO;     // opt-in (default OFF via registerDefaults, UDKeyIPadPaneLayout); iPad-gated, relaunch to apply
 BOOL sKeepSearchBarInPlace = NO;
 ApolloSettingsIconAppearance sSettingsIconAppearance = ApolloSettingsIconAppearanceLight;
