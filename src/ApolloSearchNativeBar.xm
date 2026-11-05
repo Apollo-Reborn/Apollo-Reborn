@@ -1057,6 +1057,19 @@ void ApolloNativeFeedSearchSetDuoControls(UIViewController *vc, UIBarButtonItem 
     NSBUpdateDuoControls(vc);
 }
 
+// Settings > Display & Navigation turned this screen's search bar off
+// (UDKeyShowFeedSearchBar / UDKeyShowFindInCommentsBar, Liquid Glass only).
+static BOOL NSBSearchBarTurnedOff(UIViewController *vc) {
+    if (@available(iOS 26.0, *)) {
+        return NSBIsNativeSearchCommentsVC(vc) ? !sShowFindInCommentsBar : !sShowFeedSearchBar;
+    }
+    return NO;
+}
+
+// VC -> @YES while a turned-off Find in Comments bar is attached for one search
+// the ••• menu opened. Cleared when that search is dismissed.
+static char kNSBSearchForFindKey;
+
 static void NSBUpdateSearchPlacement(UIViewController *vc) {
     if (@available(iOS 16.0, *)) {
         UINavigationItem *item = vc.navigationItem;
@@ -1068,11 +1081,10 @@ static void NSBUpdateSearchPlacement(UIViewController *vc) {
         }
         NSNumber *original = objc_getAssociatedObject(item, &kNSBDuoSearchPlacementKey);
         if (@available(iOS 26.0, *)) {
-            // Settings turned this bar off: no field under the title and no button for
-            // it either. The controller stays attached, so the ••• menu's Find in
-            // Comments can still open a search.
-            BOOL barOff = NSBIsNativeSearchCommentsVC(vc) ? !sShowFindInCommentsBar : !sShowFeedSearchBar;
-            if (barOff) {
+            // Settings turned this bar off, and the ••• menu's Find in Comments
+            // attached it for one search (NSBAttachNativeSearch): show that search
+            // in the navigation bar rather than as a field under the title.
+            if (NSBSearchBarTurnedOff(vc)) {
                 if (!original) {
                     objc_setAssociatedObject(item, &kNSBDuoSearchPlacementKey, @(item.preferredSearchBarPlacement),
                                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -1081,10 +1093,6 @@ static void NSBUpdateSearchPlacement(UIViewController *vc) {
                 item.searchBarPlacementAllowsToolbarIntegration = NO;
                 if (item.preferredSearchBarPlacement != UINavigationItemSearchBarPlacementIntegratedButton)
                     item.preferredSearchBarPlacement = UINavigationItemSearchBarPlacementIntegratedButton;
-                if (@available(iOS 27.0, *)) {
-                    UIBarButtonItem *button = item.searchBarPlacementBarButtonItem;
-                    if (button && !button.hidden) button.hidden = YES;
-                }
                 NSBUpdateDuoControls(vc);
                 return;
             }
@@ -1116,6 +1124,16 @@ static void NSBScheduleSearchPlacement(UIViewController *vc) {
 
 static void NSBAttachNativeSearch(UIViewController *vc) {
     UINavigationItem *navItem = vc.navigationItem;
+    if (NSBSearchBarTurnedOff(vc) && ![objc_getAssociatedObject(vc, &kNSBSearchForFindKey) boolValue]) {
+        // An attached controller always shows, as a field under the title or as
+        // UIKit's own Search button in the navigation bar, so keep none. Screens
+        // pick up a change to the setting on their next layout.
+        if (navItem.searchController != nil) {
+            navItem.searchController = nil;
+            ApolloLog(@"[NativeSearch] search bar turned off; detached from %s", object_getClassName(vc));
+        }
+        return;
+    }
     if (navItem.searchController != nil) {
         NSBScheduleSearchPlacement(vc);
         return;
@@ -2060,8 +2078,18 @@ static void *NSBCommentJumpTableForController(UIViewController *vc) {
 - (BOOL)becomeFirstResponder {
     if (ApolloNativeFeedSearchEnabled()) {
         UIViewController *vc = NSBFeedVCForView((UIView *)self);
+        if (vc && NSBIsNativeSearchCommentsVC(vc) && vc.navigationItem.searchController == nil &&
+            NSBSearchBarTurnedOff(vc) && !ApolloReadBoolIvar(vc, "isSearching", NO)) {
+            // The ••• menu's Find in Comments with the bar turned off: attach it
+            // for this search only (ApolloNativeFeedSearchFindDismissed ends it).
+            objc_setAssociatedObject(vc, &kNSBSearchForFindKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            NSBAttachNativeSearch(vc);
+        }
         if (vc && NSBIsNativeSearchVC(vc) && vc.navigationItem.searchController != nil) {
             if (NSBIsNativeSearchCommentsVC(vc)) ApolloFindInCommentsGlassApolloFieldFocusRequested(vc);
+            UISearchController *searchController = vc.navigationItem.searchController;
+            if ([objc_getAssociatedObject(vc, &kNSBSearchForFindKey) boolValue] && !searchController.active)
+                ApolloNativeFeedSearchFindDismissed(vc);
             return NO;
         }
     }
@@ -2069,6 +2097,12 @@ static void *NSBCommentJumpTableForController(UIViewController *vc) {
 }
 
 %end
+
+void ApolloNativeFeedSearchFindDismissed(UIViewController *vc) {
+    if (![objc_getAssociatedObject(vc, &kNSBSearchForFindKey) boolValue]) return;
+    objc_setAssociatedObject(vc, &kNSBSearchForFindKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NSBAttachNativeSearch(vc);
+}
 
 // MARK: - Feed geometry
 //
