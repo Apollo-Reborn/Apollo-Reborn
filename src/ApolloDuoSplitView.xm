@@ -1069,6 +1069,11 @@ UINavigationController *ApolloDuoSplitDetailNavigation(UINavigationController *n
     return state.split && !state.changing ? (state.feed && !state.host.postsShowingDetail ? state.feed : state.secondary) : nav;
 }
 
+UINavigationController *ApolloDuoSplitFeedNavigation(UINavigationController *nav) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    return state.split && !state.changing ? state.feed : nil;
+}
+
 BOOL ApolloDuoSplitAllowsNavigationSwipe(UINavigationController *nav) {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
     if (state.changing) return NO;

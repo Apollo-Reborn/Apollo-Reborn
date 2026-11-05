@@ -2488,6 +2488,27 @@ typedef NS_ENUM(NSInteger, Tag) {
         return IsLiquidGlass() && !sCollapseNavigationActions && ApolloInterfaceSupportsPhoneTabBarControls();
     };
 
+    // Feed title tap and Posts tab long press open the tweak's Modern search
+    // sheet or Apollo's Classic inline popup. Read live, so no relaunch is needed.
+    ApolloSettingsRow *switcherStyle =
+        [ApolloSettingsRow valueRowWithID:@"interface.subredditSwitcher"
+                                   title:@"Subreddit Switcher"
+                                  detail:^NSString * {
+            return sSubredditSwitcherSheetEnabled ? @"Modern" : @"Classic";
+        }
+                                onSelect:^{
+            ApolloSettingsPresentPicker(weakSelf, [weakSelf cellForRowID:@"interface.subredditSwitcher"],
+                @"Subreddit Switcher", @[ @"Classic", @"Modern" ],
+                sSubredditSwitcherSheetEnabled ? 1 : 0, ^(NSInteger picked) {
+                    BOOL sheetEnabled = picked == 1;
+                    if (sSubredditSwitcherSheetEnabled == sheetEnabled) return;
+                    sSubredditSwitcherSheetEnabled = sheetEnabled;
+                    [NSUserDefaults.standardUserDefaults setBool:sheetEnabled
+                        forKey:UDKeySubredditSwitcherSheetEnabled];
+                    [weakSelf reloadRowWithID:@"interface.subredditSwitcher"];
+                });
+        }];
+
     NSArray<NSString *> *trueBlackTitles = @[ @"Off", @"Dark Mode Only", @"Light Mode Only", @"Always" ];
     ApolloSettingsRow *trueBlackKeyboard =
         [ApolloSettingsRow valueRowWithID:@"interface.trueBlackKeyboard"
@@ -2512,7 +2533,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     }
     return [ApolloSettingsSection sectionWithTitle:@"Display & Navigation"
                                             footer:footer
-                                              rows:@[ scrollReturnButton, trueBlackKeyboard, collapseActions, centerBetween, iPadPaneLayout, scrollEdgeEffect ]];
+                                              rows:@[ scrollReturnButton, trueBlackKeyboard, collapseActions, centerBetween, switcherStyle, iPadPaneLayout, scrollEdgeEffect ]];
 }
 
 // Display order differs from stored values; Blur is optional, while Hidden

@@ -8,6 +8,7 @@
 #import "ApolloScrollToTop.h"
 #import "ApolloSearchNativeBar.h"
 #import "ApolloDuoSplitView.h"
+#import "ApolloSubredditSwitcherSheet.h"
 #import "ApolloState.h"
 
 // Apollo's status-bar proxy calls ASTableViewController rather than scrolling
@@ -846,6 +847,8 @@ static UIScrollView *ApolloPostsTabContentScrollView(UIView *view, CGRect viewpo
         ![viewController isKindOfClass:UINavigationController.class]) {
         return %orig(tabBarController, viewController);
     }
+    // The finger lifting after a rail hold opened the switcher is not a tap.
+    if (ApolloPostsTabHoldConsumesTap) return NO;
     UINavigationController *outer = (UINavigationController *)viewController;
     // An open subreddit drawer covers the feed. Close it rather than scrolling
     // or popping the hidden page underneath.
