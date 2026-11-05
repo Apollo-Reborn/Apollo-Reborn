@@ -3257,9 +3257,13 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
     // redirect, such as Old Reddit's sign-in gate, the current request is
     // the redirect target, whose path isn't the read's.
     NSURLRequest *sent = task.originalRequest ?: task.currentRequest;
-    // oauth.reddit.com's block page for /api/info or /api/morechildren: later
-    // reads of that endpoint go by its /.json form (ApolloOAuthReadPathToSend).
-    if ([sent.URL.host isEqualToString:@"oauth.reddit.com"] && [task.response isKindOfClass:[NSHTTPURLResponse class]]) {
+    // oauth.reddit.com's block page for an API-key account's /api/info or
+    // /api/morechildren: later reads of that endpoint go by its /.json form
+    // (ApolloOAuthReadPathToSend). API-Key-Free reads routed to oauth (they
+    // carry the rewrite's account marker, ApolloWebJSONRouteFromURL >= 0) are
+    // left to their own route table, which already tries the next route.
+    if ([sent.URL.host isEqualToString:@"oauth.reddit.com"] && ApolloWebJSONRouteFromURL(sent.URL) < 0
+        && [task.response isKindOfClass:[NSHTTPURLResponse class]]) {
         NSString *dotJSONPath = ApolloOAuthReadPathAfterResponse(sent.HTTPMethod ?: @"GET", sent.URL.path ?: @"/",
                                                                  (NSHTTPURLResponse *)task.response, NULL);
         if (dotJSONPath) {
