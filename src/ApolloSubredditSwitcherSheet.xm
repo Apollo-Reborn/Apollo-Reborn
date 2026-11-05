@@ -10,6 +10,7 @@
 #import "ApolloDuoUIKitCompatibility.h"
 #import "ApolloDuoSplitView.h"
 #import "ApolloDuoRail.h"
+#import "ApolloSpelling.h"
 
 @interface _TtC6Apollo7JumpBar : UIControl
 - (void)searchTextFieldChanged:(UITextField *)field;
@@ -282,7 +283,11 @@ static BOOL ApolloSubredditSheetIsActive(UITabBarController *tabs) {
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Subreddit"];
-    if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Subreddit"];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Subreddit"];
+        // Rows only ever show subreddit names: keep "colors" as the subreddit spells it.
+        ApolloSpellingSetViewExcluded(cell.textLabel, YES);
+    }
     NSString *name = self.sections[indexPath.section][indexPath.row];
     cell.textLabel.text = name;
     cell.textLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
