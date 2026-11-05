@@ -3,8 +3,10 @@
 // Only setters that carry interface text are hooked (labels, buttons, navigation/tab/bar items,
 // alerts, menus, segmented controls, list content configurations). Reddit content is drawn by
 // Texture text nodes, which are left alone, so posts and comments keep their author's spelling.
-// Words attached to "/", "@", "#" or "." (r/colors, u/FavoriteUser, colors.com) are skipped, and
-// American mode returns before doing any work.
+// Tweak labels that show Reddit content in UIKit (subreddit and profile headers, Community
+// Highlights cards, link previews) opt out via ApolloSpellingSetViewExcluded. Words attached to "/",
+// "@", "#" or "." (r/colors, u/FavoriteUser, colors.com) are skipped, and American mode returns
+// before doing any work.
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import "ApolloSpelling.h"
@@ -182,6 +184,21 @@ void ApolloSpellingReloadLoadedTables(UIView *except) {
     ApolloLog(@"[Spelling] reloaded %lu loaded table(s) for the new style", (unsigned long)seen.count);
 }
 
+static char kApolloSpellingExcludedKey;
+
+void ApolloSpellingSetViewExcluded(UIView *view, BOOL excluded) {
+    if (!view) return;
+    objc_setAssociatedObject(view, &kApolloSpellingExcludedKey, excluded ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // A button passes its title on to its own label, so that label has to opt out too.
+    if ([view isKindOfClass:UIButton.class]) ApolloSpellingSetViewExcluded(((UIButton *)view).titleLabel, excluded);
+}
+
+// The style check comes first so American mode never reaches the associated-object lookup.
+static BOOL SpellingSkipsView(UIView *view) {
+    return sSpellingStyle != ApolloSpellingStyleBritish
+        || objc_getAssociatedObject(view, &kApolloSpellingExcludedKey) != nil;
+}
+
 // Replaces word by word so each keeps the attributes of the run it sits in.
 static NSAttributedString *ApolloSpellingApplyAttributed(NSAttributedString *text) {
     if (![text isKindOfClass:NSAttributedString.class]) return text;
@@ -192,6 +209,16 @@ static NSAttributedString *ApolloSpellingApplyAttributed(NSAttributedString *tex
         [result replaceCharactersInRange:match.range withString:BritishFor([text.string substringWithRange:match.range])];
     }
     return result;
+}
+
+// Text for a view's setter: as given for excluded views, otherwise in the current style.
+// (Logos can't parse a ternary inside %orig, hence these wrappers.)
+static NSString *SpellingTextForView(UIView *view, NSString *text) {
+    return SpellingSkipsView(view) ? text : ApolloSpellingApply(text);
+}
+
+static NSAttributedString *SpellingAttributedTextForView(UIView *view, NSAttributedString *text) {
+    return SpellingSkipsView(view) ? text : ApolloSpellingApplyAttributed(text);
 }
 
 ApolloSpellingStyle ApolloSpellingCurrentStyle(void) {
@@ -205,14 +232,14 @@ void ApolloSpellingSetStyle(ApolloSpellingStyle style) {
 }
 
 %hook UILabel
-- (void)setText:(NSString *)text { %orig(ApolloSpellingApply(text)); }
-- (void)setAttributedText:(NSAttributedString *)text { %orig(ApolloSpellingApplyAttributed(text)); }
+- (void)setText:(NSString *)text { %orig(SpellingTextForView(self, text)); }
+- (void)setAttributedText:(NSAttributedString *)text { %orig(SpellingAttributedTextForView(self, text)); }
 %end
 
 %hook UIButton
-- (void)setTitle:(NSString *)title forState:(UIControlState)state { %orig(ApolloSpellingApply(title), state); }
+- (void)setTitle:(NSString *)title forState:(UIControlState)state { %orig(SpellingTextForView(self, title), state); }
 - (void)setAttributedTitle:(NSAttributedString *)title forState:(UIControlState)state {
-    %orig(ApolloSpellingApplyAttributed(title), state);
+    %orig(SpellingAttributedTextForView(self, title), state);
 }
 %end
 

@@ -46,6 +46,7 @@
 #import "ApolloDuoRail.h"
 #import "ApolloDuoNavigationGestures.h"
 #import "ApolloHighlightsCarouselGesturePolicy.h"
+#import "ApolloSpelling.h"
 
 NSNotificationName const ApolloCommunityHighlightsDataReadyNotification =
     @"ApolloCommunityHighlightsDataReadyNotification";
@@ -1569,6 +1570,7 @@ static ApolloHLCardView *ApolloHLBuildCard(ApolloHLItem *item) {
 
     // Title — top-aligned, white over an image, label color on a plain card.
     UILabel *title = [[UILabel alloc] init];
+    ApolloSpellingSetViewExcluded(title, YES); // the post's title and flair keep the author's spelling
     title.numberOfLines = 4;
     title.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold];
     title.userInteractionEnabled = NO;
@@ -1599,6 +1601,7 @@ static ApolloHLCardView *ApolloHLBuildCard(ApolloHLItem *item) {
     NSString *flair = ApolloHLStripEmojiTokens(item.flairText);
     if (flair.length) {
         UILabel *metaLabel = [[UILabel alloc] init];
+        ApolloSpellingSetViewExcluded(metaLabel, YES);
         metaLabel.userInteractionEnabled = NO;
         NSMutableDictionary *mattrs = [@{
             NSFontAttributeName: [UIFont systemFontOfSize:11.5 weight:UIFontWeightSemibold],

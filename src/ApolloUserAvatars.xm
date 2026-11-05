@@ -34,6 +34,7 @@
 #import "ApolloSwiftRuntime.h"
 #import "ApolloClasses.h"
 #import "ApolloUserAvatars.h"
+#import "ApolloSpelling.h"
 
 static NSString *const ApolloUserAvatarsToggleChangedNotification = @"ApolloUserAvatarsToggleChangedNotification";
 static NSString *const ApolloProfileLayoutStructureChangedMarker = @"ApolloProfileLayoutStructureChanged";
@@ -607,6 +608,7 @@ static NSString *ApolloProfileSettingsPreviewYearClubTitle(NSTimeInterval create
         // Labels live directly on the header so we can flow `about` full-width
         // below the avatar; keeps the math simple and avoids reparenting.
         _displayNameLabel = [[UILabel alloc] init];
+        ApolloSpellingSetViewExcluded(_displayNameLabel, YES); // the user's own name and bio
         _displayNameLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
         _displayNameLabel.textColor = [UIColor labelColor];
         _displayNameLabel.numberOfLines = 1;
@@ -651,6 +653,7 @@ static NSString *ApolloProfileSettingsPreviewYearClubTitle(NSTimeInterval create
         [self apollo_updateActionButtonColors];
 
         _aboutLabel = [[UILabel alloc] init];
+        ApolloSpellingSetViewExcluded(_aboutLabel, YES);
         _aboutLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
         _aboutLabel.textColor = [UIColor labelColor];
         _aboutLabel.numberOfLines = 0;

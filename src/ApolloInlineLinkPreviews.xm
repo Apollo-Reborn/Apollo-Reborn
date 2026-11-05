@@ -18,6 +18,7 @@
 #import "ApolloSwiftRuntime.h"
 #import "ApolloTranslation.h"
 #import "UserDefaultConstants.h"
+#import "ApolloSpelling.h"
 
 #import <CoreImage/CoreImage.h>
 #import <Foundation/Foundation.h>
@@ -400,6 +401,7 @@ static NSString *ApolloLPNormalizedRedditSubreddit(NSString *subreddit) {
     avatarView.tintColor = [UIColor secondaryLabelColor];
 
     UILabel *titleLabel = [UILabel new];
+    ApolloSpellingSetViewExcluded(titleLabel, YES); // Reddit's display name and bio keep their spelling
     titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     titleLabel.font = [UIFont systemFontOfSize:22.0 weight:UIFontWeightBold];
     titleLabel.textColor = [UIColor labelColor];
@@ -412,6 +414,7 @@ static NSString *ApolloLPNormalizedRedditSubreddit(NSString *subreddit) {
     handleLabel.numberOfLines = 1;
 
     UILabel *bioLabel = [UILabel new];
+    ApolloSpellingSetViewExcluded(bioLabel, YES);
     bioLabel.translatesAutoresizingMaskIntoConstraints = NO;
     bioLabel.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightRegular];
     bioLabel.textColor = [UIColor secondaryLabelColor];
@@ -611,6 +614,7 @@ static NSString *ApolloLPNormalizedRedditSubreddit(NSString *subreddit) {
     avatarView.tintColor = [UIColor secondaryLabelColor];
 
     UILabel *titleLabel = [UILabel new];
+    ApolloSpellingSetViewExcluded(titleLabel, YES); // Reddit's display name and bio keep their spelling
     titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     titleLabel.font = [UIFont systemFontOfSize:22.0 weight:UIFontWeightBold];
     titleLabel.textColor = [UIColor labelColor];
@@ -629,6 +633,7 @@ static NSString *ApolloLPNormalizedRedditSubreddit(NSString *subreddit) {
     memberLabel.numberOfLines = 1;
 
     UILabel *bioLabel = [UILabel new];
+    ApolloSpellingSetViewExcluded(bioLabel, YES);
     bioLabel.translatesAutoresizingMaskIntoConstraints = NO;
     bioLabel.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightRegular];
     bioLabel.textColor = [UIColor secondaryLabelColor];
