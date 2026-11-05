@@ -36,8 +36,7 @@ Every other combination works the same way (`old-dotjson`, `oauth-r-all+bearer`,
 
 | Entry | Routes |
 |---|---|
-| `GET /api/info` | `www-dotjson`, `old` |
-| `GET` and `POST /api/morechildren` | `oauth`, `www-dotjson`, `old` |
+| `GET /api/info`, `GET` and `POST /api/morechildren` | `oauth`, `www-dotjson`, `old` |
 | `GET /search`, `/subreddits/search`, `/r/*/search`, `/r/+/search` | `oauth`, `old` |
 | `GET /r/all`, `GET /r/all/*` | `oauth`, `api`, `old` |
 | `GET /hot`, `/new`, `/rising`, and the same sorts under `/r/*/` and `/r/+/` | `oauth`, `www` |
@@ -49,6 +48,8 @@ Search: www blocks post search for the cookie. `oauth.reddit.com` blocks it for 
 hot, new and rising: since 2026-11-03, www, old and api all answer these sorts with the block page, for the front page (`/hot`), single subreddits and `+` lists, while `best`, `top` and `controversial`, and multireddits under `/user/<name>/m/<multi>/`, still load on www. `oauth` serves them signed in to the cookie. `www` comes second so the feed recovers by itself if Reddit reopens www and closes oauth. These entries name each sort, so they beat a file entry like `/r/+/*` for `/r/a+b/hot`; to move one, name the sort (`GET /r/+/hot`).
 
 `/api/morechildren`: since 2026-11-03, `www-dotjson` and `old` answer it with the block page (with and without the slash before `.json`), while `oauth.reddit.com/api/morechildren.json` serves it, so `oauth` comes first.
+
+`/api/info`: since 2026-11-05, `www-dotjson` and `old` answer it with the block page too, while `oauth.reddit.com/api/info.json` serves it signed in to the cookie, so it has the same routes as `/api/morechildren`. `www-dotjson` and `old` stay after `oauth` in case Reddit reopens them.
 
 ## Format
 
