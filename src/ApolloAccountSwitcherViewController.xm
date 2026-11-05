@@ -407,6 +407,10 @@ static void ApolloSwitcherApplyBarAccent(UINavigationBar *bar) {
 @property (nonatomic, strong, nullable) UISelectionFeedbackGenerator *accountReorderFeedback;
 @property (nonatomic) BOOL duoEditAccentEnabled;
 @property (nonatomic) BOOL duoEditUpdateScheduled;
+// Whether the last safe-area pass cleared the Duo rail (see
+// ApolloIsAccountSheetContent), and whether a re-push is already queued.
+@property (nonatomic, strong, nullable) NSNumber *duoRailClearedApplied;
+@property (nonatomic) BOOL duoRailRefreshScheduled;
 - (BOOL)driveLiveMoveRowFromIndexPath:(NSIndexPath *)fromPath toIndexPath:(NSIndexPath *)toPath;
 - (void)updateDuoEditButton;
 @end
@@ -899,6 +903,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
+    [self refreshDuoRailSafeAreaIfNeeded];
     if (self.navigationController.topViewController != self) return;
 
     // Folding can change this sheet's accent policy while editing. Keep the
@@ -929,6 +934,42 @@ static BOOL ApolloAccountReorderSchedulePersist(
         self.tableView.scrollEnabled =
             self.tableView.contentSize.height > MAX(visibleTableHeight, 0.0) + 0.5;
     }
+}
+
+// The account sheet clears the Duo rail from its safe area below the large
+// detent and keeps it at the large detent (ApolloIsAccountSheetContent), but
+// that choice is only made when UIKit pushes safe areas down the tree. A swipe
+// on the list grows the sheet to full height while the selected detent is
+// still medium, so that push clears the rail; the detent turns large only
+// after the swipe, and the unchanged frame never triggers another push. Rows
+// then run under the status column and their ••• opens the system panel.
+// When the choice flips, have UIKit push the safe areas again.
+- (void)refreshDuoRailSafeAreaIfNeeded {
+    UINavigationController *nav = self.navigationController;
+    if (!nav.viewIfLoaded.window) return;
+    BOOL cleared = ApolloIsAccountSheetContent(nav.view);
+    NSNumber *applied = self.duoRailClearedApplied;
+    self.duoRailClearedApplied = @(cleared);
+    if (!applied || applied.boolValue == cleared || self.duoRailRefreshScheduled) return;
+
+    ApolloLog(@"[AccountSwitcher] Duo rail %@ after a detent change, refreshing safe areas",
+              cleared ? @"cleared" : @"kept");
+    // Safe-area writes drive layout, so make them after this pass.
+    self.duoRailRefreshScheduled = YES;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        typeof(self) owner = weakSelf;
+        owner.duoRailRefreshScheduled = NO;
+        UINavigationController *navigation = owner.navigationController;
+        if (!navigation.viewIfLoaded.window) return;
+        // Changing the extra insets makes UIKit recompute and push this
+        // subtree's safe areas; restoring them leaves the final push exact.
+        UIEdgeInsets extra = navigation.additionalSafeAreaInsets;
+        UIEdgeInsets nudged = extra;
+        nudged.bottom += 1.0;
+        navigation.additionalSafeAreaInsets = nudged;
+        navigation.additionalSafeAreaInsets = extra;
+    });
 }
 
 #pragma mark - UITableViewDataSource
