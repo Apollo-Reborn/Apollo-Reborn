@@ -8,25 +8,158 @@ static int sFailures = 0;
 } while (0)
 
 static void BlockTimes(NSString *account, NSString *path, ApolloWebJSONRoute route, int times, NSTimeInterval at);
+static NSDictionary *ParseJSON(NSString *json, NSArray<NSString *> **rejections);
 
-static NSArray<NSNumber *> *Fallbacks(void) {
-    return @[ @(ApolloWebJSONRouteWwwDotJSON), @(ApolloWebJSONRouteOld) ];
+static NSArray *R(ApolloWebJSONRoute a) { return @[ @(a) ]; }
+static NSArray *R2(ApolloWebJSONRoute a, ApolloWebJSONRoute b) { return @[ @(a), @(b) ]; }
+static NSArray *R3(ApolloWebJSONRoute a, ApolloWebJSONRoute b, ApolloWebJSONRoute c) { return @[ @(a), @(b), @(c) ]; }
+
+// "oauth, old", as ApolloWebJSONRouteRemoteTableDescription writes a list.
+static NSString *Names(NSArray<NSNumber *> *routes) {
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    for (NSNumber *route in routes) [names addObject:ApolloWebJSONRouteName((ApolloWebJSONRoute)route.integerValue)];
+    return [names componentsJoinedByString:@", "];
 }
 
-static void TestTableEndpoints(void) {
-    for (NSString *path in @[ @"api/info.json", @"/api/info.json", @"/api/info", @"/api/info/", @"/api/info/.json",
-                              @"/API/Info.json", @"/api/info.json?id=t1_a" ]) {
-        CHECK([ApolloWebJSONRoutesForRequest(@"GET", path) isEqualToArray:Fallbacks()], @"GET %@ falls back", path);
-        CHECK(ApolloWebJSONRouteRequestMayRetry(@"GET", path), @"GET %@ may retry", path);
+#pragma mark - The built-in table
+
+// The built-in table, and the one place these tests name its routes: changing
+// a route, or adding or removing an entry, only changes BuiltInRoutes,
+// BuiltInExamples and BuiltInNeighbours. The other tests read a built-in route
+// with BuiltIn(), or use endpoints Reddit doesn't have (a "zz" segment, like
+// /r/ios/zzsort or /api/zzfoo), which no built-in entry will ever match, with a
+// keyless-routes.json fixture where they need more than one route.
+static NSDictionary<NSString *, NSArray<NSNumber *> *> *BuiltInRoutes(void) {
+    NSArray *moreChildren = R3(ApolloWebJSONRouteOAuth, ApolloWebJSONRouteWwwDotJSON, ApolloWebJSONRouteOld);
+    NSArray *search = R2(ApolloWebJSONRouteOAuth, ApolloWebJSONRouteOld);
+    NSArray *rAll = R3(ApolloWebJSONRouteOAuth, ApolloWebJSONRouteApi, ApolloWebJSONRouteOld);
+    NSArray *hotNewRising = R2(ApolloWebJSONRouteOAuth, ApolloWebJSONRouteWww);
+    return @{
+        @"GET /api/info": R2(ApolloWebJSONRouteWwwDotJSON, ApolloWebJSONRouteOld),
+        @"GET /api/morechildren": moreChildren,
+        @"POST /api/morechildren": moreChildren,
+        @"GET /search": search,
+        @"GET /subreddits/search": search,
+        @"GET /r/*/search": search,
+        @"GET /r/+/search": search,
+        @"GET /r/all": rAll,
+        @"GET /r/all/*": rAll,
+        @"GET /hot": hotNewRising,
+        @"GET /new": hotNewRising,
+        @"GET /rising": hotNewRising,
+        @"GET /r/*/hot": hotNewRising,
+        @"GET /r/*/new": hotNewRising,
+        @"GET /r/*/rising": hotNewRising,
+        @"GET /r/+/hot": hotNewRising,
+        @"GET /r/+/new": hotNewRising,
+        @"GET /r/+/rising": hotNewRising,
+    };
+}
+
+// A built-in entry's routes, for tests that need the built-in order without
+// naming it.
+static NSArray<NSNumber *> *BuiltIn(NSString *key) {
+    NSArray<NSNumber *> *routes = BuiltInRoutes()[key];
+    CHECK(routes != nil, @"BuiltInRoutes has no %@", key);
+    return routes ?: @[];
+}
+
+// Apollo's front page: GET https://www.reddit.com/r/All/best.json?api_type=json&limit=12&raw_json=1
+// (capital A, and the best sort).
+static NSString *const kApolloAllURL = @"https://www.reddit.com/r/All/best.json?api_type=json&limit=12&raw_json=1";
+
+// Paths each entry covers, written the ways Apollo, RedditKit and the rewrite
+// send them.
+static NSDictionary<NSString *, NSArray<NSString *> *> *BuiltInExamples(void) {
+    NSArray *moreChildren = @[ @"api/morechildren.json", @"/api/morechildren", @"/api/morechildren/.json" ];
+    NSURL *front = [NSURL URLWithString:kApolloAllURL];
+    return @{
+        @"GET /api/info": @[ @"api/info.json", @"/api/info.json", @"/api/info", @"/api/info/", @"/api/info/.json", @"/API/Info.json",
+                             @"/api/info.json?id=t1_a" ],
+        @"GET /api/morechildren": moreChildren,
+        @"POST /api/morechildren": moreChildren,
+        @"GET /search": @[ @"/search", @"search.json", @"/search/.json", @"/search.json?q=apollo&sort=new" ],
+        @"GET /subreddits/search": @[ @"/subreddits/search.json" ],
+        @"GET /r/*/search": @[ @"/r/iOS/search.json", @"/R/Apple/Search" ],
+        @"GET /r/+/search": @[ @"/r/ios+apple/search/", @"/r/apollosideloaded+ApolloReborn+ApolloAppBeta+apolloapp/search.json" ],
+        // r/all's filter forms count as r/all: Exclude Subscriptions sends
+        // r/all-<sub>-<sub>, and www blocks r/all+<sub> too.
+        @"GET /r/all": @[ @"/r/all", @"/r/All.json", @"/r/all/", @"/R/ALL/.json?limit=25", @"/r/all-askreddit" ],
+        @"GET /r/all/*": @[ front.path, [front.path stringByAppendingFormat:@"?%@", front.query], @"r/All/best.json",
+                            @"/r/All/hot.json?after=t3_abc&count=25", @"/r/ALL/top.json?t=week", @"/r/all/new", @"/r/all/rising.json",
+                            @"/r/all/controversial.json?t=day", @"/r/all/gilded.json", @"/r/all/about.json",
+                            @"/r/all/search.json", @"/r/all-askreddit/hot.json", @"/r/all-askreddit-pics/best",
+                            @"/r/All-AskReddit/best.json", @"/r/all+pics/hot.json" ],
+        @"GET /hot": @[ @"/hot.json", @"hot.json?after=t3_abc" ],
+        @"GET /new": @[ @"/new" ],
+        @"GET /rising": @[ @"/rising.json" ],
+        @"GET /r/*/hot": @[ @"/r/apple/hot.json", @"/r/popular/hot.json" ],
+        @"GET /r/*/new": @[ @"r/Apple/new.json?limit=25" ],
+        @"GET /r/*/rising": @[ @"/r/apple/rising/" ],
+        @"GET /r/+/hot": @[ @"/r/apple+ios/hot.json" ],
+        @"GET /r/+/new": @[ @"/r/apple+ios+mac/new" ],
+        @"GET /r/+/rising": @[ @"/r/apple+ios/rising.json" ],
+    };
+}
+
+// Real requests next to the entries that none of them covers, so they stay on
+// www: other methods, near misses and extra segments, the sorts www still
+// serves, multireddits under /user/<name>/m/, and subreddits whose names start
+// with "all".
+static NSArray<NSArray<NSString *> *> *BuiltInNeighbours(void) {
+    NSMutableArray<NSArray<NSString *> *> *requests = [@[
+        @[ @"POST", @"/api/info.json" ], @[ @"DELETE", @"/api/morechildren.json" ], @[ @"POST", @"/search.json" ],
+        @[ @"POST", @"/r/all/hot.json" ], @[ @"PUT", @"/r/All/best.json" ], @[ @"DELETE", @"/r/all" ], @[ @"POST", @"/r/apple/hot.json" ],
+    ] mutableCopy];
+    for (NSString *path in @[ @"/api/information", @"/api/info/extra", @"/r/all/api/info.json", @"/searching", @"/search/extra",
+                              @"/r/ios/search/extra", @"/user/alice/search", @"/user/Alice/m/dev/search.json",
+                              @"/best.json", @"/top.json?t=week", @"/controversial", @"/r/apple/best.json", @"/r/apple/top.json",
+                              @"/r/popular/best.json", @"/r/apple+ios/controversial.json", @"/user/bob/m/dev/hot.json",
+                              @"/user/bob/m/dev/new", @"/r/apple.json", @"/r/popular", @"/r/apple/hot/extra", @"/r/a+/hot",
+                              @"/r/allergies/best.json", @"/r/AllThingsTerran/best.json", @"/r/pics+all/top.json",
+                              @"/r/popular-pics/best.json", @"/r/allx/best", @"/r/all/comments/abc123.json", @"/r/all/hot/extra",
+                              @"/user/all/submitted.json", @"/all/hot.json", @"/comments/abc123.json", @"/", @"" ]) {
+        [requests addObject:@[ @"GET", path ]];
     }
-    CHECK([ApolloWebJSONRoutesForRequest(@"get", @"/api/info.json") isEqualToArray:Fallbacks()], @"method is case-insensitive");
-    for (NSString *method in @[ @"GET", @"POST" ]) {
-        for (NSString *path in @[ @"api/morechildren.json", @"/api/morechildren", @"/api/morechildren/.json" ]) {
-            CHECK([ApolloWebJSONRoutesForRequest(method, path) isEqualToArray:Fallbacks()], @"%@ %@ falls back", method, path);
-            CHECK(ApolloWebJSONRouteRequestMayRetry(method, path), @"%@ %@ may retry", method, path);
+    return requests;
+}
+
+static void TestBuiltInTable(void) {
+    ApolloWebJSONRouteSetRemoteTable(nil);
+    NSDictionary<NSString *, NSArray<NSNumber *> *> *table = BuiltInRoutes();
+    NSDictionary<NSString *, NSArray<NSString *> *> *examples = BuiltInExamples();
+    CHECK([[NSSet setWithArray:examples.allKeys] isEqualToSet:[NSSet setWithArray:table.allKeys]], @"every entry has examples");
+    NSMutableArray<NSString *> *fallbacks = [NSMutableArray array];
+    for (NSString *key in table) {
+        NSArray<NSString *> *parts = [key componentsSeparatedByString:@" "];
+        NSString *method = parts[0], *pattern = parts[1];
+        NSArray<NSNumber *> *routes = table[key];
+        if (routes.count > 1) [fallbacks addObject:key];
+        // A key works as a path, and resolves to its own entry.
+        CHECK([ApolloWebJSONRoutesForRequest(method, pattern) isEqualToArray:routes], @"%@: %@ (got %@)", key, Names(routes),
+              Names(ApolloWebJSONRoutesForRequest(method, pattern)));
+        CHECK([ApolloWebJSONRoutesForRequest(method.lowercaseString, pattern) isEqualToArray:routes], @"%@: method is case-insensitive", key);
+        CHECK(!ApolloWebJSONRouteIsFromRemoteTable(method, pattern), @"%@ is built in", key);
+        for (NSString *path in examples[key]) {
+            NSArray<NSNumber *> *got = ApolloWebJSONRoutesForRequest(method, path);
+            CHECK([got isEqualToArray:routes], @"%@ %@: %@ (got %@)", method, path, Names(routes), Names(got));
+            CHECK([ApolloWebJSONRouteHealthGroup(method, path) isEqualToString:pattern], @"%@ %@ groups under %@ (got %@)", method, path,
+                  pattern, ApolloWebJSONRouteHealthGroup(method, path));
+            CHECK(ApolloWebJSONRouteRequestMayRetry(method, path) == (routes.count > 1), @"%@ %@ may retry when it has another route",
+                  method, path);
         }
     }
+    [fallbacks sortUsingSelector:@selector(compare:)];
+    CHECK([ApolloWebJSONRouteFallbackEndpoints() isEqualToArray:fallbacks], @"fallback endpoints %@ (got %@)", fallbacks,
+          ApolloWebJSONRouteFallbackEndpoints());
+    for (NSArray<NSString *> *r in BuiltInNeighbours()) {
+        CHECK([ApolloWebJSONRoutesForRequest(r[0], r[1]) isEqualToArray:R(ApolloWebJSONRouteWww)], @"%@ %@ stays on www (got %@)", r[0], r[1],
+              Names(ApolloWebJSONRoutesForRequest(r[0], r[1])));
+        CHECK(!ApolloWebJSONRouteRequestMayRetry(r[0], r[1]), @"%@ %@ is never resent", r[0], r[1]);
+    }
 }
+
+#pragma mark - Matching
 
 static NSArray<NSString *> *SearchPaths(void) {
     return @[ @"/search", @"search.json", @"/search/.json", @"/search.json?q=apollo&sort=new", @"/subreddits/search.json",
@@ -34,16 +167,12 @@ static NSArray<NSString *> *SearchPaths(void) {
               @"/r/apollosideloaded+ApolloReborn+ApolloAppBeta+apolloapp/search.json" ];
 }
 
-static void TestSearchEndpoints(void) {
-    NSArray *search = @[ @(ApolloWebJSONRouteOAuth), @(ApolloWebJSONRouteOld) ];
+static void TestSearchRead(void) {
     for (NSString *path in SearchPaths()) {
         CHECK(ApolloWebJSONRequestIsSearchRead(@"GET", path), @"GET %@ is search", path);
         CHECK(ApolloWebJSONRequestIsSearchRead(@"get", path), @"method is case-insensitive for %@", path);
-        CHECK([ApolloWebJSONRoutesForRequest(@"GET", path) isEqualToArray:search], @"GET %@: oauth, then old", path);
-        CHECK(ApolloWebJSONRouteRequestMayRetry(@"GET", path), @"GET %@ may retry", path);
         for (NSString *method in @[ @"POST", @"PUT", @"DELETE", @"HEAD" ]) {
             CHECK(!ApolloWebJSONRequestIsSearchRead(method, path), @"%@ %@ isn't a search read", method, path);
-            CHECK([ApolloWebJSONRoutesForRequest(method, path) isEqualToArray:@[ @(ApolloWebJSONRouteWww) ]], @"%@ %@ stays on www", method, path);
         }
     }
     for (NSString *path in @[ @"/searching", @"/search/extra", @"/r/ios/search/extra", @"/user/alice/search",
@@ -54,30 +183,16 @@ static void TestSearchEndpoints(void) {
     CHECK(!ApolloWebJSONRequestIsSearchRead((NSString *)(id)[NSNull null], @"/search"), @"bad method");
     CHECK(!ApolloWebJSONRequestIsSearchRead(@"GET", (NSString *)(id)@42), @"bad path");
     CHECK([ApolloWebJSONRoutePathPattern(@"/r/iOS/search.json") isEqualToString:@"/r/*/search"], @"community searches group");
-    ApolloWebJSONRouteHealthReset();
-    BlockTimes(@"alice", @"/r/apple/search.json", ApolloWebJSONRouteOAuth, 3, 0);
-    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", @"/r/iOS/search.json", 0, 1) == ApolloWebJSONRouteOld,
-          @"oauth cooling for community search: old");
-    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", @"/search.json", 0, 1) == ApolloWebJSONRouteOAuth,
-          @"global search has its own health");
-    ApolloWebJSONRouteHealthReset();
 }
 
-static void TestEverythingElseStaysOnWww(void) {
-    NSArray *www = @[ @(ApolloWebJSONRouteWww) ];
+static void TestUnmatchedStaysOnWww(void) {
+    NSArray *www = R(ApolloWebJSONRouteWww);
     NSArray<NSArray<NSString *> *> *requests = @[
-        @[ @"POST", @"/api/info.json" ],          // /api/info is a GET-only entry
-        @[ @"DELETE", @"/api/morechildren.json" ],
         @[ @"POST", @"/api/comment" ],            // writes
         @[ @"POST", @"/api/vote" ],
         @[ @"POST", @"/api/editusertext" ],
-        @[ @"GET", @"/api/information" ],         // near misses
-        @[ @"GET", @"/api/info/extra" ],
-        @[ @"GET", @"/r/all/api/info.json" ],
-        @[ @"GET", @"/r/popular/hot.json" ],      // listings
-        @[ @"GET", @"/comments/abc123.json" ],
-        @[ @"GET", @"" ],
-        @[ @"GET", @"/" ],
+        @[ @"GET", @"/api/zzfoo" ],               // no entry
+        @[ @"GET", @"/r/ios/zzsort.json" ],
     ];
     for (NSArray<NSString *> *r in requests) {
         CHECK([ApolloWebJSONRoutesForRequest(r[0], r[1]) isEqualToArray:www], @"%@ %@ stays on www", r[0], r[1]);
@@ -100,14 +215,12 @@ static void TestRouteTransforms(void) {
     CHECK([ApolloWebJSONRouteName(ApolloWebJSONRouteApi) isEqualToString:@"api"], @"api name");
     CHECK([ApolloWebJSONRouteHost(ApolloWebJSONRouteOAuth) isEqualToString:@"oauth.reddit.com"], @"oauth host");
     CHECK([ApolloWebJSONRoutePath(ApolloWebJSONRouteOAuth, @"/r/ios/search.json") isEqualToString:@"/r/ios/search.json"], @"oauth keeps the path");
+    CHECK([ApolloWebJSONRoutePath(ApolloWebJSONRouteOAuth, @"hot.json?after=t3_abc") isEqualToString:@"hot.json?after=t3_abc"],
+          @"oauth keeps a relative path");
     CHECK([ApolloWebJSONRouteName(ApolloWebJSONRouteOAuth) isEqualToString:@"oauth"], @"oauth name");
     CHECK(ApolloWebJSONRouteApi == 3 && ApolloWebJSONRouteOAuth == 4, @"route numbers in URL markers stay put");
     CHECK(ApolloWebJSONRouteOAuthBearer == 5 && ApolloWebJSONRouteWwwRAll == 6 && ApolloWebJSONRouteLast == 14,
           @"routes after the first five keep their numbers too");
-    for (NSArray<NSString *> *builtIn in @[ @[ @"GET", @"/api/info" ], @[ @"GET", @"/api/morechildren" ], @[ @"POST", @"/api/morechildren" ] ]) {
-        CHECK(![ApolloWebJSONRoutesForRequest(builtIn[0], builtIn[1]) containsObject:@(ApolloWebJSONRouteApi)],
-              @"api isn't in the built-in table for %@ %@", builtIn[0], builtIn[1]);
-    }
     CHECK([ApolloWebJSONRouteName(ApolloWebJSONRouteWwwDotJSON) isEqualToString:@"www-dotjson"], @"name");
 }
 
@@ -199,22 +312,26 @@ static void TestCooldownDoublesAndClears(void) {
 
 static void TestChoose(void) {
     ApolloWebJSONRouteHealthReset();
+    ApolloWebJSONRouteSetRemoteTable(ParseJSON(@"{\"version\":1,\"endpoints\":{\"GET /api/zzfoo\":{\"routes\":[\"www-dotjson\",\"old\"]}}}", NULL));
+    NSString *foo = @"/api/zzfoo.json";
     NSInteger dot = ApolloWebJSONRouteWwwDotJSON, old = ApolloWebJSONRouteOld;
-    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", kInfo, 0, 0) == dot, @"healthy: first route");
-    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", kInfo, 1u << dot, 0) == old, @"resend: next route");
-    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", kInfo, (1u << dot) | (1u << old), 0) == -1, @"all tried: none");
-    BlockTimes(@"alice", kInfo, ApolloWebJSONRouteWwwDotJSON, 3, 0);
-    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", kInfo, 0, 1) == old, @"skips a cooling route");
-    CHECK(ApolloWebJSONRouteChoose(@"bob", @"GET", kInfo, 0, 1) == dot, @"another account isn't affected");
-    BlockTimes(@"alice", kInfo, ApolloWebJSONRouteOld, 3, 0);
-    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", kInfo, 0, 1) == dot, @"all cooling, first send: first route anyway");
-    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", kInfo, 1u << dot, 1) == -1, @"all cooling, resend: none");
-    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", kInfo, 0, kHour + 1) == dot, @"cooldown over: first route again");
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", foo, 0, 0) == dot, @"healthy: first route");
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", foo, 1u << dot, 0) == old, @"resend: next route");
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", foo, (1u << dot) | (1u << old), 0) == -1, @"all tried: none");
+    BlockTimes(@"alice", foo, ApolloWebJSONRouteWwwDotJSON, 3, 0);
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", foo, 0, 1) == old, @"skips a cooling route");
+    CHECK(ApolloWebJSONRouteChoose(@"bob", @"GET", foo, 0, 1) == dot, @"another account isn't affected");
+    BlockTimes(@"alice", foo, ApolloWebJSONRouteOld, 3, 0);
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", foo, 0, 1) == dot, @"all cooling, first send: first route anyway");
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", foo, 1u << dot, 1) == -1, @"all cooling, resend: none");
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", foo, 0, kHour + 1) == dot, @"cooldown over: first route again");
     CHECK(ApolloWebJSONRouteChoose(@"alice", @"POST", @"/api/comment", 0, 1) == ApolloWebJSONRouteWww, @"writes: www");
     ApolloWebJSONRouteHealthReset();
     BlockTimes(@"alice", @"/api/comment", ApolloWebJSONRouteWww, 5, 0);
     CHECK(ApolloWebJSONRouteChoose(@"alice", @"POST", @"/api/comment", 0, 1) == ApolloWebJSONRouteWww,
           @"a single-route path is only counted, never skipped");
+    ApolloWebJSONRouteSetRemoteTable(nil);
+    ApolloWebJSONRouteHealthReset();
 }
 
 static void TestPathPatterns(void) {
@@ -377,33 +494,34 @@ static void TestTableParseRejectsFile(void) {
 
 static void TestRemoteTableMerge(void) {
     ApolloWebJSONRouteHealthReset();
-    NSArray *builtIn = @[ @(ApolloWebJSONRouteWwwDotJSON), @(ApolloWebJSONRouteOld) ];
+    ApolloWebJSONRouteSetRemoteTable(nil);
+    // Overrides use routes no built-in entry lists, so they're told apart.
     ApolloWebJSONRouteSetRemoteTable(ParseJSON(@"{\"version\":1,\"endpoints\":{"
-        "\"GET /api/info\":{\"routes\":[\"old\"]},"
-        "\"GET /api/foo\":{\"routes\":[\"www-dotjson\",\"www\"]},"
-        "\"GET /r/*/search\":{\"routes\":[\"old\"]}}}", NULL));
-    CHECK([ApolloWebJSONRoutesForRequest(@"GET", @"api/info.json") isEqualToArray:@[ @(ApolloWebJSONRouteOld) ]], @"override applies");
-    CHECK([ApolloWebJSONRoutesForRequest(@"GET", @"/r/iOS/search.json?q=x") isEqualToArray:@[ @(ApolloWebJSONRouteOld) ]],
+        "\"GET /api/info\":{\"routes\":[\"api-dotjson\"]},"
+        "\"GET /api/zzfoo\":{\"routes\":[\"www-dotjson\",\"www\"]},"
+        "\"GET /r/*/search\":{\"routes\":[\"old-dotjson\"]}}}", NULL));
+    CHECK([ApolloWebJSONRoutesForRequest(@"GET", @"api/info.json") isEqualToArray:R(ApolloWebJSONRouteApiDotJSON)], @"override applies");
+    CHECK([ApolloWebJSONRoutesForRequest(@"GET", @"/r/iOS/search.json?q=x") isEqualToArray:R(ApolloWebJSONRouteOldDotJSON)],
           @"search override applies to every community");
     CHECK(ApolloWebJSONRouteIsFromRemoteTable(@"GET", @"r/apple/search"), @"search override is remote");
-    CHECK([ApolloWebJSONRoutesForRequest(@"GET", @"/r/ios+apple/search.json") isEqualToArray:(@[ @(ApolloWebJSONRouteOAuth), @(ApolloWebJSONRouteOld) ])],
+    CHECK([ApolloWebJSONRoutesForRequest(@"GET", @"/r/ios+apple/search.json") isEqualToArray:BuiltIn(@"GET /r/+/search")],
           @"multireddit search has its own key, /r/+/search");
-    CHECK([ApolloWebJSONRoutesForRequest(@"GET", @"/search.json") isEqualToArray:(@[ @(ApolloWebJSONRouteOAuth), @(ApolloWebJSONRouteOld) ])],
-          @"other search endpoints keep built-in");
-    CHECK([ApolloWebJSONRouteRemoteTableDescription() containsString:@"GET /r/*/search: old (built-in: oauth, old)"],
-          @"%@", ApolloWebJSONRouteRemoteTableDescription());
+    CHECK([ApolloWebJSONRoutesForRequest(@"GET", @"/search.json") isEqualToArray:BuiltIn(@"GET /search")], @"other search endpoints keep built-in");
+    NSString *description = ApolloWebJSONRouteRemoteTableDescription();
+    NSString *searchLine = [NSString stringWithFormat:@"GET /r/*/search: old-dotjson (built-in: %@)", Names(BuiltIn(@"GET /r/*/search"))];
+    NSString *infoLine = [NSString stringWithFormat:@"GET /api/info: api-dotjson (built-in: %@)", Names(BuiltIn(@"GET /api/info"))];
+    CHECK([description containsString:searchLine], @"%@", description);
+    CHECK([description containsString:infoLine], @"%@", description);
+    CHECK([description containsString:@"GET /api/zzfoo: www-dotjson, www (built-in: www)"], @"%@", description);
     CHECK(!ApolloWebJSONRouteRequestMayRetry(@"GET", @"/api/info.json"), @"one route: nothing to retry on");
-    CHECK([ApolloWebJSONRoutesForRequest(@"POST", @"/api/morechildren.json") isEqualToArray:builtIn], @"other entries keep built-in");
-    CHECK(ApolloWebJSONRouteRequestMayRetry(@"GET", @"/api/foo"), @"added GET with two routes may retry");
-    CHECK([ApolloWebJSONRoutePath(ApolloWebJSONRouteWwwDotJSON, @"/api/foo.json") isEqualToString:@"/api/foo/.json"], @"added path");
-    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", @"/api/foo", 0, 0) == ApolloWebJSONRouteWwwDotJSON, @"choose uses it");
-    CHECK([ApolloWebJSONRouteRemoteTableDescription() containsString:@"GET /api/info: old (built-in: www-dotjson, old)"],
-          @"%@", ApolloWebJSONRouteRemoteTableDescription());
-    CHECK([ApolloWebJSONRouteRemoteTableDescription() containsString:@"GET /api/foo: www-dotjson, www (built-in: www)"],
-          @"%@", ApolloWebJSONRouteRemoteTableDescription());
+    CHECK([ApolloWebJSONRoutesForRequest(@"POST", @"/api/morechildren.json") isEqualToArray:BuiltIn(@"POST /api/morechildren")],
+          @"other entries keep built-in");
+    CHECK(ApolloWebJSONRouteRequestMayRetry(@"GET", @"/api/zzfoo"), @"added GET with two routes may retry");
+    CHECK([ApolloWebJSONRoutePath(ApolloWebJSONRouteWwwDotJSON, @"/api/zzfoo.json") isEqualToString:@"/api/zzfoo/.json"], @"added path");
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", @"/api/zzfoo", 0, 0) == ApolloWebJSONRouteWwwDotJSON, @"choose uses it");
     ApolloWebJSONRouteSetRemoteTable(nil);
-    CHECK([ApolloWebJSONRoutesForRequest(@"GET", @"/api/info") isEqualToArray:builtIn], @"cleared: built-in again");
-    CHECK([ApolloWebJSONRoutesForRequest(@"GET", @"/api/foo") isEqualToArray:@[ @(ApolloWebJSONRouteWww) ]], @"cleared: www");
+    CHECK([ApolloWebJSONRoutesForRequest(@"GET", @"/api/info") isEqualToArray:BuiltIn(@"GET /api/info")], @"cleared: built-in again");
+    CHECK([ApolloWebJSONRoutesForRequest(@"GET", @"/api/zzfoo") isEqualToArray:R(ApolloWebJSONRouteWww)], @"cleared: www");
     CHECK([ApolloWebJSONRouteRemoteTableDescription() containsString:@"built-in"], @"empty description");
 }
 
@@ -429,66 +547,63 @@ static void TestHealthSnapshot(void) {
 
 static void TestFallbackEndpoints(void) {
     ApolloWebJSONRouteSetRemoteTable(nil);
-    NSArray *builtIn = @[ @"GET /api/info", @"GET /api/morechildren", @"GET /r/*/search", @"GET /r/+/search", @"GET /r/all",
-                          @"GET /r/all/*", @"GET /search", @"GET /subreddits/search", @"POST /api/morechildren" ];
-    CHECK([ApolloWebJSONRouteFallbackEndpoints() isEqualToArray:builtIn], @"built-in (got %@)", ApolloWebJSONRouteFallbackEndpoints());
-    CHECK(!ApolloWebJSONRouteIsFromRemoteTable(@"GET", @"/api/info.json"), @"not remote");
+    NSArray<NSString *> *builtIn = ApolloWebJSONRouteFallbackEndpoints();   // TestBuiltInTable checks these
+    // Override a built-in entry with one route, so it drops out.
+    NSString *dropped = builtIn.firstObject;
+    NSArray<NSString *> *parts = [dropped componentsSeparatedByString:@" "];
+    CHECK(parts.count == 2 && !ApolloWebJSONRouteIsFromRemoteTable(parts[0], parts[1]), @"%@ isn't remote", dropped);
 
-    ApolloWebJSONRouteSetRemoteTable(ParseJSON(@"{\"version\":1,\"endpoints\":{"
-        "\"GET /api/info\":{\"routes\":[\"old\"]},"
-        "\"GET /api/foo\":{\"routes\":[\"www-dotjson\",\"old\"]},"
-        "\"GET /api/bar\":{\"routes\":[\"www-dotjson\"]}}}", NULL));
-    NSArray *expected = @[ @"GET /api/foo", @"GET /api/morechildren", @"GET /r/*/search", @"GET /r/+/search", @"GET /r/all",
-                           @"GET /r/all/*", @"GET /search", @"GET /subreddits/search", @"POST /api/morechildren" ];
+    NSString *json = [NSString stringWithFormat:@"{\"version\":1,\"endpoints\":{"
+        "\"%@\":{\"routes\":[\"old\"]},"
+        "\"GET /api/zzfoo\":{\"routes\":[\"www-dotjson\",\"old\"]},"
+        "\"GET /api/zzbar\":{\"routes\":[\"www-dotjson\"]}}}", dropped];
+    ApolloWebJSONRouteSetRemoteTable(ParseJSON(json, NULL));
+    NSMutableArray<NSString *> *expected = [builtIn mutableCopy];
+    [expected removeObject:dropped];
+    [expected addObject:@"GET /api/zzfoo"];
+    [expected sortUsingSelector:@selector(compare:)];
     CHECK([ApolloWebJSONRouteFallbackEndpoints() isEqualToArray:expected],
           @"one route has no fallback; added ones with two do (got %@)", ApolloWebJSONRouteFallbackEndpoints());
-    CHECK(ApolloWebJSONRouteIsFromRemoteTable(@"GET", @"/api/info.json"), @"remote");
-    CHECK(ApolloWebJSONRouteIsFromRemoteTable(@"GET", @"api/foo"), @"remote added");
+    CHECK(parts.count == 2 && ApolloWebJSONRouteIsFromRemoteTable(parts[0], parts[1]), @"%@ is remote", dropped);
+    CHECK(ApolloWebJSONRouteIsFromRemoteTable(@"GET", @"api/zzfoo"), @"remote added");
     ApolloWebJSONRouteSetRemoteTable(nil);
 }
 
-
-static NSArray *R(ApolloWebJSONRoute a) { return @[ @(a) ]; }
-static NSArray *R2(ApolloWebJSONRoute a, ApolloWebJSONRoute b) { return @[ @(a), @(b) ]; }
-static NSArray *RAll(void) { return @[ @(ApolloWebJSONRouteOAuth), @(ApolloWebJSONRouteApi), @(ApolloWebJSONRouteOld) ]; }
-
-// Apollo's front page: GET https://www.reddit.com/r/All/best.json?api_type=json&limit=12&raw_json=1
-// (capital A, and the best sort).
-static NSString *const kApolloAllURL = @"https://www.reddit.com/r/All/best.json?api_type=json&limit=12&raw_json=1";
-
-static void TestRAllBuiltIn(void) {
+// r/all's entries take its filter forms, and nothing else that starts with
+// "all": other subreddits, r/popular (its Exclude Subscriptions filters on
+// device, and Reddit reads r/popular-<sub> as a subreddit name), and paths
+// under r/all with more segments.
+static void TestRAllMatching(void) {
     ApolloWebJSONRouteSetRemoteTable(nil);
-    ApolloWebJSONRouteHealthReset();
-    NSArray *all = RAll();
-    NSURL *url = [NSURL URLWithString:kApolloAllURL];
-    for (NSString *path in @[ url.path, [url.path stringByAppendingFormat:@"?%@", url.query], @"r/All/best.json" ]) {
-        CHECK([ApolloWebJSONRoutesForRequest(@"GET", path) isEqualToArray:all], @"Apollo's /r/all request %@: oauth, api, then old", path);
-        CHECK(ApolloWebJSONRouteRequestMayRetry(@"GET", path), @"%@ may retry", path);
-        CHECK([ApolloWebJSONRouteHealthGroup(@"GET", path) isEqualToString:@"/r/all/*"], @"%@ groups under /r/all/*", path);
+    for (NSString *path in @[ @"/r/allergies/best.json", @"/r/AllThingsTerran/best.json", @"/r/pics+all/top.json",
+                              @"/r/popular/best.json", @"/r/popular-pics/best.json", @"/r/allx-foo/best.json", @"/r/allx/best",
+                              @"/r/all/comments/abc123.json", @"/r/all/hot/extra", @"/user/all/submitted.json", @"/all/hot.json" ]) {
+        CHECK(![ApolloWebJSONRouteHealthGroup(@"GET", path) hasPrefix:@"/r/all"], @"%@ isn't r/all (got %@)", path,
+              ApolloWebJSONRouteHealthGroup(@"GET", path));
     }
-    for (NSString *sort in @[ @"best", @"hot", @"new", @"top", @"rising", @"controversial", @"gilded" ]) {
-        NSString *path = [NSString stringWithFormat:@"/r/all/%@.json?t=week&after=t3_x", sort];
-        CHECK([ApolloWebJSONRoutesForRequest(@"GET", path) isEqualToArray:all], @"/r/all/%@", sort);
-    }
-    for (NSString *path in @[ @"/r/all", @"/r/All.json", @"/r/all/", @"/R/ALL/.json?limit=25" ]) {
-        CHECK([ApolloWebJSONRoutesForRequest(@"GET", path) isEqualToArray:all], @"bare %@", path);
-        CHECK([ApolloWebJSONRouteHealthGroup(@"GET", path) isEqualToString:@"/r/all"], @"bare %@ has its own group", path);
-    }
-    for (NSString *path in @[ @"/r/popular/best.json", @"/r/popular", @"/r/apple/best.json", @"/r/apple+ios/best.json",
-                              @"/r/allx/best", @"/r/all/comments/abc/slug", @"/best.json" ]) {
-        CHECK([ApolloWebJSONRoutesForRequest(@"GET", path) isEqualToArray:R(ApolloWebJSONRouteWww)], @"%@ stays on www", path);
-    }
-    for (NSString *method in @[ @"POST", @"PUT", @"DELETE" ]) {
-        CHECK([ApolloWebJSONRoutesForRequest(method, url.path) isEqualToArray:R(ApolloWebJSONRouteWww)], @"%@ /r/all stays on www", method);
-        CHECK(!ApolloWebJSONRouteRequestMayRetry(method, url.path), @"%@ /r/all is never resent", method);
-    }
-    CHECK(!ApolloWebJSONRequestIsSearchRead(@"GET", url.path), @"/r/all isn't search");
+    CHECK(!ApolloWebJSONRequestIsSearchRead(@"GET", [NSURL URLWithString:kApolloAllURL].path), @"/r/all isn't search");
     // /r/all/search matches both /r/all/* and /r/*/search; the literal "all"
-    // comes first, so /r/all/* wins. Both list the same routes.
+    // comes first, so /r/all/* wins.
     CHECK([ApolloWebJSONRouteHealthGroup(@"GET", @"/r/all/search.json") isEqualToString:@"/r/all/*"], @"left to right");
-    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", url.path, 0, 0) == ApolloWebJSONRouteOAuth, @"first: oauth");
-    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", url.path, 1u << ApolloWebJSONRouteOAuth, 0) == ApolloWebJSONRouteApi,
-          @"resend after oauth's block page: api");
+
+    // The sorts and filter forms share their health: three block pages on any
+    // of them cool the route for all of them.
+    ApolloWebJSONRouteHealthReset();
+    ApolloWebJSONRouteHealthNoteBlockPage(@"alice", @"GET", @"/r/all/hot.json", ApolloWebJSONRouteOAuth, 0);
+    ApolloWebJSONRouteHealthNoteBlockPage(@"alice", @"GET", @"/r/All/new.json", ApolloWebJSONRouteOAuth, 0);
+    CHECK(ApolloWebJSONRouteHealthNoteBlockPage(@"alice", @"GET", @"/r/all-askreddit/top.json", ApolloWebJSONRouteOAuth, 0),
+          @"3rd block");
+    CHECK(ApolloWebJSONRouteCooldownRemaining(@"alice", @"GET", @"r/All/best.json", ApolloWebJSONRouteOAuth, 1) > 0, @"another sort cools too");
+    CHECK(ApolloWebJSONRouteCooldownRemaining(@"bob", @"GET", @"r/All/best.json", ApolloWebJSONRouteOAuth, 1) == 0, @"per account");
+    CHECK(ApolloWebJSONRouteCooldownRemaining(@"alice", @"GET", @"/r/popular/best.json", ApolloWebJSONRouteOAuth, 1) == 0, @"r/popular");
+    ApolloWebJSONRouteHealthReset();
+
+    // keyless-routes.json can reorder r/all, but not split off its filter form.
+    NSArray<NSString *> *rejections = nil;
+    NSDictionary *table = ParseJSON(@"{\"version\":1,\"endpoints\":{\"GET /r/all\":{\"routes\":[\"old\",\"oauth\"]},"
+        "\"GET /r/all-askreddit/*\":{\"routes\":[\"old\"]},\"GET /r/all+pics/*\":{\"routes\":[\"old\"]}}}", &rejections);
+    CHECK([table[@"GET /r/all"] isEqualToArray:R2(ApolloWebJSONRouteOld, ApolloWebJSONRouteOAuth)] && table.count == 1 &&
+          rejections.count == 2, @"GET /r/all is a key, its filter forms aren't (got %@, rejected %@)", table, rejections);
 }
 
 static void TestPatternGrammar(void) {
@@ -504,27 +619,26 @@ static void TestPatternGrammar(void) {
     NSArray *www = R(ApolloWebJSONRouteWww), *old = R(ApolloWebJSONRouteOld);
     NSDictionary<NSString *, NSArray *> *cases = @{
         kApolloAllURL: R2(ApolloWebJSONRouteWwwDotJSON, ApolloWebJSONRouteOld),   // a literal beats built-in /r/all/*
-        @"/r/all/top.json": RAll(),                                               // built-in /r/all/*
+        @"/r/all/top.json": BuiltIn(@"GET /r/all/*"),                            // built-in /r/all/*
         @"/r/all-askreddit/best.json": R2(ApolloWebJSONRouteWwwDotJSON, ApolloWebJSONRouteOld),   // filter form is r/all
-        @"/r/all": RAll(),                                                        // built-in /r/all
+        @"/r/all": BuiltIn(@"GET /r/all"),                                       // built-in /r/all
         @"/r/apple/hot.json": old,
         @"/r/Apple/new": old,
         @"/r/apple/search.json": old,             // /r/apple/* beats /r/*/search: "apple" is a literal
-        @"/r/apple+ios/hot.json": R(ApolloWebJSONRouteOAuth),    // "+" is a joined list, not /r/apple/*
-        @"/r/apple+ios+mac/top": R(ApolloWebJSONRouteOAuth),
-        @"/r/apple+ios/search": R2(ApolloWebJSONRouteOAuth, ApolloWebJSONRouteOld),   // /r/+/search beats /r/+/*
-        @"/r/a+/hot": www,                        // not a list of two names
-        @"/r/+b/hot": www,
-        @"/r/a++b/hot": www,
-        @"/r/ios/hot": www,
-        @"/r/popular/best": www,
+        @"/r/apple+ios/zzsort.json": R(ApolloWebJSONRouteOAuth), // "+" is a joined list, not /r/apple/*
+        @"/r/apple+ios+mac/zzsort": R(ApolloWebJSONRouteOAuth),
+        @"/r/apple+ios/search": BuiltIn(@"GET /r/+/search"),   // /r/+/search beats /r/+/*
+        @"/r/a+/zzsort": www,                     // not a list of two names
+        @"/r/+b/zzsort": www,
+        @"/r/a++b/zzsort": www,
+        @"/r/ios/zzsort": www,
         @"/user/Bob/submitted.json": R2(ApolloWebJSONRouteOld, ApolloWebJSONRouteWww),
-        @"/user/bob/comments": www,
+        @"/user/bob/zzpage": www,
         @"/user/bob/submitted/extra": www,        // segment count must match
         @"/comments/abc123.json": R2(ApolloWebJSONRouteOld, ApolloWebJSONRouteWww),
         @"/comments/abc123/slug": www,
         @"/message/inbox.json?mark=true": old,
-        @"/message/unread": www,
+        @"/message/zzbox": www,
         @"api/v1/me.json": R2(ApolloWebJSONRouteWwwRAll, ApolloWebJSONRouteWww),
     };
     for (NSString *path in cases) {
@@ -536,10 +650,10 @@ static void TestPatternGrammar(void) {
         @"/r/All/best.json": @"/r/all/best",
         @"/r/all/hot": @"/r/all/*",
         @"/r/apple/hot": @"/r/apple/*",
-        @"/r/apple+ios/hot": @"/r/+/*",
-        @"/r/ios/hot": @"/r/*/hot",               // no entry: the path pattern
-        @"/r/ios+mac/new": @"/r/+/*",
-        @"/user/bob/comments": @"/user/*/comments",
+        @"/r/apple+ios/zzsort": @"/r/+/*",
+        @"/r/ios/zzsort": @"/r/*/zzsort",         // no entry: the path pattern
+        @"/r/ios+mac/zzsort": @"/r/+/*",
+        @"/user/bob/zzpage": @"/user/*/zzpage",
         @"/user/Bob/submitted": @"/user/*/submitted",
     };
     for (NSString *path in groups) {
@@ -547,10 +661,10 @@ static void TestPatternGrammar(void) {
               ApolloWebJSONRouteHealthGroup(@"GET", path));
     }
     CHECK([ApolloWebJSONRoutesForRequest(@"POST", @"/r/apple/hot") isEqualToArray:www], @"entries are per method");
-    CHECK(ApolloWebJSONRouteIsFromRemoteTable(@"GET", @"/r/apple+ios/hot"), @"remote");
+    CHECK(ApolloWebJSONRouteIsFromRemoteTable(@"GET", @"/r/apple+ios/zzsort"), @"remote");
     CHECK(!ApolloWebJSONRouteIsFromRemoteTable(@"GET", @"/r/all/hot"), @"built-in");
-    CHECK([ApolloWebJSONRouteRemoteTableDescription() containsString:@"GET /r/all/best: www-dotjson, old (built-in: oauth, api, old)"],
-          @"%@", ApolloWebJSONRouteRemoteTableDescription());
+    NSString *bestLine = [NSString stringWithFormat:@"GET /r/all/best: www-dotjson, old (built-in: %@)", Names(BuiltIn(@"GET /r/all/*"))];
+    CHECK([ApolloWebJSONRouteRemoteTableDescription() containsString:bestLine], @"%@", ApolloWebJSONRouteRemoteTableDescription());
     CHECK([ApolloWebJSONRouteRemoteTableDescription() containsString:@"GET /r/apple/*: old (built-in: www)"],
           @"%@", ApolloWebJSONRouteRemoteTableDescription());
     // A fallback key resolves to its own entry when used as a path.
@@ -638,7 +752,7 @@ static void TestBearerRoutes(void) {
     BlockTimes(@"alice", all, ApolloWebJSONRouteOAuthBearer, 3, 0);
     CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", all, 0, 1) == ApolloWebJSONRouteOld, @"bearer route cooling");
     [asked removeAllObjects];
-    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", @"/r/popular/best", 0, 0) == ApolloWebJSONRouteWww && asked.count == 0,
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", @"/r/popular/zzsort", 0, 0) == ApolloWebJSONRouteWww && asked.count == 0,
           @"requests without a bearer route never ask");
     ApolloWebJSONRouteSetRemoteTable(nil);
     CHECK(!ApolloWebJSONRouteTableUsesBearerAuth(), @"cleared");
@@ -653,70 +767,10 @@ static void TestRepositoryFile(const char *repoRoot) {
     CHECK(table != nil && rejections.count == 0, @"keyless-routes.json parses cleanly (rejected %@)", rejections);
 }
 
-static void TestAllListings(void) {
-    ApolloWebJSONRouteSetRemoteTable(nil);
-    NSArray *allRoutes = RAll();
-    // Every sort and filter form, written the ways RedditKit and the rewrite do.
-    // Exclude Subscriptions sends r/all-<sub>-<sub>; www blocks r/all+<sub> too.
-    for (NSString *path in @[ @"r/All/best.json", @"/r/all", @"/r/all.json", @"/r/all/", @"/r/All/hot.json?after=t3_abc&count=25",
-                              @"/r/ALL/top.json?t=week", @"/r/all/new", @"/r/all/rising.json", @"/r/all/controversial.json?t=day",
-                              @"/r/all-askreddit/hot.json", @"/r/all-askreddit-pics/best", @"/r/All-AskReddit/best.json",
-                              @"/r/all+pics/hot.json", @"/r/all-askreddit", @"/r/all/about.json", @"/r/all/gilded.json" ]) {
-        CHECK([ApolloWebJSONRoutesForRequest(@"GET", path) isEqualToArray:allRoutes], @"GET %@: oauth, api, then old", path);
-        CHECK(ApolloWebJSONRouteRequestMayRetry(@"GET", path), @"GET %@ may retry", path);
-        CHECK([ApolloWebJSONRouteHealthGroup(@"GET", path) hasPrefix:@"/r/all"], @"%@ groups under r/all (got %@)", path,
-              ApolloWebJSONRouteHealthGroup(@"GET", path));
-        CHECK([ApolloWebJSONRoutePath(ApolloWebJSONRouteApi, path) isEqualToString:path], @"api keeps %@", path);
-    }
-    CHECK([ApolloWebJSONRoutesForRequest(@"get", @"/r/all/hot.json") isEqualToArray:allRoutes], @"method is case-insensitive");
-    CHECK([ApolloWebJSONRouteHealthGroup(@"GET", @"/r/all-askreddit/best.json") isEqualToString:@"/r/all/*"], @"filter form, sorted");
-    CHECK([ApolloWebJSONRouteHealthGroup(@"GET", @"/r/all-askreddit") isEqualToString:@"/r/all"], @"filter form, bare");
-
-    // Other subreddits, r/popular (its Exclude Subscriptions filters on device,
-    // and Reddit reads r/popular-<sub> as a subreddit name), and paths under
-    // r/all with more segments.
-    NSArray *www = R(ApolloWebJSONRouteWww);
-    for (NSString *path in @[ @"/r/allergies/hot.json", @"/r/AllThingsTerran/best.json", @"/r/pics+all/hot.json",
-                              @"/r/popular/best.json", @"/r/popular-pics/best.json", @"/r/allx-foo/hot.json",
-                              @"/r/all/comments/abc123.json", @"/r/all/hot/extra", @"/user/all/submitted.json", @"/all/hot.json" ]) {
-        CHECK([ApolloWebJSONRoutesForRequest(@"GET", path) isEqualToArray:www], @"GET %@ stays on www", path);
-        CHECK(![ApolloWebJSONRouteHealthGroup(@"GET", path) hasPrefix:@"/r/all"], @"%@ isn't r/all", path);
-    }
-    // Search under r/all goes by r/all's entry, which also starts with oauth.
-    CHECK([ApolloWebJSONRoutesForRequest(@"GET", @"/r/all/search.json") isEqualToArray:allRoutes], @"r/all search");
-    for (NSString *method in @[ @"POST", @"PUT", @"DELETE" ]) {
-        CHECK([ApolloWebJSONRoutesForRequest(method, @"/r/all/hot.json") isEqualToArray:www], @"%@ stays on www", method);
-        CHECK(!ApolloWebJSONRouteRequestMayRetry(method, @"/r/all/hot.json"), @"%@ is never resent", method);
-    }
-
-    // The sorts and filter forms share their health: three block pages on any
-    // of them send all of them past oauth for the hour.
-    ApolloWebJSONRouteHealthReset();
-    NSInteger oauth = ApolloWebJSONRouteOAuth, api = ApolloWebJSONRouteApi, old = ApolloWebJSONRouteOld;
-    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", @"r/All/best.json", 0, 0) == oauth, @"healthy: oauth");
-    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", @"r/All/best.json", 1u << oauth, 0) == api, @"resend: api");
-    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", @"r/All/best.json", (1u << oauth) | (1u << api), 0) == old, @"then old");
-    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", @"r/All/best.json", (1u << oauth) | (1u << api) | (1u << old), 0) == -1,
-          @"all tried");
-    ApolloWebJSONRouteHealthNoteBlockPage(@"alice", @"GET", @"/r/all/hot.json", ApolloWebJSONRouteOAuth, 0);
-    ApolloWebJSONRouteHealthNoteBlockPage(@"alice", @"GET", @"/r/All/new.json", ApolloWebJSONRouteOAuth, 0);
-    CHECK(ApolloWebJSONRouteHealthNoteBlockPage(@"alice", @"GET", @"/r/all-askreddit/top.json", ApolloWebJSONRouteOAuth, 0),
-          @"3rd block");
-    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", @"r/All/best.json", 0, 1) == api, @"another sort skips oauth too");
-    CHECK(ApolloWebJSONRouteChoose(@"bob", @"GET", @"r/All/best.json", 0, 1) == oauth, @"per account");
-    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", @"/r/popular/best.json", 0, 1) == ApolloWebJSONRouteWww, @"r/popular");
-    ApolloWebJSONRouteHealthReset();
-
-    // keyless-routes.json can reorder r/all, but not split off its filter form.
-    NSArray<NSString *> *rejections = nil;
-    NSDictionary *table = ParseJSON(@"{\"version\":1,\"endpoints\":{\"GET /r/all\":{\"routes\":[\"old\",\"oauth\"]},"
-        "\"GET /r/all-askreddit/*\":{\"routes\":[\"old\"]},\"GET /r/all+pics/*\":{\"routes\":[\"old\"]}}}", &rejections);
-    CHECK([table[@"GET /r/all"] isEqualToArray:R2(ApolloWebJSONRouteOld, ApolloWebJSONRouteOAuth)] && table.count == 1 &&
-          rejections.count == 2, @"GET /r/all is a key, its filter forms aren't (got %@, rejected %@)", table, rejections);
-}
 
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
+        TestBuiltInTable();
         TestTableParseValid();
         TestTableParseRejectsEntries();
         TestTableParseRejectsFile();
@@ -724,9 +778,8 @@ int main(int argc, const char *argv[]) {
         TestHealthSnapshot();
         TestFallbackEndpoints();
         if (argc > 1) TestRepositoryFile(argv[1]);
-        TestTableEndpoints();
-        TestSearchEndpoints();
-        TestEverythingElseStaysOnWww();
+        TestSearchRead();
+        TestUnmatchedStaysOnWww();
         TestRouteTransforms();
         TestBlockPage();
         TestSignInGate();
@@ -734,9 +787,8 @@ int main(int argc, const char *argv[]) {
         TestCooldownDoublesAndClears();
         TestChoose();
         TestPathPatterns();
-        TestAllListings();
         TestDescription();
-        TestRAllBuiltIn();
+        TestRAllMatching();
         TestPatternGrammar();
         TestMatchedEntryHealth();
         TestRouteParts();
