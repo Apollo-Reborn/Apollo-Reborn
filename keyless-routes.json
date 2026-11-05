@@ -10,6 +10,7 @@
     "GET /r/+/hot": { "routes": ["oauth", "www"] },
     "GET /r/+/new": { "routes": ["oauth", "www"] },
     "GET /r/+/rising": { "routes": ["oauth", "www"] },
+    "GET /api/info": { "routes": ["oauth", "www-dotjson", "old"] },
     "GET /api/morechildren": { "routes": ["oauth", "www-dotjson", "old"] },
     "POST /api/morechildren": { "routes": ["oauth", "www-dotjson", "old"] }
   }
