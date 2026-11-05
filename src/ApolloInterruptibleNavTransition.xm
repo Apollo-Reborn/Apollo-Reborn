@@ -327,8 +327,18 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
                                                               curve:UIViewAnimationCurveLinear
                                                          animations:nil];
     } else {
+        // Same velocity on both axes, as Apollo's own scalar initialSpringVelocity: 4.0 gives.
+        // An unequal vector (it used to be (4.0, 0.0)) makes UIKit split every position change
+        // in this animator into separate X and Y springs (-[UIViewPropertyAnimator
+        // _generatePointValueSpringAnimationsForKeyPath:] is YES only when dx != dy, iOS 26.2 and
+        // 27.1). That path then asks the pending animation for its spring stiffness, assuming it
+        // is a CASpringAnimation. When the navigation bar's crossfade animates its background
+        // inside this animator with its own non-spring animation, the message goes to a plain
+        // CABasicAnimation and UIKit aborts with an unrecognized selector (#1642, Settings ->
+        // General under LiveContainer on the iPhone Duo). UIKit's own transitions never take
+        // that path, and with equal components neither does this one.
         UISpringTimingParameters *spring =
-            [[UISpringTimingParameters alloc] initWithDampingRatio:1.0 initialVelocity:CGVectorMake(4.0, 0.0)];
+            [[UISpringTimingParameters alloc] initWithDampingRatio:1.0 initialVelocity:CGVectorMake(4.0, 4.0)];
         animator = [[UIViewPropertyAnimator alloc] initWithDuration:duration timingParameters:spring];
     }
 
