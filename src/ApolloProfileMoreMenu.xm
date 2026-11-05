@@ -23,10 +23,13 @@
 //                                   reddit.com/user/<name> URL, mirroring the
 //                                   Share row on other people's menus
 //
-// The button is a plain UIBarButtonItem with a UIMenu (iOS 14+), which renders
-// as the same pull-down Apollo's converted "..." menus use on Liquid Glass and
-// as a standard pull-down on the legacy chrome — no ActionController involved,
-// since this menu is entirely ours.
+// On Liquid Glass the button is a plain UIBarButtonItem with a UIMenu, which
+// renders as the same pull-down Apollo's converted "..." menus use there. The
+// standard build's "..." menus are Apollo's own bottom ActionController sheets,
+// so there the button calls Apollo's moreOptionsBarButtonItemTappedWithSender:
+// and the sheet Apollo builds has its rows replaced with ours (see
+// ApolloProfileMoreMenuPreparePresentation) — Apollo's real cells, icons,
+// presentation and Cancel button, just our actions.
 //
 // This module is also the single owner of a profile screen's right-bar
 // LAYOUT (see ApolloProfileMoreMenuNormalize): Apollo rewrites a pushed
@@ -53,16 +56,24 @@
 #import <objc/runtime.h>
 
 #import "ApolloAccountCredentials.h"
+#import "ApolloActionMenu.h"
+#import "ApolloClasses.h"
 #import "ApolloCommon.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloGalleryViewController.h"
 #import "ApolloProfileEditorWebViewController.h"
+#import "ApolloProfileMoreMenu.h"
 
 // Defined in ApolloUserAvatars.xm.
 extern NSString *ApolloUsernameFromProfileViewController(UIViewController *viewController);
+// ApolloSwiftIvarBridge.swift: ARC-safe Optional<String> assignment.
+extern "C" void ApolloSwiftAssignOptionalString(void *storage, const char *utf8Value);
 
 // Our bar button, associated to the profile view controller that owns it.
 static char kApolloProfileMoreMenuItemKey;
+// The own profile whose "..." tap is synchronously building Apollo's sheet.
+// Scoped to that one call so no other ActionController is ever touched.
+static __weak UIViewController *sApolloProfileMoreMenuBuildingOwner;
 // Set on a profile view controller's UINavigationItem: an NSHashTable holding
 // the view controller weakly, so the setter hooks below can find their way
 // back without retaining it.
@@ -177,6 +188,56 @@ UIMenu *ApolloProfileMoreMenuForController(UIViewController *viewController) {
     return [UIMenu menuWithTitle:@"" children:@[gallerySection, actionsSection]];
 }
 
+#pragma mark - Standard-build sheet
+
+// Standard build: keep Apollo's real ActionController (row styling,
+// presentation controller, Cancel button) and only replace this own-profile
+// sheet's visible rows. The Liquid Glass menu above stays independent.
+static NSArray<ApolloActionMenuSpec *> *ApolloProfileMoreMenuSheetRows(UIViewController *viewController) {
+    __weak UIViewController *weakVC = viewController;
+    NSMutableArray<ApolloActionMenuSpec *> *rows = [NSMutableArray array];
+    void (^addRow)(NSString *, NSString *, NSString *, void (^)(UIViewController *)) =
+        ^(NSString *identifier, NSString *title, NSString *symbol, void (^perform)(UIViewController *)) {
+        ApolloActionMenuSpec *row = [ApolloActionMenuSpec new];
+        row.identifier = identifier;
+        row.title = ^NSString *(__unused id controller, __unused UITableViewCell *donor) { return title; };
+        row.image = ^UIImage *(__unused id controller, __unused UITableViewCell *donor) {
+            return ApolloActionMenuSymbolIcon(symbol);
+        };
+        row.legacyDismissesSheet = YES;
+        row.perform = ^(__unused id controller) {
+            UIViewController *vc = weakVC;
+            if (vc.viewIfLoaded.window) perform(vc);
+        };
+        [rows addObject:row];
+    };
+    addRow(@"own-profile-gallery", @"Gallery View", @"square.grid.2x2", ^(UIViewController *vc) {
+        ApolloProfileMoreMenuOpenGallery(vc);
+    });
+    addRow(@"own-profile-edit", @"Edit Profile", @"pencil", ^(UIViewController *vc) {
+        ApolloProfileEditorOpenFromViewController(vc);
+    });
+    addRow(@"own-profile-share", @"Share Profile", @"square.and.arrow.up", ^(UIViewController *vc) {
+        ApolloProfileMoreMenuShare(vc);
+    });
+    return rows;
+}
+
+// Called from ApolloNativeActionMenus.xm's presentation hooks. Apollo presents
+// profile sheets from the navigation controller, so match either presenter.
+BOOL ApolloProfileMoreMenuPreparePresentation(UIViewController *presenter, UIViewController *controller) {
+    if (IsLiquidGlass()) return YES;
+    UIViewController *owner = sApolloProfileMoreMenuBuildingOwner;
+    if (!owner || (presenter != owner && presenter != owner.navigationController) ||
+        ![controller isKindOfClass:ApolloClassActionController]) return YES;
+    if (!ApolloActionMenuSetLegacyReplacementRows(controller, ApolloProfileMoreMenuSheetRows(owner))) {
+        ApolloLogError(@"[ProfileMoreMenu] Could not prepare own-profile action sheet");
+        return NO;
+    }
+    ApolloLog(@"[ProfileMoreMenu] Presenting Apollo's own-profile action sheet");
+    return YES;
+}
+
 #pragma mark - Nav-item normalization
 
 // The single owner of a profile screen's rightBarButtonItems layout. Takes
@@ -230,15 +291,20 @@ static void ApolloProfileMoreMenuNormalize(UIViewController *viewController) {
             // the "..." on other profiles, on both the glass and legacy
             // chromes.
             UIImage *image = apolloItem.image ?: [UIImage systemImageNamed:@"ellipsis"];
-            ours = [[UIBarButtonItem alloc] initWithImage:image menu:nil];
-            ours.accessibilityLabel = @"More Options";
             // Built once for the button's lifetime: every handler re-resolves
             // its username (and view controller) at tap time, so there is
             // nothing account- or state-dependent baked in that a later pass
             // would need to refresh — and never reassigning .menu means a
             // normalize can't collapse or re-render the pull-down while the
             // user has it open.
-            ours.menu = ApolloProfileMoreMenuForController(viewController);
+            if (IsLiquidGlass()) {
+                ours = [[UIBarButtonItem alloc] initWithImage:image menu:nil];
+                ours.menu = ApolloProfileMoreMenuForController(viewController);
+            } else {
+                ours = [[UIBarButtonItem alloc] initWithImage:image style:UIBarButtonItemStylePlain
+                    target:viewController action:@selector(moreOptionsBarButtonItemTappedWithSender:)];
+            }
+            ours.accessibilityLabel = @"More Options";
             objc_setAssociatedObject(viewController, &kApolloProfileMoreMenuItemKey, ours,
                                      OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             ApolloLog(@"[ProfileMoreMenu] Built own-profile '...' for u/%@ (glyph=%@)",
@@ -301,6 +367,48 @@ static void ApolloProfileMoreMenuNavigationItemChanged(UINavigationItem *navigat
 #pragma mark - Hooks
 
 %hook _TtC6Apollo21ProfileViewController
+
+// Standard build, own profile: let Apollo build its real sheet, and mark this
+// controller as the owner so the presentation hook swaps in our rows.
+- (void)moreOptionsBarButtonItemTappedWithSender:(id)sender {
+    UIViewController *viewController = (UIViewController *)self;
+    UIBarButtonItem *ours = objc_getAssociatedObject(viewController, &kApolloProfileMoreMenuItemKey);
+    if (IsLiquidGlass() || !ours || sender != ours) {
+        %orig;
+        return;
+    }
+    void *signedInTypeStorage = NULL;
+    BOOL tabRoot = viewController.navigationController.viewControllers.firstObject == viewController;
+    if (tabRoot) {
+        // Apollo 1.15.11's sheet builder (0x1007bc048) reads profileType's two
+        // String words and returns early when word 1 is nil (.signedInUser),
+        // so the account tab would get no sheet. The class metadata declares a
+        // 16-byte enum, with hasVotesPublic next. Supply the live username only
+        // for this synchronous build, via Swift assignment for ownership, then
+        // restore .signedInUser.
+        ptrdiff_t offset = ApolloIvarOffset(object_getClass(self), "profileType");
+        ptrdiff_t next = ApolloIvarOffset(object_getClass(self), "hasVotesPublic");
+        if (offset < 0 || next != offset + 16 ||
+            (size_t)next > class_getInstanceSize(object_getClass(self))) {
+            ApolloLogError(@"[ProfileMoreMenu] Unrecognized account profile type layout");
+            return;
+        }
+        uint64_t *words = (uint64_t *)((uint8_t *)(__bridge void *)self + offset);
+        // Apollo checks only the second word for nil.
+        if (words[1] == 0) signedInTypeStorage = words;
+    }
+    NSString *active = ApolloActiveAccountUsername();
+    if (signedInTypeStorage && active.length == 0) return;
+    UIViewController *previousOwner = sApolloProfileMoreMenuBuildingOwner;
+    sApolloProfileMoreMenuBuildingOwner = viewController;
+    @try {
+        if (signedInTypeStorage) ApolloSwiftAssignOptionalString(signedInTypeStorage, active.UTF8String);
+        %orig;
+    } @finally {
+        if (signedInTypeStorage) ApolloSwiftAssignOptionalString(signedInTypeStorage, NULL);
+        sApolloProfileMoreMenuBuildingOwner = previousOwner;
+    }
+}
 
 - (void)viewDidLoad {
     %orig;

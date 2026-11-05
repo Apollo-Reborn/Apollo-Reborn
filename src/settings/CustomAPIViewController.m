@@ -1201,7 +1201,7 @@ typedef NS_ENUM(NSInteger, Tag) {
                                          push:(UIViewController * (^)(void))makeVC {
     __weak typeof(self) weakSelf = self;
     NSString *reuseID = [@"Cell_Hub_" stringByAppendingString:rowID];
-    return [ApolloSettingsRow customRowWithID:rowID
+    ApolloSettingsRow *navigationRow = [ApolloSettingsRow customRowWithID:rowID
                                          cell:^UITableViewCell *(UITableView *tableView, __unused ApolloSettingsRow *row) {
         UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:reuseID];
         if (!cell) {
@@ -1228,6 +1228,17 @@ typedef NS_ENUM(NSInteger, Tag) {
             [weakSelf presentViewController:navigation animated:YES completion:nil];
         }
     }];
+    if (!IsLiquidGlass() && !subtitle) {
+        // UIKit self-sizes these multiline-label navigation cells to 52pt
+        // even when their title fits one line. Match classic native rows,
+        // measuring the title so larger text can still grow instead of clip.
+        __weak ApolloSettingsRow *weakRow = navigationRow;
+        navigationRow.height = ^CGFloat {
+            return ApolloSettingsClassicRowHeight(weakSelf.tableView, title, nil,
+                                                  weakRow.iconSystemName != nil, 24.0);
+        };
+    }
+    return navigationRow;
 }
 
 // Compact disclosure row for settings hubs where the current value belongs on
@@ -1427,6 +1438,15 @@ typedef NS_ENUM(NSInteger, Tag) {
     backup.configure = ^(UITableViewCell *cell) {
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     };
+    if (!IsLiquidGlass()) {
+        // This configure block only adds a chevron; it does not need the
+        // automatic sizing reserved for custom cell layouts in the form.
+        __weak ApolloSettingsRow *weakBackup = backup;
+        backup.height = ^CGFloat {
+            return ApolloSettingsClassicRowHeight(weakSelf.tableView, @"Backup Settings", nil,
+                                                  weakBackup.iconSystemName != nil, 24.0);
+        };
+    }
 
     ApolloSettingsRow *restore =
         [ApolloSettingsRow buttonRowWithID:@"data.restore"
@@ -2468,6 +2488,27 @@ typedef NS_ENUM(NSInteger, Tag) {
         return IsLiquidGlass() && !sCollapseNavigationActions && ApolloInterfaceSupportsPhoneTabBarControls();
     };
 
+    // Feed title tap and Posts tab long press open the tweak's Modern search
+    // sheet or Apollo's Classic inline popup. Read live, so no relaunch is needed.
+    ApolloSettingsRow *switcherStyle =
+        [ApolloSettingsRow valueRowWithID:@"interface.subredditSwitcher"
+                                   title:@"Subreddit Switcher"
+                                  detail:^NSString * {
+            return sSubredditSwitcherSheetEnabled ? @"Modern" : @"Classic";
+        }
+                                onSelect:^{
+            ApolloSettingsPresentPicker(weakSelf, [weakSelf cellForRowID:@"interface.subredditSwitcher"],
+                @"Subreddit Switcher", @[ @"Classic", @"Modern" ],
+                sSubredditSwitcherSheetEnabled ? 1 : 0, ^(NSInteger picked) {
+                    BOOL sheetEnabled = picked == 1;
+                    if (sSubredditSwitcherSheetEnabled == sheetEnabled) return;
+                    sSubredditSwitcherSheetEnabled = sheetEnabled;
+                    [NSUserDefaults.standardUserDefaults setBool:sheetEnabled
+                        forKey:UDKeySubredditSwitcherSheetEnabled];
+                    [weakSelf reloadRowWithID:@"interface.subredditSwitcher"];
+                });
+        }];
+
     NSArray<NSString *> *trueBlackTitles = @[ @"Off", @"Dark Mode Only", @"Light Mode Only", @"Always" ];
     ApolloSettingsRow *trueBlackKeyboard =
         [ApolloSettingsRow valueRowWithID:@"interface.trueBlackKeyboard"
@@ -2492,7 +2533,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     }
     return [ApolloSettingsSection sectionWithTitle:@"Display & Navigation"
                                             footer:footer
-                                              rows:@[ scrollReturnButton, trueBlackKeyboard, collapseActions, centerBetween, iPadPaneLayout, scrollEdgeEffect ]];
+                                              rows:@[ scrollReturnButton, trueBlackKeyboard, collapseActions, centerBetween, switcherStyle, iPadPaneLayout, scrollEdgeEffect ]];
 }
 
 // Display order differs from stored values; Blur is optional, while Hidden

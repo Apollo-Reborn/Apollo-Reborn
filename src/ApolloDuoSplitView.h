@@ -7,6 +7,8 @@ BOOL ApolloDuoRequiresSubredditEnhancements(void);
 BOOL ApolloDuoSplitIsUnfoldedPortrait(void);
 CGFloat ApolloDuoSplitTransitionContentWidth(UIView *view, CGFloat trailingInset);
 UINavigationController *ApolloDuoSplitDetailNavigation(UINavigationController *navigation);
+/// The feed column's own stack while the tab shows columns, else nil.
+UINavigationController *ApolloDuoSplitFeedNavigation(UINavigationController *navigation);
 /// The native tab root retained by Duo, including while its tab is offscreen.
 /// Returns nil when the navigation controller has no Duo split state.
 UIViewController *ApolloDuoSplitRootController(UINavigationController *navigation);
