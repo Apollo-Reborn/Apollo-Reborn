@@ -1248,7 +1248,7 @@ static void ApolloSocialLinkOpenURL(NSURL *url, UIViewController *opener);
         [self.contentView addSubview:_iconBox];
 
         _titleLabel2 = [[UILabel alloc] init];
-        ApolloSpellingSetViewExcluded(_titleLabel2, YES); // link titles are the profile owner's text
+        ApolloSpellingSetExcluded(_titleLabel2, YES); // link titles are the profile owner's text
         _titleLabel2.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
         _titleLabel2.adjustsFontForContentSizeCategory = YES;
         _titleLabel2.textColor = [UIColor labelColor];
@@ -1390,7 +1390,7 @@ static void ApolloSocialLinkOpenURL(NSURL *url, UIViewController *opener) {
         _iconView.layer.cornerRadius = 3.0;
         [self addSubview:_iconView];
         _titleLabel = [[UILabel alloc] init];
-        ApolloSpellingSetViewExcluded(_titleLabel, YES);
+        ApolloSpellingSetExcluded(_titleLabel, YES);
         _titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
         _titleLabel.adjustsFontForContentSizeCategory = YES;
         _titleLabel.textColor = [UIColor labelColor];

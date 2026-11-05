@@ -900,9 +900,9 @@ static id ApolloMultiEditIssue858InjectedResponse(id responseObject, NSString *m
     if (description.length > 0) {
         // The description is the multireddit owner's text. The label is Apollo's reused cell
         // label, so the opt-out only covers this set.
-        ApolloSpellingSetViewExcluded(subtitleLabel, YES);
+        ApolloSpellingSetExcluded(subtitleLabel, YES);
         subtitleLabel.text = description;
-        ApolloSpellingSetViewExcluded(subtitleLabel, NO);
+        ApolloSpellingSetExcluded(subtitleLabel, NO);
     }
     return cell;
 }

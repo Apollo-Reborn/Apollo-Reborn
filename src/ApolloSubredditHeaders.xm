@@ -456,11 +456,11 @@ static UIImage *ApolloSubredditSizedActionIcon(UIImage *image) {
         _displayNameLabel.numberOfLines = 2;
         _displayNameLabel.adjustsFontForContentSizeCategory = YES;
         // Name, title and description are the subreddit's own text: keep its spelling.
-        ApolloSpellingSetViewExcluded(_displayNameLabel, YES);
+        ApolloSpellingSetExcluded(_displayNameLabel, YES);
         [self addSubview:_displayNameLabel];
 
         _nameLabel = [[UILabel alloc] init];
-        ApolloSpellingSetViewExcluded(_nameLabel, YES);
+        ApolloSpellingSetExcluded(_nameLabel, YES);
         _nameLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
         _nameLabel.textColor = [UIColor secondaryLabelColor];
         _nameLabel.numberOfLines = 1;
@@ -519,7 +519,7 @@ static UIImage *ApolloSubredditSizedActionIcon(UIImage *image) {
         // to a few lines with a "more"/"less" toggle instead of a small,
         // hard-capped footnote.
         _aboutLabel = [[UILabel alloc] init];
-        ApolloSpellingSetViewExcluded(_aboutLabel, YES);
+        ApolloSpellingSetExcluded(_aboutLabel, YES);
         _aboutLabel.textColor = [UIColor labelColor];
         _aboutLabel.adjustsFontForContentSizeCategory = YES;
         _aboutLabel.userInteractionEnabled = YES;

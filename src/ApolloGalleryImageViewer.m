@@ -894,7 +894,7 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
 
     // (material added above sits at index 0, behind these labels)
     self.titleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-    ApolloSpellingSetViewExcluded(self.titleLabel, YES); // the post title keeps the author's spelling
+    ApolloSpellingSetExcluded(self.titleLabel, YES); // the post title keeps the author's spelling
     self.titleLabel.textColor = UIColor.whiteColor;
     self.titleLabel.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightSemibold];
     self.titleLabel.numberOfLines = 2;

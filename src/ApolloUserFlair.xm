@@ -1305,7 +1305,7 @@ static void ApolloUserFlairEnsureTemplateLimits(NSString *subreddit, void (^comp
     previewTitle.textColor = [UIColor secondaryLabelColor];
 
     self.previewLabel = [UILabel new];
-    ApolloSpellingSetViewExcluded(self.previewLabel, YES); // the user's flair text
+    ApolloSpellingSetExcluded(self.previewLabel, YES); // the user's flair text
     self.previewLabel.numberOfLines = 2;
     self.previewLabel.font = [UIFont systemFontOfSize:15];
     self.previewLabel.textColor = [UIColor labelColor];

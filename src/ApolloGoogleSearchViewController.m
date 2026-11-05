@@ -587,14 +587,14 @@ static UIImage *ApolloSearchEngineMenuMark(ApolloSearchEngine engine) {
 
         _snippetLabel = [[UILabel alloc] init];
         // Result titles, snippets and post bodies are quoted page text: keep their spelling.
-        ApolloSpellingSetViewExcluded(_titleLabel, YES);
-        ApolloSpellingSetViewExcluded(_snippetLabel, YES);
+        ApolloSpellingSetExcluded(_titleLabel, YES);
+        ApolloSpellingSetExcluded(_snippetLabel, YES);
 
         _bodyBar = [[UIView alloc] init];
         _bodyBar.layer.cornerRadius = 1.5;
         _bodyLabel = [[UILabel alloc] init];
         _bodyLabel.numberOfLines = 0;
-        ApolloSpellingSetViewExcluded(_bodyLabel, YES);
+        ApolloSpellingSetExcluded(_bodyLabel, YES);
         _bodyContainer = [[UIView alloc] init];
         _bodyBar.translatesAutoresizingMaskIntoConstraints = NO;
         _bodyLabel.translatesAutoresizingMaskIntoConstraints = NO;

@@ -286,7 +286,7 @@ static BOOL ApolloSubredditSheetIsActive(UITabBarController *tabs) {
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Subreddit"];
         // Rows only ever show subreddit names: keep "colors" as the subreddit spells it.
-        ApolloSpellingSetViewExcluded(cell.textLabel, YES);
+        ApolloSpellingSetExcluded(cell.textLabel, YES);
     }
     NSString *name = self.sections[indexPath.section][indexPath.row];
     cell.textLabel.text = name;
