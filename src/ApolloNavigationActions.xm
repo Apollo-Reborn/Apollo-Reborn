@@ -1144,6 +1144,11 @@ static BOOL ApolloActionsIsModeratorButton(UIButton *button) {
         || ApolloActionsButtonActionContains(button, @"moderator");
 }
 
+static BOOL ApolloActionsIsSortButton(UIButton *button) {
+    return ApolloActionsButtonActionContains(button, @"sort")
+        || [button.accessibilityLabel.lowercaseString containsString:@"sort"];
+}
+
 static NSArray<UIMenuElement *> *ApolloActionsDuoNestTimeRanges(NSArray<UIMenuElement *> *rows, id sortController,
                                                                  UIView *source) {
     if (@available(iOS 15.0, *)) {
@@ -1180,8 +1185,7 @@ static NSArray<UIMenuElement *> *ApolloActionsDuoNestTimeRanges(NSArray<UIMenuEl
 static void ApolloActionsUpdateOverflowRepresentation(UIBarButtonItem *item, UIButton *button, UINavigationItem *navItem) {
     if (@available(iOS 16.0, *)) {
         BOOL moderator = ApolloActionsIsModeratorButton(button);
-        BOOL sort = ApolloActionsButtonActionContains(button, @"sort")
-            || [button.accessibilityLabel.lowercaseString containsString:@"sort"];
+        BOOL sort = ApolloActionsIsSortButton(button);
         if (!moderator && !sort) return;
         NSString *title = moderator ? @"Moderator" : (button.accessibilityLabel ?: @"Sort");
         item.title = title;
@@ -1396,9 +1400,12 @@ static NSArray<UIBarButtonItem *> *ApolloActionsDuoNativeItems(UINavigationItem 
             // Resolve exported priorities at runtime: device releases still
             // compile against SDK 26 with the iOS 14 deployment floor.
             if (systemOverflow && [native respondsToSelector:@selector(setVisibilityPriority:)]) {
-                const char *symbol = ApolloActionsIsModeratorButton(button)
-                    ? "UIBarButtonItemVisibilityPriorityLow" : "UIBarButtonItemVisibilityPriorityHigh";
-                const NSInteger *priority = (const NSInteger *)dlsym(RTLD_DEFAULT, symbol);
+                // Only Sort outranks the rest (the globe stays at the default),
+                // so the rail keeps the same button through a fold when only
+                // one fits.
+                const char *symbol = ApolloActionsIsModeratorButton(button) ? "UIBarButtonItemVisibilityPriorityLow"
+                    : ApolloActionsIsSortButton(button) ? "UIBarButtonItemVisibilityPriorityHigh" : NULL;
+                const NSInteger *priority = symbol ? (const NSInteger *)dlsym(RTLD_DEFAULT, symbol) : NULL;
                 if (priority) ((void (*)(id, SEL, NSInteger))objc_msgSend)(native, @selector(setVisibilityPriority:), *priority);
             }
             if (systemOverflow) ApolloActionsUpdateOverflowRepresentation(native, button, item);
