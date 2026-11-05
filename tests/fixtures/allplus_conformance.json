@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "tolerance": { "hot": 1e-9 },
+  "constants": {
+    "HOT_EPOCH": 1134028003,
+    "TIME_DIVISOR": 45000
+  },
+
+  "num": [
+    { "note": "plain number passes through unchanged", "data": { "v": 42 }, "key": "v", "expected": 42 },
+    { "note": "numeric string coerces via parseFloat (JS) / -doubleValue (ObjC)", "data": { "v": "42.5" }, "key": "v", "expected": 42.5 },
+    { "note": "non-numeric string has no parseable numeric prefix -> clamps to 0", "data": { "v": "x" }, "key": "v", "expected": 0 },
+    { "note": "REQUIRED CASE: the string \"inf\". JS's parseFloat does not recognize the bare word \"inf\" (only the exact literal \"Infinity\"), so it already yields NaN -> 0 unaided. ObjC's -[NSString doubleValue] DOES parse \"inf\" as INFINITY, which is finite-looking to naive code but must be caught by an isfinite() clamp -- this is the exact case Fix 3 exists for; without the clamp ObjC returns INFINITY here where JS returns 0.", "data": { "v": "inf" }, "key": "v", "expected": 0 },
+    { "note": "the string \"nan\" parses to a non-finite NaN in both runtimes -> clamps to 0", "data": { "v": "nan" }, "key": "v", "expected": 0 },
+    { "note": "a JSON null value is not a number -> clamps to 0", "data": { "v": null }, "key": "v", "expected": 0 },
+    { "note": "key entirely absent from data -> undefined (JS) / nil (ObjC) -> clamps to 0", "data": {}, "key": "v", "expected": 0 }
+  ],
+
+  "hotRank": [
+    {
+      "note": "known pair: log10(1500) + (1140000000-EPOCH)/45000",
+      "score": 1500,
+      "created_utc": 1140000000,
+      "expected": 135.88713570350012
+    },
+    {
+      "note": "zero score clamps to log10(1)=0; sign(0)=0 zeroes the time term too",
+      "score": 0,
+      "created_utc": 1140000000,
+      "expected": 0
+    },
+    {
+      "note": "negative score flips sign(); created_utc is exactly EPOCH+45000 so |time term|=1",
+      "score": -2000,
+      "created_utc": 1134073003,
+      "expected": 2.3010299956639813
+    },
+    {
+      "note": "created_utc at HOT_EPOCH exactly: time term is 0, hot is pure log10(score)",
+      "score": 42,
+      "created_utc": 1134028003,
+      "expected": 1.6232492903979006
+    }
+  ],
+
+  "placement": [
+    {
+      "note": "nativeHots sorted descending (for contrast with the next case): the four measured native floors d25/d50/d100/d250 vs the hottest NSFW post anywhere (14452.69, boost 0). It clears d25 and d50 but not d100 or below -- 3 natives outrank it, well off page 1 (25).",
+      "nativeHots": [14453.06, 14452.91, 14452.70, 14452.43],
+      "candHot": 14452.69,
+      "boost": 0,
+      "expected": 3
+    },
+    {
+      "note": "REQUIRED CASE: same four native hot values as above but NOT sorted descending -- this is measured reality (r/all's native listing is not hot-ordered) and the entire reason placement is a count of outranking natives, not an insertion index into a sorted list. The expected count is identical to the sorted case because slotFor counts, it does not scan for a sorted position.",
+      "nativeHots": [14452.43, 14453.06, 14452.70, 14452.91],
+      "candHot": 14452.69,
+      "boost": 0,
+      "expected": 3
+    },
+    {
+      "note": "same unsorted native set, but boost 0.5 lifts the candidate's effective hot to 14453.19, above all four native floors -- 0 natives outrank it, so it lands at the very top slot.",
+      "nativeHots": [14452.70, 14452.43, 14453.06, 14452.91],
+      "candHot": 14452.69,
+      "boost": 0.5,
+      "expected": 0
+    },
+    {
+      "note": "small unsorted integers, boost 0: candidate is outranked by every native.",
+      "nativeHots": [10, 20, 5, 15],
+      "candHot": 1,
+      "boost": 0,
+      "expected": 4
+    },
+    {
+      "note": "tie boundary: comparison is strict '>', so a candidate exactly equal to every native's hot is outranked by none of them.",
+      "nativeHots": [5, 5, 5],
+      "candHot": 5,
+      "boost": 0,
+      "expected": 0
+    }
+  ]
+}

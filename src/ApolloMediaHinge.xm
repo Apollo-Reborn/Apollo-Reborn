@@ -168,8 +168,10 @@ static BOOL ApolloDuoMediaUpdateViewport(UITableView *table) {
         height = floor(CGRectGetHeight(window.bounds));
         if (!isfinite(height) || height < 100.0) height = 0.0;
         if (height > 0.0 && sDuoLandscapeFeedLayout == 2) {
+            // Focused narrows the post column only. Media keeps the same
+            // display-height cap as Original, so a tall image fills the column
+            // instead of shrinking; wide media is already limited by its width.
             layout = sDuoLandscapeFeedLayout;
-            height = floor(height * 0.60);
             centerOffset = ApolloDuoFeedCenterOffset(table, window, owner);
         }
     }

@@ -147,6 +147,18 @@ static NSArray<NSString *> *ApolloWebJSONRouteSearchEndpoints(void) {
     return @[ @"/search", @"/subreddits/search", @"/r/*/search", @"/r/+/search" ];
 }
 
+// The listing sorts www, old and api refuse (the table's comment below), as
+// ApolloWebJSONRoutePathPattern names them. Every other sort keeps www.
+static NSArray<NSString *> *ApolloWebJSONRouteHotNewRisingEndpoints(void) {
+    NSMutableArray<NSString *> *endpoints = [NSMutableArray array];
+    for (NSString *sort in @[ @"hot", @"new", @"rising" ]) {
+        [endpoints addObject:[@"/" stringByAppendingString:sort]];
+        [endpoints addObject:[@"/r/*/" stringByAppendingString:sort]];
+        [endpoints addObject:[@"/r/+/" stringByAppendingString:sort]];
+    }
+    return endpoints;
+}
+
 BOOL ApolloWebJSONRequestIsSearchRead(NSString *method, NSString *path) {
     if (![method isKindOfClass:[NSString class]] || ![path isKindOfClass:[NSString class]]) return NO;
     return [method.uppercaseString isEqualToString:@"GET"] &&
@@ -160,7 +172,8 @@ BOOL ApolloWebJSONRequestIsSearchRead(NSString *method, NSString *path) {
 // - GET /api/info: RDKClient's thingsByFullNames:completion:. The Inbox's
 //   Notifications list waits on it for its replies' parents (completion at
 //   0x10019dde8).
-// - /api/morechildren: the "more replies" rows in a thread (issue #1456).
+// - /api/morechildren: the "more replies" rows in a thread (issue #1456);
+//   oauth comes first for it since 2026-11-03 (below).
 //   Apollo POSTs it, but it only reads.
 // www-dotjson gets past www's block rather than being a documented route, and
 // Reddit is limiting old.reddit.com to accounts with recent Old Reddit use, so
@@ -180,22 +193,35 @@ BOOL ApolloWebJSONRequestIsSearchRead(NSString *method, NSString *path) {
 // listings signed in to the cookie (checked 2026-10-27 and 2026-10-28: the
 // account's saved posts and votes came back), and api's carry the same image
 // fields www's feeds have. oauth comes first for the same reason as in search.
+// hot, new and rising (ApolloWebJSONRouteHotNewRisingEndpoints): since
+// 2026-11-03 www, old and api all answer these sorts with the block page, for
+// the front page, single subreddits and "+" lists alike, while best, top and
+// controversial, and multireddits under /user/<name>/m/, still load on www.
+// oauth served them signed in to the cookie. www stays second, so the feed
+// loads again on its own if Reddit reopens www and closes oauth.
+// /api/morechildren went the same way on 2026-11-03: www-dotjson and old both
+// get the block page, oauth serves it, so oauth comes first.
 static NSArray<NSDictionary *> *ApolloWebJSONRouteBuiltInTable(void) {
     static NSArray<NSDictionary *> *table;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         NSArray *fallbacks = @[ @(ApolloWebJSONRouteWwwDotJSON), @(ApolloWebJSONRouteOld) ];
+        NSArray *moreChildren = @[ @(ApolloWebJSONRouteOAuth), @(ApolloWebJSONRouteWwwDotJSON), @(ApolloWebJSONRouteOld) ];
         NSArray *cookieOAuth = @[ @(ApolloWebJSONRouteOAuth), @(ApolloWebJSONRouteOld) ];
         NSArray *rAll = @[ @(ApolloWebJSONRouteOAuth), @(ApolloWebJSONRouteApi), @(ApolloWebJSONRouteOld) ];
+        NSArray *hotNewRising = @[ @(ApolloWebJSONRouteOAuth), @(ApolloWebJSONRouteWww) ];
         NSMutableArray<NSDictionary *> *rows = [@[
             ApolloWebJSONRouteMakeEntry(@"GET", @"/api/info", fallbacks, NO),
-            ApolloWebJSONRouteMakeEntry(@"GET", @"/api/morechildren", fallbacks, NO),
-            ApolloWebJSONRouteMakeEntry(@"POST", @"/api/morechildren", fallbacks, NO),
+            ApolloWebJSONRouteMakeEntry(@"GET", @"/api/morechildren", moreChildren, NO),
+            ApolloWebJSONRouteMakeEntry(@"POST", @"/api/morechildren", moreChildren, NO),
             ApolloWebJSONRouteMakeEntry(@"GET", @"/r/all", rAll, NO),
             ApolloWebJSONRouteMakeEntry(@"GET", @"/r/all/*", rAll, NO),
         ] mutableCopy];
         for (NSString *endpoint in ApolloWebJSONRouteSearchEndpoints()) {
             [rows addObject:ApolloWebJSONRouteMakeEntry(@"GET", endpoint, cookieOAuth, NO)];
+        }
+        for (NSString *endpoint in ApolloWebJSONRouteHotNewRisingEndpoints()) {
+            [rows addObject:ApolloWebJSONRouteMakeEntry(@"GET", endpoint, hotNewRising, NO)];
         }
         table = [rows copy];
     });
