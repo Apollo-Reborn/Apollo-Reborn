@@ -31,6 +31,10 @@ void ApolloNativeFeedSearchWillScrollToTop(UIScrollView *scrollView);
 void ApolloNativeFeedSearchSetDuoControls(UIViewController *vc, UIBarButtonItem *list,
                                         UIBarButtonItem *split, UIBarButtonItem *layout);
 
+// A Find in Comments search the ••• menu opened with the bar turned off in
+// Settings has been dismissed: take the bar off the thread again.
+void ApolloNativeFeedSearchFindDismissed(UIViewController *vc);
+
 // Preserve registered trailing controls when Apollo replaces its action items.
 NSArray<UIBarButtonItem *> *ApolloNativeFeedSearchDuoTrailingItems(UINavigationItem *item,
                                                                 NSArray<UIBarButtonItem *> *items);
