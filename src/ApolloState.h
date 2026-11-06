@@ -54,6 +54,8 @@ extern BOOL sFeedGalleryEdgeSwipeNav;
 // silently while they are on screen (ApolloGalleryViewController.m).
 extern BOOL sGalleryAutoplayVideos;
 extern BOOL sGalleryAutoplayGIFs;
+// Gallery slideshow photo seconds; read via ApolloGallerySlideshowSanitizedPhotoSeconds().
+extern NSInteger sGallerySlideshowPhotoDuration;
 // Default-on: scrolling the feed a few posts past where you swiped back drops
 // Apollo's forward-swipe memory (ApolloForwardSwipeExpiry.xm).
 extern BOOL sForwardSwipeForgetAfterScrolling;

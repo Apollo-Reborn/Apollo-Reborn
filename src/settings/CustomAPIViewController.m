@@ -36,6 +36,7 @@
 #import "ApolloPerAccountFavorites.h"
 #import "ApolloFavoritesSorting.h"
 #import "ApolloState.h"
+#import "ApolloGallerySlideshow.h"
 #import "ApolloScrollToTop.h"
 #import "ApolloSessionRestoration.h"
 #import "ApolloTabBarHideStyle.h"
@@ -2875,9 +2876,18 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                       isOn:^BOOL { return sGalleryAutoplayGIFs; }
                                   onToggle:^(UISwitch *sender) { [weakSelf galleryAutoplayGIFsSwitchToggled:sender]; }];
 
+    ApolloSettingsRow *gallerySlideshowDuration =
+        [ApolloSettingsRow valueRowWithID:@"media.gallerySlideshowPhotoDuration"
+                                    title:@"Slideshow Photo Duration"
+                                   detail:^NSString * {
+            return ApolloGallerySlideshowPhotoDurationTitle(
+                ApolloGallerySlideshowSanitizedPhotoSeconds(sGallerySlideshowPhotoDuration));
+        }
+                                 onSelect:^{ [weakSelf chooseGallerySlideshowPhotoDuration]; }];
+
     return [ApolloSettingsSection sectionWithTitle:@"Browsing"
-                                            footer:@"Swipe Through Feed Galleries: page through a gallery post's images without leaving the feed.\n\nSwipe Past Gallery to Navigate: at the first or last image, keep swiping to use your normal post swipes (vote, save, back or forward) instead of bouncing. From any image, a swipe that starts at the screen edge goes back or forward. Off by default.\n\nSwipe Up for Comments: in the fullscreen media viewer, swipe up or tap the comments button to open comments over the media. Off by default.\n\nPlay Videos / GIFs in Gallery View: video and GIF tiles play silently while they're on screen; tap one for the full-size viewer with sound. Paused in Low Power Mode."
-                                              rows:@[ feedGalleries, edgeSwipeNav, swipeComments, galleryAutoplayVideos, galleryAutoplayGIFs ]];
+                                            footer:@"Swipe Through Feed Galleries: page through a gallery post's images without leaving the feed.\n\nSwipe Past Gallery to Navigate: at the first or last image, keep swiping to use your normal post swipes (vote, save, back or forward) instead of bouncing. From any image, a swipe that starts at the screen edge goes back or forward. Off by default.\n\nSwipe Up for Comments: in the fullscreen media viewer, swipe up or tap the comments button to open comments over the media. Off by default.\n\nPlay Videos / GIFs in Gallery View: video and GIF tiles play silently while they're on screen; tap one for the full-size viewer with sound. Paused in Low Power Mode.\n\nSlideshow Photo Duration: how long each photo stays up in a Gallery View slideshow. Videos and GIFs always play to the end."
+                                              rows:@[ feedGalleries, edgeSwipeNav, swipeComments, galleryAutoplayVideos, galleryAutoplayGIFs, gallerySlideshowDuration ]];
 }
 
 // NSFW Media. Lives here rather than in Apollo's native Filters & Blocks screen:
@@ -5249,6 +5259,24 @@ static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
     sGalleryAutoplayGIFs = sender.isOn;
     [[NSUserDefaults standardUserDefaults] setBool:sGalleryAutoplayGIFs forKey:UDKeyGalleryAutoplayGIFs];
     [[NSNotificationCenter defaultCenter] postNotificationName:ApolloGalleryAutoplayMediaChangedNotification object:nil];
+}
+
+// No notification: an open slideshow reads the global as each photo starts.
+- (void)chooseGallerySlideshowPhotoDuration {
+    NSArray<NSNumber *> *choices = ApolloGallerySlideshowPhotoDurationChoices();
+    NSMutableArray<NSString *> *titles = [NSMutableArray arrayWithCapacity:choices.count];
+    for (NSNumber *seconds in choices) {
+        [titles addObject:ApolloGallerySlideshowPhotoDurationTitle(seconds.integerValue)];
+    }
+    NSUInteger current = [choices indexOfObject:@(ApolloGallerySlideshowSanitizedPhotoSeconds(sGallerySlideshowPhotoDuration))];
+    __weak typeof(self) weakSelf = self;
+    ApolloSettingsPresentPicker(self, [self cellForRowID:@"media.gallerySlideshowPhotoDuration"],
+                                @"Slideshow Photo Duration", titles, (NSInteger)current, ^(NSInteger pickedIndex) {
+        sGallerySlideshowPhotoDuration = choices[(NSUInteger)pickedIndex].integerValue;
+        [[NSUserDefaults standardUserDefaults] setInteger:sGallerySlideshowPhotoDuration
+                                                   forKey:UDKeyGallerySlideshowPhotoDuration];
+        [weakSelf reloadRowWithID:@"media.gallerySlideshowPhotoDuration"];
+    });
 }
 
 - (void)feedGalleryEdgeSwipeNavSwitchToggled:(UISwitch *)sender {

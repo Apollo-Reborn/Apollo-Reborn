@@ -782,6 +782,8 @@ static NSString *const UDKeyFeedGalleryEdgeSwipeNav = @"FeedGalleryEdgeSwipeNavi
 static NSString *const UDKeyGalleryAutoplayVideos = @"GalleryAutoplayVideos";
 static NSString *const UDKeyGalleryAutoplayGIFs = @"GalleryAutoplayGIFs";
 static NSString *const ApolloGalleryAutoplayMediaChangedNotification = @"ApolloGalleryAutoplayMediaChangedNotification";
+// Gallery slideshow: seconds each photo stays up (videos and GIFs play to the end). Default 5.
+static NSString *const UDKeyGallerySlideshowPhotoDuration = @"GallerySlideshowPhotoDuration";
 // Apollo's forward-swipe (right edge, plus the gallery edge-swipe hand-off)
 // re-opens the screen you last swiped back from, and that memory natively
 // survives unlimited feed scrolling. With this on, scrolling the feed a few
