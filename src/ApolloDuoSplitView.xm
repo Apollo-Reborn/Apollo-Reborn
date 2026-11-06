@@ -3696,45 +3696,6 @@ static void ApolloDuoResumeVideosAfterMove(NSArray<UIViewController *> *controll
     });
 }
 
-// A fold or rotation while a pane's own push or pop is still running (Apollo's
-// interactive Back held under the finger): moving the stacks under it left
-// the pop to settle on a stack that no longer held its pages, a blank Home
-// with the thread gone. End the swipe (the page springs back) and close the
-// split once that transition has settled, as Open waits for one.
-static BOOL ApolloDuoSplitDeferCloseForPaneTransition(ApolloDuoSplitState *state) {
-    if (!state.split || state.changing) return NO;
-    for (UINavigationController *nav in @[state.primary ?: (id)NSNull.null, state.feed ?: (id)NSNull.null,
-                                          state.secondary ?: (id)NSNull.null]) {
-        if (![nav isKindOfClass:UINavigationController.class]) continue;
-        id<UIViewControllerTransitionCoordinator> transition = nav.transitionCoordinator;
-        if (!transition || transition == sDuoSplitSizeCoordinator) continue;
-        if (transition.isInteractive) {
-            NSMutableArray<UIGestureRecognizer *> *recognizers = [NSMutableArray array];
-            if (nav.viewIfLoaded.gestureRecognizers) [recognizers addObjectsFromArray:nav.view.gestureRecognizers];
-            if (nav.navigationBar.gestureRecognizers) [recognizers addObjectsFromArray:nav.navigationBar.gestureRecognizers];
-            for (UIGestureRecognizer *recognizer in recognizers) {
-                if (![recognizer isKindOfClass:UIPanGestureRecognizer.class]) continue;
-                if (recognizer.state != UIGestureRecognizerStateBegan && recognizer.state != UIGestureRecognizerStateChanged) continue;
-                recognizer.enabled = NO;
-                recognizer.enabled = YES;
-            }
-        }
-        if (state.pendingNavigationTransition != transition) {
-            state.pendingNavigationTransition = transition;
-            __weak ApolloDuoSplitState *weakState = state;
-            [transition animateAlongsideTransition:nil
-                                       completion:^(__unused id<UIViewControllerTransitionCoordinatorContext> context) {
-                weakState.pendingNavigationTransition = nil;
-                ApolloDuoSplitScheduleUpdate();
-            }];
-        }
-        ApolloLog(@"[DuoSplit] %@ columns stay until a pane's %@ transition settles",
-                  state.kind, transition.isInteractive ? @"interactive" : @"animated");
-        return YES;
-    }
-    return NO;
-}
-
 static void ApolloDuoSplitClose(ApolloDuoSplitState *state, BOOL preserveDetail) {
     [sDuoSplitDeferredPresentations removeObject:state];
     // Even a close that bails (mid column change, or no split left) lets the
@@ -4184,6 +4145,45 @@ static BOOL ApolloDuoAccountBeginForwardDrag(UINavigationController *navigation)
         ApolloDuoSetPagePicture(pages.lastObject, leftPicture, current.host.view, rect);
         ApolloLog(@"[DuoSplit] Account forward completed under the drag");
     });
+}
+
+// A fold or rotation while a pane's own push or pop is still running (Apollo's
+// interactive Back held under the finger): moving the stacks under it left
+// the pop to settle on a stack that no longer held its pages, a blank Home
+// with the thread gone. End the swipe (the page springs back) and close the
+// split once that transition has settled, as Open waits for one.
+static BOOL ApolloDuoSplitDeferCloseForPaneTransition(ApolloDuoSplitState *state) {
+    if (!state.split || state.changing) return NO;
+    for (UINavigationController *nav in @[state.primary ?: (id)NSNull.null, state.feed ?: (id)NSNull.null,
+                                          state.secondary ?: (id)NSNull.null]) {
+        if (![nav isKindOfClass:UINavigationController.class]) continue;
+        id<UIViewControllerTransitionCoordinator> transition = nav.transitionCoordinator;
+        if (!transition || transition == sDuoSplitSizeCoordinator) continue;
+        if (transition.isInteractive) {
+            NSMutableArray<UIGestureRecognizer *> *recognizers = [NSMutableArray array];
+            if (nav.viewIfLoaded.gestureRecognizers) [recognizers addObjectsFromArray:nav.view.gestureRecognizers];
+            if (nav.navigationBar.gestureRecognizers) [recognizers addObjectsFromArray:nav.navigationBar.gestureRecognizers];
+            for (UIGestureRecognizer *recognizer in recognizers) {
+                if (![recognizer isKindOfClass:UIPanGestureRecognizer.class]) continue;
+                if (recognizer.state != UIGestureRecognizerStateBegan && recognizer.state != UIGestureRecognizerStateChanged) continue;
+                recognizer.enabled = NO;
+                recognizer.enabled = YES;
+            }
+        }
+        if (state.pendingNavigationTransition != transition) {
+            state.pendingNavigationTransition = transition;
+            __weak ApolloDuoSplitState *weakState = state;
+            [transition animateAlongsideTransition:nil
+                                       completion:^(__unused id<UIViewControllerTransitionCoordinatorContext> context) {
+                weakState.pendingNavigationTransition = nil;
+                ApolloDuoSplitScheduleUpdate();
+            }];
+        }
+        ApolloLog(@"[DuoSplit] %@ columns stay until a pane's %@ transition settles",
+                  state.kind, transition.isInteractive ? @"interactive" : @"animated");
+        return YES;
+    }
+    return NO;
 }
 
 static void ApolloDuoSplitUpdate(void) {
@@ -4946,6 +4946,18 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     if (self == state.feed) ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventMemoryWarning, 0.0);
     // The visited profile a Back left is a forward page like Apollo's own.
     if (self == state.feed || self == state.secondary || self == state.outer) ApolloDuoSplitForgetProfileForward(state);
+    // So is the Account page the split's own Back left. The kept pictures go
+    // too: drags without one navigate on release instead.
+    if (self == state.secondary) {
+        state.accountForwardPage = nil;
+        state.accountForwardStack = nil;
+    }
+    if (self == state.feed || self == state.secondary || self == state.primary) {
+        for (UIViewController *page in ((UINavigationController *)self).viewControllers)
+            objc_setAssociatedObject(page, &kApolloDuoPagePicture, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        state.profileBackPicture = nil;
+        state.profileForwardPicture = nil;
+    }
 }
 - (void)setNavigationBarHidden:(BOOL)hidden animated:(BOOL)animated {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(self, NO);
@@ -5491,6 +5503,16 @@ static void ApolloDuoSlideFitDisplay(id builder) {
             object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
                 ApolloDuoSplitState *state = sDuoPostsClosedThreadState;
                 if (state) ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventAccountChanged, 0.0);
+                // Account's profile reloads in place for the other account, so
+                // the page its Back left would otherwise come back under it.
+                UITabBarController *tabs = (id)ApolloMainTabBarController();
+                if (![tabs isKindOfClass:UITabBarController.class]) return;
+                for (UIViewController *child in tabs.viewControllers) {
+                    if (![child isKindOfClass:UINavigationController.class]) continue;
+                    ApolloDuoSplitState *tab = ApolloDuoSplitStateForNavigation((id)child, NO);
+                    tab.accountForwardPage = nil;
+                    tab.accountForwardStack = nil;
+                }
             }];
     }
     Class subredditList = NSClassFromString(@"Apollo.RedditListViewController");
