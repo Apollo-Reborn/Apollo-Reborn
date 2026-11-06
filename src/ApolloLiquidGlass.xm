@@ -6,6 +6,7 @@
 #import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloAccountSwitcherViewController.h"
 #import "ApolloDeviceGeometry.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloState.h"
@@ -277,17 +278,11 @@ static NSInteger ApolloTabShortcutIndexForView(UIView *view) {
     return NSNotFound;
 }
 
-// Opens Apollo's account switcher by invoking ProfileViewController's bar button action.
-// sourceWindow is the window of the long-pressed tab button (the scene the user is in);
-// the app-wide key window / first visible window is only a fallback.
-static void OpenAccountManager(UIWindow *sourceWindow) {
-    static CFTimeInterval lastOpen = 0;
-    CFTimeInterval now = CACurrentMediaTime();
-    if (now - lastOpen < 0.75) {
-        return;
-    }
-    lastOpen = now;
-
+// The Account tab's ProfileViewController, whose accounts bar button presents
+// Apollo's account manager. sourceWindow is the scene the user is in; the
+// app-wide key window / first visible window is only a fallback.
+static UIViewController *ApolloProfileViewControllerForWindow(UIWindow *sourceWindow,
+                                                              UITabBarController **outTabBarController) {
     UIWindow *lastKeyWindow = sourceWindow ?: ApolloKeyWindow();
     if (!lastKeyWindow) {
         for (UIWindow *window in ApolloAllWindows()) {
@@ -299,7 +294,7 @@ static void OpenAccountManager(UIWindow *sourceWindow) {
     }
 
     if (!lastKeyWindow) {
-        return;
+        return nil;
     }
 
     Class profileVCClass = ApolloClassProfileViewController;
@@ -347,7 +342,22 @@ static void OpenAccountManager(UIWindow *sourceWindow) {
             }
         }
     }
+    if (outTabBarController) *outTabBarController = tabBarController;
+    return profileVC;
+}
 
+// Opens Apollo's account switcher by invoking ProfileViewController's bar button action.
+// sourceWindow is the window of the long-pressed tab button (the scene the user is in).
+static void OpenAccountManager(UIWindow *sourceWindow) {
+    static CFTimeInterval lastOpen = 0;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - lastOpen < 0.75) {
+        return;
+    }
+    lastOpen = now;
+
+    UITabBarController *tabBarController = nil;
+    UIViewController *profileVC = ApolloProfileViewControllerForWindow(sourceWindow, &tabBarController);
     if (profileVC && [profileVC respondsToSelector:@selector(accountsBarButtonItemTappedWithSender:)]) {
         // A long press begins on the Profile tab button but should only open
         // the switcher. Preserve the tab that was visible before UIKit's
@@ -361,6 +371,18 @@ static void OpenAccountManager(UIWindow *sourceWindow) {
     } else {
         ApolloLog(@"[LiquidGlassTabBar] Unable to find ProfileViewController for account manager");
     }
+}
+
+BOOL ApolloOpenAccountManager(UIWindow *sourceWindow) {
+    // Same bar button as the tab long press, without the long press's tab
+    // selection guard: the caller here is a button, not a held tab.
+    UIViewController *profileVC = ApolloProfileViewControllerForWindow(sourceWindow, NULL);
+    if (![profileVC respondsToSelector:@selector(accountsBarButtonItemTappedWithSender:)]) {
+        ApolloLog(@"[AccountSwitcher] Unable to find ProfileViewController to open Accounts");
+        return NO;
+    }
+    [profileVC performSelector:@selector(accountsBarButtonItemTappedWithSender:) withObject:nil];
+    return YES;
 }
 
 // Horizontal Posts/Account buttons own recognizers; the vertical rail uses the

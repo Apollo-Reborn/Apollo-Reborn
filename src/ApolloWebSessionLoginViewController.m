@@ -5,6 +5,8 @@
 #import "ApolloAccountCredentials.h"
 #import "ApolloState.h"
 #import "ApolloCommon.h"
+#import "ApolloAccountSwitcherViewController.h"
+#import "Defaults.h"
 #import "UIWindow+Apollo.h"
 #import "ApolloReduceRateLimiting.h"
 #import "UserDefaultConstants.h"
@@ -983,27 +985,98 @@ void ApolloWebSessionPresentSignInChooser(UIViewController *host, void (^apiKeyH
 
 #pragma mark - Per-account mode conversions
 
-void ApolloPresentSwitchToAPIKeyFlow(UIViewController *host, NSString *username, void (^completion)(BOOL switched)) {
-    if (username.length == 0) { if (completion) completion(NO); return; }
+typedef NS_ENUM(NSInteger, ApolloSavedAPIKeySignIn) {
+    ApolloSavedAPIKeySignInWorks,
+    ApolloSavedAPIKeySignInRejected,  // Reddit refused the saved refresh token or key
+    ApolloSavedAPIKeySignInUnknown,   // offline, rate limited, block page, 5xx
+};
+
+// Asks Reddit's token endpoint for a fresh access token with the account's saved
+// refresh token: the same refresh_token grant RedditKit sends. RedditKit keeps
+// the old refresh token after every refresh (it never reads one back from the
+// response), so this check can't replace or use up the saved sign-in. The new
+// access token is thrown away; Apollo mints its own after the relaunch. No
+// cookies, like RedditKit's own refresh, so a web session can't answer for it.
+static void ApolloCheckSavedAPIKeySignIn(NSString *clientId, NSString *refreshToken,
+                                         void (^completion)(ApolloSavedAPIKeySignIn result, NSInteger status)) {
     completion = [completion copy];
+    // Probe-tagged so the request hooks pass it through as written.
+    NSURL *url = ApolloWebJSONProbeURL([NSURL URLWithString:@"https://www.reddit.com/api/v1/access_token"]);
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url
+                                                           cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
+                                                       timeoutInterval:15];
+    request.HTTPMethod = @"POST";
+    NSString *pair = [NSString stringWithFormat:@"%@:%@", clientId, ApolloSecretForClientId(clientId)];
+    NSString *basic = [[pair dataUsingEncoding:NSUTF8StringEncoding] base64EncodedStringWithOptions:0];
+    [request setValue:[@"Basic " stringByAppendingString:basic] forHTTPHeaderField:@"Authorization"];
+    [request setValue:@"application/x-www-form-urlencoded" forHTTPHeaderField:@"Content-Type"];
+    [request setValue:(sUserAgent.length > 0 ? sUserAgent : defaultUserAgent) forHTTPHeaderField:@"User-Agent"];
+    NSCharacterSet *unreserved = [NSCharacterSet characterSetWithCharactersInString:
+        @"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"];
+    NSString *encodedToken = [refreshToken stringByAddingPercentEncodingWithAllowedCharacters:unreserved] ?: @"";
+    request.HTTPBody = [[@"grant_type=refresh_token&refresh_token=" stringByAppendingString:encodedToken]
+                        dataUsingEncoding:NSUTF8StringEncoding];
 
-    // What would the account fall back to? A real OAuth credential on disk plus
-    // an API key (its own or the default) means the switch "just works" after a
-    // relaunch; anything less means the user has to sign in again with a key.
-    ApolloAccountCredentialEntry *entry = ApolloAccountCredentialsFor(username);
-    BOOL hasKey = entry.clientId.length > 0 || sRedditClientId.length > 0;
-    BOOL hasRealCredential = ApolloWebJSONDiskAccountHasRealCredential(username);
-    BOOL cleanSwitch = hasKey && hasRealCredential;
+    NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+    configuration.HTTPCookieStorage = nil;
+    configuration.HTTPShouldSetCookies = NO;
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:configuration];
+    [[session dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]] ? ((NSHTTPURLResponse *)response).statusCode : 0;
+        ApolloSavedAPIKeySignIn result = ApolloSavedAPIKeySignInUnknown;
+        if (!error && status == 200) {
+            // Reddit can answer a dead grant with 200 {"error": ...}; RedditKit
+            // treats that as a failed refresh too.
+            id json = data.length > 0 ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
+            NSDictionary *body = [json isKindOfClass:[NSDictionary class]] ? json : nil;
+            id accessToken = body[@"access_token"];
+            if (body[@"error"]) {
+                result = ApolloSavedAPIKeySignInRejected;
+            } else if ([accessToken isKindOfClass:[NSString class]] && [(NSString *)accessToken length] > 0) {
+                result = ApolloSavedAPIKeySignInWorks;
+            }
+        } else if (!error && (status == 400 || status == 401)) {
+            // 400 = dead refresh token, 401 = the key itself is refused.
+            result = ApolloSavedAPIKeySignInRejected;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(result, status); });
+    }] resume];
+    [session finishTasksAndInvalidate];
+}
 
-    NSString *message = cleanSwitch
-        ? [NSString stringWithFormat:@"u/%@ will stop using its web session and go back to signing in with its API key. Apollo needs to quit and reopen to finish the switch.", username]
-        : [NSString stringWithFormat:@"u/%@ signed in without an API key, and no API-key sign-in is stored for it. Its web session will be removed — you'll then need to sign it in again with an API key (Accounts → Add Account).", username];
-
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Use API Key Instead?"
+// The account keeps its web session: switching an account whose saved API-key
+// sign-in is dead (or was never there) would leave it signed in with nothing
+// that works, a feed that just fails. A fresh API-key sign-in fixes it, and
+// Apollo only removes accounts from its own Accounts screen, so point there.
+static void ApolloPresentSignInAgainWithAPIKey(UIViewController *host, NSString *username, BOOL hasSavedSignIn) {
+    BOOL inAccounts = [host isKindOfClass:[ApolloAccountSwitcherViewController class]];
+    NSString *cause = hasSavedSignIn
+        ? [NSString stringWithFormat:@"u/%@'s saved API-key sign-in no longer works", username]
+        : [NSString stringWithFormat:@"u/%@ has no saved API-key sign-in", username];
+    NSString *message = [NSString stringWithFormat:
+        @"%@, so it stays on API-Key-Free Mode. Remove it %@, then add it back with Sign In With API Key.",
+        cause, inAccounts ? @"here" : @"in Accounts"];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Sign In Again With Your API Key"
                                                                    message:message
                                                             preferredStyle:UIAlertControllerStyleAlert];
+    if (inAccounts) {
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+    } else {
+        __weak UIViewController *weakHost = host;
+        [alert addAction:[UIAlertAction actionWithTitle:@"Open Accounts" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+            ApolloOpenAccountManager(weakHost.view.window);
+        }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"Not Now" style:UIAlertActionStyleCancel handler:nil]];
+    }
+    [host presentViewController:alert animated:YES completion:nil];
+}
+
+static void ApolloPresentConfirmSwitchToAPIKey(UIViewController *host, NSString *username, void (^completion)(BOOL switched)) {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Use API Key Instead?"
+                                                                   message:[NSString stringWithFormat:@"u/%@ will stop using its web session and go back to signing in with its API key. Apollo needs to quit and reopen to finish the switch.", username]
+                                                            preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"Switch to API Key"
-                                              style:(cleanSwitch ? UIAlertActionStyleDefault : UIAlertActionStyleDestructive)
+                                              style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction *a) {
         ApolloWebSessionRemove(username);
         ApolloLog(@"[WebJSON] u/%@ switched to API-key sign-in — web session removed", username);
@@ -1026,4 +1099,86 @@ void ApolloPresentSwitchToAPIKeyFlow(UIViewController *host, NSString *username,
         if (completion) completion(NO);
     }]];
     [host presentViewController:alert animated:YES completion:nil];
+}
+
+void ApolloPresentSwitchToAPIKeyFlow(UIViewController *host, NSString *username, void (^completion)(BOOL switched)) {
+    if (username.length == 0) { if (completion) completion(NO); return; }
+    completion = [completion copy];
+
+    // The key Apollo refreshes this account with: its own pinned key, else the
+    // default from Settings.
+    ApolloAccountCredentialEntry *entry = ApolloAccountCredentialsFor(username);
+    NSString *clientId = entry.clientId.length > 0 ? entry.clientId : sRedditClientId;
+    if (clientId.length == 0) {
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Add an API Key First"
+                                                                       message:[NSString stringWithFormat:@"There's no Reddit API key in Accounts & API Keys yet, so u/%@ has nothing to sign in with.", username]
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+        [host presentViewController:alert animated:YES completion:nil];
+        if (completion) completion(NO);
+        return;
+    }
+
+    // An access token alone (no refresh token) expires within the hour, so
+    // only a refresh token counts as a saved sign-in.
+    NSString *refreshToken = ApolloWebJSONDiskAccountRefreshToken(username);
+    if (refreshToken.length == 0) {
+        ApolloLog(@"[WebJSON] u/%@ has no saved API-key sign-in — keeping its web session", username);
+        ApolloPresentSignInAgainWithAPIKey(host, username, NO);
+        if (completion) completion(NO);
+        return;
+    }
+
+    UIAlertController *checking = [UIAlertController alertControllerWithTitle:@"Checking Sign-In…"
+                                                                      message:[NSString stringWithFormat:@"Making sure u/%@'s saved API-key sign-in still works.", username]
+                                                               preferredStyle:UIAlertControllerStyleAlert];
+    // Cancel and the check's answer both land on main; whichever comes first wins.
+    __block BOOL settled = NO;
+    [checking addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction *a) {
+        if (settled) return;
+        settled = YES;
+        if (completion) completion(NO);
+    }]];
+    __weak UIViewController *weakHost = host;
+    __weak UIAlertController *weakChecking = checking;
+    // Start the check once the alert is up, so a fast answer never dismisses
+    // it mid-presentation (UIKit can drop a dismissal sent then).
+    [host presentViewController:checking animated:YES completion:^{
+        ApolloCheckSavedAPIKeySignIn(clientId, refreshToken, ^(ApolloSavedAPIKeySignIn result, NSInteger status) {
+            if (settled) return;
+            settled = YES;
+            ApolloLog(@"[WebJSON] u/%@'s saved API-key sign-in %@ (HTTP %ld)", username,
+                      result == ApolloSavedAPIKeySignInWorks ? @"works" :
+                      result == ApolloSavedAPIKeySignInRejected ? @"was rejected" : @"couldn't be checked",
+                      (long)status);
+            void (^next)(void) = ^{
+                UIViewController *strongHost = weakHost;
+                if (!strongHost.view.window) { if (completion) completion(NO); return; }
+                switch (result) {
+                    case ApolloSavedAPIKeySignInWorks:
+                        ApolloPresentConfirmSwitchToAPIKey(strongHost, username, completion);
+                        break;
+                    case ApolloSavedAPIKeySignInRejected:
+                        ApolloPresentSignInAgainWithAPIKey(strongHost, username, YES);
+                        if (completion) completion(NO);
+                        break;
+                    case ApolloSavedAPIKeySignInUnknown: {
+                        UIAlertController *failed = [UIAlertController alertControllerWithTitle:@"Couldn't Check Sign-In"
+                                                                                        message:@"Reddit didn't answer. Check your connection and try again."
+                                                                                 preferredStyle:UIAlertControllerStyleAlert];
+                        [failed addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+                        [strongHost presentViewController:failed animated:YES completion:nil];
+                        if (completion) completion(NO);
+                        break;
+                    }
+                }
+            };
+            UIAlertController *strongChecking = weakChecking;
+            if (strongChecking.presentingViewController) {
+                [strongChecking dismissViewControllerAnimated:YES completion:next];
+            } else {
+                next();
+            }
+        });
+    }];
 }

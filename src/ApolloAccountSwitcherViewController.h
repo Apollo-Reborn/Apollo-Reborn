@@ -25,4 +25,18 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// Opens Apollo's Accounts screen (and this switcher over it) from any tab, via
+// the Account tab's own accounts bar button. NO when that tab isn't loaded yet.
+// sourceWindow picks the scene; nil falls back to the key window. Defined in
+// ApolloLiquidGlass.xm beside the tab long-press opener, which shares its lookup.
+BOOL ApolloOpenAccountManager(UIWindow *_Nullable sourceWindow);
+
+#ifdef __cplusplus
+}
+#endif
+
 NS_ASSUME_NONNULL_END
