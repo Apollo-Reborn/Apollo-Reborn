@@ -92,6 +92,43 @@ int main(void) {
         CHECK(sApolloInboxParentsWriteCount.count == kApolloInboxParentsReuseMaxEntries, "write counts are evicted with them");
         NSString *newest = ApolloInboxParentsReuseKey(Client(@"keyless"), @[[NSString stringWithFormat:@"t1_%lu", (unsigned long)(kApolloInboxParentsReuseMaxEntries + 2)]]);
         CHECK(ApolloInboxParentsReusable(newest, NULL) != nil, "the newest answer survives eviction");
+
+        // Two Inboxes asking for the same parents at once (#1664): the second joins the first.
+        NSString *launchA = ApolloInboxParentsReuseKey(Client(@"keyless"), @[@"t1_x", @"t1_y", @"t3_z"]);
+        NSString *launchB = ApolloInboxParentsReuseKey(Client(@"keyless"), @[@"t3_z", @"t1_y", @"t1_x"]);
+        NSUInteger writes = ApolloWebJSONAccountWriteCount(@"keyless");
+        id noop = ^(NSArray *t, NSError *e) {};
+        ApolloInboxParentsLookup *first = nil, *second = nil;
+        CHECK(!ApolloInboxParentsJoinInFlight(nil, writes, noop, &first) && first == nil, "no key (OAuth) never joins or registers");
+        CHECK(!ApolloInboxParentsJoinInFlight(launchA, writes, noop, &first) && first != nil, "the first lookup goes out");
+        CHECK(ApolloInboxParentsJoinInFlight(launchB, writes, noop, &second) && second == nil, "the same parents in another order join it");
+        CHECK(ApolloInboxParentsJoinInFlight(launchA, writes, noop, NULL), "a third caller joins too");
+        NSString *otherSet = ApolloInboxParentsReuseKey(Client(@"keyless"), @[@"t1_x"]);
+        ApolloInboxParentsLookup *other = nil;
+        CHECK(!ApolloInboxParentsJoinInFlight(otherSet, writes, noop, &other) && other != nil, "a different set sends its own");
+        CHECK([ApolloInboxParentsFinishInFlight(otherSet, other) count] == 0, "a lookup nobody joined answers only itself");
+        CHECK([ApolloInboxParentsFinishInFlight(launchA, first) count] == 2, "the answer reaches every caller that joined");
+        CHECK(sApolloInboxParentsInFlight[launchA] == nil, "an answered lookup stops taking callers");
+        CHECK([ApolloInboxParentsFinishInFlight(launchA, first) count] == 2 && sApolloInboxParentsInFlight[launchA] == nil,
+              "finishing twice doesn't disturb the key");
+
+        ApolloInboxParentsLookup *beforeWrite = nil, *afterWrite = nil;
+        ApolloInboxParentsJoinInFlight(launchA, writes, noop, &beforeWrite);
+        Write(@"keyless");
+        NSUInteger writesAfter = ApolloWebJSONAccountWriteCount(@"keyless");
+        CHECK(!ApolloInboxParentsJoinInFlight(launchA, writesAfter, noop, &afterWrite) && afterWrite != nil,
+              "a caller after a write doesn't join an answer that may predate it");
+        ApolloInboxParentsFinishInFlight(launchA, beforeWrite);
+        CHECK(sApolloInboxParentsInFlight[launchA] == afterWrite, "the older lookup's answer leaves the newer one in flight");
+        ApolloInboxParentsFinishInFlight(launchA, afterWrite);
+
+        ApolloInboxParentsLookup *stalled = nil, *fresh = nil;
+        ApolloInboxParentsJoinInFlight(launchA, writesAfter, noop, &stalled);
+        stalled.sentAt = [NSDate dateWithTimeIntervalSinceNow:-(kApolloInboxParentsJoinWindow + 1)];
+        CHECK(!ApolloInboxParentsJoinInFlight(launchA, writesAfter, noop, &fresh) && fresh != nil,
+              "a lookup that never answered stops taking callers after the join window");
+        CHECK([ApolloInboxParentsFinishInFlight(launchA, stalled) count] == 0 && sApolloInboxParentsInFlight[launchA] == fresh,
+              "a late answer from the stalled lookup leaves the fresh one in flight");
     }
     if (failures) {
         NSLog(@"%d inbox parent reuse check(s) failed", failures);

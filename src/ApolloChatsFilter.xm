@@ -2499,11 +2499,28 @@ static id ApolloInboxCompletionMarkingParentLookup(id completion) {
 // minutes, until the account writes anything (an edited or deleted comment can be a parent; the
 // same write count ApolloWebJSON's shared reads start over on). A new reply (a new set) still asks
 // Reddit. OAuth accounts have Reddit's full API budget and keep the stock lookup.
+//
+// The same lookup can also be asked for twice at once: at launch two InboxViewControllers load the
+// same page together (their message/inbox reads are already shared, ApolloWebJSONShareAccountRead),
+// and each then looks up the same parents, in a different order (#1664). A lookup for a set already
+// in flight waits for that answer instead of sending its own.
 static const NSTimeInterval kApolloInboxParentsReuseTTL = 10.0 * 60.0;
 static const NSUInteger kApolloInboxParentsReuseMaxEntries = 8;
 static NSMutableDictionary<NSString *, NSArray *> *sApolloInboxParentsByKey;
 static NSMutableDictionary<NSString *, NSDate *> *sApolloInboxParentsAnsweredAt;
 static NSMutableDictionary<NSString *, NSNumber *> *sApolloInboxParentsWriteCount;
+// A lookup in flight: the completions of the callers that joined it, the account's write count when
+// it went out (a caller after a write doesn't join an answer that may predate it), and when it went
+// out (one RedditKit never answers stops taking callers after a minute).
+@interface ApolloInboxParentsLookup : NSObject
+@property (nonatomic, strong) NSMutableArray *joiners;
+@property (nonatomic) NSUInteger writesAtSend;
+@property (nonatomic, strong) NSDate *sentAt;
+@end
+@implementation ApolloInboxParentsLookup
+@end
+static const NSTimeInterval kApolloInboxParentsJoinWindow = 60.0;
+static NSMutableDictionary<NSString *, ApolloInboxParentsLookup *> *sApolloInboxParentsInFlight;
 
 static NSObject *ApolloInboxParentsLock(void) {
     static NSObject *lock;
@@ -2569,6 +2586,41 @@ static void ApolloInboxParentsRemember(NSString *key, NSArray *things, NSUIntege
             [sApolloInboxParentsByKey removeObjectForKey:oldest];
             [sApolloInboxParentsWriteCount removeObjectForKey:oldest];
         }
+    }
+}
+
+// YES: `completion` joined the lookup for `key` already in flight (sent at the same write count,
+// under a minute ago) and gets its answer. NO: the caller sends its own lookup; with a key it is
+// now the one in flight, returned in `*outLookup` for ApolloInboxParentsFinishInFlight.
+static BOOL ApolloInboxParentsJoinInFlight(NSString *key, NSUInteger writesAtSend, id completion,
+                                           ApolloInboxParentsLookup **outLookup) {
+    if (outLookup) *outLookup = nil;
+    if (!key || !completion) return NO;
+    @synchronized (ApolloInboxParentsLock()) {
+        ApolloInboxParentsLookup *inFlight = sApolloInboxParentsInFlight[key];
+        if (inFlight && inFlight.writesAtSend == writesAtSend &&
+            -inFlight.sentAt.timeIntervalSinceNow < kApolloInboxParentsJoinWindow) {
+            [inFlight.joiners addObject:[completion copy]];
+            return YES;
+        }
+        if (!sApolloInboxParentsInFlight) sApolloInboxParentsInFlight = [NSMutableDictionary dictionary];
+        ApolloInboxParentsLookup *lookup = [ApolloInboxParentsLookup new];
+        lookup.joiners = [NSMutableArray array];
+        lookup.writesAtSend = writesAtSend;
+        lookup.sentAt = [NSDate date];
+        sApolloInboxParentsInFlight[key] = lookup;
+        if (outLookup) *outLookup = lookup;
+        return NO;
+    }
+}
+
+// The completions that joined `lookup`, once it's answered. Its key is cleared only if it still
+// owns it: a newer lookup (after a write, or after this one went quiet) may have taken it over.
+static NSArray *ApolloInboxParentsFinishInFlight(NSString *key, ApolloInboxParentsLookup *lookup) {
+    if (!key || !lookup) return @[];
+    @synchronized (ApolloInboxParentsLock()) {
+        if (sApolloInboxParentsInFlight[key] == lookup) [sApolloInboxParentsInFlight removeObjectForKey:key];
+        return [lookup.joiners copy];
     }
 }
 
@@ -2644,7 +2696,8 @@ static void ApolloInboxParentsRemember(NSString *key, NSArray *things, NSUIntege
 
 // The Inbox's reply-parent lookup (Inbox reply parents, above): a failure answers with an empty
 // list so the page still draws, and an API-Key-Free account reuses a recent answer for the same
-// parents (Reused reply parents, above). Any other caller passes straight through.
+// parents, or joins the same lookup in flight (Reused reply parents, above). Any other caller
+// passes straight through.
 - (id)thingsByFullNames:(id)fullNames completion:(id)completion {
     if (!completion || ![[NSThread currentThread].threadDictionary[kApolloInboxPageHandlingKey] boolValue]) return %orig;
     void (^lookupCompletion)(NSArray *, NSError *) = completion;
@@ -2661,15 +2714,25 @@ static void ApolloInboxParentsRemember(NSString *key, NSArray *things, NSUIntege
         dispatch_async(dispatch_get_main_queue(), ^{ lookupCompletion(reused, nil); });
         return nil;
     }
+    ApolloInboxParentsLookup *lookup = nil;
+    if (ApolloInboxParentsJoinInFlight(reuseKey, writesAtSend, lookupCompletion, &lookup)) {
+        ApolloLog(@"[InboxParents] Joined the lookup of the same %lu reply parent(s) already in flight instead of asking Reddit again",
+                  (unsigned long)requested);
+        // Like the reuse above, the answer comes later and Apollo ignores the returned task.
+        return nil;
+    }
     id wrapped = ^(NSArray *things, NSError *error) {
+        NSArray *joiners = ApolloInboxParentsFinishInFlight(reuseKey, lookup);
         if (!error && [things isKindOfClass:[NSArray class]]) {
             ApolloInboxParentsRemember(reuseKey, things, writesAtSend);
             lookupCompletion(things, nil);
+            for (void (^joiner)(NSArray *, NSError *) in joiners) joiner(things, nil);
             return;
         }
         ApolloLog(@"[InboxParents] Lookup of %lu reply parent(s) failed (%@); showing the page without them",
                   (unsigned long)requested, error.localizedDescription ?: @"no list");
         lookupCompletion(@[], nil);
+        for (void (^joiner)(NSArray *, NSError *) in joiners) joiner(@[], nil);
     };
     return %orig(fullNames, wrapped);
 }
