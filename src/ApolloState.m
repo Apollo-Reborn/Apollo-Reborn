@@ -25,6 +25,7 @@ BOOL sFeedGalleryCarousel = YES;
 BOOL sFeedGalleryEdgeSwipeNav = NO;
 BOOL sGalleryAutoplayVideos = YES;
 BOOL sGalleryAutoplayGIFs = YES;
+NSInteger sGallerySlideshowPhotoDuration = 5;
 BOOL sForwardSwipeForgetAfterScrolling = NO; // scrolling the feed away expires the forward-swipe memory (opt-in)
 BOOL sSwipeUpForComments = NO;
 BOOL sDevvitInteractivePosts = NO;

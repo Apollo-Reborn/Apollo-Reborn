@@ -651,6 +651,7 @@ static void *kApolloGalleryTileItemStatusContext = &kApolloGalleryTileItemStatus
 @property (nonatomic, weak) UIGestureRecognizer *contextMenuPopGesture;
 @property (nonatomic) BOOL popGestureEnabledBeforeContextMenu;
 @property (nonatomic, strong, nullable) UIBarButtonItem *filterBarButtonItem;
+@property (nonatomic, strong, nullable) UIBarButtonItem *slideshowBarButtonItem;
 @property (nonatomic) NSInteger tileSizeIndex;
 @property (nonatomic, strong) UIPinchGestureRecognizer *tilePinch;
 @property (nonatomic, copy) NSArray<NSNumber *> *pinchSizeIndices;
@@ -1735,7 +1736,47 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
         [buttons addObject:sort];
     }
     [buttons addObject:self.filterBarButtonItem];
+    // play.rectangle.on.rectangle is iOS 15+; the plain one covers iOS 14.
+    UIImage *slideshowImage = [UIImage systemImageNamed:@"play.rectangle.on.rectangle"]
+        ?: [UIImage systemImageNamed:@"play.rectangle"];
+    self.slideshowBarButtonItem = [[UIBarButtonItem alloc] initWithImage:slideshowImage
+                                                                   style:UIBarButtonItemStylePlain
+                                                                  target:self
+                                                                  action:@selector(apollo_slideshowPressed)];
+    self.slideshowBarButtonItem.accessibilityLabel = @"Start Slideshow";
     self.navigationItem.rightBarButtonItems = buttons;
+    // On the left: a third button on the right squeezed "Gallery" to "…".
+    self.navigationItem.leftItemsSupplementBackButton = YES;
+    self.navigationItem.leftBarButtonItems = @[ self.slideshowBarButtonItem ];
+    [self apollo_updateSlideshowButton];
+}
+
+- (void)apollo_updateSlideshowButton {
+    self.slideshowBarButtonItem.enabled = self.feed.items.count > 0;
+}
+
+// The first tile wholly on screen, else the first partly visible one.
+- (NSInteger)apollo_firstVisibleItemIndex {
+    NSInteger count = (NSInteger)self.feed.items.count;
+    if (count == 0) return 0;
+    CGRect visible = UIEdgeInsetsInsetRect(self.collectionView.bounds, self.collectionView.adjustedContentInset);
+    NSArray<NSIndexPath *> *paths = [self.collectionView.indexPathsForVisibleItems sortedArrayUsingSelector:@selector(compare:)];
+    NSInteger index = paths.count > 0 ? paths.firstObject.item : 0;
+    for (NSIndexPath *path in paths) {
+        UICollectionViewLayoutAttributes *attributes = [self.collectionView layoutAttributesForItemAtIndexPath:path];
+        if (attributes && CGRectContainsRect(visible, attributes.frame)) {
+            index = path.item;
+            break;
+        }
+    }
+    return MAX(0, MIN(index, count - 1));
+}
+
+- (void)apollo_slideshowPressed {
+    if (self.feed.items.count == 0 || self.activeViewer || self.galleryContextMenuActive) return;
+    NSInteger index = [self apollo_firstVisibleItemIndex];
+    ApolloLog(@"[Gallery] slideshow requested from grid at %ld", (long)index);
+    [self apollo_presentViewerAtIndex:index startingSlideshow:YES];
 }
 
 // A filled glyph while a filter is narrowing things down, so it's obvious at a
@@ -2009,6 +2050,7 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
 }
 
 - (void)apollo_updateEmptyStateWithError:(NSString *)errorMessage {
+    [self apollo_updateSlideshowButton];
     if (self.feed.items.count > 0) {
         self.messageLabel.hidden = YES;
         self.retryButton.hidden = YES;
@@ -2103,6 +2145,7 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
 // The count can only have GROWN here — shrinks happen solely in
 // apollo_toggleKind, which reloads wholesale.
 - (void)apollo_syncAppendedItems {
+    [self apollo_updateSlideshowButton];
     if (self.galleryReloadPendingAfterMenu) return;
     NSInteger known = [self.collectionView numberOfItemsInSection:0];
     NSInteger total = (NSInteger)self.feed.items.count;
@@ -2311,10 +2354,14 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
     [collectionView deselectItemAtIndexPath:indexPath animated:NO];
     if (self.galleryContextMenuActive) return;
     if (indexPath.item >= (NSInteger)self.feed.items.count) return;
+    [self apollo_presentViewerAtIndex:indexPath.item startingSlideshow:NO];
+}
 
+- (void)apollo_presentViewerAtIndex:(NSInteger)index startingSlideshow:(BOOL)startSlideshow {
     ApolloGalleryImageViewer *viewer = [[ApolloGalleryImageViewer alloc] initWithFeed:self.feed
-                                                                        initialIndex:indexPath.item];
+                                                                        initialIndex:index];
     viewer.galleryDelegate = self;
+    viewer.startsSlideshow = startSlideshow;
     self.activeViewer = viewer;
     // OverFullScreen retains this view, so viewWillDisappear does not pause
     // the grid for us. Only the fullscreen page should keep playing.

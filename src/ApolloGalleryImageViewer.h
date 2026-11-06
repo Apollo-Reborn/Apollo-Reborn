@@ -36,6 +36,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithCoder:(NSCoder *)coder NS_UNAVAILABLE;
 
 @property (nonatomic, weak, nullable) id<ApolloGalleryImageViewerDelegate> galleryDelegate;
+// Set before presenting to open with a slideshow running (the grid's button).
+@property (nonatomic) BOOL startsSlideshow;
 // Index of the picture currently on screen.
 @property (nonatomic, readonly) NSInteger currentIndex;
 
