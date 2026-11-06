@@ -1278,6 +1278,12 @@ static void ApolloMarkdownGifApplyMediaGating(UIViewController *composeControlle
     if (cached && cached.commentMediaInfoAvailable) {
         ApolloMarkdownGifApplyGatingStates(imageControl, gifButton, subreddit,
                                            cached.allowsImageComments || imagesPostAsLinks, cached.allowsGifComments);
+        // An entry cached before the static/animated split refreshes once, so a
+        // camera-roll GIF upload knows whether this subreddit takes uploaded GIFs
+        // (#1663). The buttons only use allowsImageComments, so nothing re-applies.
+        if (!cached.imageCommentKindsAvailable) {
+            [cache requestCommentMediaInfoForSubreddit:subreddit completion:^(__unused ApolloSubredditInfo *info) {}];
+        }
         return;
     }
 
@@ -1453,6 +1459,9 @@ BOOL ApolloCommentNativeUploadPending(void) {
            sApolloCommentUploadNativeMode &&
            sApolloCommentLinkArmedComposer != nil &&
            [NSDate timeIntervalSinceReferenceDate] < sApolloCommentLinkUploadUntil;
+}
+NSString *ApolloActiveCommentComposerSubreddit(void) {
+    return ApolloMarkdownGifResolveCommentSubreddit(sApolloCommentLinkArmedComposer ?: sApolloMarkdownGifActiveComposeController);
 }
 void ApolloCommentLinkClearUpload(void) {
     sApolloCommentLinkUploadUntil = 0.0;

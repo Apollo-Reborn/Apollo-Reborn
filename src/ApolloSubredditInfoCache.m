@@ -250,6 +250,11 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
         dict[@"allowsImageComments"] = @(info.allowsImageComments);
         dict[@"allowsGifComments"] = @(info.allowsGifComments);
     }
+    if (info.imageCommentKindsAvailable) {
+        dict[@"imageCommentKindsAvailable"] = @(YES);
+        dict[@"allowsStaticImageComments"] = @(info.allowsStaticImageComments);
+        dict[@"allowsAnimatedImageComments"] = @(info.allowsAnimatedImageComments);
+    }
     if (info.userFlairInfoAvailable) {
         dict[@"userFlairInfoAvailable"] = @(YES);
         dict[@"usersCanAssignUserFlair"] = @(info.usersCanAssignUserFlair);
@@ -296,6 +301,9 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
     info.commentMediaInfoAvailable = [dict[@"commentMediaInfoAvailable"] boolValue];
     info.allowsImageComments = [dict[@"allowsImageComments"] boolValue];
     info.allowsGifComments = [dict[@"allowsGifComments"] boolValue];
+    info.imageCommentKindsAvailable = [dict[@"imageCommentKindsAvailable"] boolValue];
+    info.allowsStaticImageComments = [dict[@"allowsStaticImageComments"] boolValue];
+    info.allowsAnimatedImageComments = [dict[@"allowsAnimatedImageComments"] boolValue];
     info.userFlairInfoAvailable = [dict[@"userFlairInfoAvailable"] boolValue];
     info.usersCanAssignUserFlair = [dict[@"usersCanAssignUserFlair"] boolValue];
     id storedSubscriberFlag = dict[@"userIsSubscriber"];
@@ -489,11 +497,14 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
     id mediaValue = dataDict[@"allowed_media_in_comments"];
     if ([mediaValue isKindOfClass:[NSArray class]]) {
         info.commentMediaInfoAvailable = YES;
+        info.imageCommentKindsAvailable = YES;
         for (id entry in (NSArray *)mediaValue) {
             if (![entry isKindOfClass:[NSString class]]) continue;
             NSString *kind = [(NSString *)entry lowercaseString];
             if ([kind isEqualToString:@"static"] || [kind isEqualToString:@"animated"]) {
                 info.allowsImageComments = YES;
+                if ([kind isEqualToString:@"static"]) info.allowsStaticImageComments = YES;
+                else info.allowsAnimatedImageComments = YES;
             } else if ([kind isEqualToString:@"giphy"]) {
                 info.allowsGifComments = YES;
             }
@@ -676,13 +687,14 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
 
 - (void)requestCommentMediaInfoForSubreddit:(NSString *)subredditName completion:(void (^)(ApolloSubredditInfo *info))completion {
     ApolloSubredditInfo *cached = [self cachedInfoForSubreddit:subredditName];
-    if (cached && [self isFreshInfo:cached] && cached.commentMediaInfoAvailable) {
+    BOOL complete = cached.commentMediaInfoAvailable && cached.imageCommentKindsAvailable;
+    if (cached && [self isFreshInfo:cached] && complete) {
         if (completion) completion(cached);
         return;
     }
-    // Fresh entry missing the comment-media field (older disk cache) → force a
-    // refetch so we don't keep serving incomplete data.
-    BOOL forceRefresh = (cached != nil && !cached.commentMediaInfoAvailable);
+    // Fresh entry missing the comment-media field or its static/animated split
+    // (older disk cache) → force a refetch so we don't keep serving incomplete data.
+    BOOL forceRefresh = (cached != nil && !complete);
     [self enqueueRequestForSubreddit:subredditName forceRefresh:forceRefresh completion:completion];
 }
 

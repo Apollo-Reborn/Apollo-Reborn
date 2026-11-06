@@ -31,6 +31,13 @@ FOUNDATION_EXPORT void ApolloSubredditPrepareNativeIcons(void);
 @property(nonatomic) BOOL commentMediaInfoAvailable;
 @property(nonatomic) BOOL allowsImageComments; // uploaded images/gifs ("static"/"animated")
 @property(nonatomic) BOOL allowsGifComments;   // Giphy GIFs ("giphy")
+// The two upload kinds behind allowsImageComments. Mod tools toggle them
+// separately, so a community can take uploaded images but refuse uploaded GIFs.
+// `imageCommentKindsAvailable` is NO on entries cached before the split was
+// captured; treat that as unknown.
+@property(nonatomic) BOOL imageCommentKindsAvailable;
+@property(nonatomic) BOOL allowsStaticImageComments;   // "static"
+@property(nonatomic) BOOL allowsAnimatedImageComments; // "animated"
 
 // Whether Reddit says users may assign their own flair in this community.
 // The availability bit distinguishes a known NO from an older cached entry.
