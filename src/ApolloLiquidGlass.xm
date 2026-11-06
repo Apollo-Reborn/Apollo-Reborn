@@ -417,12 +417,13 @@ static void ApolloCollectVerticalTabButtonFrames(UIView *view, UIWindow *window,
     }
 }
 
-static BOOL ApolloWindowPointTargetsProfile(UIWindow *window, CGPoint point) {
+// Index of the rail's Posts (0) or Account (2) button under point, else NSNotFound.
+static NSInteger ApolloWindowRailShortcutIndexAtPoint(UIWindow *window, CGPoint point) {
     if (!window || !ApolloDuoRailHasVisibleSideBar()
-        || point.x < CGRectGetWidth(window.bounds) * 0.75) return NO;
+        || point.x < CGRectGetWidth(window.bounds) * 0.75) return NSNotFound;
     UITabBarController *tabs = (id)ApolloMainTabBarController();
     if (![tabs isKindOfClass:UITabBarController.class]
-        || tabs.viewIfLoaded.window != window || tabs.presentedViewController) return NO;
+        || tabs.viewIfLoaded.window != window || tabs.presentedViewController) return NSNotFound;
 
     NSMutableArray<NSValue *> *rawFrames = [NSMutableArray array];
     ApolloCollectVerticalTabButtonFrames(window, window, rawFrames);
@@ -441,8 +442,11 @@ static BOOL ApolloWindowPointTargetsProfile(UIWindow *window, CGPoint point) {
         }
     }
     // Normal and selected-content copies share a center. Require the touch to
-    // be inside the Account button, not merely at its Y position in the feed.
-    return frames.count == 5 && CGRectContainsPoint(frames[2].CGRectValue, point);
+    // be inside the button, not merely at its Y position in the feed.
+    if (frames.count != 5) return NSNotFound;
+    if (CGRectContainsPoint(frames[0].CGRectValue, point)) return 0;
+    if (CGRectContainsPoint(frames[2].CGRectValue, point)) return 2;
+    return NSNotFound;
 }
 
 static void ApolloHandleTabShortcutLongPress(UIView *view, UILongPressGestureRecognizer *recognizer) {
@@ -634,7 +638,9 @@ static void ApolloInsetLiquidGlassTabBadges(UIView *tabButton) {
     CGPoint point = [touch locationInView:window];
     switch (touch.phase) {
         case UITouchPhaseBegan: {
-            if (touches.count != 1 || !ApolloWindowPointTargetsProfile(window, point)) return;
+            NSInteger shortcutIndex = touches.count == 1
+                ? ApolloWindowRailShortcutIndexAtPoint(window, point) : NSNotFound;
+            if (shortcutIndex == NSNotFound) return;
             NSUInteger generation = ++sApolloAccountRailPressGeneration;
             sApolloAccountRailPressTouch = touch;
             sApolloAccountRailPressOrigin = point;
@@ -647,6 +653,14 @@ static void ApolloInsetLiquidGlassTabBadges(UIView *tabButton) {
                 CGPoint current = [currentTouch locationInView:window];
                 if (hypot(current.x - sApolloAccountRailPressOrigin.x,
                           current.y - sApolloAccountRailPressOrigin.y) > 12.0) return;
+                if (shortcutIndex == 0) {
+                    os_log_debug(ApolloFixLog(), "[ApolloFix] [LiquidGlassTabBar] Posts touch hold opening subreddit switcher");
+                    if (ApolloPresentPostsTabSubredditSheet(window)) {
+                        ApolloPostsTabHoldConsumesTap = YES;
+                        [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium] impactOccurred];
+                    }
+                    return;
+                }
                 os_log_debug(ApolloFixLog(), "[ApolloFix] [LiquidGlassTabBar] Profile touch hold opening account switcher");
                 OpenAccountManager(window);
             });
@@ -667,6 +681,10 @@ static void ApolloInsetLiquidGlassTabBadges(UIView *tabButton) {
                 ++sApolloAccountRailPressGeneration;
                 sApolloAccountRailPressTouch = nil;
                 ApolloFinishAccountRailLongPress();
+                // The tab's tap from this lift may arrive after this event.
+                if (ApolloPostsTabHoldConsumesTap) {
+                    dispatch_async(dispatch_get_main_queue(), ^{ ApolloPostsTabHoldConsumesTap = NO; });
+                }
             }
             break;
         default:
@@ -2052,7 +2070,10 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
     // (don't recurse to the buttons inside, which sit a few points further in).
     // Otherwise recurse into containers (e.g. _UITAMICAdaptorView wrappers) and
     // treat controls / labels / image views / visual-effect bubbles as edges.
-    UIEdgeInsets chromeInsets = ApolloDeviceChromeInsetsForView(bar);
+    // The medium account sheet sits below Duo's rail, which it already clears
+    // from the bar's safe area; its layout margins can still include it.
+    UIEdgeInsets chromeInsets = ApolloIsAccountSheetContent(bar)
+        ? UIEdgeInsetsZero : ApolloDeviceChromeInsetsForView(bar);
     CGFloat leftLimit = CGRectGetMinX(bar.bounds) + chromeInsets.left;
     CGFloat rightLimit = CGRectGetMaxX(bar.bounds) - chromeInsets.right;
     // A pane's primary navigation bar can extend underneath UIKit's sidebar.
@@ -2215,6 +2236,20 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
     // a zero-width constraint here makes that temporary size self-perpetuating.
     // Its content/layout callback retries once the native title is ready.
     if (!searching && naturalWidth <= 1.0) return NO;
+    // A Live Activity on the unfolded Duo pushes the pill near the midpoint;
+    // slide the title into the free space rather than squeezing it to "…".
+    if (!searching && !lowerIPadTitle && !centerBetweenButtons) {
+        ApolloNavigationTitleGeometry fitted = ApolloNavigationTitleFittedGeometry(geometry,
+            MAX(leftLimit, CGRectGetMinX(titleBounds)), MIN(rightLimit, CGRectGetMaxX(titleBounds)),
+            naturalWidth, capsulePadding, kEdgePadding);
+        if (fitted.center != geometry.center || fitted.maximumContentWidth != geometry.maximumContentWidth) {
+            os_log_debug(ApolloFixLog(), "[ApolloFix] [NavigationTitleLayout] %{public}@ slid title center %.1f -> %.1f max %.1f -> %.1f",
+                         NSStringFromClass(topVC.class), geometry.center, fitted.center,
+                         geometry.maximumContentWidth, fitted.maximumContentWidth);
+            geometry = fitted;
+            maximumWidth = geometry.maximumContentWidth;
+        }
+    }
     CGFloat fittedWidth = searching ? maximumWidth : MIN(maximumWidth, naturalWidth);
     CGFloat widthTolerance = 0.5 / MAX(1.0, titleControl.traitCollection.displayScale);
     BOOL widthChanged = !controller.fittedWidthConstraint ||

@@ -53,6 +53,11 @@ BOOL ApolloDuoCoverChromeIsActive(void);
 /// exposes only the active UIScreen. Uses Duo capability and live fold size.
 BOOL ApolloDuoUsesCoverContentInsets(void);
 
+/// YES for views in the account sheet while it sits below the trailing rail
+/// (not the large detent). The sheet clears the rail from their safe area, so
+/// title centering must not reserve it either. Defined in the account switcher.
+BOOL ApolloIsAccountSheetContent(UIView *view);
+
 /// Keep the comments jump button clear of Duo's system chrome and tab rail.
 void ApolloDuoCoverAdjustJumpButton(UIViewController *comments);
 

@@ -654,10 +654,13 @@ static UIImage *ApolloSubredditSizedActionIcon(UIImage *image) {
 
 - (ApolloIdentityHeaderLayout)apollo_identityForWidth:(CGFloat)width {
     CGRect column = ApolloDuoSplitContentFrame(self.hostViewController, self);
-    if (CGRectIsNull(column) && ApolloDuoRailHasVisibleSideBar() && self.hostViewController.view.window) {
-        // UITableView sizes its header to the readable width on the cover.
-        // Identity artwork still centers over the whole screen, including rail.
-        column = [self convertRect:self.hostViewController.view.bounds fromView:self.hostViewController.view];
+    UIView *hostView = self.hostViewController.view;
+    if (CGRectIsNull(column) && ApolloDuoRailHasVisibleSideBar() && hostView.window) {
+        // The closed cover runs the table under the trailing rail and status
+        // bar. Center the banner, icon and body in the safe area instead.
+        UIEdgeInsets safe = hostView.safeAreaInsets;
+        CGRect safeColumn = UIEdgeInsetsInsetRect(hostView.bounds, UIEdgeInsetsMake(0, safe.left, 0, safe.right));
+        column = [self convertRect:safeColumn fromView:hostView];
     }
     CGFloat leading = CGRectIsNull(column) ? 0.0 : MAX(0.0, CGRectGetMinX(column));
     CGFloat alignmentWidth = CGRectIsNull(column) ? width : CGRectGetWidth(column);
@@ -2386,6 +2389,8 @@ static void ApolloSubredditInstallAmbient(UIViewController *viewController, UITa
     }
     ambient.contentViewController = viewController;
     ambient.frame = tableView.bounds;
+    // Its artwork column can change without a frame change (closed Duo rail).
+    [ambient setNeedsLayout];
     header.bannerImageView.alpha = ApolloSubredditFadedBannerAlpha;
     ApolloSubredditSyncAmbient(header);
     ApolloSubredditUpdateAmbientScroll(viewController, tableView);
@@ -2677,6 +2682,13 @@ static BOOL ApolloSubredditNeedsInstall(UIViewController *viewController) {
     CGRect content = ApolloSubredditHeaderContentRect(tableView, viewController, width);
     if (fabs(header.frame.origin.x - content.origin.x) > 0.5 ||
         fabs(header.frame.size.width - content.size.width) > 0.5) return YES;
+    // A settings change can lay the header out offscreen, where the closed Duo
+    // safe column isn't measurable. Relayout once it's back in the window.
+    if (header.window) {
+        CGRect banner = [header apollo_identityForWidth:CGRectGetWidth(header.bounds)].bannerFrame;
+        if (fabs(CGRectGetMinX(header.bannerImageView.frame) - CGRectGetMinX(banner)) > 0.5 ||
+            fabs(CGRectGetWidth(header.bannerImageView.frame) - CGRectGetWidth(banner)) > 0.5) return YES;
+    }
 
     ApolloImmersiveHeaderBackgroundView *ambient = objc_getAssociatedObject(viewController, kApolloSubredditAmbientViewKey);
     BOOL hasAmbient = ambient != nil;
@@ -3009,6 +3021,9 @@ static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewControlle
             tableView.tableHeaderView = wrappedHeader;
             objc_setAssociatedObject(tableView, kApolloSubredditRewrapInProgressKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
+        // Same frame can still need a new inner column (offscreen layout).
+        [header setNeedsLayout];
+        [header layoutIfNeeded];
     }
     // New gets the melt/ambient backdrop. Classic keeps the same Apollo Reborn
     // header content flat/compact, while Native mode tears the wrapper down
@@ -3412,6 +3427,8 @@ static void ApolloSubredditSettleBlockedTableToTop(UITableView *tableView) {
         // structural install check misses that change. Remeasure after UIKit
         // settles the safe area, including any new description wrapping.
         [header setNeedsLayout];
+        // The immersive backdrop follows the same safe column beside the rail.
+        [(UIView *)objc_getAssociatedObject(self, kApolloSubredditAmbientViewKey) setNeedsLayout];
         ApolloSubredditScheduleRepairPass((UIViewController *)self, @"safe area changed");
     } else {
         ApolloSubredditScheduleInstallIfNeeded((UIViewController *)self);
