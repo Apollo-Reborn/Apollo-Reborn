@@ -275,6 +275,26 @@ void ApolloDuoRailPrepareTableForTransition(UITableView *table) {
 // before the transition and restore it once the new layout commits.
 static char kApolloDuoFoldAnchorKey;
 
+// The anchor's restore passes run after the transition and again 0.3s later.
+// A scroll the reader starts in that window wins: restoring after the finger
+// lifts would put the feed back and make the first scroll look ignored.
+@interface ApolloDuoFoldAnchorDragObserver : NSObject
++ (instancetype)shared;
+- (void)panChanged:(UIPanGestureRecognizer *)pan;
+@end
+@implementation ApolloDuoFoldAnchorDragObserver
++ (instancetype)shared {
+    static ApolloDuoFoldAnchorDragObserver *observer;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ observer = [self new]; });
+    return observer;
+}
+- (void)panChanged:(UIPanGestureRecognizer *)pan {
+    if (pan.state != UIGestureRecognizerStateBegan) return;
+    objc_setAssociatedObject(pan.view, &kApolloDuoFoldAnchorKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+@end
+
 static void ApolloDuoCollectVisibleTables(UIView *view, NSMutableArray<UITableView *> *tables, NSUInteger depth) {
     if (!view || view.hidden || view.alpha < 0.01 || depth > 24) return;
     if (ApolloClassASTableView && [view isKindOfClass:ApolloClassASTableView]) {
@@ -305,6 +325,9 @@ static void ApolloDuoCaptureFoldAnchor(UITableView *table) {
         CGFloat fraction = rect.size.height > 0.0 ? (visibleTop - CGRectGetMinY(rect)) / rect.size.height : 0.0;
         objc_setAssociatedObject(table, &kApolloDuoFoldAnchorKey,
             @[path, @(MAX(0.0, MIN(1.0, fraction)))], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        // UIKit ignores a target-action pair that is already registered.
+        [table.panGestureRecognizer addTarget:[ApolloDuoFoldAnchorDragObserver shared]
+                                       action:@selector(panChanged:)];
         return;
     }
 }
