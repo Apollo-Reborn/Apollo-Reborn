@@ -175,6 +175,9 @@ void ApolloActionMenuPrepareControllerForDirectAction(id actionController);
 // Apollo's own rows (an untagged element is transparent to that placement).
 void ApolloActionMenuTagElementWithNativeKind(UIMenuElement *element, NSUInteger kind);
 
+// The native Action kind a glass element was built from, NSNotFound if none.
+NSUInteger ApolloActionMenuNativeKindForElement(UIMenuElement *element);
+
 // The square box menu row icons are fitted into, in points. Apollo's own
 // option-* assets are ~24pt on the long edge and its legacy sheet shows them
 // at natural size, so 24 is the weight a row icon needs to sit next to them

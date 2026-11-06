@@ -250,6 +250,11 @@ static void ApolloActionMenuTagElementWithSpec(UIMenuElement *element, NSString 
     objc_setAssociatedObject(element, &kApolloActionMenuElementSpecKey, [specIdentifier copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
 }
 
+NSUInteger ApolloActionMenuNativeKindForElement(UIMenuElement *element) {
+    NSNumber *kind = element ? objc_getAssociatedObject(element, &kApolloActionMenuElementKindKey) : nil;
+    return kind ? kind.unsignedIntegerValue : NSNotFound;
+}
+
 // Rank of a glass element in the context's saved order; NSNotFound for an
 // element that carries no tag or whose item isn't catalogued for the context.
 static NSUInteger ApolloActionMenuRankForElement(UIMenuElement *element, ApolloActionMenuContext context) {

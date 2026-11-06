@@ -859,6 +859,7 @@ static NSInteger ApolloNativeActionMenuRowForActionKind(id actionController,
 }
 
 static BOOL sApolloNativeCapturingController;
+static BOOL sApolloNativeCapturingMenuContext;
 static id sApolloNativeCapturedController;
 
 id ApolloNativeActionMenuCaptureController(UIView *source, dispatch_block_t build) {
@@ -866,12 +867,57 @@ id ApolloNativeActionMenuCaptureController(UIView *source, dispatch_block_t buil
     sApolloNativeCapturingController = YES;
     sApolloNativeCapturedController = nil;
     @try { build(); }
-    @finally { sApolloNativeCapturingController = NO; }
+    @finally {
+        sApolloNativeCapturingController = NO;
+        sApolloNativeCapturingMenuContext = NO;
+    }
     id controller = sApolloNativeCapturedController;
     sApolloNativeCapturedController = nil;
     if (controller) objc_setAssociatedObject(controller, &kApolloNativeActionMenuSourceViewKey,
         source, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return controller;
+}
+
+id ApolloNativeActionMenuCaptureMenuController(UIView *source, dispatch_block_t build) {
+    if (sApolloNativeCapturingController) return nil;
+    sApolloNativeCapturingMenuContext = YES;
+    return ApolloNativeActionMenuCaptureController(source, build);
+}
+
+// Some sheets come one run-loop turn after their row's tap (Sort by Top's time
+// ranges): keep capturing, checking every 50 ms for up to 300 ms.
+static void ApolloNativeActionMenuFinishLateCapture(UIView *source, NSUInteger attempt, void (^done)(id controller)) {
+    id controller = sApolloNativeCapturedController;
+    if (!controller && attempt < 6) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            ApolloNativeActionMenuFinishLateCapture(source, attempt + 1, done);
+        });
+        return;
+    }
+    sApolloNativeCapturingController = NO;
+    sApolloNativeCapturingMenuContext = NO;
+    sApolloNativeCapturedController = nil;
+    if (controller) objc_setAssociatedObject(controller, &kApolloNativeActionMenuSourceViewKey,
+        source, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    done(controller);
+}
+
+void ApolloNativeActionMenuCaptureLateMenuController(UIView *source, dispatch_block_t build,
+                                                     void (^done)(id _Nullable controller)) {
+    if (sApolloNativeCapturingController || !source.window || !build || !done) {
+        if (done) done(nil);
+        return;
+    }
+    sApolloNativeCapturingController = YES;
+    sApolloNativeCapturingMenuContext = YES;
+    sApolloNativeCapturedController = nil;
+    @try { build(); }
+    @catch (NSException *exception) {
+        sApolloNativeCapturingController = NO;
+        sApolloNativeCapturingMenuContext = NO;
+        @throw;
+    }
+    ApolloNativeActionMenuFinishLateCapture(source, 0, done);
 }
 
 BOOL ApolloNativeActionMenuHasAction(id controller, uint16_t kind) {
@@ -886,6 +932,9 @@ void ApolloNativeActionMenuInvokeAction(id controller, uint16_t kind) {
 static BOOL ApolloNativeActionMenuPerformPendingDirectAction(id actionController) {
     if (sApolloNativeCapturingController &&
         [actionController isKindOfClass:ApolloClassActionController]) {
+        // The tap hook that armed this sheet's context disarms it once the
+        // handler returns, before the captured menu is built: claim it now.
+        if (sApolloNativeCapturingMenuContext) ApolloActionMenuCaptureContextForController(actionController);
         sApolloNativeCapturedController = actionController;
         return YES;
     }
@@ -1952,7 +2001,9 @@ static UIViewController *ApolloNativeActionMenuTopMostPresenter(UIViewController
 }
 
 UIMenu *ApolloNativeActionMenuBuildCaptured(id controller) {
-    return ApolloNativeActionMenuBuildMenu(controller, NO);
+    // A sheet Apollo flags moderator-only keeps the moderator styling, and its
+    // page-opening rows wait for the menu to close, as when presented.
+    return ApolloNativeActionMenuBuildMenu(controller, ApolloNativeActionMenuActionControllerIsModeratorOnly(controller));
 }
 
 BOOL ApolloNativeActionMenuPresentCaptured(UIMenu *menu, UIView *source, id controller, dispatch_block_t didEnd) {
