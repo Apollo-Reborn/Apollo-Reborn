@@ -195,6 +195,40 @@ static void CheckNativeIconTracker(void) {
     [defaults removePersistentDomainForName:suite];
 }
 
+// Uploaded images ("static") and uploaded GIFs ("animated") are separate mod
+// toggles; a camera-roll GIF keeps Apollo's still only where images are allowed
+// and GIFs aren't (#1663).
+static void CheckCommentMediaKinds(SubredditInfoHarness *cache) {
+    ApolloSubredditInfo *both = Parse(cache, @{@"allowed_media_in_comments": @[@"giphy", @"static", @"animated"]});
+    Check(both.allowsImageComments && both.imageCommentKindsAvailable &&
+          both.allowsStaticImageComments && both.allowsAnimatedImageComments && both.allowsGifComments,
+          @"static + animated + giphy parse as all three");
+
+    ApolloSubredditInfo *staticOnly = Parse(cache, @{@"allowed_media_in_comments": @[@"static"]});
+    Check(staticOnly.allowsImageComments && staticOnly.allowsStaticImageComments && !staticOnly.allowsAnimatedImageComments,
+          @"images without uploaded GIFs");
+
+    ApolloSubredditInfo *none = Parse(cache, @{@"allowed_media_in_comments": @[]});
+    Check(none.commentMediaInfoAvailable && none.imageCommentKindsAvailable && !none.allowsImageComments &&
+          !none.allowsStaticImageComments && !none.allowsAnimatedImageComments,
+          @"an empty list is known and allows nothing");
+
+    ApolloSubredditInfo *missing = Parse(cache, @{});
+    Check(!missing.commentMediaInfoAvailable && !missing.imageCommentKindsAvailable, @"a missing list stays unknown");
+
+    NSMutableDictionary *stored = [[cache dictionaryForInfo:staticOnly] mutableCopy];
+    ApolloSubredditInfo *restored = [cache infoFromDictionary:stored fallbackSubredditName:@"example"];
+    Check(restored.imageCommentKindsAvailable && restored.allowsStaticImageComments && !restored.allowsAnimatedImageComments,
+          @"the static/animated split survives the disk cache");
+
+    for (NSString *key in @[@"imageCommentKindsAvailable", @"allowsStaticImageComments", @"allowsAnimatedImageComments"]) {
+        [stored removeObjectForKey:key];
+    }
+    ApolloSubredditInfo *older = [cache infoFromDictionary:stored fallbackSubredditName:@"example"];
+    Check(older.commentMediaInfoAvailable && older.allowsImageComments && !older.imageCommentKindsAvailable,
+          @"an entry cached before the split reads as kinds unknown");
+}
+
 static void CheckRequests(SubredditInfoHarness *cache) {
     NSURLRequest *about = [cache requestForSubreddit:@"example"];
     Check([about.URL.absoluteString isEqualToString:@"https://www.reddit.com/r/example/about.json?raw_json=1"],
@@ -209,6 +243,7 @@ int main(void) {
         ApolloSubredditInfo *fresh = CheckArtworkPriority(cache);
         CheckMetadataMigration(cache, fresh);
         CheckNativeIconTracker();
+        CheckCommentMediaKinds(cache);
         CheckRequests(cache);
         printf("PASS: %lu subreddit info cache checks\n", (unsigned long)checks);
     }

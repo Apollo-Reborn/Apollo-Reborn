@@ -14,6 +14,8 @@
 #import "ApolloUploadAlbumCompatibility.h"
 #import "ApolloImgChestUpload.h"
 #import "ApolloMarkdownToolbarGif.h"
+#import "ApolloSubredditInfoCache.h"
+#import "ApolloUploadOriginalGIF.h"
 #import "ApolloMediaMetadata.h"
 #import "ApolloNewVideoPost.h"
 #import "ApolloState.h"
@@ -1660,7 +1662,9 @@ static NSData *ApolloRedditRichTextJSONDataForText(NSString *text) {
             ApolloLog(@"[RedditUpload] No asset ID recorded for uploaded media URL; falling back to markdown rewrite");
             return nil;
         }
-        [blocks addObject:@{ @"e": @"img", @"id": assetID, @"c": @"" }];
+        // An uploaded GIF is RTJSON's "gif" media element; "img" is a still.
+        BOOL animated = [ApolloRedditUploadInfoForAssetID(assetID)[@"mimeType"] isEqual:@"image/gif"];
+        [blocks addObject:@{ @"e": animated ? @"gif" : @"img", @"id": assetID, @"c": @"" }];
         cursor = NSMaxRange(blockRange);
     }
     if (cursor < text.length) {
@@ -3110,6 +3114,39 @@ static BOOL ApolloShouldUseCookieRedditUpload(NSURLRequest *request) {
     return YES;
 }
 
+// Apollo's Imgur request carries no Content-Type, so the bytes decide. A
+// camera-roll GIF swapped back in (#1663) must not go out labelled image/jpeg.
+static NSString *ApolloUploadMIMETypeForBody(NSURLRequest *request, NSData *body) {
+    if (ApolloUploadDataIsGIF(body)) return @"image/gif";
+    return ApolloMediaMIMETypeForFilename(nil, [request valueForHTTPHeaderField:@"Content-Type"]);
+}
+
+// Whether a camera-roll GIF picked for this upload (#1663) has to go out as Apollo's
+// still after all; returns the reason, or nil to upload the GIF. GIFs are kept for
+// comment/reply uploads only. Reddit's "Media in comments" settings also have
+// separate toggles for uploaded images and uploaded GIFs: where a subreddit takes
+// images but not GIFs, a native Reddit upload of the GIF would be refused when the
+// comment is submitted, so that case keeps the still (what Apollo always posted).
+// Mirrors the routing order in the upload hooks below: the link host posts a plain
+// link, an Image Chest host takes the upload unless Auto forces native, and a
+// keyless session without a web lease falls back to Imgur.
+static NSString *ApolloOriginalGIFStillReason(NSURLRequest *request) {
+    if (ApolloChatImageUploadPending()) return @"a chat upload";
+    if (ApolloCommentLinkUploadPending()) return nil;
+    NSString *subreddit = ApolloActiveCommentComposerSubreddit();
+    if (subreddit.length == 0) return @"no comment composer";
+    BOOL nativeForced = ApolloCommentNativeUploadPending();
+    if (sImageUploadProvider == ImageUploadProviderImgChest && !nativeForced) return nil;
+    BOOL cookieUpload = ApolloShouldUseCookieRedditUpload(request);
+    if (ApolloWebJSONBearerIsSynthetic(ApolloRedditUploadBearerToken()) && !cookieUpload) return nil;
+    if (!nativeForced && !cookieUpload && sImageUploadProvider != ImageUploadProviderReddit) return nil;
+    ApolloSubredditInfo *info = [[ApolloSubredditInfoCache sharedCache] cachedInfoForSubreddit:subreddit];
+    if (info.imageCommentKindsAvailable && info.allowsStaticImageComments && !info.allowsAnimatedImageComments) {
+        return [NSString stringWithFormat:@"r/%@ allows image comments but not GIFs", subreddit];
+    }
+    return nil;
+}
+
 static void ApolloCompleteRedditNativeMediaUpload(NSData *mediaData, NSURL *mediaFileURL, NSString *filename, NSString *mimeType,
                                                   NSData *videoPosterData, NSDictionary *videoContext, NSURL *originalURL, ApolloRedditNativeUploadAttempt *attempt,
                                                   void (^completionHandler)(NSData *, NSURLResponse *, NSError *)) {
@@ -3330,6 +3367,22 @@ static void ApolloCompleteRedditNativeMediaUpload(NSData *mediaData, NSURL *medi
 - (NSURLSessionUploadTask *)uploadTaskWithRequest:(NSURLRequest *)request fromData:(NSData *)bodyData completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
     ApolloRedditCaptureBearerTokenFromRequest(request, @"NSURLSession uploadTaskWithRequest:fromData:");
 
+    // Camera-roll GIF (#1663): Apollo flattened it to a JPEG of its first frame
+    // before building this request. Re-issue the upload with the original GIF so
+    // every route below (Reddit, Imgur, Image Chest, the link host) keeps the
+    // animation. The GIF's bytes match no stored JPEG, so the re-entry routes once.
+    if (completionHandler && ApolloIsImgurImageUploadRequest(request)) {
+        NSData *originalGIF = ApolloUploadOriginalGIFDataForBody(bodyData);
+        NSString *stillReason = originalGIF ? ApolloOriginalGIFStillReason(request) : nil;
+        if (stillReason) {
+            ApolloLog(@"[OriginalGIF] Uploading Apollo's still: %@", stillReason);
+        } else if (originalGIF) {
+            ApolloLog(@"[OriginalGIF] Uploading the original GIF (%lu bytes) instead of Apollo's still (%lu bytes, fromData)",
+                      (unsigned long)originalGIF.length, (unsigned long)bodyData.length);
+            return [self uploadTaskWithRequest:request fromData:originalGIF completionHandler:completionHandler];
+        }
+    }
+
     // Comment Link Host: an upload initiated from the comment/reply editor (window
     // armed by the photo-button hook in ApolloMarkdownToolbarGif.xm) routes to the
     // chosen link host and gets posted as a plain link — subreddits can disallow
@@ -3340,7 +3393,7 @@ static void ApolloCompleteRedditNativeMediaUpload(NSData *mediaData, NSURL *medi
     BOOL commentLinkImgur = NO;
     if (completionHandler && ApolloIsImgurImageUploadRequest(request) &&
         !ApolloChatImageUploadPending() && ApolloCommentLinkUploadPending()) {
-        NSString *linkMIMEType = ApolloMediaMIMETypeForFilename(nil, [request valueForHTTPHeaderField:@"Content-Type"]);
+        NSString *linkMIMEType = ApolloUploadMIMETypeForBody(request, bodyData);
         // ImgChest can't host video and needs its API key; Imgur needs an Imgur
         // client id (the request chokepoints sign uploads with it — a keyless
         // Imgur upload just 401s). When the chosen leg is unusable fall through
@@ -3380,7 +3433,7 @@ static void ApolloCompleteRedditNativeMediaUpload(NSData *mediaData, NSURL *medi
         BOOL chestForChat = ApolloChatImageUploadPending();   // capture now; the upload completes asynchronously
         if (chestForChat) ApolloChatClearImageUpload();        // window consumed: don't let it leak to a later non-chat upload
         BOOL chestForCommentLink = commentLinkImgChest;
-        NSString *chestMIMEType = ApolloMediaMIMETypeForFilename(nil, [request valueForHTTPHeaderField:@"Content-Type"]);
+        NSString *chestMIMEType = ApolloUploadMIMETypeForBody(request, bodyData);
         if (!ApolloImgChestUploadAvailable() || ApolloMediaMIMETypeIsVideo(chestMIMEType)) {
             ApolloLog(@"[ImgChestUpload] %@ — falling back to Imgur (fromData)",
                       !ApolloImgChestUploadAvailable() ? @"no ImgChest API key" : @"video uploads not supported by ImgChest");
@@ -3468,7 +3521,7 @@ static void ApolloCompleteRedditNativeMediaUpload(NSData *mediaData, NSURL *medi
         return %orig;
     }
 
-    NSString *mimeType = ApolloMediaMIMETypeForFilename(nil, [request valueForHTTPHeaderField:@"Content-Type"]);
+    NSString *mimeType = ApolloUploadMIMETypeForBody(request, bodyData);
     NSString *extension = ApolloRedditUploadExtensionForMIMEType(mimeType);
     NSString *filename = [@"apollo-upload" stringByAppendingPathExtension:extension];
     NSData *uploadData = bodyData ?: [NSData data];
@@ -3531,6 +3584,19 @@ static void ApolloCompleteRedditNativeMediaUpload(NSData *mediaData, NSURL *medi
 
 - (NSURLSessionUploadTask *)uploadTaskWithRequest:(NSURLRequest *)request fromFile:(NSURL *)fileURL completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
     ApolloRedditCaptureBearerTokenFromRequest(request, @"NSURLSession uploadTaskWithRequest:fromFile:");
+
+    // Camera-roll GIF (#1663): see the fromData: hook. The kept copy is a .gif
+    // file, so the filename-based MIME type below reads image/gif.
+    if (completionHandler && ApolloIsImgurImageUploadRequest(request)) {
+        NSURL *originalGIFFile = ApolloUploadOriginalGIFFileForBodyFile(fileURL);
+        NSString *stillReason = originalGIFFile ? ApolloOriginalGIFStillReason(request) : nil;
+        if (stillReason) {
+            ApolloLog(@"[OriginalGIF] Uploading Apollo's still: %@", stillReason);
+        } else if (originalGIFFile) {
+            ApolloLog(@"[OriginalGIF] Uploading the original GIF instead of Apollo's still (fromFile)");
+            return [self uploadTaskWithRequest:request fromFile:originalGIFFile completionHandler:completionHandler];
+        }
+    }
 
     // Comment Link Host (see the fromData: hook): comment/reply-editor uploads go
     // to the chosen link host and are posted as a plain link; chat keeps precedence.
@@ -4039,7 +4105,8 @@ void ApolloImageUploadHostInstallRebindings(void) {
             {"CGImageDestinationAddImage", (void *)hooked_CGImageDestinationAddImage,
              (void **)&orig_CGImageDestinationAddImage},
         }, 2);
+        ApolloUploadOriginalGIFInstallRebindings(_dyld_get_image_header(i), _dyld_get_image_vmaddr_slide(i));
         return;
     }
-    ApolloLog(@"[ImageUploadHost] Apollo image not found; full-resolution upload bypass inactive");
+    ApolloLog(@"[ImageUploadHost] Apollo image not found; full-resolution upload bypass and camera-roll GIF uploads inactive");
 }

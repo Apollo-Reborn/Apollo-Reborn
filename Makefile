@@ -124,6 +124,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/settings/ApolloSettingsSearch.m \
     $(SRC_DIR)/ApolloToast.m \
     $(SRC_DIR)/ApolloRedditMediaUpload.m \
+    $(SRC_DIR)/ApolloUploadOriginalGIF.m \
     $(SRC_DIR)/ApolloUploadAlbumCompatibility.m \
     $(SRC_DIR)/ApolloNotificationBackend.m \
     $(SRC_DIR)/ApolloBarkIconResolver.m \
