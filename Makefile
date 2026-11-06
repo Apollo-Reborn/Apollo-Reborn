@@ -387,6 +387,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloLinkCardTitleFallback.xm \
     $(SRC_DIR)/ApolloFeedTextPostThumbnails.xm \
     $(SRC_DIR)/ApolloMediaHinge.xm \
+    $(SRC_DIR)/ApolloDuoVideoLayout.xm \
     $(SRC_DIR)/ApolloTweetBuddy.xm \
 	$(SRC_DIR)/ApolloVisionOSFix.xm \
     $(SRC_DIR)/ApolloVisionOSHover.xm \

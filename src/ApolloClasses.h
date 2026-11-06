@@ -12,6 +12,8 @@
 
 __BEGIN_DECLS
 
+extern Class ApolloClassUIViewReservedRegionKind;
+
 extern Class ApolloClassASBackgroundLayoutSpec;
 extern Class ApolloClassASBatchContext;
 extern Class ApolloClassASButtonNode;

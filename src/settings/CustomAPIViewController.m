@@ -3090,23 +3090,9 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     });
 }
 
-// Subreddits group screen: list organization, subreddit page layout, and
-// the sources used by the Search tab.
-- (ApolloSettingsSection *)buildSubredditsMainSection {
+// Duo-only row on the Subreddits screen (open display panel appearance).
+- (ApolloSettingsRow *)buildDuoPanelStyleRow {
     __weak typeof(self) weakSelf = self;
-
-    ApolloSettingsRow *feedShortcuts =
-        [ApolloSettingsRow disclosureRowWithID:@"sub.feedShortcuts"
-                               title:@"Feed Shortcuts"
-                            detail:^NSString * {
-            return [NSString stringWithFormat:@"%@ · %@",
-                    [weakSelf subredditFeedIconStyleText],
-                    [weakSelf subredditFeedLayoutText]];
-        }
-                                push:^UIViewController * {
-            return ApolloSettingsRouteInstantiate(@"feed-shortcuts");
-        }];
-
     ApolloSettingsRow *panelStyle =
         [ApolloSettingsRow valueRowWithID:@"sub.panelStyle"
                                    title:@"Subreddit Panel Style"
@@ -3127,6 +3113,26 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                 });
         }];
     panelStyle.visible = ^BOOL { return ApolloDuoUsesAdaptiveBars(); };
+
+    return panelStyle;
+}
+
+- (ApolloSettingsSection *)buildSubredditsMainSection {
+    __weak typeof(self) weakSelf = self;
+
+    ApolloSettingsRow *feedShortcuts =
+        [ApolloSettingsRow disclosureRowWithID:@"sub.feedShortcuts"
+                               title:@"Feed Shortcuts"
+                            detail:^NSString * {
+            return [NSString stringWithFormat:@"%@ · %@",
+                    [weakSelf subredditFeedIconStyleText],
+                    [weakSelf subredditFeedLayoutText]];
+        }
+                                push:^UIViewController * {
+            return ApolloSettingsRouteInstantiate(@"feed-shortcuts");
+        }];
+
+    ApolloSettingsRow *panelStyle = [self buildDuoPanelStyleRow];
 
     // Pushes the dedicated Subreddit Sections screen: the FOLLOWING section
     // for followed users, drag-to-reorder for the special sections, and a
