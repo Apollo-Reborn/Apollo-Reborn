@@ -80,7 +80,7 @@ static BOOL ApolloDuoForwardSwipeStartsAnywhere(void) {
 }
 
 static BOOL ApolloDuoForwardSwipeCanNavigate(UINavigationController *navigation) {
-    return (ApolloDuoSplitCanRestoreClosedThread(navigation) || ApolloDuoSplitCanForwardToVisitedProfile(navigation))
+    return (ApolloDuoSplitCanRestoreClosedThread(navigation) || ApolloDuoSplitCanForwardInSplit(navigation))
         && ApolloDuoSwipeEnvironmentAllows(navigation);
 }
 
@@ -226,10 +226,11 @@ static BOOL ApolloDuoIsScrollPan(UIGestureRecognizer *gesture) {
 // following the finger when the split kept a picture of it.
 @property(nonatomic, strong) UIPanGestureRecognizer *forwardSwipe;
 @property(nonatomic) BOOL forwardFollows;
-// The forward drag brings back a visited profile, not the closed thread.
-@property(nonatomic) BOOL forwardProfile;
-// The Back drag leaves a visited profile with the finger.
-@property(nonatomic) BOOL profileFollows;
+// The forward drag is one the split lays out (a visited profile, Account's
+// detail), not the closed thread.
+@property(nonatomic) BOOL forwardSplit;
+// A Pop-route Back follows the finger over the split's pictures.
+@property(nonatomic) BOOL coverFollows;
 // Recognizes as soon as a touch the Back drag accepts moves clearly sideways,
 // so the row under the finger gets touchesCancelled and drops its highlight
 // before the drag itself is sure. Either direction: a leftward move is a row
@@ -298,11 +299,11 @@ static NSHashTable<ApolloDuoBackSwipe *> *sDuoPaneDrags;
     CGFloat vx = [pan velocityInView:nil].x;
     switch (pan.state) {
         case UIGestureRecognizerStateBegan:
-            self.forwardProfile = !ApolloDuoSplitCanRestoreClosedThread(navigation)
-                && ApolloDuoSplitCanForwardToVisitedProfile(navigation);
-            self.forwardFollows = self.forwardProfile ? ApolloDuoSplitBeginProfileDrag(navigation, YES)
-                                                      : ApolloDuoSplitBeginRestoreDrag(navigation);
-            ApolloLog(@"[DuoSwipe] forward drag began profile=%d follows=%d", self.forwardProfile, self.forwardFollows);
+            self.forwardSplit = !ApolloDuoSplitCanRestoreClosedThread(navigation)
+                && ApolloDuoSplitCanForwardInSplit(navigation);
+            self.forwardFollows = self.forwardSplit ? ApolloDuoSplitBeginForwardDrag(navigation)
+                                                    : ApolloDuoSplitBeginRestoreDrag(navigation);
+            ApolloLog(@"[DuoSwipe] forward drag began split=%d follows=%d", self.forwardSplit, self.forwardFollows);
             [self moveForward:navigation shown:shown];
             break;
         case UIGestureRecognizerStateChanged:
@@ -313,24 +314,24 @@ static NSHashTable<ApolloDuoBackSwipe *> *sDuoPaneDrags;
             [self moveForward:navigation shown:shown];
             break;
         case UIGestureRecognizerStateEnded: {
-            BOOL profile = self.forwardProfile;
-            CGFloat travel = profile ? ApolloDuoSplitProfileDragTravel(navigation) : ApolloDuoSplitRestoreDragTravel(navigation);
+            BOOL splitOwned = self.forwardSplit;
+            CGFloat travel = splitOwned ? ApolloDuoSplitCoverDragTravel(navigation) : ApolloDuoSplitRestoreDragTravel(navigation);
             if (travel <= 0) travel = CGRectGetWidth(navigation.view.bounds) / 2;
             BOOL restore = ApolloDuoDragCommits(ApolloDuoDragClamp(shown, travel), travel, -vx);
-            if (self.forwardFollows && profile) ApolloDuoSplitEndProfileDrag(navigation, restore, shown, vx);
+            if (self.forwardFollows && splitOwned) ApolloDuoSplitEndCoverDrag(navigation, restore, shown, vx);
             else if (self.forwardFollows) ApolloDuoSplitEndRestoreDrag(navigation, restore, shown, vx);
-            else if (restore && profile) ApolloDuoSplitForwardToVisitedProfile(navigation);
+            else if (restore && splitOwned) ApolloDuoSplitForwardInSplit(navigation);
             else if (restore) ApolloDuoSplitRestoreClosedThread(navigation);
             self.forwardFollows = NO;
-            self.forwardProfile = NO;
+            self.forwardSplit = NO;
             break;
         }
         case UIGestureRecognizerStateCancelled:
         case UIGestureRecognizerStateFailed:
-            if (self.forwardFollows && self.forwardProfile) ApolloDuoSplitEndProfileDrag(navigation, NO, shown, 0);
+            if (self.forwardFollows && self.forwardSplit) ApolloDuoSplitEndCoverDrag(navigation, NO, shown, 0);
             else if (self.forwardFollows) ApolloDuoSplitEndRestoreDrag(navigation, NO, shown, 0);
             self.forwardFollows = NO;
-            self.forwardProfile = NO;
+            self.forwardSplit = NO;
             break;
         default:
             break;
@@ -338,7 +339,7 @@ static NSHashTable<ApolloDuoBackSwipe *> *sDuoPaneDrags;
 }
 - (void)moveForward:(UINavigationController *)navigation shown:(CGFloat)shown {
     if (!self.forwardFollows) return;
-    if (self.forwardProfile) ApolloDuoSplitMoveProfileDrag(navigation, shown);
+    if (self.forwardSplit) ApolloDuoSplitMoveCoverDrag(navigation, shown);
     else ApolloDuoSplitMoveRestoreDrag(navigation, shown);
 }
 - (void)cancelRecognizer:(UIGestureRecognizer *)recognizer {
@@ -393,13 +394,12 @@ static NSHashTable<ApolloDuoBackSwipe *> *sDuoPaneDrags;
             break;
         }
         case ApolloDuoBackRoutePop:
-            // Leaving a visited profile follows the finger over pictures of
-            // both sides (ApolloDuoSplitBeginProfileDrag). Without a picture,
-            // and for a Back only the split lays out, run it as soon as the
-            // drag is clearly a Back.
-            if (ApolloDuoSplitBeginProfileDrag(navigation, NO)) {
-                self.profileFollows = YES;
-                ApolloLog(@"[DuoSwipe] visited profile: Back drag follows the finger");
+            // A Back the split lays out follows the finger over pictures of
+            // both sides (ApolloDuoSplitBeginBackDrag). Without a picture,
+            // run it as soon as the drag is clearly a Back.
+            if (ApolloDuoSplitBeginBackDrag(navigation)) {
+                self.coverFollows = YES;
+                ApolloLog(@"[DuoSwipe] split Back drag follows the finger");
                 break;
             }
             if (ApolloDuoSplitReturnFromVisitedProfile(navigation)) {
@@ -415,8 +415,8 @@ static NSHashTable<ApolloDuoBackSwipe *> *sDuoPaneDrags;
     }
 }
 - (void)track:(UINavigationController *)navigation dx:(CGFloat)dx {
-    if (self.profileFollows) {
-        ApolloDuoSplitMoveProfileDrag(navigation, dx);
+    if (self.coverFollows) {
+        ApolloDuoSplitMoveCoverDrag(navigation, dx);
         return;
     }
     if (self.route == ApolloDuoBackRouteDrawer) {
@@ -428,11 +428,11 @@ static NSHashTable<ApolloDuoBackSwipe *> *sDuoPaneDrags;
 - (void)finish:(UINavigationController *)navigation dx:(CGFloat)dx velocity:(CGFloat)vx cancelled:(BOOL)cancelled {
     ApolloDuoBackRoute route = self.route;
     self.route = ApolloDuoBackRouteNone;
-    if (self.profileFollows) {
-        self.profileFollows = NO;
-        CGFloat travel = ApolloDuoSplitProfileDragTravel(navigation);
+    if (self.coverFollows) {
+        self.coverFollows = NO;
+        CGFloat travel = ApolloDuoSplitCoverDragTravel(navigation);
         CGFloat shown = ApolloDuoDragClamp(dx, travel);
-        ApolloDuoSplitEndProfileDrag(navigation, !cancelled && ApolloDuoDragCommits(shown, travel, vx), shown, vx);
+        ApolloDuoSplitEndCoverDrag(navigation, !cancelled && ApolloDuoDragCommits(shown, travel, vx), shown, vx);
         return;
     }
     if (route == ApolloDuoBackRouteDrawer) {

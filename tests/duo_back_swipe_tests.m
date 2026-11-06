@@ -137,7 +137,7 @@ typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 @property(nonatomic, strong) UIViewController *root;
 @property(nonatomic, strong) TestDuoHost *host;
 @property(nonatomic) BOOL changing;
-@property(nonatomic, strong) NSObject *profileDragPicture;
+@property(nonatomic, strong) NSObject *coverDrag;
 @end
 @implementation ApolloDuoSplitState @end
 static BOOL duo = YES, disabled, leftSwipesDisabled, rightSwipesDisabled, resizing, reduceMotion;
@@ -197,36 +197,39 @@ static void ApolloDuoSplitEndRestoreDrag(UINavigationController *nav, BOOL resto
     restoreCommitted = restore;
     if (restore) ApolloDuoSplitRestoreClosedThread(nav);
 }
-// Profile drags: the split's pictures, recorded instead of moved. Without a
-// picture (profileDragFollows off) Begin declines and the swipe navigates.
+// Split drags (the profile here): the split's pictures, recorded instead of
+// moved. Without a picture (profileDragFollows off) Begin declines and the
+// swipe navigates.
 static __weak UINavigationController *profileForwardPane;
 static NSUInteger profileForwards, profileDragsBegun;
 static BOOL profileDragFollows = YES, profileDragEnded, profileDragCommitted, profileDragForward;
 static CGFloat profileDragShown = -1;
-static BOOL ApolloDuoSplitCanForwardToVisitedProfile(UINavigationController *nav) {
+static BOOL ApolloDuoSplitCanForwardInSplit(UINavigationController *nav) {
     return nav && nav == profileForwardPane && !ApolloDuoSplitCanRestoreClosedThread(nav);
 }
-static BOOL ApolloDuoSplitForwardToVisitedProfile(UINavigationController *nav) {
-    if (!ApolloDuoSplitCanForwardToVisitedProfile(nav)) return NO;
+static BOOL ApolloDuoSplitForwardInSplit(UINavigationController *nav) {
+    if (!ApolloDuoSplitCanForwardInSplit(nav)) return NO;
     profileForwardPane = nil;
     profileForwards++;
     return YES;
 }
 static BOOL ApolloDuoSplitBeginProfileDrag(UINavigationController *nav, BOOL forward) {
     if (!profileDragFollows) return NO;
-    if (forward ? !ApolloDuoSplitCanForwardToVisitedProfile(nav) : !ApolloDuoSplitCanReturnFromVisitedProfile(nav)) return NO;
+    if (forward ? !ApolloDuoSplitCanForwardInSplit(nav) : !ApolloDuoSplitCanReturnFromVisitedProfile(nav)) return NO;
     profileDragsBegun++;
     profileDragForward = forward;
     profileDragEnded = NO;
     return YES;
 }
-static CGFloat ApolloDuoSplitProfileDragTravel(__unused UINavigationController *nav) { return 900; }
-static void ApolloDuoSplitMoveProfileDrag(__unused UINavigationController *nav, CGFloat shown) { profileDragShown = shown; }
-static void ApolloDuoSplitEndProfileDrag(UINavigationController *nav, BOOL commit, __unused CGFloat shown, __unused CGFloat velocity) {
+static BOOL ApolloDuoSplitBeginBackDrag(UINavigationController *nav) { return ApolloDuoSplitBeginProfileDrag(nav, NO); }
+static BOOL ApolloDuoSplitBeginForwardDrag(UINavigationController *nav) { return ApolloDuoSplitBeginProfileDrag(nav, YES); }
+static CGFloat ApolloDuoSplitCoverDragTravel(__unused UINavigationController *nav) { return 900; }
+static void ApolloDuoSplitMoveCoverDrag(__unused UINavigationController *nav, CGFloat shown) { profileDragShown = shown; }
+static void ApolloDuoSplitEndCoverDrag(UINavigationController *nav, BOOL commit, __unused CGFloat shown, __unused CGFloat velocity) {
     profileDragEnded = YES;
     profileDragCommitted = commit;
     if (!commit) return;
-    if (profileDragForward) ApolloDuoSplitForwardToVisitedProfile(nav);
+    if (profileDragForward) ApolloDuoSplitForwardInSplit(nav);
     else ApolloDuoSplitReturnFromVisitedProfile(nav);
 }
 static CGRect ApolloDuoSplitContentFrame(UINavigationController *nav, __unused UIView *view) { return nav.pane; }

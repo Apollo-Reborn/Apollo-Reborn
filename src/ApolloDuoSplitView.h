@@ -29,19 +29,21 @@ BOOL ApolloDuoSplitDismissPostsList(UINavigationController *navigation);
 /// Returns from a visited profile dashboard to its retained Posts Back stack.
 BOOL ApolloDuoSplitCanReturnFromVisitedProfile(UINavigationController *navigation);
 BOOL ApolloDuoSplitReturnFromVisitedProfile(UINavigationController *navigation);
-/// After a Back out of a visited profile, a forward swipe on the Posts pane
-/// it returned to brings that profile back, until the pane moves on (another
-/// thread or feed, a pop, a memory warning).
-BOOL ApolloDuoSplitCanForwardToVisitedProfile(UINavigationController *navigation);
-BOOL ApolloDuoSplitForwardToVisitedProfile(UINavigationController *navigation);
-/// Profile drags, Back and forward: the page being left moves with the finger
-/// and a picture of the other side comes in beside it; release swaps the real
-/// pages under that picture. NO from Begin when there is no picture (Reduce
-/// Motion, a resize since); then run the plain navigation on release.
-BOOL ApolloDuoSplitBeginProfileDrag(UINavigationController *navigation, BOOL forward);
-CGFloat ApolloDuoSplitProfileDragTravel(UINavigationController *navigation);
-void ApolloDuoSplitMoveProfileDrag(UINavigationController *navigation, CGFloat shown);
-void ApolloDuoSplitEndProfileDrag(UINavigationController *navigation, BOOL commit, CGFloat shown, CGFloat velocity);
+/// Forward swipes the split owns: back into a visited profile (after a Back
+/// out of it, until the Posts pane moves on), and Account's detail pages.
+BOOL ApolloDuoSplitCanForwardInSplit(UINavigationController *navigation);
+BOOL ApolloDuoSplitForwardInSplit(UINavigationController *navigation);
+/// Cover drags, Back and forward, for navigation the split lays out itself
+/// (a visited profile, Account's detail, Back from a feed link beside a
+/// thread): a picture of what shows now and a kept picture of the destination
+/// slide with the finger; release swaps the real pages under them. NO from
+/// Begin when there is no picture (Reduce Motion, a resize since); then
+/// navigate on release.
+BOOL ApolloDuoSplitBeginBackDrag(UINavigationController *navigation);
+BOOL ApolloDuoSplitBeginForwardDrag(UINavigationController *navigation);
+CGFloat ApolloDuoSplitCoverDragTravel(UINavigationController *navigation);
+void ApolloDuoSplitMoveCoverDrag(UINavigationController *navigation, CGFloat shown);
+void ApolloDuoSplitEndCoverDrag(UINavigationController *navigation, BOOL commit, CGFloat shown, CGFloat velocity);
 /// The thread the last close (the button or a Back) took from beside the Posts
 /// feed `nav`, while it can still come back: the feed page it was closed from
 /// is on top and shows the same feed for the same account, no thread is open,
