@@ -2588,7 +2588,9 @@ static BOOL ApolloActionsIsSystemMoreItem(UIBarButtonItem *item) {
     if (ApolloActionsIsSystemMoreItem(item)) {
         if (item.image != sApolloDuoMoreGlyph) item.image = sApolloDuoMoreGlyph;
         if (item.primaryAction.image != sApolloDuoMoreGlyph) item.primaryAction.image = sApolloDuoMoreGlyph;
-        item.accessibilityLabel = @"More";
+        // Any write reconfigures the button and re-enters this hook, so an
+        // unconditional one loops forever (a launch hang on the inner display).
+        if (![item.accessibilityLabel isEqualToString:@"More"]) item.accessibilityLabel = @"More";
     }
     BOOL decorate = NO;
     if (@available(iOS 27.1, *)) decorate = IsLiquidGlass();
