@@ -1002,11 +1002,16 @@ NSArray<UIBarButtonItem *> *ApolloNativeFeedSearchDuoTrailingItems(UINavigationI
     // Apollo rebuilds its trailing actions when comments appear or their sort
     // changes. Keep the registered host control in that same update instead
     // of removing it and adding it back on the next layout pass.
-    NSMutableArray *result = [trailing mutableCopy];
+    NSMutableArray *result = [NSMutableArray array];
     for (UIBarButtonItem *candidate in items) {
         if (![candidate.accessibilityIdentifier isEqualToString:@"ApolloDuoFeedControl"])
             [result addObject:candidate];
     }
+    // rightBarButtonItems is trailing-first. Keep horizontal host controls at
+    // the other end, so their separate glass section cannot sit between the
+    // vertical page actions and UIKit's generated overflow section. UIKit
+    // still places Feed Layout in the top bar, but the rail now shares a pill.
+    [result addObjectsFromArray:trailing];
     return result;
 }
 
