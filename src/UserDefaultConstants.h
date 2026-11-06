@@ -352,6 +352,8 @@ static NSString *const UDKeyIPadTabBarBottom = @"IPadTabBarBottom";
 static NSString *const ApolloIPadTabBarBottomChangedNotification = @"ApolloIPadTabBarBottomChangedNotification";
 // True Black Keyboard mode: 0 Off (default), 1 Dark Only, 2 Light Only, 3 Always.
 static NSString *const UDKeyTrueBlackKeyboardMode = @"TrueBlackKeyboardMode";
+// Spelling of interface text: 0 American (default, Apollo's own), 1 British. See ApolloSpelling.xm.
+static NSString *const UDKeySpellingStyle = @"SpellingStyle";
 // Settings icons: 0 = System, 1 = Light (default), 2 = Dark.
 static NSString *const UDKeySettingsIconAppearance = @"SettingsIconAppearance";
 // Glass builds only. Default ON. Applied once before UIKit/Logos startup;

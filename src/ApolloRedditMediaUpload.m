@@ -16,7 +16,7 @@ static NSError *ApolloRedditUploadError(NSInteger code, NSString *message) {
 static NSError *ApolloRedditUploadCancelledError(void) {
     return [NSError errorWithDomain:NSURLErrorDomain
                                code:NSURLErrorCancelled
-                           userInfo:@{NSLocalizedDescriptionKey: @"Reddit media upload was cancelled"}];
+                           userInfo:@{NSLocalizedDescriptionKey: @"Reddit media upload was canceled"}];
 }
 
 @interface ApolloRedditMediaUploadOperation ()

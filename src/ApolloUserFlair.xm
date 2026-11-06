@@ -13,6 +13,7 @@
 #import <objc/runtime.h>
 #import <stdlib.h>
 #import "ApolloClasses.h"
+#import "ApolloSpelling.h"
 
 static char kApolloUserFlairEditorPresentedKey;
 static char kApolloUserFlairCapturedOptionsKey;
@@ -1304,6 +1305,7 @@ static void ApolloUserFlairEnsureTemplateLimits(NSString *subreddit, void (^comp
     previewTitle.textColor = [UIColor secondaryLabelColor];
 
     self.previewLabel = [UILabel new];
+    ApolloSpellingSetExcluded(self.previewLabel, YES); // the user's flair text
     self.previewLabel.numberOfLines = 2;
     self.previewLabel.font = [UIFont systemFontOfSize:15];
     self.previewLabel.textColor = [UIColor labelColor];
