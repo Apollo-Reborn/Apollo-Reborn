@@ -137,6 +137,7 @@ typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 @property(nonatomic, strong) UIViewController *root;
 @property(nonatomic, strong) TestDuoHost *host;
 @property(nonatomic) BOOL changing;
+@property(nonatomic, strong) NSObject *profileDragPicture;
 @end
 @implementation ApolloDuoSplitState @end
 static BOOL duo = YES, disabled, leftSwipesDisabled, rightSwipesDisabled, resizing, reduceMotion;
@@ -195,6 +196,38 @@ static void ApolloDuoSplitEndRestoreDrag(UINavigationController *nav, BOOL resto
     restoreEnded = YES;
     restoreCommitted = restore;
     if (restore) ApolloDuoSplitRestoreClosedThread(nav);
+}
+// Profile drags: the split's pictures, recorded instead of moved. Without a
+// picture (profileDragFollows off) Begin declines and the swipe navigates.
+static __weak UINavigationController *profileForwardPane;
+static NSUInteger profileForwards, profileDragsBegun;
+static BOOL profileDragFollows = YES, profileDragEnded, profileDragCommitted, profileDragForward;
+static CGFloat profileDragShown = -1;
+static BOOL ApolloDuoSplitCanForwardToVisitedProfile(UINavigationController *nav) {
+    return nav && nav == profileForwardPane && !ApolloDuoSplitCanRestoreClosedThread(nav);
+}
+static BOOL ApolloDuoSplitForwardToVisitedProfile(UINavigationController *nav) {
+    if (!ApolloDuoSplitCanForwardToVisitedProfile(nav)) return NO;
+    profileForwardPane = nil;
+    profileForwards++;
+    return YES;
+}
+static BOOL ApolloDuoSplitBeginProfileDrag(UINavigationController *nav, BOOL forward) {
+    if (!profileDragFollows) return NO;
+    if (forward ? !ApolloDuoSplitCanForwardToVisitedProfile(nav) : !ApolloDuoSplitCanReturnFromVisitedProfile(nav)) return NO;
+    profileDragsBegun++;
+    profileDragForward = forward;
+    profileDragEnded = NO;
+    return YES;
+}
+static CGFloat ApolloDuoSplitProfileDragTravel(__unused UINavigationController *nav) { return 900; }
+static void ApolloDuoSplitMoveProfileDrag(__unused UINavigationController *nav, CGFloat shown) { profileDragShown = shown; }
+static void ApolloDuoSplitEndProfileDrag(UINavigationController *nav, BOOL commit, __unused CGFloat shown, __unused CGFloat velocity) {
+    profileDragEnded = YES;
+    profileDragCommitted = commit;
+    if (!commit) return;
+    if (profileDragForward) ApolloDuoSplitForwardToVisitedProfile(nav);
+    else ApolloDuoSplitReturnFromVisitedProfile(nav);
 }
 static CGRect ApolloDuoSplitContentFrame(UINavigationController *nav, __unused UIView *view) { return nav.pane; }
 static BOOL UIAccessibilityIsReduceMotionEnabled(void) { return reduceMotion; }
@@ -544,8 +577,35 @@ int main(void) {
         profile.duoState = account;
         Check(ApolloDuoBackSwipeCanNavigate(profile), @"a visited profile's pane can swipe Back out of the profile");
         ApolloDuoInstallBackSwipe(profile); owner = objc_getAssociatedObject(profile, &kApolloDuoBackSwipe);
+        // With pictures of both sides, the profile follows the finger and
+        // acts on release: an early one stays, a full one leaves.
+        owner.pan.translation = CGPointMake(30, 0);
+        Check([owner gestureRecognizerShouldBegin:owner.pan], @"profile Back: the drag begins");
+        owner.pan.state = UIGestureRecognizerStateBegan; [owner panned:owner.pan];
+        owner.pan.translation = CGPointMake(120, 0);
+        owner.pan.state = UIGestureRecognizerStateChanged; [owner panned:owner.pan];
+        Check(profileDragsBegun == 1 && !profileDragForward && profileDragShown == 120 && profileReturns == 0,
+              @"profile Back: the profile follows the finger, nothing left yet");
+        owner.pan.state = UIGestureRecognizerStateEnded; [owner panned:owner.pan];
+        owner.pan.state = UIGestureRecognizerStatePossible;
+        Check(profileDragEnded && !profileDragCommitted && profileReturns == 0 && account.profilePrefix.count,
+              @"profile Back: an early release stays on the profile");
+        owner.pan.translation = CGPointMake(30, 0);
+        owner.pan.state = UIGestureRecognizerStateBegan; [owner gestureRecognizerShouldBegin:owner.pan]; [owner panned:owner.pan];
+        owner.pan.state = UIGestureRecognizerStateCancelled; [owner panned:owner.pan];
+        owner.pan.state = UIGestureRecognizerStatePossible;
+        Check(profileDragEnded && !profileDragCommitted && profileReturns == 0,
+              @"profile Back: a cancelled drag (a fold, Control Center) springs back");
+        // Without a picture (Reduce Motion, a resize since) it leaves at once.
+        profileDragFollows = NO;
         Drag(owner);
+        profileDragFollows = YES;
         Check(profileReturns == 1 && profile.pops == 0, @"the swipe leaves the visited profile through its Back transition");
+        account.profilePrefix = @[[UIViewController new]];
+        Drag(owner);
+        Check(profileDragsBegun == 3 && profileDragCommitted && profileReturns == 2 && profile.pops == 0,
+              @"profile Back: a full drag leaves the profile under the finger");
+        profileReturns = 1;
         Check(!ApolloDuoBackSwipeCanNavigate(profile), @"once left, the profile pane has nothing to go Back to");
         // The profile's left column (header and shortcuts) belongs to the
         // same visit, so a swipe there leaves the profile too.
@@ -716,6 +776,39 @@ int main(void) {
             Check(![fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:strip],
                   @"forward: ordinary phones are excluded");
             duo = YES; closedThreadFeed = nil;
+
+            // After a Back out of a visited profile, the Posts pane it came
+            // back to brings it forward again, following the finger.
+            restoreEnded = NO; profileDragEnded = NO;
+            NSUInteger dragsBefore = restoreDragsBegun, forwardsBefore = profileForwards;
+            profileForwardPane = fwdFeed;
+            Check([fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:strip]
+                  && [fwdOwner gestureRecognizerShouldBegin:fwdOwner.forwardSwipe],
+                  @"forward profile: the trailing strip starts it");
+            Check(![fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:inner],
+                  @"forward profile: the pane's interior keeps its row actions");
+            ForwardDrag(fwdOwner, -80);
+            Check(profileDragsBegun && profileDragForward && profileDragShown == 80 && profileForwards == forwardsBefore
+                  && restoreDragsBegun == dragsBefore,
+                  @"forward profile: the profile follows the finger, not the closed thread's picture");
+            ForwardRelease(fwdOwner, -80, 0);
+            Check(profileDragEnded && !profileDragCommitted && profileForwards == forwardsBefore,
+                  @"forward profile: an early release slides it back out");
+            ForwardDrag(fwdOwner, -400); ForwardRelease(fwdOwner, -400, 0);
+            Check(profileDragCommitted && profileForwards == forwardsBefore + 1 && !restoreEnded,
+                  @"forward profile: a full drag brings the profile back");
+            Check(![fwdOwner gestureRecognizerShouldBegin:fwdOwner.forwardSwipe],
+                  @"forward profile: once back on the profile there is nothing forward");
+            profileForwardPane = fwdFeed; profileDragFollows = NO; profileDragEnded = NO;
+            ForwardDrag(fwdOwner, -400); ForwardRelease(fwdOwner, -400, 0);
+            Check(!profileDragEnded && profileForwards == forwardsBefore + 2,
+                  @"forward profile: with no picture it still goes forward on release");
+            profileDragFollows = YES;
+            profileForwardPane = fwdFeed; closedThreadFeed = fwdFeed;
+            ForwardDrag(fwdOwner, -400); ForwardRelease(fwdOwner, -400, 0);
+            Check(restoreEnded && restoreCommitted && profileForwards == forwardsBefore + 2,
+                  @"forward profile: a closed thread to bring back comes first");
+            closedThreadFeed = nil; profileForwardPane = nil;
         }
 
         // The memory forgets the thread whenever what the feed shows changes

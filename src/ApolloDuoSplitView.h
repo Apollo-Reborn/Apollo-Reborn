@@ -29,6 +29,19 @@ BOOL ApolloDuoSplitDismissPostsList(UINavigationController *navigation);
 /// Returns from a visited profile dashboard to its retained Posts Back stack.
 BOOL ApolloDuoSplitCanReturnFromVisitedProfile(UINavigationController *navigation);
 BOOL ApolloDuoSplitReturnFromVisitedProfile(UINavigationController *navigation);
+/// After a Back out of a visited profile, a forward swipe on the Posts pane
+/// it returned to brings that profile back, until the pane moves on (another
+/// thread or feed, a pop, a memory warning).
+BOOL ApolloDuoSplitCanForwardToVisitedProfile(UINavigationController *navigation);
+BOOL ApolloDuoSplitForwardToVisitedProfile(UINavigationController *navigation);
+/// Profile drags, Back and forward: the page being left moves with the finger
+/// and a picture of the other side comes in beside it; release swaps the real
+/// pages under that picture. NO from Begin when there is no picture (Reduce
+/// Motion, a resize since); then run the plain navigation on release.
+BOOL ApolloDuoSplitBeginProfileDrag(UINavigationController *navigation, BOOL forward);
+CGFloat ApolloDuoSplitProfileDragTravel(UINavigationController *navigation);
+void ApolloDuoSplitMoveProfileDrag(UINavigationController *navigation, CGFloat shown);
+void ApolloDuoSplitEndProfileDrag(UINavigationController *navigation, BOOL commit, CGFloat shown, CGFloat velocity);
 /// The thread the last close (the button or a Back) took from beside the Posts
 /// feed `nav`, while it can still come back: the feed page it was closed from
 /// is on top and shows the same feed for the same account, no thread is open,

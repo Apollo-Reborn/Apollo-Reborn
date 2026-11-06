@@ -1111,6 +1111,21 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
 @property(nonatomic, copy) NSArray<UIViewController *> *profilePrefix;
 @property(nonatomic, strong) UIViewController *tabRoot;
 @property(nonatomic, copy) NSString *tabKind;
+// A picture of the Posts split a visited profile was opened from, for a Back
+// drag to slide in; the size it was taken at.
+@property(nonatomic, strong) UIView *profileBackPicture;
+@property(nonatomic) CGSize profileBackPictureSize;
+// The profile a Back left, for a forward swipe to bring back, with its
+// picture and the Posts pages it returned to (it counts while they show).
+@property(nonatomic, strong) UIViewController *profileForwardPage;
+@property(nonatomic, strong) UIView *profileForwardPicture;
+@property(nonatomic) CGSize profileForwardPictureSize;
+@property(nonatomic, copy) NSArray<UIViewController *> *profileForwardStack;
+@property(nonatomic, weak) UIViewController *profileForwardFeedTop;
+@property(nonatomic, weak) UIViewController *profileForwardDetailTop;
+// A profile drag in flight: the incoming picture, and which way it goes.
+@property(nonatomic, strong) UIView *profileDragPicture;
+@property(nonatomic) BOOL profileDragForward;
 @property(nonatomic) BOOL selectingAccountShortcut;
 @property(nonatomic) BOOL changing;
 @property(nonatomic) BOOL postsTogglingSplit;
@@ -3662,6 +3677,7 @@ static void ApolloDuoSplitClose(ApolloDuoSplitState *state, BOOL preserveDetail)
     // Restoring its entry-time title would repoint the cover header at the old user.
     if (![state.kind isEqualToString:@"account"]) state.root.navigationItem.title = state.sidebarTitle;
     if (state.profilePrefix.count) {
+        state.profileBackPicture = nil;
         state.root = state.tabRoot;
         state.kind = state.tabKind;
         state.tabRoot = nil;
@@ -3679,14 +3695,24 @@ static void ApolloDuoSplitClose(ApolloDuoSplitState *state, BOOL preserveDetail)
     ApolloLog(@"[DuoSplit] restored single-column %@ stack", state.kind);
 }
 
-// Reparent the live pages under one visual transition. A snapshot covers the
-// intermediate single-column stack, so UIKit cannot flash that layout first.
-static void ApolloDuoSplitNavigateProfile(ApolloDuoSplitState *state, UIViewController *profile, BOOL forward) {
-    if (!state.split || state.changing) return;
+static void ApolloDuoSplitForgetProfileForward(ApolloDuoSplitState *state) {
+    if (!state.profileForwardPage) return;
+    state.profileForwardPage = nil;
+    state.profileForwardPicture = nil;
+    state.profileForwardStack = nil;
+    state.profileForwardFeedTop = nil;
+    state.profileForwardDetailTop = nil;
+}
+
+// Close the split and reopen it on the other side of a profile visit, at
+// once. Keeps what the opposite swipe needs: a picture of the side left and,
+// after a Back, the profile itself with the Posts pages it returned to.
+static void ApolloDuoSplitSwapProfile(ApolloDuoSplitState *state, UIViewController *profile, BOOL forward) {
     UINavigationController *outer = state.outer;
     UIView *oldView = state.host.view;
-    UIView *snapshot = [oldView snapshotViewAfterScreenUpdates:NO];
-    CGRect frame = [oldView convertRect:oldView.bounds toView:outer.view];
+    CGSize size = oldView.bounds.size;
+    UIView *picture = oldView.window ? [oldView snapshotViewAfterScreenUpdates:NO] : nil;
+    UIViewController *leaving = state.root;
     NSArray *prefix = state.profilePrefix;
     [UIView performWithoutAnimation:^{
         ApolloDuoSplitClose(state, YES);
@@ -3695,6 +3721,29 @@ static void ApolloDuoSplitNavigateProfile(ApolloDuoSplitState *state, UIViewCont
         ApolloDuoSplitOpen(state);
         [outer.view layoutIfNeeded];
     }];
+    ApolloDuoSplitForgetProfileForward(state);
+    if (forward) {
+        state.profileBackPicture = picture;
+        state.profileBackPictureSize = size;
+    } else if (state.split && leaving) {
+        state.profileForwardPage = leaving;
+        state.profileForwardPicture = picture;
+        state.profileForwardPictureSize = size;
+        state.profileForwardStack = outer.viewControllers;
+        state.profileForwardFeedTop = state.feed.topViewController;
+        state.profileForwardDetailTop = state.secondary.topViewController;
+    }
+}
+
+// Reparent the live pages under one visual transition. A snapshot covers the
+// intermediate single-column stack, so UIKit cannot flash that layout first.
+static void ApolloDuoSplitNavigateProfile(ApolloDuoSplitState *state, UIViewController *profile, BOOL forward) {
+    if (!state.split || state.changing || state.profileDragPicture) return;
+    UINavigationController *outer = state.outer;
+    UIView *oldView = state.host.view;
+    UIView *snapshot = [oldView snapshotViewAfterScreenUpdates:NO];
+    CGRect frame = [oldView convertRect:oldView.bounds toView:outer.view];
+    ApolloDuoSplitSwapProfile(state, profile, forward);
     UIView *destination = state.host.view;
     if (!snapshot || !destination || UIAccessibilityIsReduceMotionEnabled()) return;
     snapshot.frame = frame;
@@ -3713,13 +3762,16 @@ static void ApolloDuoSplitNavigateProfile(ApolloDuoSplitState *state, UIViewCont
     }];
 }
 
-BOOL ApolloDuoSplitCanReturnFromVisitedProfile(UINavigationController *navigation) {
-    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(navigation, NO);
-    return state.split && !state.changing && state.profilePrefix.count
+static BOOL ApolloDuoSplitStateCanReturnFromProfile(ApolloDuoSplitState *state) {
+    return state.split && !state.changing && !state.profileDragPicture && state.profilePrefix.count
         && [state.kind isEqualToString:@"account"]
         && [state.tabKind isEqualToString:@"subreddits"]
         && state.secondary.viewControllers.count == 1
         && state.secondary.topViewController == state.root;
+}
+
+BOOL ApolloDuoSplitCanReturnFromVisitedProfile(UINavigationController *navigation) {
+    return ApolloDuoSplitStateCanReturnFromProfile(ApolloDuoSplitStateForNavigation(navigation, NO));
 }
 
 BOOL ApolloDuoSplitReturnFromVisitedProfile(UINavigationController *navigation) {
@@ -3731,6 +3783,133 @@ BOOL ApolloDuoSplitReturnFromVisitedProfile(UINavigationController *navigation) 
     // no Posts prefix and must retain its own profile at the top.
     ApolloDuoSplitNavigateProfile(state, nil, NO);
     return YES;
+}
+
+// The profile a Back left, while the Posts pages it returned to still show
+// unchanged; anything else (another thread or feed, a pop, a reopened split)
+// forgets it, as a native push forgets Apollo's forward pages.
+static UIViewController *ApolloDuoSplitProfileForwardPage(ApolloDuoSplitState *state) {
+    if (!state.profileForwardPage) return nil;
+    BOOL current = state.split && !state.profilePrefix.count && [state.kind isEqualToString:@"subreddits"]
+        && [state.outer.viewControllers isEqualToArray:state.profileForwardStack]
+        && state.feed.topViewController == state.profileForwardFeedTop
+        && state.secondary.topViewController == state.profileForwardDetailTop;
+    if (!current) {
+        ApolloLog(@"[DuoSplit] forgot the visited profile's forward swipe");
+        ApolloDuoSplitForgetProfileForward(state);
+    }
+    return state.profileForwardPage;
+}
+
+BOOL ApolloDuoSplitCanForwardToVisitedProfile(UINavigationController *navigation) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(navigation, NO);
+    if (!state.split || state.changing || state.profileDragPicture) return NO;
+    // The visible Posts pane: the thread, or the feed when no thread shows.
+    if (navigation != state.secondary && !(navigation == state.feed && !state.host.postsShowingDetail)) return NO;
+    if (ApolloDuoSplitCanRestoreClosedThread(navigation)) return NO;
+    return ApolloDuoSplitProfileForwardPage(state) != nil;
+}
+
+BOOL ApolloDuoSplitForwardToVisitedProfile(UINavigationController *navigation) {
+    if (!ApolloDuoSplitCanForwardToVisitedProfile(navigation)) return NO;
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(navigation, NO);
+    ApolloDuoSplitNavigateProfile(state, state.profileForwardPage, YES);
+    return YES;
+}
+
+#pragma mark - Profile drags
+
+// A profile Back or forward swipe follows the finger without moving any real
+// page: a cover over the split holds a picture of the page being left and the
+// kept picture of the other side, and slides both. The real pages swap under
+// the cover once a completed drag settles; an early release slides it back.
+// The pane the drag began in stays put underneath, so its touch carries on.
+static UIView *ApolloDuoSplitProfilePicture(ApolloDuoSplitState *state, BOOL forward) {
+    UIView *picture = forward ? state.profileForwardPicture : state.profileBackPicture;
+    CGSize size = forward ? state.profileForwardPictureSize : state.profileBackPictureSize;
+    return picture && CGSizeEqualToSize(size, state.host.view.bounds.size) ? picture : nil;
+}
+
+CGFloat ApolloDuoSplitProfileDragTravel(UINavigationController *navigation) {
+    UIView *cover = ApolloDuoSplitStateForNavigation(navigation, NO).profileDragPicture;
+    return cover ? CGRectGetWidth(cover.bounds) : 0;
+}
+
+BOOL ApolloDuoSplitBeginProfileDrag(UINavigationController *navigation, BOOL forward) {
+    if (forward ? !ApolloDuoSplitCanForwardToVisitedProfile(navigation)
+                : !ApolloDuoSplitCanReturnFromVisitedProfile(navigation)) return NO;
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(navigation, NO);
+    UIView *host = state.host.view;
+    UIView *incoming = ApolloDuoSplitProfilePicture(state, forward);
+    if (!incoming || !host.window || UIAccessibilityIsReduceMotionEnabled()) return NO;
+    UIView *leaving = [host snapshotViewAfterScreenUpdates:NO];
+    if (!leaving) return NO;
+    CGRect bounds = host.bounds;
+    UIView *cover = [[UIView alloc] initWithFrame:host.frame];
+    cover.userInteractionEnabled = NO;
+    cover.clipsToBounds = YES;
+    cover.backgroundColor = UIColor.systemBackgroundColor;
+    leaving.frame = bounds;
+    [incoming.layer removeAllAnimations];
+    incoming.transform = CGAffineTransformIdentity;
+    incoming.frame = bounds;
+    incoming.transform = CGAffineTransformMakeTranslation(forward ? CGRectGetWidth(bounds) : -CGRectGetWidth(bounds), 0);
+    [cover addSubview:leaving];
+    [cover addSubview:incoming];
+    [host.superview insertSubview:cover aboveSubview:host];
+    state.profileDragPicture = cover;
+    state.profileDragForward = forward;
+    ApolloLog(@"[DuoDrag] profile %@ drag began travel=%.0f", forward ? @"forward" : @"Back", CGRectGetWidth(bounds));
+    return YES;
+}
+
+// `shown` is how far the drag has gone, 0 to the split's width.
+void ApolloDuoSplitMoveProfileDrag(UINavigationController *navigation, CGFloat shown) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(navigation, NO);
+    UIView *cover = state.profileDragPicture;
+    if (cover.subviews.count < 2) return;
+    CGFloat width = CGRectGetWidth(cover.bounds);
+    // The way the page being left moves: right for Back, left for forward.
+    CGFloat direction = state.profileDragForward ? -1 : 1;
+    CGFloat offset = direction * ApolloDuoDragClamp(shown, width);
+    cover.subviews.firstObject.transform = CGAffineTransformMakeTranslation(offset, 0);
+    cover.subviews.lastObject.transform = CGAffineTransformMakeTranslation(offset - direction * width, 0);
+}
+
+void ApolloDuoSplitEndProfileDrag(UINavigationController *navigation, BOOL commit, CGFloat shown, CGFloat velocity) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(navigation, NO);
+    UIView *cover = state.profileDragPicture;
+    if (!cover) return;
+    BOOL forward = state.profileDragForward;
+    UIViewController *profile = forward ? state.profileForwardPage : nil;
+    ApolloLog(@"[DuoDrag] profile %@ drag ended commit=%d shown=%.0f velocity=%.0f",
+              forward ? @"forward" : @"Back", commit, shown, velocity);
+    if (cover.subviews.count < 2) {
+        state.profileDragPicture = nil;
+        [cover removeFromSuperview];
+        return;
+    }
+    UIView *leaving = cover.subviews.firstObject;
+    UIView *incoming = cover.subviews.lastObject;
+    CGFloat width = CGRectGetWidth(cover.bounds);
+    CGFloat direction = forward ? -1 : 1;
+    CGFloat from = (leaving.layer.presentationLayer ?: leaving.layer).transform.m41;
+    CGFloat to = commit ? direction * width : 0;
+    BOOL animated = cover.window != nil;
+    __weak ApolloDuoSplitState *weakState = state;
+    ApolloDuoSlideDrawer(incoming, from - direction * width, to - direction * width, velocity, animated, nil);
+    ApolloDuoSlideDrawer(leaving, from, to, velocity, animated, ^{
+        ApolloDuoSplitState *current = weakState;
+        if (current.profileDragPicture == cover) current.profileDragPicture = nil;
+        // A fold or rotation mid-drag may have closed the split meanwhile.
+        BOOL still = forward ? current.split && !current.changing && ApolloDuoSplitProfileForwardPage(current) == profile
+                             : ApolloDuoSplitStateCanReturnFromProfile(current);
+        if (commit && still) {
+            ApolloDuoSplitSwapProfile(current, profile, forward);
+            ApolloLog(@"[DuoSplit] profile %@ completed under the drag", forward ? @"forward" : @"Back");
+        }
+        [cover removeFromSuperview];
+    });
 }
 
 static void ApolloDuoSplitUpdate(void) {
@@ -4384,6 +4563,8 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     %orig;
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(self, NO);
     if (self == state.feed) ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventMemoryWarning, 0.0);
+    // The visited profile a Back left is a forward page like Apollo's own.
+    if (self == state.feed || self == state.secondary || self == state.outer) ApolloDuoSplitForgetProfileForward(state);
 }
 - (void)setNavigationBarHidden:(BOOL)hidden animated:(BOOL)animated {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(self, NO);
@@ -4413,7 +4594,8 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     // A feed with a closed thread to bring back leaves forward to the pane's
     // forward swipe, so one swipe never both reopens the thread and pushes.
     if ((self != state.secondary && !(self == state.feed && !state.host.postsShowingDetail)) || (back && nav.viewControllers.count < 2) ||
-        (forward && (!ApolloDuoSplitForwardPage(self) || ApolloDuoSplitCanRestoreClosedThread(nav)))) return NO;
+        (forward && (!ApolloDuoSplitForwardPage(self) || ApolloDuoSplitCanRestoreClosedThread(nav)
+                     || ApolloDuoSplitCanForwardToVisitedProfile(nav)))) return NO;
     UIView *view = nav.view;
     CGRect pane = UIEdgeInsetsInsetRect(view.bounds, view.safeAreaInsets);
     CGPoint point = [gesture locationInView:view];

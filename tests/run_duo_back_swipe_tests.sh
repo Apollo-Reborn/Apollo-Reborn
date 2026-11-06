@@ -15,6 +15,7 @@ policies = []
 for signature in ['UINavigationController *ApolloDuoSplitDetailNavigation(',
                   'BOOL ApolloDuoSplitAllowsNavigationSwipe(',
                   'BOOL ApolloDuoSplitCanRevealPostsListWithSwipe(',
+                  'static BOOL ApolloDuoSplitStateCanReturnFromProfile(',
                   'BOOL ApolloDuoSplitCanReturnFromVisitedProfile(',
                   'BOOL ApolloDuoSplitPopRevealsContent(']:
     start = split.index(signature)
