@@ -4335,9 +4335,10 @@ static BOOL ApolloDuoPostsRouteFeedLink(ApolloDuoSplitState *state, UINavigation
         return YES;
     }
     ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventFeedOpened, 0.0);
-    // The split as the link leaves it (the feed and its thread): a Back drag
-    // from the linked feed, with a thread open beside it, slides this back in.
-    ApolloDuoRememberPagePicture(page, state.host.viewIfLoaded, state.host.viewIfLoaded.bounds);
+    // The split as the link leaves it (the feed and its thread), kept on the
+    // feed it leaves: a Back drag from the linked feed, with a thread open
+    // beside it, slides this back in.
+    ApolloDuoRememberPagePicture(visibleFeed, state.host.viewIfLoaded, state.host.viewIfLoaded.bounds);
     NSArray *detail = state.secondary.viewControllers.count > 1
         ? [state.secondary.viewControllers subarrayWithRange:NSMakeRange(1, state.secondary.viewControllers.count - 1)] : @[];
     BOOL animate = animated && !UIAccessibilityIsReduceMotionEnabled();
@@ -4514,8 +4515,8 @@ static BOOL ApolloDuoPostsBeginFeedLinkBackDrag(UINavigationController *navigati
     UIView *surface = state.host.view;
     NSArray<UIViewController *> *thread = state.secondary.viewControllers;
     __weak ApolloDuoSplitState *weakState = state;
-    return ApolloDuoSplitBeginCoverDrag(state, surface.bounds, ApolloDuoPagePictureView(top, surface, surface.bounds), NO, NO,
-                                        ^(__unused UIView *leftPicture) {
+    return ApolloDuoSplitBeginCoverDrag(state, surface.bounds, ApolloDuoPagePictureView(previous, surface, surface.bounds), NO, NO,
+                                        ^(UIView *leftPicture) {
         ApolloDuoSplitState *current = weakState;
         if (!current.split || current.changing || ![current.feed.viewControllers isEqualToArray:pages]
             || ![current.secondary.viewControllers isEqualToArray:thread]) return;
@@ -4523,12 +4524,16 @@ static BOOL ApolloDuoPostsBeginFeedLinkBackDrag(UINavigationController *navigati
         if (!restore.detail.count) return;
         ApolloDuoPostsReviewClosedThread(current, ApolloDuoClosedThreadEventFeedOpened, 0.0);
         objc_setAssociatedObject(previous, &kDuoFeedLinkReturnDetail, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [current.feed setViewControllers:[pages subarrayWithRange:NSMakeRange(0, pages.count - 1)] animated:NO];
+        // Apollo's own pop (its thread still shows, so the split leaves it to
+        // Apollo): it keeps the linked feed as a forward page, as its Back does.
+        [current.feed popViewControllerAnimated:NO];
         UIViewController *backstop = current.secondary.viewControllers.firstObject;
         [current.secondary setViewControllers:[(backstop ? @[backstop] : @[]) arrayByAddingObjectsFromArray:restore.detail]
                                      animated:NO];
         ApolloDuoPostsSyncColumns(current);
         [current.host.view layoutIfNeeded];
+        // The linked feed as it showed, for a forward swipe back to it.
+        ApolloDuoSetPagePicture(top, leftPicture, current.host.view, current.host.view.bounds);
         ApolloLog(@"[DuoSplit] Back from a feed link completed under the drag; restored %lu thread page(s)",
                   (unsigned long)restore.detail.count);
     });
@@ -4570,6 +4575,95 @@ static BOOL ApolloDuoSidebarBeginBackDrag(UINavigationController *navigation) {
     });
 }
 
+// Forward in a sidebar pane: the page Apollo's Back left. Apollo's own
+// forward pan begins only at the screen's right edge, which the rail covers
+// in the split, and its push would slide the page in under the sidebar, so
+// the split owns this forward as it owns the Back.
+static UIViewController *ApolloDuoSidebarForwardPage(UINavigationController *navigation) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(navigation, NO);
+    if (state.changing || [state.kind isEqualToString:@"account"] || !ApolloDuoSplitPaneRunsUnderSidebar(state, navigation))
+        return nil;
+    return ApolloDuoSplitForwardPage(navigation);
+}
+
+static void ApolloDuoSidebarForward(UINavigationController *navigation, UIViewController *page, BOOL animated) {
+    // Apollo's push of its own forward page.
+    [navigation pushViewController:page animated:animated];
+    ApolloLog(@"[DuoSplit] sidebar forward to %@", NSStringFromClass(page.class));
+}
+
+static BOOL ApolloDuoSidebarBeginForwardDrag(UINavigationController *navigation) {
+    UIViewController *page = ApolloDuoSidebarForwardPage(navigation);
+    if (!page) return NO;
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(navigation, NO);
+    NSArray<UIViewController *> *pages = navigation.viewControllers;
+    CGRect rect = ApolloDuoAccountDetailRect(state);
+    __weak ApolloDuoSplitState *weakState = state;
+    __weak UINavigationController *weakNavigation = navigation;
+    return ApolloDuoSplitBeginCoverDrag(state, rect, ApolloDuoPagePictureView(page, state.host.view, rect), YES, YES,
+                                        ^(UIView *leftPicture) {
+        ApolloDuoSplitState *current = weakState;
+        UINavigationController *pane = weakNavigation;
+        if (!current.split || current.changing || pane != current.secondary || ![pane.viewControllers isEqualToArray:pages]
+            || ApolloDuoSplitForwardPage(pane) != page) return;
+        ApolloDuoSidebarForward(pane, page, NO);
+        ApolloDuoSetPagePicture(pages.lastObject, leftPicture, current.host.view, rect);
+        ApolloLog(@"[DuoSplit] %@ forward completed under the drag", current.kind);
+    });
+}
+
+// A full-width feed page about to leave (a Back button, or Apollo's own
+// Back pan as it begins) keeps its picture, for the feed's forward swipe once
+// a thread shows beside the feed it returns to.
+static void ApolloDuoPostsRememberLeavingFeed(UINavigationController *navigation) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(navigation, NO);
+    if (!state.split || state.changing || navigation != state.feed || state.host.postsShowingDetail
+        || navigation.viewControllers.count < 2) return;
+    ApolloDuoRememberPagePicture(navigation.topViewController, state.host.viewIfLoaded, state.host.viewIfLoaded.bounds);
+}
+
+// Forward in the feed while a thread shows beside it: the feed page Apollo's
+// Back left (a feed link, or any feed popped with the thread open). It opens
+// as a feed link does, full width with Back restoring the thread, and slides
+// in over the whole split under the finger. Apollo's own forward pan stands
+// down here: it would push into the half-width feed.
+static UIViewController *ApolloDuoPostsFeedForwardPage(UINavigationController *navigation) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(navigation, NO);
+    if (!state.split || state.changing || navigation != state.feed || !state.host.postsShowingDetail
+        || !ApolloDuoPostsUsesSplit(state)) return nil;
+    UIViewController *page = ApolloDuoSplitForwardPage(navigation);
+    if (!ApolloDuoIsFeedPage(page) || [page isKindOfClass:ApolloGalleryViewController.class]) return nil;
+    NSString *target = ApolloNamedSubredditForPostsController(page);
+    NSString *current = ApolloNamedSubredditForPostsController(navigation.topViewController);
+    // The feed link route ignores a link to the feed already shown.
+    if (target.length && current.length && [target caseInsensitiveCompare:current] == NSOrderedSame) return nil;
+    return page;
+}
+
+static void ApolloDuoPostsFeedForward(ApolloDuoSplitState *state, UIViewController *page, BOOL animated) {
+    if (!ApolloDuoPostsRouteFeedLink(state, state.feed, page, animated)) [state.feed pushViewController:page animated:animated];
+    ApolloLog(@"[DuoSplit] feed forward to %@", NSStringFromClass(page.class));
+}
+
+static BOOL ApolloDuoPostsBeginFeedForwardDrag(UINavigationController *navigation) {
+    UIViewController *page = ApolloDuoPostsFeedForwardPage(navigation);
+    if (!page) return NO;
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(navigation, NO);
+    UIView *surface = state.host.view;
+    NSArray<UIViewController *> *pages = navigation.viewControllers;
+    __weak ApolloDuoSplitState *weakState = state;
+    return ApolloDuoSplitBeginCoverDrag(state, surface.bounds, ApolloDuoPagePictureView(page, surface, surface.bounds), YES, NO,
+                                        ^(UIView *leftPicture) {
+        ApolloDuoSplitState *current = weakState;
+        if (!current.split || current.changing || ![current.feed.viewControllers isEqualToArray:pages]
+            || ApolloDuoSplitForwardPage(current.feed) != page) return;
+        ApolloDuoPostsFeedForward(current, page, NO);
+        // The route kept a picture taken under the cover; keep the real one.
+        ApolloDuoSetPagePicture(pages.lastObject, leftPicture, current.host.view, current.host.view.bounds);
+        ApolloLog(@"[DuoSplit] feed forward completed under the drag");
+    });
+}
+
 #pragma mark - Split drag entry points
 
 // The pane drag's Pop route: a Back the split lays out itself, following the
@@ -4579,19 +4673,32 @@ BOOL ApolloDuoSplitBeginBackDrag(UINavigationController *navigation) {
         || ApolloDuoSidebarBeginBackDrag(navigation) || ApolloDuoPostsBeginFeedLinkBackDrag(navigation);
 }
 
-// Forward swipes the split owns: back into a visited profile, and Account's
-// detail pages (whose pushes the split lays out, so Apollo's can't follow).
+// Forward swipes the split owns: back into a visited profile, Account's
+// detail pages (whose pushes the split lays out, so Apollo's can't follow),
+// Settings and Inbox detail pages, and the feed beside a thread.
 BOOL ApolloDuoSplitCanForwardInSplit(UINavigationController *navigation) {
-    return ApolloDuoSplitCanForwardToVisitedProfile(navigation) || ApolloDuoAccountCanForward(navigation);
+    return ApolloDuoSplitCanForwardToVisitedProfile(navigation) || ApolloDuoAccountCanForward(navigation)
+        || ApolloDuoSidebarForwardPage(navigation) != nil || ApolloDuoPostsFeedForwardPage(navigation) != nil;
 }
 
 BOOL ApolloDuoSplitBeginForwardDrag(UINavigationController *navigation) {
-    return ApolloDuoSplitBeginProfileDrag(navigation, YES) || ApolloDuoAccountBeginForwardDrag(navigation);
+    return ApolloDuoSplitBeginProfileDrag(navigation, YES) || ApolloDuoAccountBeginForwardDrag(navigation)
+        || ApolloDuoSidebarBeginForwardDrag(navigation) || ApolloDuoPostsBeginFeedForwardDrag(navigation);
 }
 
 // Without a picture to follow, a completed forward swipe navigates at once.
 BOOL ApolloDuoSplitForwardInSplit(UINavigationController *navigation) {
     if (ApolloDuoSplitForwardToVisitedProfile(navigation)) return YES;
+    UIViewController *sidebarPage = ApolloDuoSidebarForwardPage(navigation);
+    if (sidebarPage) {
+        ApolloDuoSidebarForward(navigation, sidebarPage, YES);
+        return YES;
+    }
+    UIViewController *feedPage = ApolloDuoPostsFeedForwardPage(navigation);
+    if (feedPage) {
+        ApolloDuoPostsFeedForward(ApolloDuoSplitStateForNavigation(navigation, NO), feedPage, YES);
+        return YES;
+    }
     if (!ApolloDuoAccountCanForward(navigation)) return NO;
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(navigation, NO);
     BOOL splitPage = NO;
@@ -4979,6 +5086,13 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     if (back && ApolloDuoHasBackSwipe(nav) && !ApolloDuoPaneBackIsNative(nav)) return NO;
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(self, NO);
     if (!state.split || state.changing) return %orig(gesture);
+    // Apollo's navigation-bar pan drives Back and forward too. A forward the
+    // split owns (Settings, Account, the feed beside a thread) is the pane's
+    // forward swipe; Apollo's push would land under the sidebar or in the
+    // half-width feed.
+    Ivar barIvar = class_getInstanceVariable(nav.class, "navigationBarPanGestureRecognizer");
+    if (barIvar && object_getIvar(self, barIvar) == gesture && [gesture isKindOfClass:UIPanGestureRecognizer.class]
+        && [(UIPanGestureRecognizer *)gesture velocityInView:nil].x < 0 && ApolloDuoSplitCanForwardInSplit(nav)) return NO;
     Ivar rightIvar = class_getInstanceVariable(nav.class, "rightScreenEdgePanGestureRecognizer");
     BOOL forward = rightIvar && object_getIvar(self, rightIvar) == gesture;
     if (!back && !forward) return %orig(gesture);
@@ -5003,10 +5117,12 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     return result;
 }
 - (void)screenEdgePanned:(UIPanGestureRecognizer *)gesture {
+    if (gesture.state == UIGestureRecognizerStateBegan && [gesture velocityInView:nil].x > 0) ApolloDuoPostsRememberLeavingFeed(self);
     ApolloDuoSplitRunNativePan(self, gesture, ^{ %orig(gesture); });
 }
 // Apollo's navigation-bar pan drives the same handler, Back or Forward.
 - (void)navigationBarPanned:(UIPanGestureRecognizer *)gesture {
+    if (gesture.state == UIGestureRecognizerStateBegan && [gesture velocityInView:nil].x > 0) ApolloDuoPostsRememberLeavingFeed(self);
     ApolloDuoSplitRunNativePan(self, gesture, ^{ %orig(gesture); });
 }
 - (void)pushViewController:(UIViewController *)controller animated:(BOOL)animated {
@@ -5076,6 +5192,7 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     if (native && state.split && self == state.secondary && [state.kind isEqualToString:@"account"])
         ApolloDuoRememberPagePicture(((UINavigationController *)self).topViewController, state.host.viewIfLoaded,
                                      ApolloDuoAccountDetailRect(state));
+    ApolloDuoPostsRememberLeavingFeed(self);
     if (!native && state.feed && self == state.feed) {
         UIViewController *popped = ApolloDuoPostsPopFeedLink(state, animated);
         if (popped) return popped;
