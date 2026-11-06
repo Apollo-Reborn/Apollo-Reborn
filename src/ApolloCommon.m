@@ -17,6 +17,7 @@
 #import "ApolloAccountCredentials.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloDeviceIdentity.h"
+#import "ApolloSwiftRuntime.h"
 #include <sys/sysctl.h>
 
 #pragma mark - Security dictionaries
@@ -845,14 +846,18 @@ BOOL ApolloRouteURLThroughAppInScene(NSURL *url, UIWindowScene *scene) {
     UITabBarController *tabs = (id)ApolloMainTabBarControllerForScene(scene);
     if (![tabs isKindOfClass:UITabBarController.class]) return NO;
     if (scene && tabs.viewIfLoaded.window.windowScene != scene) return NO;
-    Ivar ivar = class_getInstanceVariable([appDelegate class], "tabBarController");
-    Ivar next = class_getInstanceVariable([appDelegate class], "apolloProProducts");
     // Verified in AppDelegate's native destructor at 0x10016cb10: ldr +
-    // objc_release, followed by apolloProProducts eight bytes later. Swift's
-    // mangled Optional encoding is deliberately not interpreted as ObjC @.
-    if (![appDelegate isMemberOfClass:objc_getClass("_TtC6Apollo11AppDelegate")] || !ivar || !next ||
-        ivar_getOffset(next) - ivar_getOffset(ivar) != sizeof(void *)) return NO;
-    void *storage = (uint8_t *)(__bridge void *)appDelegate + ivar_getOffset(ivar);
+    // objc_release, followed by apolloProProducts eight bytes later (the same
+    // order as the 1.7.4 and 1.10.99 class dumps). Swift's mangled Optional
+    // encoding is deliberately not interpreted as ObjC @. Apollo builds that
+    // still ship Firebase (iOS 14 users run 1.14.x) move the delegate onto
+    // GoogleUtilities' GUL_ subclass, which an exact class check refused (#1529).
+    void *storage = ApolloPointerIvarSlot(appDelegate, "_TtC6Apollo11AppDelegate", "tabBarController",
+                                          "apolloProProducts");
+    if (!storage) {
+        ApolloLog(@"[ApolloRouteURL] not routing: unrecognized app delegate %s", object_getClassName(appDelegate));
+        return NO;
+    }
     id previous = (__bridge_transfer id)ApolloSwiftExchangePaneTabs(storage, (__bridge const void *)tabs);
     @try {
         return ((BOOL (*)(id, SEL, id, id, id))objc_msgSend)(appDelegate, selector, application, url, @{});
