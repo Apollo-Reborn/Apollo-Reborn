@@ -159,6 +159,11 @@ static NSUInteger drawerReveals, profileReturns;
 static BOOL ApolloDeviceIsDuo(void) { return duo; }
 static BOOL ApolloDuoSplitIsResizing(void) { return resizing; }
 static ApolloDuoSplitState *ApolloDuoSplitStateForNavigation(UINavigationController *nav, __unused BOOL create) { return nav.duoState; }
+// A sidebar pane's kept picture of the page below (the split's cover Back).
+@interface TestDetailPage : UIViewController @end
+@implementation TestDetailPage @end
+static BOOL paneBackPicture;
+static BOOL ApolloDuoSplitPaneBackHasPicture(__unused UINavigationController *nav) { return paneBackPicture; }
 // INCLUDE_PRODUCTION_SPLIT_POLICIES
 static BOOL ApolloDuoSplitReturnFromVisitedProfile(UINavigationController *nav) {
     if (!ApolloDuoSplitCanReturnFromVisitedProfile(nav)) return NO;
@@ -623,6 +628,22 @@ int main(void) {
         Check(!ApolloDuoBackSwipeCanNavigate(header), @"after leaving, the left column swipe stands down");
         account.profilePrefix = @[[UIViewController new]]; account.tabKind = @"profile";
         Check(!ApolloDuoBackSwipeCanNavigate(profile), @"the Account tab's own profile is a root, not a visit");
+
+        // A sidebar split's detail runs under the sidebar: with a kept
+        // picture of the page below, the split's cover drag owns its Back
+        // (Apollo's would slide its own background over that page).
+        {
+            UINavigationController *detail = Navigation();
+            detail.viewControllers = @[[TestDetailPage new], [TestDetailPage new]];
+            ApolloDuoSplitState *settings = [ApolloDuoSplitState new];
+            settings.split = [NSObject new]; settings.host = [TestDuoHost new]; settings.kind = @"settings";
+            settings.secondary = detail; detail.duoState = settings;
+            paneBackPicture = NO;
+            Check(ApolloDuoSplitPopRevealsContent(detail), @"sidebar pane: without a picture, Apollo's Back pops it");
+            paneBackPicture = YES;
+            Check(!ApolloDuoSplitPopRevealsContent(detail), @"sidebar pane: with a picture of the page below, the split's drag does");
+            paneBackPicture = NO;
+        }
 
         // Each pane's swipe acts on its own pane, with the setting on as off:
         // a swipe in the feed does the feed's own Back (the list at its root)
