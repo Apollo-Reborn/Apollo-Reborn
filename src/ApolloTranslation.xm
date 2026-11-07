@@ -1266,6 +1266,24 @@ static void ApolloLogPostBodySkipOnce(RDKLink *link, NSString *reason) {
 
 static NSString *ApolloStripInlineMediaTokens(NSString *text);
 
+// Spelling noise a provider adds to text it had nothing to translate: accents
+// dropped or added (Google hands "Dončić" back as "Doncic" from Slovenian,
+// "Bogdanovic" as "Bogdanović" from Maltese) and a stretched word coming back
+// a letter longer or shorter ("LUKA" + 25 A's returned with 26, from Tagalog,
+// #1665). Accents fold away and any run of 3+ of one character counts as two,
+// so neither reads as a translation. Already case/whitespace-normalized input.
+static NSString *ApolloFoldSpellingNoiseForCompare(NSString *normalized) {
+    static NSRegularExpression *repeatedCharacterRun;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        repeatedCharacterRun = [NSRegularExpression regularExpressionWithPattern:@"(.)\\1{2,}" options:0 error:NULL];
+    });
+    NSString *folded = [normalized stringByFoldingWithOptions:NSDiacriticInsensitiveSearch locale:nil];
+    return [repeatedCharacterRun stringByReplacingMatchesInString:folded options:0
+                                                            range:NSMakeRange(0, folded.length)
+                                                     withTemplate:@"$1$1"];
+}
+
 // NO when the "translation" is the original handed back: the provider saw the
 // target language, or a name / emoji / slang word with nothing to translate.
 // Inline media-id tokens (![gif](giphy|…)) never reach the provider, so they
@@ -1274,7 +1292,8 @@ static NSString *ApolloStripInlineMediaTokens(NSString *text);
 static BOOL ApolloTranslatedTextDiffersFromSource(NSString *sourceText, NSString *translatedText) {
     NSString *sourceNorm = ApolloNormalizeTextForCompare(ApolloStripInlineMediaTokens(sourceText ?: @""));
     NSString *translatedNorm = ApolloNormalizeTextForCompare(ApolloStripInlineMediaTokens(translatedText ?: @""));
-    return sourceNorm.length > 0 && translatedNorm.length > 0 && ![sourceNorm isEqualToString:translatedNorm];
+    if (sourceNorm.length == 0 || translatedNorm.length == 0 || [sourceNorm isEqualToString:translatedNorm]) return NO;
+    return ![ApolloFoldSpellingNoiseForCompare(sourceNorm) isEqualToString:ApolloFoldSpellingNoiseForCompare(translatedNorm)];
 }
 
 // YES when the cached reply for `cacheKey` is just `sourceText` handed back. The
@@ -3747,6 +3766,36 @@ static NSString *ApolloExtractGoogleSourceLanguage(id jsonObject) {
     return nil;
 }
 
+// How sure gtx is of that source language, 0–1: seventh at the top level —
+// [[segments…], null, "tl", null, null, null, 0.31, …]. clients5 reports none.
+static NSNumber *ApolloExtractGoogleSourceConfidence(id jsonObject) {
+    if (![jsonObject isKindOfClass:[NSArray class]]) return nil;
+    NSArray *array = (NSArray *)jsonObject;
+    if (array.count <= 6 || ![array[6] isKindOfClass:[NSNumber class]]) return nil;
+    double confidence = [array[6] doubleValue];
+    return (confidence >= 0.0 && confidence <= 1.0) ? array[6] : nil;
+}
+
+// Short text Google can't place is a name, slang or a stretched word it guessed
+// a language for, not a translation (#1665): "Kuminga" came back "Kumiga" from
+// Maori at 0.33, "Luka Luka Luka Luka" as "Wounds Wounds…" from Indonesian at
+// 0.46, "Vando szn" as "No. Vando" from Hungarian at 0.48, while real short
+// foreign text scores higher (Hola 1.0, Grazie 0.96, Danke 0.66, Golazo 0.52).
+// Longer text keeps Google's answer, since low confidence there means mixed
+// languages, which still translate fine. A long post's short last chunk is
+// judged the same way; Google misreads those too ("Ja." → "And." from Estonian).
+static BOOL ApolloGoogleDetectionTooUnsureForText(NSString *requestText, NSNumber *confidence) {
+    static const NSUInteger kMaxWords = 4;
+    static const double kMinConfidence = 0.5;
+    if (![confidence isKindOfClass:[NSNumber class]] || confidence.doubleValue >= kMinConfidence) return NO;
+    if (![requestText isKindOfClass:[NSString class]]) return NO;
+    NSUInteger words = 0;
+    for (NSString *part in [requestText componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]) {
+        if (part.length > 0 && ++words > kMaxWords) return NO;
+    }
+    return words > 0;
+}
+
 // Completion for one provider leg: the translation plus the source language the
 // provider reports translating FROM (nil when it gave none).
 typedef void (^ApolloTranslationLegCompletion)(NSString *translated, NSString *sourceLanguage, NSError *error);
@@ -3788,8 +3837,10 @@ static NSURL *ApolloGoogleTranslateFallbackURL(NSString *text, NSString *targetL
 }
 
 // One GET against a Google translate endpoint + shared response parsing.
-// `endpointLabel` only feeds the local diagnostic log.
+// `requestText` is the text the URL carries; `endpointLabel` only feeds the
+// local diagnostic log.
 static void ApolloGoogleTranslateFetch(NSURL *url,
+                                       NSString *requestText,
                                        NSString *endpointLabel,
                                        ApolloTranslationLegCompletion completion) {
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:12.0];
@@ -3840,6 +3891,15 @@ static void ApolloGoogleTranslateFetch(NSURL *url,
         }
 
         NSString *sourceLanguage = ApolloExtractGoogleSourceLanguage(jsonObject);
+        NSNumber *confidence = ApolloExtractGoogleSourceConfidence(jsonObject);
+        if (ApolloGoogleDetectionTooUnsureForText(requestText, confidence)) {
+            // Hand the original back, the way a skip-listed language is: callers
+            // treat it as nothing to translate, so no rewrite and no marker.
+            ApolloLog(@"[Translation] Google(%@) only %.2f sure the %lu-char text is %@ — keeping the original",
+                      endpointLabel, confidence.doubleValue, (unsigned long)requestText.length, sourceLanguage ?: @"(none)");
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(requestText, nil, nil); });
+            return;
+        }
         dispatch_async(dispatch_get_main_queue(), ^{ completion(translated, sourceLanguage, nil); });
     }];
 
@@ -3868,7 +3928,7 @@ static void ApolloTranslateViaGoogle(NSString *text,
             completion(nil, nil, primaryError);
             return;
         }
-        ApolloGoogleTranslateFetch(fallbackURL, @"clients5", ^(NSString *retried, NSString *retriedSource, NSError *fallbackError) {
+        ApolloGoogleTranslateFetch(fallbackURL, text, @"clients5", ^(NSString *retried, NSString *retriedSource, NSError *fallbackError) {
             if ([retried isKindOfClass:[NSString class]] && retried.length > 0) {
                 completion(retried, retriedSource, nil);
                 return;
@@ -3895,7 +3955,7 @@ static void ApolloTranslateViaGoogle(NSString *text,
         dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, nil, error); });
         return;
     }
-    ApolloGoogleTranslateFetch(primaryURL, @"gtx", ^(NSString *translated, NSString *sourceLanguage, NSError *primaryError) {
+    ApolloGoogleTranslateFetch(primaryURL, text, @"gtx", ^(NSString *translated, NSString *sourceLanguage, NSError *primaryError) {
         if ([translated isKindOfClass:[NSString class]] && translated.length > 0) {
             completion(translated, sourceLanguage, nil);
             return;
@@ -5052,7 +5112,7 @@ void ApolloTranslationDebugProbe(NSString *spec) {
     } else if ([leg isEqualToString:@"google2"]) {
         NSURL *fallbackURL = ApolloGoogleTranslateFallbackURL(text, target);
         if (!fallbackURL) { ApolloLog(@"[Translation][Probe] clients5 URL build failed"); return; }
-        ApolloGoogleTranslateFetch(fallbackURL, @"clients5", report);
+        ApolloGoogleTranslateFetch(fallbackURL, text, @"clients5", report);
     } else if ([leg isEqualToString:@"libre"]) {
         ApolloTranslateViaLibre(text, target, report);
     } else if ([leg isEqualToString:@"microsoft"]) {

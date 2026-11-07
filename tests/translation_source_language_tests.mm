@@ -89,6 +89,54 @@ static void TestTranslationChangesText(void) {
     Check(!ApolloTranslatedTextDiffersFromSource(@"Hola", nil), @"no reply is not a change");
 }
 
+// #1665: names and stretched words Google only re-spelled (real replies, 2026-11-07).
+static void TestSpellingNoiseIsNotATranslation(void) {
+    NSString *luka25 = [@"LUKA" stringByPaddingToLength:29 withString:@"A" startingAtIndex:0];
+    NSString *luka26 = [@"LUKA" stringByPaddingToLength:30 withString:@"A" startingAtIndex:0];
+    Check(!ApolloTranslatedTextDiffersFromSource(luka25, luka26), @"LUKA + 25 A's back with 26 (tl) is unchanged");
+    Check(!ApolloTranslatedTextDiffersFromSource(@"LUKAAAAAA", @"LUKAAAAA"), @"one A fewer (haw) is unchanged");
+    Check(!ApolloTranslatedTextDiffersFromSource(@"Hmmm!!!!", @"Hmmmmm!!!"), @"runs of 3+ of a letter or a mark fold together");
+    Check(!ApolloTranslatedTextDiffersFromSource(@"Dončić", @"Doncic"), @"accents dropped (sl) is unchanged");
+    Check(!ApolloTranslatedTextDiffersFromSource(@"Bogdanovic", @"Bogdanović"), @"accents added (mt) is unchanged");
+    Check(!ApolloTranslatedTextDiffersFromSource(@"😂😂😂😂", @"😂😂😂"), @"a repeated emoji folds like a letter");
+    Check(ApolloTranslatedTextDiffersFromSource(@"Kuminga", @"Kumiga"), @"a dropped letter is still a change");
+    Check(ApolloTranslatedTextDiffersFromSource(@"Luka 3!!!", @"Wound 3!!!"), @"a name read as a word is still a change");
+    Check(ApolloTranslatedTextDiffersFromSource(@"Nooo", @"No"), @"a double letter is not a run");
+    Check(ApolloTranslatedTextDiffersFromSource(@"Jajaja", @"Ha ha ha"), @"a real rewrite of a laugh is a change");
+    Check(ApolloTranslatedTextDiffersFromSource(@"Danke schön", @"Thank you very much"), @"a translation is a change");
+}
+
+#pragma mark - Google detection confidence
+
+static void TestGoogleSourceConfidence(void) {
+    NSString *gtxLuka = @"[[[\"LUKAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"LUKAAAAAAAAAAAAAAAAAAAAAAAAAA\",null,null,3,null,null,[[]],[[[\"1eb561d2d816b8957a38cd5018eb164c\",\"tea_AllEn_2022q2.md\"]]]]],null,\"tl\",null,null,null,0.30606875,[],[[\"tl\"],null,[0.30606875],[\"tl\"]]]";
+    NSNumber *luka = ApolloExtractGoogleSourceConfidence(JSON(gtxLuka));
+    Check(luka && fabs(luka.doubleValue - 0.30606875) < 1e-9, @"gtx: confidence is seventh at the top level");
+    NSString *gtxDanke = @"[[[\"Thanks\",\"Danke\",null,null,10]],null,\"de\",null,null,null,0.66015625,[],[[\"de\"],null,[0.66015625],[\"de\"]]]";
+    Check(fabs(ApolloExtractGoogleSourceConfidence(JSON(gtxDanke)).doubleValue - 0.66015625) < 1e-9, @"gtx: Danke reads 0.66");
+    NSString *gtxSpanish = @"[[[\"Hello how are you? \",\"Hola, ¿cómo estás? \",null,null,10]],null,\"es\",null,null,null,1,[],[[\"es\"],null,[1],[\"es\"]]]";
+    Check(ApolloExtractGoogleSourceConfidence(JSON(gtxSpanish)).doubleValue == 1.0, @"gtx: a whole-number confidence reads 1");
+    Check(ApolloExtractGoogleSourceConfidence(JSON(@"[[\"Hello\",\"es\"]]")) == nil, @"clients5 reports no confidence");
+    Check(ApolloExtractGoogleSourceConfidence(JSON(@"[[],null,\"es\",null,null,null,null]")) == nil, @"null → nil");
+    Check(ApolloExtractGoogleSourceConfidence(JSON(@"[[],null,\"es\",null,null,null,5]")) == nil, @"out of 0–1 → nil");
+    Check(ApolloExtractGoogleSourceConfidence(JSON(@"{\"x\":1}")) == nil, @"not an array → nil");
+
+    // Short text Google can't place: hand the original back.
+    Check(ApolloGoogleDetectionTooUnsureForText(@"LUKAAAAAAAAAAAAAAAAAAAAAAAAAA", luka), @"LUKAAA… tl 0.31 → keep the original");
+    Check(ApolloGoogleDetectionTooUnsureForText(@"Kuminga", @0.32569098), @"Kuminga mi 0.33 → keep");
+    Check(ApolloGoogleDetectionTooUnsureForText(@"Luka Luka Luka Luka", @0.46366933), @"four words at id 0.46 → keep");
+    Check(ApolloGoogleDetectionTooUnsureForText(@"Ja.", @0.44573644), @"Ja. et 0.45 → keep (not \"And.\")");
+    Check(ApolloGoogleDetectionTooUnsureForText(@"APOLLOTRANSLATIONNAME0TOKEN szn", @0.48), @"a protected-name sentinel is one word");
+    // Real short foreign text, and anything longer, keeps Google's answer.
+    Check(!ApolloGoogleDetectionTooUnsureForText(@"Danke", @0.66015625), @"Danke de 0.66 → translate");
+    Check(!ApolloGoogleDetectionTooUnsureForText(@"Golazo", @0.51953125), @"Golazo es 0.52 → translate");
+    Check(!ApolloGoogleDetectionTooUnsureForText(@"Golazo", @0.5), @"exactly 0.5 → translate");
+    Check(!ApolloGoogleDetectionTooUnsureForText(@"Kuminga to the bench again", @0.3), @"five words → translate");
+    Check(!ApolloGoogleDetectionTooUnsureForText(@"Kuminga", nil), @"no confidence (clients5) → translate");
+    Check(!ApolloGoogleDetectionTooUnsureForText(@" \n ", @0.1), @"no words → nothing to judge");
+    Check(!ApolloGoogleDetectionTooUnsureForText(nil, @0.1), @"no text → nothing to judge");
+}
+
 #pragma mark - Store key
 
 static void TestSourceLanguageKey(void) {
@@ -108,6 +156,8 @@ int main(void) {
         TestGoogleSourceLanguage();
         TestNormalizedReportedSourceLanguage();
         TestTranslationChangesText();
+        TestSpellingNoiseIsNotATranslation();
+        TestGoogleSourceConfidence();
         TestSourceLanguageKey();
         printf("translation source language tests passed (%lu checks)\n", (unsigned long)sChecks);
     }
