@@ -84,15 +84,19 @@ static BOOL ApolloDuoForwardSwipeCanNavigate(UINavigationController *navigation)
         && ApolloDuoSwipeEnvironmentAllows(navigation);
 }
 
-static BOOL ApolloDuoForwardSwipeInEdgeStrip(CGRect pane, CGPoint point) {
-    return point.x >= CGRectGetMaxX(pane) - 28.0;
+// The pane runs under a trailing side rail (its content frame keeps that strip
+// to center content), so measure from the visible edge, as a release does. In
+// landscape the strip would otherwise sit almost entirely behind the rail.
+static BOOL ApolloDuoForwardSwipeInEdgeStrip(UIView *view, CGRect pane, CGPoint point) {
+    CGFloat visibleRight = MIN(CGRectGetMaxX(pane), CGRectGetWidth(view.bounds) - view.safeAreaInsets.right);
+    return point.x >= visibleRight - 28.0;
 }
 
 static BOOL ApolloDuoForwardSwipeAcceptsPoint(UINavigationController *navigation, CGPoint point) {
     if (!ApolloDuoForwardSwipeCanNavigate(navigation)) return NO;
     CGRect pane = ApolloDuoBackSwipePane(navigation);
     if (CGRectIsEmpty(pane) || !CGRectContainsPoint(pane, point)) return NO;
-    return ApolloDuoForwardSwipeInEdgeStrip(pane, point) || ApolloDuoForwardSwipeStartsAnywhere();
+    return ApolloDuoForwardSwipeInEdgeStrip(navigation.view, pane, point) || ApolloDuoForwardSwipeStartsAnywhere();
 }
 
 // Away from the edge strip, content with its own sideways drag keeps it: a

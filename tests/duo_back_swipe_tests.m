@@ -9,8 +9,10 @@
 @property(nonatomic) CGRect layoutFrame;
 @end
 @implementation UILayoutGuide @end
+typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 @interface UIView : NSObject
 @property(nonatomic) CGRect bounds;
+@property(nonatomic) UIEdgeInsets safeAreaInsets;
 @property(nonatomic, weak) UIView *superview;
 @property(nonatomic, strong) NSObject *window;
 @property(nonatomic, strong) UILayoutGuide *safeAreaLayoutGuide;
@@ -60,7 +62,6 @@
 @property(nonatomic) NSUInteger direction, numberOfTouchesRequired;
 @end
 @implementation UISwipeGestureRecognizer @end
-typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 @interface UIScrollView : UIView
 @property(nonatomic, strong) UIPanGestureRecognizer *panGestureRecognizer;
 @property(nonatomic) CGSize contentSize;
@@ -728,6 +729,19 @@ int main(void) {
                   @"forward: just inside the strip, row swipe actions keep the touch");
             Check(![fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:inner],
                   @"forward: the feed's interior keeps its row actions by default");
+            // In landscape the side rail covers the pane's trailing 84pt; the strip
+            // is measured from the visible edge, beside the rail.
+            fwdFeed.view.safeAreaInsets = (UIEdgeInsets){0, 0, 0, 84};
+            strip.point = CGPointMake(1280 - 84 - 28, 300);
+            Check([fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:strip],
+                  @"forward: beside a trailing rail, the strip starts at the visible edge");
+            strip.point = CGPointMake(1280 - 84 - 29, 300);
+            Check(![fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:strip],
+                  @"forward: beside a trailing rail, the strip is still 28pt wide");
+            strip.point = CGPointMake(1270, 300);
+            Check([fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:strip],
+                  @"forward: past the rail's pills, the screen edge still starts it");
+            fwdFeed.view.safeAreaInsets = (UIEdgeInsets){0, 0, 0, 0};
             Check(![fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:leading],
                   @"forward: the leading edge is Back's, not forward's");
             strip.point = CGPointMake(1270, 300);
