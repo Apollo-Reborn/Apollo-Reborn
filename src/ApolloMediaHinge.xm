@@ -139,8 +139,17 @@ static CGFloat ApolloDuoFeedCenterOffset(UITableView *table, UIWindow *window, U
     CGRect content = UIEdgeInsetsInsetRect(table.bounds, table.safeAreaInsets);
     CGFloat contentWidth = ApolloDuoRailFeedContentWidth(table);
     if (!isfinite(contentWidth) || contentWidth <= 0.0) contentWidth = CGRectGetWidth(content);
-    CGFloat target = [table convertPoint:CGPointMake(CGRectGetMidX(pane), CGRectGetMidY(pane))
-                               fromView:window].x;
+    // Center against the page at rest. A push or Back moves the page (Apollo
+    // parks the outgoing feed at its parallax offset), and measuring its live
+    // position shoves the column across the page until the transition ends.
+    // The page rests at its navigation view's origin: map the pane there, then
+    // into the table through the page's own view, which leaves the move out.
+    CGPoint mid = CGPointMake(CGRectGetMidX(pane), CGRectGetMidY(pane));
+    UIView *page = owner.viewIfLoaded, *stack = owner.navigationController.viewIfLoaded;
+    BOOL paged = page && stack && owner.parentViewController == owner.navigationController
+        && [table isDescendantOfView:page];
+    CGFloat target = paged ? [table convertPoint:[stack convertPoint:mid fromView:window] fromView:page].x
+                           : [table convertPoint:mid fromView:window].x;
     CGFloat offset = target - (CGRectGetMinX(content) + contentWidth * 0.5);
     return isfinite(offset) && contentWidth > 0.0 ? offset : 0.0;
 }
