@@ -5104,12 +5104,19 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
         (forward && (!ApolloDuoSplitForwardPage(self) || ApolloDuoSplitCanRestoreClosedThread(nav)
                      || ApolloDuoSplitCanForwardInSplit(nav)))) return NO;
     UIView *view = nav.view;
-    CGRect pane = UIEdgeInsetsInsetRect(view.bounds, view.safeAreaInsets);
+    UIEdgeInsets insets = view.safeAreaInsets;
+    // Forward also starts under a trailing side rail, between its buttons.
+    // A finger there is still over the rail when the pan decides to begin.
+    if (forward) insets.right = 0.0;
+    CGRect pane = UIEdgeInsetsInsetRect(view.bounds, insets);
     CGPoint point = [gesture locationInView:view];
     if (!CGRectContainsPoint(pane, point)) return NO;
     sDuoSplitGesture = (__bridge void *)gesture;
     sDuoSplitGestureView = (__bridge void *)view;
-    sDuoSplitGestureOffset = back ? -view.safeAreaInsets.left : view.safeAreaInsets.right;
+    // Apollo checks its edge band against the visible pane: shift by the
+    // rail's inset, but never past the screen edge for a start under the rail.
+    sDuoSplitGestureOffset = back ? -view.safeAreaInsets.left
+        : MIN(view.safeAreaInsets.right, MAX(0.0, CGRectGetMaxX(view.bounds) - 1.0 - point.x));
     BOOL result = %orig(gesture);
     sDuoSplitGesture = NULL;
     sDuoSplitGestureView = NULL;
