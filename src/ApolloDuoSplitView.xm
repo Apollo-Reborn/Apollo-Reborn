@@ -3,6 +3,8 @@
 // switching can keep addressing that object. Only its visible contents change
 // at an unfold/fold boundary. UIKit owns all column frames and transitions.
 #import "ApolloDuoSplitView.h"
+#import "ApolloDuoSplitDivider.h"
+#import "ApolloDuoDividerGeometry.h"
 #import "ApolloDuoNavigationGestures.h"
 #import "ApolloMediaHinge.h"
 #import "ApolloSearchRecents.h"
@@ -32,6 +34,7 @@
 static UITableView *ApolloDuoSplitFindTable(UIView *view);
 static void ApolloDuoPostsStopGeometry(UIView *feed);
 @class ApolloDuoSplitHost;
+static void ApolloDuoUpdateDivider(ApolloDuoSplitHost *host);
 static void ApolloDuoToggleFeedLayout(ApolloDuoSplitHost *host);
 static void ApolloDuoToggleVisibleFeedLayout(UIViewController *controller, BOOL enabled);
 
@@ -250,6 +253,8 @@ static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat
 @property(nonatomic) BOOL postsShowingDetail;
 @property(nonatomic) BOOL postsSplitEnabled;
 @property(nonatomic) BOOL postsColumnsPaired;
+@property(nonatomic, strong) ApolloDuoSplitDivider *dividerGrip;
+@property(nonatomic, strong) NSNumber *dividerPreviewWidth;
 @property(nonatomic, strong) UIView *postsTransitionSnapshot;
 @property(nonatomic, weak) UINavigationController *searchNavigation;
 @property(nonatomic) NSUInteger listAnimationGeneration;
@@ -452,6 +457,7 @@ static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat
 }
 - (void)viewDidDisappear:(BOOL)animated {
     [super viewDidDisappear:animated];
+    [self.dividerGrip cancel];
     self.pendingFeedControlsReveal = NO;
     if (self.subredditList) {
         for (UIButton *button in @[self.listButton, self.splitButton, self.feedLayoutButton]) {
@@ -465,6 +471,7 @@ static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat
     ApolloDuoPostsStopGeometry(self.searchNavigation.viewIfLoaded);
 }
 - (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
+    [self.dividerGrip cancel];
     ApolloDuoPostsStopGeometry(self.searchNavigation.viewIfLoaded);
     [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
 }
@@ -807,6 +814,7 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     [self scheduleSplitSafeAreaSync];
+    ApolloDuoUpdateDivider(self);
     if (self.subredditList) {
         CGFloat width = MIN(360, self.view.bounds.size.width - 96);
         BOOL portrait = self.view.bounds.size.width <= self.view.bounds.size.height;
@@ -1326,17 +1334,27 @@ static void ApolloDuoSplitApplySidebarWidth(ApolloDuoSplitState *state, BOOL hal
     CGSize canvas = sDuoSplitResizingTabs ? sDuoSplitTargetSize : state.host.view.bounds.size;
     BOOL postsLandscape = state.feed && canvas.width > canvas.height;
     CGFloat half = canvas.width * 0.5;
-    // UIKit may keep an earlier sidebar width across column replacement.
-    // Bound both ends for Posts so its actual divider stays at the midpoint.
-    CGFloat maximum = postsLandscape ? half : (state.feed || halfWidth ? CGFLOAT_MAX : 420.0);
+    // Keep UIKit's actual columns authoritative. The grip updates the requested
+    // width; no snapshots, private recognizer changes, or navigation handoffs.
+    CGFloat postsWidth = half;
+    if (postsLandscape && CGRectIsNull(ApolloDuoActiveVerticalDivision(state.host.view))) {
+        double share = [NSUserDefaults.standardUserDefaults doubleForKey:UDKeyDuoDividerFeedShare];
+        if (!(share > 0 && share < 1) || !isfinite(share)) share = 0.5;
+        CGFloat inset = MAX(state.host.view.safeAreaInsets.right, state.secondary.view.safeAreaInsets.right);
+        postsWidth = ApolloDuoDividerClamp(state.host.dividerPreviewWidth ? state.host.dividerPreviewWidth.doubleValue : share * canvas.width,
+                                           canvas.width, inset);
+    }
+    // Pin the requested width so ordinary swipes never resize the divider.
+    CGFloat maximum = postsLandscape ? postsWidth : (state.feed || halfWidth ? CGFLOAT_MAX : 420.0);
     // Settings' widest native row is "Touch ID & Passcode" + its value +
     // disclosure: a third of the flat inner display (~317pt) cut "Off" to "O".
     // Give that sidebar enough room for the value at the default text size.
     CGFloat sidebarMinimum = [state.kind isEqualToString:@"settings"] ? 340.0 : 240.0;
-    CGFloat minimum = postsLandscape ? half : sidebarMinimum;
+    CGFloat minimum = postsLandscape ? postsWidth : sidebarMinimum;
     if (split.maximumPrimaryColumnWidth != maximum) split.maximumPrimaryColumnWidth = maximum;
     if (split.minimumPrimaryColumnWidth != minimum) split.minimumPrimaryColumnWidth = minimum;
     CGFloat fraction = halfWidth || state.feed ? 0.5 : 1.0 / 3.0;
+    if (postsLandscape && canvas.width > 0) fraction = postsWidth / canvas.width;
     if (halfWidth && !state.feed && canvas.width > 0.0) {
         // End the sidebar at the fold itself rather than an assumed midpoint.
         CGRect fold = ApolloDuoActiveVerticalDivision(state.host.view);
@@ -1353,6 +1371,54 @@ static void ApolloDuoSplitApplySidebarWidth(ApolloDuoSplitState *state, BOOL hal
         split.preferredDisplayMode = UISplitViewControllerDisplayModeOneBesideSecondary;
         [split showColumn:UISplitViewControllerColumnPrimary];
     }
+}
+
+// Only an idle, visible Posts pair offers resizing. The fold retains its
+// natural division and never overwrites the saved flat-display preference.
+static BOOL ApolloDuoDividerVisible(ApolloDuoSplitHost *host) {
+    return host.postsColumnsPaired && host.viewIfLoaded.window && !host.listVisible
+        && host.view.bounds.size.width > host.view.bounds.size.height
+        && CGRectIsNull(ApolloDuoActiveVerticalDivision(host.view));
+}
+static BOOL ApolloDuoDividerAvailable(ApolloDuoSplitHost *host) {
+    if (!ApolloDuoDividerVisible(host) || host.postsTransitionSnapshot.window
+        || sDuoSplitResizingTabs || sDuoFeedLayoutChanging) return NO;
+    for (UIViewController *vc = host; vc; vc = vc.parentViewController)
+        if (vc.presentedViewController || vc.transitionCoordinator || vc.isBeingDismissed) return NO;
+    UINavigationController *thread = (id)[host.split viewControllerForColumn:UISplitViewControllerColumnSecondary];
+    return !host.postsNavigation.transitionCoordinator && !thread.transitionCoordinator
+        && !host.postsNavigation.topViewController.presentedViewController
+        && !thread.topViewController.presentedViewController;
+}
+
+static void ApolloDuoUpdateDivider(ApolloDuoSplitHost *host) {
+    if (!host.postsNavigation) return;
+    if (!host.dividerGrip) {
+        host.dividerGrip = [[ApolloDuoSplitDivider alloc] initWithFrame:CGRectZero];
+        __weak ApolloDuoSplitHost *weakHost = host;
+        host.dividerGrip.canBegin = ^BOOL { return ApolloDuoDividerAvailable(weakHost); };
+        host.dividerGrip.changeWidth = ^(CGFloat width, BOOL commit) {
+            ApolloDuoSplitHost *strongHost = weakHost;
+            if (!strongHost) return;
+            ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(strongHost.postsNavigation, NO);
+            if (!state || state.host != strongHost) return;
+            if (commit) [NSUserDefaults.standardUserDefaults setDouble:width / MAX(1, strongHost.view.bounds.size.width)
+                                                                forKey:UDKeyDuoDividerFeedShare];
+            strongHost.dividerPreviewWidth = strongHost.dividerGrip.dragging ? @(width) : nil;
+            ApolloDuoSplitApplySidebarWidth(state, state.halfWidthSidebar);
+            [strongHost.split.view setNeedsLayout];
+            [strongHost.split.view layoutIfNeeded];
+            [strongHost.view setNeedsLayout];
+        };
+        [host.view addSubview:host.dividerGrip];
+    }
+    UIViewController *thread = [host.split viewControllerForColumn:UISplitViewControllerColumnSecondary];
+    // The secondary navigation view spans the canvas on Duo; UIKit insets
+    // its content behind the primary. The feed edge is the actual divider.
+    CGRect frame = [host.postsNavigation.view convertRect:host.postsNavigation.view.bounds toView:host.view];
+    CGFloat inset = MAX(host.view.safeAreaInsets.right, thread.view.safeAreaInsets.right);
+    [host.dividerGrip updateWithDivider:CGRectGetMaxX(frame) trailingInset:inset
+                               enabled:ApolloDuoDividerVisible(host) && CGRectGetMaxX(frame) > 0];
 }
 
 BOOL ApolloDuoRequiresSubredditEnhancements(void) {
