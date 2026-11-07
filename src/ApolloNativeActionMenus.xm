@@ -910,6 +910,8 @@ static UIMenu *ApolloNativeActionMenuBuildMenu(id actionController, BOOL moderat
 // waits for that presentation and fills itself from the captured sheet.
 @interface ApolloNativeNestedMenuRequest : NSObject
 @property (nonatomic, strong) id parentController;
+@property (nonatomic, assign) NSInteger row;
+// Receives the nested sheet's rows, or nil when it never came.
 @property (nonatomic, copy) void (^completion)(NSArray<UIMenuElement *> *elements);
 @end
 
@@ -1021,7 +1023,48 @@ static void ApolloNativeActionMenuFinishNestedRequest(ApolloNativeNestedMenuRequ
     if (sApolloNativeNestedMenuRequest == request) sApolloNativeNestedMenuRequest = nil;
     void (^completion)(NSArray<UIMenuElement *> *) = request.completion;
     request.completion = nil;
-    if (completion) completion(elements.count ? elements : @[ApolloNativeActionMenuNestedUnavailableElement()]);
+    if (completion) completion(elements.count ? elements : nil);
+}
+
+// Rows of nested sheets fetched ahead of time, keyed by parent row.
+static char kApolloNativeActionMenuNestedCacheKey;
+
+static NSMutableDictionary<NSNumber *, NSArray<UIMenuElement *> *> *ApolloNativeActionMenuNestedCache(id parent) {
+    NSMutableDictionary *cache = objc_getAssociatedObject(parent, &kApolloNativeActionMenuNestedCacheKey);
+    if (!cache) {
+        cache = [NSMutableDictionary dictionary];
+        objc_setAssociatedObject(parent, &kApolloNativeActionMenuNestedCacheKey, cache, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return cache;
+}
+
+
+// Asks the parent's row for its nested sheet and hands its rows to done (nil
+// after a second without one).
+static void ApolloNativeActionMenuRequestNested(id parent, NSInteger row,
+                                                void (^done)(NSArray<UIMenuElement *> *elements)) {
+    // A request still waiting is replaced: its submenu shows "Unavailable".
+    ApolloNativeNestedMenuRequest *previous = sApolloNativeNestedMenuRequest;
+    if (previous) ApolloNativeActionMenuFinishNestedRequest(previous, nil);
+
+    ApolloNativeNestedMenuRequest *request = [ApolloNativeNestedMenuRequest new];
+    request.parentController = parent;
+    request.row = row;
+    request.completion = ^(NSArray<UIMenuElement *> *elements) {
+        if (elements.count) ApolloNativeActionMenuNestedCache(parent)[@(row)] = elements;
+        done(elements);
+    };
+    sApolloNativeNestedMenuRequest = request;
+    ApolloLog(@"[NativeActionMenu] Nested submenu requesting row %ld of %@", (long)row, parent);
+    ApolloNativeActionMenuSelectRow(parent, row);
+
+    // Apollo presents within a main-queue turn or two; give up after a second.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (request.completion) {
+            ApolloLog(@"[NativeActionMenu] Nested submenu timed out for row %ld", (long)row);
+            ApolloNativeActionMenuFinishNestedRequest(request, nil);
+        }
+    });
 }
 
 // Called from the presentation hooks: hands the sheet a nested row asked for
@@ -1086,29 +1129,66 @@ static UIMenuElement *ApolloNativeActionMenuNestedElement(id actionController, N
     UIMenuOptions options = (rowAction.attributes & UIMenuElementAttributesDestructive)
         ? UIMenuOptionsDestructive : 0;
     UIDeferredMenuElement *deferred = [UIDeferredMenuElement elementWithUncachedProvider:^(void (^completion)(NSArray<UIMenuElement *> *elements)) {
-        // A submenu reopened before the last one filled replaces it.
-        ApolloNativeNestedMenuRequest *previous = sApolloNativeNestedMenuRequest;
-        if (previous) ApolloNativeActionMenuFinishNestedRequest(previous, nil);
-
-        ApolloNativeNestedMenuRequest *request = [ApolloNativeNestedMenuRequest new];
-        request.parentController = actionController;
-        request.completion = completion;
-        sApolloNativeNestedMenuRequest = request;
-        ApolloLog(@"[NativeActionMenu] Nested submenu requesting row %ld of %@", (long)row, actionController);
-        ApolloNativeActionMenuSelectRow(actionController, row);
-
-        // Apollo presents within a main-queue turn or two; give up after a second.
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if (request.completion) {
-                ApolloLog(@"[NativeActionMenu] Nested submenu timed out for row %ld", (long)row);
-                ApolloNativeActionMenuFinishNestedRequest(request, nil);
-            }
-        });
+        void (^show)(NSArray<UIMenuElement *> *) = ^(NSArray<UIMenuElement *> *elements) {
+            completion(elements.count ? elements : @[ApolloNativeActionMenuNestedUnavailableElement()]);
+        };
+        // Rows fetched ahead of time fill the submenu in this call, so UIKit
+        // lays it out once at its final height and doesn't move the row.
+        NSArray<UIMenuElement *> *cached = ApolloNativeActionMenuNestedCache(actionController)[@(row)];
+        if (cached) {
+            show(cached);
+            return;
+        }
+        // This row's fetch is still running: wait for it.
+        ApolloNativeNestedMenuRequest *pending = sApolloNativeNestedMenuRequest;
+        if (pending && pending.parentController == actionController && pending.row == row && pending.completion) {
+            void (^previous)(NSArray<UIMenuElement *> *) = pending.completion;
+            pending.completion = ^(NSArray<UIMenuElement *> *elements) {
+                previous(elements);
+                show(elements);
+            };
+            return;
+        }
+        ApolloNativeActionMenuRequestNested(actionController, row, show);
     }];
     UIMenu *submenu = [UIMenu menuWithTitle:title image:image identifier:nil options:options children:@[deferred]];
     // The current sort (Top, Controversial) keeps its checkmark as a submenu.
     if (currentChoice) ApolloNativeActionMenuMarkSubmenuCurrent(submenu);
     return submenu;
+}
+
+// Fetches a sort sheet's nested rows (Top's and Controversial's time ranges)
+// one at a time while the menu is open, so each submenu opens filled. Only
+// sort sheets: their nested rows' handlers just build the next sheet.
+static void ApolloNativeActionMenuPrefetchNested(id parent, NSArray<NSNumber *> *rows, NSUInteger index) {
+    if (index >= rows.count) return;
+    // Something else is waiting on a nested sheet (a submenu the user opened).
+    if (sApolloNativeNestedMenuRequest) return;
+    NSInteger row = rows[index].integerValue;
+    if (ApolloNativeActionMenuNestedCache(parent)[@(row)]) {
+        ApolloNativeActionMenuPrefetchNested(parent, rows, index + 1);
+        return;
+    }
+    ApolloNativeActionMenuRequestNested(parent, row, ^(__unused NSArray<UIMenuElement *> *elements) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ApolloNativeActionMenuPrefetchNested(parent, rows, index + 1);
+        });
+    });
+}
+
+static void ApolloNativeActionMenuStartNestedPrefetch(id parent) {
+    if (!ApolloNativeNestedMenuSourceIsSort(ApolloNativeActionMenuNestedSourceForController(parent))) return;
+    if (!ApolloReadBoolIvar(parent, "actionsEnabled", YES)) return;
+    void *actionsBuffer = ApolloReadRawIvar(parent, "actions");
+    int64_t count = ApolloSwiftArrayCount(actionsBuffer);
+    NSMutableArray<NSNumber *> *rows = [NSMutableArray array];
+    for (int64_t i = 0; i < count; i++) {
+        uint16_t kind = *(uint16_t *)((uint8_t *)actionsBuffer + 0x20 + i * 0x30);
+        if (ApolloNativeActionMenuRowNests(parent, kind)) [rows addObject:@(i)];
+    }
+    if (rows.count == 0) return;
+    ApolloLog(@"[NativeActionMenu] Prefetching %lu nested submenus of %@", (unsigned long)rows.count, parent);
+    ApolloNativeActionMenuPrefetchNested(parent, rows, 0);
 }
 
 static BOOL sApolloNativeCapturingController;
@@ -2355,7 +2435,13 @@ static BOOL ApolloNativeActionMenuPresent(id presenter, id actionController, voi
     menuPresenter.menu = menu;
     menuPresenter.actionController = actionController;
     menuPresenter.sourcePoint = sourcePoint;
-    return [menuPresenter presentFromView:sourceView completion:completion];
+    BOOL presented = [menuPresenter presentFromView:sourceView completion:completion];
+    if (presented) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ApolloNativeActionMenuStartNestedPrefetch(actionController);
+        });
+    }
+    return presented;
 }
 
 static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionController) {
