@@ -33,6 +33,31 @@ static char kApolloNativeActionMenuWindowPresenterKey;
 static char kApolloNativeActionMenuWindowRequestKey;
 static char kApolloNativeActionMenuCapturedSourcePresenterKey;
 static char kApolloNativeActionMenuSurfaceStateKey;
+// Which sheet this is (ApolloNativeNestedMenuSource), for sheets whose rows
+// can open their follow-up sheet as a nested submenu.
+static char kApolloNativeActionMenuNestedSourceKey;
+// Set on sort sheets and the time-range sheets nested in them: rows get a
+// checkmark on the current choice.
+static char kApolloNativeActionMenuShowsCurrentChoiceKey;
+
+// Sheets identified by where they were opened from, for nesting rows whose
+// handler only builds and presents the next sheet. Each rule in
+// ApolloNativeActionMenuRowNests cites the handler that shows it is safe to run
+// just to fill a submenu.
+typedef NS_ENUM(NSInteger, ApolloNativeNestedMenuSource) {
+    ApolloNativeNestedMenuSourceNone = 0,
+    ApolloNativeNestedMenuSourcePostsSort,
+    ApolloNativeNestedMenuSourceUserCommentsSort,
+    ApolloNativeNestedMenuSourceSearchSort,
+    // Settings > Default Posts Sort…
+    ApolloNativeNestedMenuSourceSettingsPostsSort,
+    // Touch and hold a message in a conversation (private message or modmail).
+    ApolloNativeNestedMenuSourceMessageLongPress,
+    // A conversation's sheet in the modmail inbox.
+    ApolloNativeNestedMenuSourceModmailInbox,
+};
+// The source whose button or gesture is running. Main thread only.
+static ApolloNativeNestedMenuSource sApolloNativeNestedMenuSource = ApolloNativeNestedMenuSourceNone;
 static char kApolloMediaMenuPressLocationKey;
 
 static __weak UIView *sApolloNativeActionMenuSourceView = nil;
@@ -874,6 +899,218 @@ static NSInteger ApolloNativeActionMenuRowForActionKind(id actionController,
     return NSNotFound;
 }
 
+static UIMenu *ApolloNativeActionMenuBuildMenu(id actionController, BOOL moderatorStyle);
+
+// Nested submenus: a row such as the sort sheet's "Top" or a post's "Delete"
+// becomes a submenu whose contents are the sheet Apollo presents for that row
+// ("Sort by Top for…", the "Delete Post" confirmation).
+// Apollo's row selection runs the handler on a later main-queue turn
+// (tableView:didSelectRowAtIndexPath: at 0x10079f65c dispatches async, then
+// dismisses the sheet and runs the handler in the completion), so the submenu
+// waits for that presentation and fills itself from the captured sheet.
+@interface ApolloNativeNestedMenuRequest : NSObject
+@property (nonatomic, strong) id parentController;
+@property (nonatomic, copy) void (^completion)(NSArray<UIMenuElement *> *elements);
+@end
+
+@implementation ApolloNativeNestedMenuRequest
+@end
+
+static ApolloNativeNestedMenuRequest *sApolloNativeNestedMenuRequest = nil;
+
+static ApolloNativeNestedMenuSource ApolloNativeActionMenuNestedSourceForController(id actionController) {
+    return (ApolloNativeNestedMenuSource)[objc_getAssociatedObject(actionController, &kApolloNativeActionMenuNestedSourceKey) integerValue];
+}
+
+static BOOL ApolloNativeNestedMenuSourceIsSort(ApolloNativeNestedMenuSource source) {
+    return source == ApolloNativeNestedMenuSourcePostsSort ||
+        source == ApolloNativeNestedMenuSourceUserCommentsSort ||
+        source == ApolloNativeNestedMenuSourceSearchSort ||
+        source == ApolloNativeNestedMenuSourceSettingsPostsSort;
+}
+
+// Whether a row opens its follow-up sheet as a nested submenu. Opening the
+// submenu runs the row's handler, so a rule is only added for a handler that
+// builds and presents the next sheet without changing anything first.
+static BOOL ApolloNativeActionMenuRowNests(id actionController, uint16_t actionKind) {
+    switch (ApolloNativeActionMenuNestedSourceForController(actionController)) {
+        case ApolloNativeNestedMenuSourcePostsSort:
+            // Sort by Top / Controversial: PostsViewController 0x1005a1490 cases 5 and 6.
+        case ApolloNativeNestedMenuSourceUserCommentsSort:
+            // 0x100421e10 / 0x100421e48 -> 0x1004207c0 / 0x100420050.
+            if (actionKind == 0x57 || actionKind == 0x53) return YES;
+            break;
+        case ApolloNativeNestedMenuSourceSettingsPostsSort:
+            // 0x1001571ec / 0x100157240 -> 0x10013c38c / 0x10013c92c.
+            if (actionKind == 0x57 || actionKind == 0x53) return YES;
+            break;
+        case ApolloNativeNestedMenuSourceSearchSort:
+            // Relevance, Top and Comments -> 0x100274054; New applies at once.
+            if (actionKind == 0x5a || actionKind == 0x57 || actionKind == 0x4f) return YES;
+            break;
+        case ApolloNativeNestedMenuSourceMessageLongPress:
+            // Modmail message Share (0xcf) -> "Share…" (Text / Message Link),
+            // 0x100490358 -> 0x10046da38. A private message's Share is 0xf
+            // and shares at once.
+        case ApolloNativeNestedMenuSourceModmailInbox:
+            // Share -> "Share…", 0x1005369d4 -> 0x10053584c. The conversation
+            // screen's own ••• Share (0x1004908c0) shares at once: no rule.
+            if (actionKind == 0xcf) return YES;
+            break;
+        default:
+            break;
+    }
+
+    NSString *context = ApolloActionMenuContextForController(actionController);
+    // Delete -> a single "Delete Post" / "Delete Comment" confirmation:
+    // 0x100346400 -> 0x100327b04 (feed post), 0x100729658 -> 0x100713840
+    // (post in comments), 0x1006096a8 -> 0x1005f990c (comment).
+    if (actionKind == 0x10 &&
+        ([context isEqualToString:ApolloActionMenuContextPost] ||
+         [context isEqualToString:ApolloActionMenuContextPostDetail] ||
+         [context isEqualToString:ApolloActionMenuContextComment])) {
+        return YES;
+    }
+    // Comment Nuke -> "Delete comment AND all replies?", 0x100559e5c -> 0x10054c6a4.
+    if (actionKind == 0xa1 && [context isEqualToString:ApolloActionMenuContextModeratorComment]) {
+        return YES;
+    }
+    // These kinds appear only in one sheet each. Composer toolbar: Header ->
+    // header sizes (0x1001d1358 -> 0x1001bb224), Text Faces -> faces from the
+    // bundled plist (0x1001d13f0 -> 0x1001bb614). Mod Log: Action -> "Filter by
+    // Action…" (0x100514624 -> 0x10050fefc).
+    return actionKind == 0x45 || actionKind == 0x68 || actionKind == 0xdb;
+}
+
+// Identifies a sheet's source when it is presented, from the running tap or
+// gesture hook or, for sheets with no hook of their own, from the sheet.
+static void ApolloNativeActionMenuTagNestedSource(id presenter, id actionController) {
+    if (objc_getAssociatedObject(actionController, &kApolloNativeActionMenuNestedSourceKey)) return;
+
+    ApolloNativeNestedMenuSource source = sApolloNativeNestedMenuSource;
+    if (source == ApolloNativeNestedMenuSourceNone) {
+        NSString *title = ApolloReadSwiftStringIvar(actionController, "actionsDescription");
+        UIViewController *visible = [presenter isKindOfClass:[UINavigationController class]]
+            ? ((UINavigationController *)presenter).topViewController : presenter;
+        if ([title isEqualToString:@"Default Posts Sort…"]) {
+            source = ApolloNativeNestedMenuSourceSettingsPostsSort;
+        } else if (ApolloClassModmailInboxViewController &&
+                   [visible isKindOfClass:ApolloClassModmailInboxViewController]) {
+            source = ApolloNativeNestedMenuSourceModmailInbox;
+        }
+    }
+    if (source == ApolloNativeNestedMenuSourceNone) return;
+
+    objc_setAssociatedObject(actionController, &kApolloNativeActionMenuNestedSourceKey,
+                             @(source), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (ApolloNativeNestedMenuSourceIsSort(source)) {
+        objc_setAssociatedObject(actionController, &kApolloNativeActionMenuShowsCurrentChoiceKey,
+                                 @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
+static UIMenuElement *ApolloNativeActionMenuNestedUnavailableElement(void) {
+    UIAction *action = [UIAction actionWithTitle:@"Unavailable" image:nil identifier:nil
+                                         handler:^(__unused UIAction *selectedAction) {}];
+    action.attributes = UIMenuElementAttributesDisabled;
+    return action;
+}
+
+static void ApolloNativeActionMenuFinishNestedRequest(ApolloNativeNestedMenuRequest *request,
+                                                      NSArray<UIMenuElement *> *elements) {
+    if (sApolloNativeNestedMenuRequest == request) sApolloNativeNestedMenuRequest = nil;
+    void (^completion)(NSArray<UIMenuElement *> *) = request.completion;
+    request.completion = nil;
+    if (completion) completion(elements.count ? elements : @[ApolloNativeActionMenuNestedUnavailableElement()]);
+}
+
+// Called from the presentation hooks: hands the sheet a nested row asked for
+// to its submenu instead of presenting it. Returns YES when consumed.
+static BOOL ApolloNativeActionMenuDeliverNestedChild(id actionController) {
+    ApolloNativeNestedMenuRequest *request = sApolloNativeNestedMenuRequest;
+    if (!request || ![actionController isKindOfClass:ApolloClassActionController] ||
+        actionController == request.parentController) {
+        return NO;
+    }
+
+    id parent = request.parentController;
+    // A time range nested in a sort sheet marks the current one too.
+    if (objc_getAssociatedObject(parent, &kApolloNativeActionMenuShowsCurrentChoiceKey)) {
+        objc_setAssociatedObject(actionController, &kApolloNativeActionMenuShowsCurrentChoiceKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    // Anything the nested sheet's rows present opens where the parent did.
+    objc_setAssociatedObject(actionController, &kApolloNativeActionMenuSourceViewKey,
+        objc_getAssociatedObject(parent, &kApolloNativeActionMenuSourceViewKey), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(actionController, &kApolloNativeActionMenuSourcePointKey,
+        objc_getAssociatedObject(parent, &kApolloNativeActionMenuSourcePointKey), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    UIMenu *menu = ApolloNativeActionMenuBuildMenu(actionController, NO);
+    ApolloLog(@"[NativeActionMenu] Nested submenu filled from %@ (%lu rows)",
+              actionController, (unsigned long)menu.children.count);
+    ApolloNativeActionMenuFinishNestedRequest(request, menu.children);
+    return YES;
+}
+
+// A submenu row UIKit draws with a checkmark. UIKit only checks a submenu row
+// when -_shouldShowSelectionState is YES (UIContextMenuListView), which needs
+// _surfacesSelectionState plus a selected child, and a nested row's children
+// stay unknown until it opens. -menuByReplacingChildren: allocates with the
+// menu's own class, so the subclass survives UIKit filling the deferred element.
+// Both getters are overridden: -_setSurfacesSelectionState: asserts outside
+// SpringBoard, so the flag can't be set.
+@interface ApolloNativeCurrentChoiceMenu : UIMenu
+@end
+
+@implementation ApolloNativeCurrentChoiceMenu
+- (BOOL)_surfacesSelectionState {
+    return YES;
+}
+
+- (BOOL)_shouldShowSelectionState {
+    return YES;
+}
+@end
+
+static void ApolloNativeActionMenuMarkSubmenuCurrent(UIMenu *menu) {
+    if (object_getClass(menu) != [UIMenu class] ||
+        ![menu respondsToSelector:@selector(_shouldShowSelectionState)]) {
+        return;
+    }
+    object_setClass(menu, [ApolloNativeCurrentChoiceMenu class]);
+}
+
+static UIMenuElement *ApolloNativeActionMenuNestedElement(id actionController, NSInteger row,
+                                                          UIAction *rowAction, BOOL currentChoice) {
+    NSString *title = rowAction.title;
+    UIImage *image = rowAction.image;
+    UIMenuOptions options = (rowAction.attributes & UIMenuElementAttributesDestructive)
+        ? UIMenuOptionsDestructive : 0;
+    UIDeferredMenuElement *deferred = [UIDeferredMenuElement elementWithUncachedProvider:^(void (^completion)(NSArray<UIMenuElement *> *elements)) {
+        // A submenu reopened before the last one filled replaces it.
+        ApolloNativeNestedMenuRequest *previous = sApolloNativeNestedMenuRequest;
+        if (previous) ApolloNativeActionMenuFinishNestedRequest(previous, nil);
+
+        ApolloNativeNestedMenuRequest *request = [ApolloNativeNestedMenuRequest new];
+        request.parentController = actionController;
+        request.completion = completion;
+        sApolloNativeNestedMenuRequest = request;
+        ApolloLog(@"[NativeActionMenu] Nested submenu requesting row %ld of %@", (long)row, actionController);
+        ApolloNativeActionMenuSelectRow(actionController, row);
+
+        // Apollo presents within a main-queue turn or two; give up after a second.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (request.completion) {
+                ApolloLog(@"[NativeActionMenu] Nested submenu timed out for row %ld", (long)row);
+                ApolloNativeActionMenuFinishNestedRequest(request, nil);
+            }
+        });
+    }];
+    UIMenu *submenu = [UIMenu menuWithTitle:title image:image identifier:nil options:options children:@[deferred]];
+    // The current sort (Top, Controversial) keeps its checkmark as a submenu.
+    if (currentChoice) ApolloNativeActionMenuMarkSubmenuCurrent(submenu);
+    return submenu;
+}
+
 static BOOL sApolloNativeCapturingController;
 static BOOL sApolloNativeCapturingMenuContext;
 static id sApolloNativeCapturedController;
@@ -946,6 +1183,7 @@ void ApolloNativeActionMenuInvokeAction(id controller, uint16_t kind) {
 }
 
 static BOOL ApolloNativeActionMenuPerformPendingDirectAction(id actionController) {
+    if (ApolloNativeActionMenuDeliverNestedChild(actionController)) return YES;
     if (sApolloNativeCapturingController &&
         [actionController isKindOfClass:ApolloClassActionController]) {
         // The tap hook that armed this sheet's context disarms it once the
@@ -1229,11 +1467,20 @@ static UIMenu *ApolloNativeActionMenuBuildMenu(id actionController, BOOL moderat
         [children addObjectsFromArray:reportSections];
     }
 
+    // Sort sheets and their nested time-range sheets mark the current choice.
+    BOOL showsCurrentChoice =
+        objc_getAssociatedObject(actionController, &kApolloNativeActionMenuShowsCurrentChoiceKey) != nil;
+
     for (int64_t i = 0; i < actionCount; i++) {
         uint8_t *element = (uint8_t *)actionsBuffer + 0x20 + i * 0x30;
         uint16_t actionKind = *(uint16_t *)(element + 0x00);
         NSString *title = ApolloDecodeSwiftString(*(uint64_t *)(element + 0x08), *(uint64_t *)(element + 0x10));
         NSString *subtitle = ApolloDecodeSwiftString(*(uint64_t *)(element + 0x18), *(uint64_t *)(element + 0x20));
+        // Row accessory, the byte Action init (0x100795634) stores after the
+        // subtitle: 0 checkmark, 1 disclosure, 2 disclosure on the current
+        // choice, 3 none.
+        uint8_t accessory = *(uint8_t *)(element + 0x28);
+        BOOL currentChoice = showsCurrentChoice && (accessory == 0 || accessory == 2);
         if (title.length == 0) {
             title = ApolloNativeActionDefaultTitle(actionKind);
         }
@@ -1241,9 +1488,12 @@ static UIMenu *ApolloNativeActionMenuBuildMenu(id actionController, BOOL moderat
         BOOL opensModeratorMenu = ApolloNativeActionKindOpensModeratorMenu(actionKind);
         UIColor *actionTintColor = opensModeratorMenu ? moderatorTintColor : menuTintColor;
         BOOL destructive = ApolloNativeActionMenuTitleIsDestructive(title);
-        UIAction *action = ApolloNativeActionMenuAction(title, subtitle, image, actionTintColor, opensModeratorMenu, destructive, NO, enabled, actionController, (NSInteger)i);
+        UIAction *action = ApolloNativeActionMenuAction(title, subtitle, image, actionTintColor, opensModeratorMenu, destructive, currentChoice, enabled, actionController, (NSInteger)i);
         if (action) {
             UIMenuElement *element = action;
+            if (enabled && ApolloNativeActionMenuRowNests(actionController, actionKind)) {
+                element = ApolloNativeActionMenuNestedElement(actionController, (NSInteger)i, action, currentChoice);
+            }
             // actionKind 51 = Submit Post: swap the plain row for the quick
             // post-type group (Photo/Link/Text/Poll) when one is available.
             if (actionKind == 51 && enabled) {
@@ -2076,6 +2326,8 @@ static BOOL ApolloNativeActionMenuPresent(id presenter, id actionController, voi
 
     ApolloNativeActionMenuSortSavedCategoriesIfNeeded(presenter, actionController);
 
+    ApolloNativeActionMenuTagNestedSource(presenter, actionController);
+
     BOOL moderatorStyle = ApolloNativeActionMenuModeratorStyleActive()
         || sApolloNativeActionMenuNextPresentationModeratorStyle
         || ApolloNativeActionMenuActionControllerIsModeratorOnly(actionController);
@@ -2313,8 +2565,15 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
 
 - (void)sortBarButtonItemTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginCapture(sender, self);
-    %orig;
-    ApolloNativeActionMenuEndCapture();
+    ApolloNativeNestedMenuSource previousSource = sApolloNativeNestedMenuSource;
+    // A subclass's hook has already named its own screen.
+    if (previousSource == ApolloNativeNestedMenuSourceNone) sApolloNativeNestedMenuSource = ApolloNativeNestedMenuSourcePostsSort;
+    @try {
+        %orig;
+    } @finally {
+        sApolloNativeNestedMenuSource = previousSource;
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 
 - (void)moderatorBarButtonItemTappedWithSender:(id)sender {
@@ -2364,16 +2623,30 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
 %hook _TtC6Apollo32PostsSearchResultsViewController
 - (void)sortBarButtonItemTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginCapture(sender, self);
-    %orig;
-    ApolloNativeActionMenuEndCapture();
+    ApolloNativeNestedMenuSource previousSource = sApolloNativeNestedMenuSource;
+    // A subclass's hook has already named its own screen.
+    if (previousSource == ApolloNativeNestedMenuSourceNone) sApolloNativeNestedMenuSource = ApolloNativeNestedMenuSourceSearchSort;
+    @try {
+        %orig;
+    } @finally {
+        sApolloNativeNestedMenuSource = previousSource;
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 %end
 
 %hook _TtC6Apollo26UserCommentsViewController
 - (void)sortBarButtonItemTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginCapture(sender, self);
-    %orig;
-    ApolloNativeActionMenuEndCapture();
+    ApolloNativeNestedMenuSource previousSource = sApolloNativeNestedMenuSource;
+    // A subclass's hook has already named its own screen.
+    if (previousSource == ApolloNativeNestedMenuSourceNone) sApolloNativeNestedMenuSource = ApolloNativeNestedMenuSourceUserCommentsSort;
+    @try {
+        %orig;
+    } @finally {
+        sApolloNativeNestedMenuSource = previousSource;
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 %end
 
@@ -2428,9 +2701,12 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
         ApolloLog(@"[NativeActionMenu] message long press anchored at (%.0f, %.0f) in %@",
                   point.x, point.y, NSStringFromClass(view.class));
     }
+    ApolloNativeNestedMenuSource previousSource = sApolloNativeNestedMenuSource;
+    sApolloNativeNestedMenuSource = ApolloNativeNestedMenuSourceMessageLongPress;
     @try {
         %orig;
     } @finally {
+        sApolloNativeNestedMenuSource = previousSource;
         ApolloNativeActionMenuEndCapture();
     }
 }
