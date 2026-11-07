@@ -92,6 +92,10 @@ static NSString *const UDKeyHideRPopularRedditList = @"HideRPopularRedditList";
 static NSString *const UDKeyHideRAllRedditList = @"HideRAllRedditList";
 static NSString *const UDKeyHideModeratorRedditList = @"HideModeratorRedditList";
 static NSString *const ApolloFeedShortcutsChangedNotification = @"ApolloFeedShortcutsChangedNotification";
+// Home shows Reddit's personalized "For You" feed instead of the account's
+// subscriptions (ApolloForYouFeed.xm). Picked from Home's "Sort by..." menu;
+// choosing any native sort turns it off again. Default NO.
+static NSString *const UDKeyHomeFeedForYou = @"HomeFeedForYou";
 // Keep an independent FavoriteSubreddits list for each Reddit account. Opt-in:
 // default NO via registerDefaults. ApolloPerAccountFavorites projects the active
 // account's bucket back through Apollo's native FavoriteSubreddits key so every
