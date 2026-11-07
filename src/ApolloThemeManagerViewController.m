@@ -1,3 +1,9 @@
+#import "settings/ApolloSettingsForm.h"
+
+extern void ApolloInactiveTabIconsRefresh(void);
+
+static NSString * const kApolloTintedTabIconsKey = @"ApolloTintedTabIcons";
+
 #import "ApolloThemeManagerViewController.h"
 #import "ApolloThemeTokens.h"
 #import "ApolloThemeStore.h"
@@ -874,7 +880,7 @@ static NSString *SpacedThemeName(NSString *raw) {
         case HSBrowse:   return 2;
         case HSMyThemes: return MAX((NSInteger)[self myThemes].count, 1);
         case HSImported: return (NSInteger)[self importedThemes].count; // section exists only with content
-        case HSOptions:  return 2;
+        case HSOptions:  return IsLiquidGlass() ? 2 : 3;
     }
     return 0;
 }
@@ -1089,14 +1095,27 @@ static NSString *SpacedThemeName(NSString *raw) {
         if (ip.row == 0) {
             cell.textLabel.text = @"Light/Dark Mode";
             cell.imageView.image = [UIImage systemImageNamed:@"circle.lefthalf.filled"];
-        } else {
+        } else if (ip.row == 1) {
             cell.textLabel.text = @"Comments Theme";
             cell.detailTextLabel.text = [self commentsThemeDetail];
             cell.detailTextLabel.adjustsFontSizeToFitWidth = YES;
             cell.detailTextLabel.minimumScaleFactor = 0.8;
             cell.imageView.image = [UIImage systemImageNamed:@"text.bubble"];
+        } else {
+            cell.textLabel.text = @"Tint Tab Bar Icons";
+            cell.imageView.image = [UIImage systemImageNamed:@"paintbrush"];
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+
+            UISwitch *toggle = [[UISwitch alloc] init];
+            toggle.on = [[NSUserDefaults standardUserDefaults]
+                boolForKey:kApolloTintedTabIconsKey];
+            [toggle addTarget:self
+                       action:@selector(apolloTintTabBarIconsChanged:)
+             forControlEvents:UIControlEventValueChanged];
+            cell.accessoryView = toggle;
         }
-        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        if (ip.row != 2)
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         return cell;
     }
     if (ip.section == HSMyThemes || ip.section == HSImported) {
@@ -1396,11 +1415,21 @@ static NSString *SpacedThemeName(NSString *raw) {
         return;
     }
     if (ip.section == HSOptions) {
+        if (ip.row == 2) return;
+
         BOOL ok = (ip.row == 0) ? ApolloThemeOpenNativeLightDarkFromHub(self)
                                 : ApolloThemeOpenNativeCommentsThemeFromHub(self);
         if (!ok) [self showError:@"Apollo's settings aren't available from here. Go back and reopen Appearance."];
         return;
     }
+}
+
+- (void)apolloTintTabBarIconsChanged:(UISwitch *)sender {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if ([defaults boolForKey:kApolloTintedTabIconsKey] == sender.isOn) return;
+
+    [defaults setBool:sender.isOn forKey:kApolloTintedTabIconsKey];
+    ApolloInactiveTabIconsRefresh();
 }
 
 - (void)tableView:(UITableView *)tv accessoryButtonTappedForRowWithIndexPath:(NSIndexPath *)ip {
