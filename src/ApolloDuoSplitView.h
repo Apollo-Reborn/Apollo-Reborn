@@ -29,6 +29,21 @@ BOOL ApolloDuoSplitDismissPostsList(UINavigationController *navigation);
 /// Returns from a visited profile dashboard to its retained Posts Back stack.
 BOOL ApolloDuoSplitCanReturnFromVisitedProfile(UINavigationController *navigation);
 BOOL ApolloDuoSplitReturnFromVisitedProfile(UINavigationController *navigation);
+/// Forward swipes the split owns: back into a visited profile (after a Back
+/// out of it, until the Posts pane moves on), and Account's detail pages.
+BOOL ApolloDuoSplitCanForwardInSplit(UINavigationController *navigation);
+BOOL ApolloDuoSplitForwardInSplit(UINavigationController *navigation);
+/// Cover drags, Back and forward, for navigation the split lays out itself
+/// (a visited profile, Account's detail, Back from a feed link beside a
+/// thread): a picture of what shows now and a kept picture of the destination
+/// slide with the finger; release swaps the real pages under them. NO from
+/// Begin when there is no picture (Reduce Motion, a resize since); then
+/// navigate on release.
+BOOL ApolloDuoSplitBeginBackDrag(UINavigationController *navigation);
+BOOL ApolloDuoSplitBeginForwardDrag(UINavigationController *navigation);
+CGFloat ApolloDuoSplitCoverDragTravel(UINavigationController *navigation);
+void ApolloDuoSplitMoveCoverDrag(UINavigationController *navigation, CGFloat shown);
+void ApolloDuoSplitEndCoverDrag(UINavigationController *navigation, BOOL commit, CGFloat shown, CGFloat velocity);
 /// The thread the last close (the button or a Back) took from beside the Posts
 /// feed `nav`, while it can still come back: the feed page it was closed from
 /// is on top and shows the same feed for the same account, no thread is open,
@@ -39,11 +54,34 @@ BOOL ApolloDuoSplitReturnFromVisitedProfile(UINavigationController *navigation);
 /// the normal open.
 BOOL ApolloDuoSplitCanRestoreClosedThread(UINavigationController *nav);
 BOOL ApolloDuoSplitRestoreClosedThread(UINavigationController *nav);
+/// Forward drags: the closed thread's picture slides in with the finger.
+/// NO from Begin when there is no picture to show; restore on release then.
+BOOL ApolloDuoSplitBeginRestoreDrag(UINavigationController *nav);
+CGFloat ApolloDuoSplitRestoreDragTravel(UINavigationController *nav);
+void ApolloDuoSplitMoveRestoreDrag(UINavigationController *nav, CGFloat shown);
+void ApolloDuoSplitEndRestoreDrag(UINavigationController *nav, BOOL restore, CGFloat shown, CGFloat velocity);
 /// For ApolloForwardSwipeExpiry: the feed's closed thread counted as a forward
 /// page (a token for it, nil without one) and its forget.
 id ApolloDuoSplitClosedThreadToken(UINavigationController *nav);
 void ApolloDuoSplitForgetClosedThreadAfterScrolling(UINavigationController *nav);
 BOOL ApolloDuoSplitShowSidebar(UINavigationController *navigation);
+/// A native pop here uncovers a real page of the same pane, not the Posts
+/// backstop under a thread, an empty detail's placeholder or Account's Overview.
+BOOL ApolloDuoSplitPopRevealsContent(UINavigationController *navigation);
+/// The Posts thread pane shows a thread right above its backstop.
+BOOL ApolloDuoSplitCanDragThreadClosed(UINavigationController *navigation);
+/// Takes the thread pane from where it is; its offset, or -1 when it can't.
+CGFloat ApolloDuoSplitBeginThreadDrag(UINavigationController *navigation);
+void ApolloDuoSplitDragThread(UINavigationController *navigation, CGFloat offset);
+CGFloat ApolloDuoSplitThreadDragTravel(UINavigationController *navigation);
+/// Closes the thread from `offset` with the finger's velocity, or springs back.
+void ApolloDuoSplitEndThreadDrag(UINavigationController *navigation, BOOL close, CGFloat offset, CGFloat velocity);
+/// Subreddit list drags from the feed root. `shown` runs 0 (hidden) to travel.
+BOOL ApolloDuoSplitBeginListDrag(UINavigationController *navigation);
+CGFloat ApolloDuoSplitListDragTravel(UINavigationController *navigation);
+CGFloat ApolloDuoSplitListDragStart(UINavigationController *navigation);
+void ApolloDuoSplitMoveListDrag(UINavigationController *navigation, CGFloat shown);
+void ApolloDuoSplitEndListDrag(UINavigationController *navigation, BOOL show, CGFloat velocity);
 __END_DECLS
 
 void ApolloDuoSplitPrepareOverlaySurface(UIView *surface);
