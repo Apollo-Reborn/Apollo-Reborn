@@ -77,6 +77,7 @@
 #import "ApolloWebSessionStore.h"
 #import "ApolloReduceRateLimiting.h"
 #import "ApolloAllPlusNSFW.h"
+#import "ApolloSubscriptionRefreshGuard.h"
 
 // Minimal surface of Apollo's RedditKit classes used here. Real definitions live
 // in Headers/ObjC/{RDKClient,RDKOAuthCredential,RDKAccessToken}.h (not on the
@@ -1007,70 +1008,78 @@ static BOOL ApolloWebJSONRequestIsSubscriptionWalk(NSString *method, NSString *p
         && [ApolloWebJSONBarePath(path) hasPrefix:@"subreddits/mine/subscriber"];
 }
 
-// A walk cut short still reaches AccountManager's completion, which replaces
-// RDKUser.subscribedSubreddits with the pages it had: in issue #1409's log one
-// refused page (HTTP 429, the session's budget spent) turned 1,935 subscriptions
-// into 947, and the sidebar stayed that way until a later walk got through.
-// Noted when a page of the walk fails, in the same completion chain that sets
-// the list (RedditKit's block and AccountManager's closure run synchronously
-// from it), and consumed by the setter hook below: a shorter list arriving
-// right after a failed page is the cut-short walk, so the account keeps the
-// list it had. Lowercased username and the time the page failed, under the
-// lock; the window is short so an unrelated shorter list later (an
-// unsubscribe from Apollo's own code) is never held back.
-static NSObject *ApolloWebJSONSubscriptionWalkLock(void) {
-    static NSObject *lock;
+// A subscription refresh that fails still reaches AccountManager's timer
+// completion, which stores whatever pages it had: nothing when the first page
+// fails (#1635: the subreddit list loses every subscription until a pull to
+// refresh), part of the list when a later one does (#1409: 1,935 became 947).
+// Every account, API key or not. Mechanism and binary addresses:
+// ApolloSubscriptionRefreshGuard.h.
+//
+// The account a walk belongs to: the web session's user for an API-Key-Free
+// account, else the client's signed-in user. nil for anything else.
+static NSString *ApolloSubscriptionWalkUsername(RDKClient *client, NSString *webSessionUsername,
+                                                NSString *method, NSString *path) {
+    if (!ApolloWebJSONRequestIsSubscriptionWalk(method, path)) return nil;
+    if (webSessionUsername.length > 0) return webSessionUsername;
+    RDKUser *user = [client currentUser];
+    return [user isKindOfClass:objc_getClass("RDKUser")] && user.username.length > 0 ? user.username : nil;
+}
+
+// At most one "page failed" line a minute per account: while offline, Apollo's
+// subreddit list retries its own walk every 5 seconds (FUN_10063b574).
+static BOOL ApolloSubscriptionWalkShouldLogFailure(NSString *username) {
+    static NSMutableDictionary<NSString *, NSDate *> *lastLogged;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ lock = [NSObject new]; });
-    return lock;
-}
-static NSString *sApolloWebJSONFailedWalkUser;
-static NSTimeInterval sApolloWebJSONFailedWalkAt;
-static const NSTimeInterval kApolloWebJSONFailedWalkWindow = 3.0;
-
-static void ApolloWebJSONNoteSubscriptionWalkFailed(NSString *username, NSHTTPURLResponse *response, NSError *error) {
-    if (username.length == 0) return;
-    @synchronized (ApolloWebJSONSubscriptionWalkLock()) {
-        sApolloWebJSONFailedWalkUser = username.lowercaseString;
-        sApolloWebJSONFailedWalkAt = [NSDate timeIntervalSinceReferenceDate];
+    dispatch_once(&once, ^{ lastLogged = [NSMutableDictionary dictionary]; });
+    NSString *key = username.lowercaseString;
+    NSDate *now = [NSDate date];
+    @synchronized (lastLogged) {
+        NSDate *last = lastLogged[key];
+        if (last && [now timeIntervalSinceDate:last] < 60) return NO;
+        lastLogged[key] = now;
     }
-    ApolloLog(@"[WebJSON] A page of u/%@'s subscription refresh failed (HTTP %ld%@); keeping the list it had if the refresh stops here",
-              username, (long)response.statusCode, error ? [@", " stringByAppendingString:error.localizedDescription ?: @"error"] : @"");
-}
-
-// YES when `list` is the remainder of a walk that just failed for this user
-// and the current list is longer: the caller keeps the current list.
-static BOOL ApolloWebJSONKeepSubscriptionListAfterFailedWalk(RDKUser *user, NSArray *list) {
-    NSString *failedUser = nil;
-    @synchronized (ApolloWebJSONSubscriptionWalkLock()) {
-        if (sApolloWebJSONFailedWalkUser &&
-            [NSDate timeIntervalSinceReferenceDate] - sApolloWebJSONFailedWalkAt <= kApolloWebJSONFailedWalkWindow) {
-            failedUser = sApolloWebJSONFailedWalkUser;
-        }
-    }
-    if (!failedUser) return NO;
-    NSString *username = user.username.lowercaseString;
-    NSArray *current = user.subscribedSubreddits;
-    NSString *declined = nil;
-    if (username.length > 0 && ![username isEqualToString:failedUser]) declined = [@"another account: u/" stringByAppendingString:username];
-    else if (![current isKindOfClass:[NSArray class]] || current.count == 0) declined = @"no list to keep";
-    else if ([list isKindOfClass:[NSArray class]] && list.count >= current.count) declined = @"the new list is not shorter";
-    if (declined) {
-        ApolloLog(@"[WebJSON] Subscription list set after u/%@'s failed page, letting it through (%@: %lu -> %lu)",
-                  failedUser, declined, (unsigned long)current.count, (unsigned long)[list isKindOfClass:[NSArray class]] ? list.count : 0);
-        return NO;
-    }
-    @synchronized (ApolloWebJSONSubscriptionWalkLock()) {
-        sApolloWebJSONFailedWalkUser = nil;
-    }
-    ApolloLog(@"[WebJSON] Kept u/%@'s %lu subscriptions: the refresh stopped after %lu because a page failed",
-              failedUser, (unsigned long)current.count, (unsigned long)[list isKindOfClass:[NSArray class]] ? list.count : 0);
     return YES;
+}
+
+// Hands a page of a subscriptions walk to its completion. A failed page (an
+// error, or an HTTP error status RedditKit let through) is delivered inside the
+// guard's scope, so the list it cuts short can be refused by the setter below.
+static void ApolloSubscriptionWalkDeliver(NSString *walkUsername, NSHTTPURLResponse *response, NSError *error,
+                                          void (NS_NOESCAPE ^deliver)(void)) {
+    NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]] ? response.statusCode : 0;
+    if (walkUsername.length == 0 || (!error && status < 400)) {
+        deliver();
+        return;
+    }
+    if (ApolloSubscriptionWalkShouldLogFailure(walkUsername)) {
+        ApolloLog(@"[SubscriptionRefresh] A page of u/%@'s subscriptions failed (HTTP %ld%@); keeping the list the account had if the refresh stops here",
+                  walkUsername, (long)status,
+                  error ? [NSString stringWithFormat:@", %@ %ld", error.domain, (long)error.code] : @"");
+    }
+    ApolloSubscriptionRefreshDeliverFailedPage(walkUsername, deliver);
 }
 
 %hook RDKUser
 - (void)setSubscribedSubreddits:(NSArray *)list {
-    if (ApolloWebJSONKeepSubscriptionListAfterFailedWalk(self, list)) return;
+    NSArray *current = self.subscribedSubreddits;
+    NSUInteger currentCount = [current isKindOfClass:[NSArray class]] ? current.count : 0;
+    NSUInteger newCount = [list isKindOfClass:[NSArray class]] ? list.count : 0;
+    switch (ApolloSubscriptionRefreshDecideList(self.username, current, list)) {
+        case ApolloSubscriptionListDecisionKeep:
+            ApolloLog(@"[SubscriptionRefresh] Kept u/%@'s %lu subscriptions: the refresh stopped at %lu because a page failed",
+                      self.username, (unsigned long)currentCount, (unsigned long)newCount);
+            return;
+        case ApolloSubscriptionListDecisionApplyNothingToKeep:
+            ApolloLog(@"[SubscriptionRefresh] u/%@'s refresh failed but there's no list to keep; storing its %lu",
+                      self.username, (unsigned long)newCount);
+            break;
+        case ApolloSubscriptionListDecisionApplyNotShorter:
+            ApolloLog(@"[SubscriptionRefresh] u/%@'s refresh failed but its list isn't shorter (%lu -> %lu); storing it",
+                      self.username, (unsigned long)currentCount, (unsigned long)newCount);
+            break;
+        case ApolloSubscriptionListDecisionApply:
+            break;
+    }
     %orig;
 }
 %end
@@ -1122,6 +1131,8 @@ static BOOL ApolloWebJSONKeepSubscriptionListAfterFailedWalk(RDKUser *user, NSAr
     parameters = ApolloWebJSONParametersForAccountRead(username, requestMethod, requestPath, parameters);
     RDKClient *client = self;
     id sentParameters = parameters;
+    // Every account's subscriptions walk (#1635), not only API-Key-Free ones.
+    NSString *walkUsername = ApolloSubscriptionWalkUsername(self, username, requestMethod, requestPath);
     void (^wrapped)(NSHTTPURLResponse *, id, NSError *) = ^(NSHTTPURLResponse *response, id object, NSError *error) {
         // A read that has another route gets sent again on it, at most once per
         // route, and only the last answer reaches the caller. Writes never get
@@ -1162,13 +1173,11 @@ static BOOL ApolloWebJSONKeepSubscriptionListAfterFailedWalk(RDKUser *user, NSAr
             ApolloWebJSONLogRouteOutcomeOnce(requestMethod, requestPath, [NSString stringWithFormat:@"answered by route %@",
                 ApolloWebJSONRouteName((ApolloWebJSONRoute)usedRoute)]);
         }
-        if (username && ApolloWebJSONRequestIsSubscriptionWalk(requestMethod, requestPath) &&
-            (error || response.statusCode >= 400)) {
-            ApolloWebJSONNoteSubscriptionWalkFailed(username, response, error);
-        }
         NSError *sessionError = ApolloWebJSONAccountSessionError(username);
         if (sessionError) {
-            completion(response, nil, sessionError);
+            ApolloSubscriptionWalkDeliver(walkUsername, response, sessionError, ^{
+                completion(response, nil, sessionError);
+            });
             return;
         }
         id guarded = ApolloWebJSONGuardListingTaskResponse(requestMethod, requestPath, response, object, &error);
@@ -1177,7 +1186,12 @@ static BOOL ApolloWebJSONKeepSubscriptionListAfterFailedWalk(RDKUser *user, NSAr
         if (object && !guarded && ![object isKindOfClass:[NSDictionary class]]) {
             ApolloWebJSONNoteMalformedAccountResponse(username, requestPath);
         }
-        completion(response, guarded, error);
+        // After the guard, so a refusal RedditKit doesn't report (an HTML page,
+        // an empty 429) counts as the failed page it is.
+        NSError *deliveredError = error;
+        ApolloSubscriptionWalkDeliver(walkUsername, response, deliveredError, ^{
+            completion(response, guarded, deliveredError);
+        });
     };
 
     // API-Key-Free duplicate account reads: an identical one in flight or just

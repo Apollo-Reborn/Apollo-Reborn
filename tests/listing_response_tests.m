@@ -13,15 +13,24 @@ static ApolloWebJSONTaskCompletion ApolloWebJSONShareAccountRead(NSString *usern
     return completion;
 }
 static id ApolloWebJSONSharedReadPlaceholderTask(void) { return nil; }
-// The API-Key-Free subscription-walk helpers (page size, cut-short-walk
-// guard) only act for web-session accounts; these clients have none.
+// The API-Key-Free page size only acts for web-session accounts; these clients
+// have none.
 static id ApolloWebJSONParametersForAccountRead(NSString *username, NSString *method, NSString *path, id parameters) {
     (void)username; (void)method; (void)path;
     return parameters;
 }
-static BOOL ApolloWebJSONRequestIsSubscriptionWalk(NSString *method, NSString *path) { (void)method; (void)path; return NO; }
-static void ApolloWebJSONNoteSubscriptionWalkFailed(NSString *username, NSHTTPURLResponse *response, NSError *error) {
-    (void)username; (void)response; (void)error;
+// The failed-subscription-refresh guard has its own test
+// (tests/run_subscription_refresh_guard_tests.sh); here a page is just delivered.
+@class RDKClient;
+static NSString *ApolloSubscriptionWalkUsername(RDKClient *client, NSString *webSessionUsername,
+                                                NSString *method, NSString *path) {
+    (void)client; (void)webSessionUsername; (void)method; (void)path;
+    return nil;
+}
+static void ApolloSubscriptionWalkDeliver(NSString *walkUsername, NSHTTPURLResponse *response, NSError *error,
+                                          void (NS_NOESCAPE ^deliver)(void)) {
+    (void)walkUsername; (void)response; (void)error;
+    deliver();
 }
 static id nextObject;
 static NSError *nextError;
