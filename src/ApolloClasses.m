@@ -82,6 +82,8 @@ Class ApolloClassPostsViewController;
 Class ApolloClassProfileFeatureCellNode;
 Class ApolloClassProfileViewController;
 Class ApolloClassQuickBarKeyboardView;
+Class ApolloClassSubredditRulesViewController;
+Class ApolloClassModeratorRemovalReasonsViewController;
 Class ApolloClassRDKClient;
 Class ApolloClassRDKComment;
 Class ApolloClassRDKFlair;
@@ -226,6 +228,8 @@ __attribute__((constructor)) static void ApolloClassesResolve(void) {
     ApolloClassProfileFeatureCellNode = objc_getClass("_TtC6Apollo22ProfileFeatureCellNode");
     ApolloClassProfileViewController = objc_getClass("_TtC6Apollo21ProfileViewController");
     ApolloClassQuickBarKeyboardView = objc_getClass("_TtC6Apollo20QuickBarKeyboardView");
+    ApolloClassSubredditRulesViewController = objc_getClass("_TtC6Apollo28SubredditRulesViewController");
+    ApolloClassModeratorRemovalReasonsViewController = objc_getClass("_TtC6Apollo37ModeratorRemovalReasonsViewController");
     ApolloClassRDKClient = objc_getClass("RDKClient");
     ApolloClassRDKComment = objc_getClass("RDKComment");
     ApolloClassRDKFlair = objc_getClass("RDKFlair");
