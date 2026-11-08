@@ -121,6 +121,10 @@ __unused static BOOL UIAccessibilityIsReduceMotionEnabled(void) { return NO; }
 static NSString *ApolloDuoSplitKind(UIViewController *page) { return page.kind; }
 static ApolloDuoSplitState *ApolloDuoSplitStateForNavigation(UINavigationController *nav,
                                                           __unused BOOL create) { return nav.duoState; }
+// A pane's push or pop still running when the split would close (a fold
+// mid-swipe): the close waits for it.
+static BOOL paneTransitionRunning;
+static BOOL ApolloDuoSplitDeferCloseForPaneTransition(__unused ApolloDuoSplitState *state) { return paneTransitionRunning; }
 static void ApolloDuoSplitClose(__unused ApolloDuoSplitState *state, BOOL preserve) {
     closes++;
     lastClosePreserved = preserve;
@@ -406,6 +410,10 @@ int main(void) {
         Check(closes == 1 && !lastClosePreserved, @"the landscape profile dashboard still collapses in portrait");
         closes = 0;
         unfolded = NO;
+        paneTransitionRunning = YES;
+        UpdateDecision(state);
+        Check(closes == 0, @"a fold while a pane's swipe is still held waits for it to settle");
+        paneTransitionRunning = NO;
         UpdateDecision(state);
         Check(closes == 1 && !lastClosePreserved, @"closing Duo still collapses Posts normally");
         CheckProfileOwnership();
