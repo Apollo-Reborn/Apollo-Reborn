@@ -3890,7 +3890,8 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     ApolloDuoInstallBackSwipe(navigation);
     BOOL postsTab = [ApolloDuoSplitKind(navigation.viewControllers.firstObject) isEqualToString:@"subreddits"];
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(navigation, postsTab);
-    if (postsTab && navigation == state.outer && !state.split) {
+    // A fold restores the bare list while the split is still closing.
+    if (postsTab && navigation == state.outer && (!state.split || state.changing)) {
         BOOL bareList = controller == state.root && navigation.viewControllers.count == 1;
         state.foldedListShownAt = bareList ? CACurrentMediaTime() : 0;
     }
