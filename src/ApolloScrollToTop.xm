@@ -452,21 +452,28 @@ static NSString *ApolloReturnItemID(id node) {
         [item setLeftBarButtonItems:leftItems animated:!UIAccessibilityIsReduceMotionEnabled()];
         return;
     }
+    // Match the bar's own glass buttons. The unfolded Duo's regular-width bar
+    // uses 48-point buttons and widened a 44-point circle into an oval; iPad's
+    // regular bar keeps 44-point buttons and caps their height there.
+    UINavigationBar *bar = self.owner.navigationController.navigationBar;
+    BOOL duoRegular = ApolloDuoSplitIsUnfolded() &&
+        bar.traitCollection.horizontalSizeClass == UIUserInterfaceSizeClassRegular;
+    CGFloat diameter = duoRegular ? 48 : 44;
     UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
-    button.frame = CGRectMake(0, 0, 44, 44);
+    button.frame = CGRectMake(0, 0, diameter, diameter);
     button.translatesAutoresizingMaskIntoConstraints = NO;
     [button setImage:[UIImage systemImageNamed:@"arrow.uturn.down"] forState:UIControlStateNormal];
     [button setPreferredSymbolConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:22 weight:UIImageSymbolWeightMedium]
                             forImageInState:UIControlStateNormal];
     if (@available(iOS 26.0, *)) {
         if (IsLiquidGlass()) {
-            // Match the back button's 44-point glass surface. A configured
+            // Match the back button's glass surface. A configured
             // glass button adds optical background insets inside its bounds,
             // making the bubble smaller even when the touch target is larger.
             UIGlassEffect *effect = [UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];
             effect.interactive = YES;
             UIVisualEffectView *glass = [[UIVisualEffectView alloc] initWithEffect:effect];
-            glass.frame = CGRectMake(0, 0, 44, 44);
+            glass.frame = CGRectMake(0, 0, diameter, diameter);
             glass.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
             glass.userInteractionEnabled = NO;
             glass.clipsToBounds = YES;
@@ -489,14 +496,14 @@ static NSString *ApolloReturnItemID(id node) {
         }
     }
     button.tintColor = UIColor.labelColor;
-    button.layer.cornerRadius = 22;
+    button.layer.cornerRadius = diameter / 2;
     button.accessibilityIdentifier = @"apollo.scrollReturn";
     button.accessibilityLabel = @"Return to your spot";
     button.alpha = 0;
     [button addTarget:self action:@selector(returnToPosition) forControlEvents:UIControlEventTouchUpInside];
     [NSLayoutConstraint activateConstraints:@[
-        [button.widthAnchor constraintEqualToConstant:44],
-        [button.heightAnchor constraintEqualToConstant:44]
+        [button.widthAnchor constraintEqualToConstant:diameter],
+        [button.heightAnchor constraintEqualToConstant:diameter]
     ]];
     self.button = button;
     UINavigationItem *item = self.owner.navigationItem;
@@ -508,7 +515,6 @@ static NSString *ApolloReturnItemID(id node) {
     if ([self.returnItem respondsToSelector:hideBackground]) {
         ((void (*)(id, SEL, BOOL))objc_msgSend)(self.returnItem, hideBackground, YES);
     }
-    UINavigationBar *bar = self.owner.navigationController.navigationBar;
     [bar layoutIfNeeded];
     BOOL reduceMotion = UIAccessibilityIsReduceMotionEnabled();
     CASpringAnimation *spring = reduceMotion ? nil : ApolloScrollReturnSpring();
