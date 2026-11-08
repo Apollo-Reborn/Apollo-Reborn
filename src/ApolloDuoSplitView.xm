@@ -57,11 +57,11 @@ static UIImage *ApolloDuoFeedLayoutImage(void) {
         originalImage = [UIImage systemImageNamed:@"rectangle"];
         focusedImage = [UIImage systemImageNamed:@"rectangle.center.inset.filled"];
     });
-    return sDuoLandscapeFeedLayout == 2 ? focusedImage : originalImage;
+    return sDuoUnfoldedFeedLayout == 2 ? focusedImage : originalImage;
 }
 
 static void ApolloDuoRefreshLayoutButton(UIButton *button, UIBarButtonItem *item) {
-    BOOL focused = sDuoLandscapeFeedLayout == 2;
+    BOOL focused = sDuoUnfoldedFeedLayout == 2;
     UIImage *image = ApolloDuoFeedLayoutImage();
     if (button.configuration.image != image) {
         UIButtonConfiguration *configuration = [button.configuration copy];
@@ -859,16 +859,18 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
         // Carry the same control into full-width comments, just like List and
         // Split. Replacing it with the thread's standalone item makes its
         // glass and glyph disappear/reappear during the native push and Back.
-        self.feedLayoutButton.hidden = portrait || !supportsLayout;
+        // Portrait has no Split, so Layout sits beside List instead of
+        // crowding Apollo's trailing actions.
+        self.feedLayoutButton.hidden = !supportsLayout;
         [self applyFeedLayoutAvailability];
         if (self.feedControlsOwner != owner) {
-            ApolloNativeFeedSearchSetDuoControls(self.feedControlsOwner, nil, nil, nil);
+            ApolloNativeFeedSearchSetDuoControls(self.feedControlsOwner, nil, nil, nil, NO);
             self.feedControlsOwner = owner;
         }
         ApolloNativeFeedSearchSetDuoControls(owner,
             self.listButton.hidden ? nil : self.listBarItem,
             self.splitButton.hidden ? nil : self.splitBarItem,
-            self.feedLayoutButton.hidden ? nil : self.feedLayoutBarItem);
+            self.feedLayoutButton.hidden ? nil : self.feedLayoutBarItem, portrait);
     }
     if (!self.accountHeader) return;
     UISplitViewControllerDisplayMode displayMode = self.accountDisplayMode
@@ -1915,7 +1917,7 @@ static void ApolloDuoPostsAnimateGeometry(NSArray<ApolloDuoPostsGeometry *> *geo
 static void ApolloDuoToggleVisibleFeedLayout(UIViewController *controller, BOOL enabled) {
     UIWindow *window = controller.viewIfLoaded.window;
     if (!window || !enabled || sDuoFeedLayoutChanging || ApolloDuoSplitIsResizing()
-        || !ApolloDuoSplitIsUnfolded() || ApolloDuoSplitIsUnfoldedPortrait()) return;
+        || !ApolloDuoSplitIsUnfolded()) return;
     [window layoutIfNeeded];
     BOOL animate = !UIAccessibilityIsReduceMotionEnabled();
     NSMutableArray<ApolloDuoLayoutTransition *> *transitions = [NSMutableArray array];
@@ -1956,8 +1958,8 @@ static void ApolloDuoToggleVisibleFeedLayout(UIViewController *controller, BOOL 
     }
     if (!transitions.count) return;
     sDuoFeedLayoutChanging = YES;
-    sDuoLandscapeFeedLayout = sDuoLandscapeFeedLayout == 2 ? 0 : 2;
-    [NSUserDefaults.standardUserDefaults setInteger:sDuoLandscapeFeedLayout forKey:UDKeyDuoLandscapeFeedLayout];
+    sDuoUnfoldedFeedLayout = sDuoUnfoldedFeedLayout == 2 ? 0 : 2;
+    [NSUserDefaults.standardUserDefaults setInteger:sDuoUnfoldedFeedLayout forKey:UDKeyDuoUnfoldedFeedLayout];
     ApolloDuoRefreshLayoutControls();
     [NSNotificationCenter.defaultCenter postNotificationName:@"ApolloDuoFeedLayoutDidChange" object:nil];
     // Media invalidation queues first. Finish Texture's transaction before
@@ -1990,7 +1992,7 @@ static void ApolloDuoToggleVisibleFeedLayout(UIViewController *controller, BOOL 
             }];
             [transition.cover removeFromSuperview];
             if (animate && CGSizeEqualToSize(transition.size, surface.bounds.size)
-                && ApolloDuoSplitIsUnfolded() && !ApolloDuoSplitIsUnfoldedPortrait())
+                && ApolloDuoSplitIsUnfolded())
                 ApolloDuoPostsAnimateGeometry(transition.geometry, surface, surface, 0.32);
         }
         sDuoFeedLayoutChanging = NO;
@@ -2002,56 +2004,58 @@ static void ApolloDuoToggleFeedLayout(ApolloDuoSplitHost *host) {
     ApolloDuoToggleVisibleFeedLayout(host.feedControlsOwner, host.feedLayoutButton.enabled);
 }
 
-// Threads outside Posts need their own control. Inside Posts, the host carries
-// its retained layout item between the feed and comments with List and Split.
-static NSString *const kApolloDuoCommentsLayoutID = @"ApolloDuoCommentsLayoutControl";
-static char kApolloDuoCommentsLayoutKey, kApolloDuoCommentsLayoutPendingKey;
-@interface ApolloDuoCommentsLayoutControl : NSObject <ApolloDuoLayoutControl>
+// Feeds and threads outside Posts (a subreddit opened from Inbox, Account or
+// Search) need their own control. Inside Posts, the host carries its retained
+// layout item between the feed and comments with List and Split.
+static NSString *const kApolloDuoPageLayoutID = @"ApolloDuoPageLayoutControl";
+static char kApolloDuoPageLayoutKey, kApolloDuoPageLayoutPendingKey;
+@interface ApolloDuoPageLayoutControl : NSObject <ApolloDuoLayoutControl>
 @property(nonatomic, weak) UIViewController *controller;
 @property(nonatomic, strong) UIBarButtonItem *item;
 - (void)update;
 - (void)toggle;
 @end
-static NSMapTable<UINavigationItem *, ApolloDuoCommentsLayoutControl *> *sDuoCommentsLayoutOwners;
+static NSMapTable<UINavigationItem *, ApolloDuoPageLayoutControl *> *sDuoPageLayoutOwners;
 
-static BOOL ApolloDuoCommentsShowsLayoutControl(UIViewController *controller) {
-    if (!ApolloDuoSplitIsUnfolded() || ApolloDuoSplitIsUnfoldedPortrait()) return NO;
+static BOOL ApolloDuoPageShowsLayoutControl(UIViewController *controller) {
+    if (!ApolloDuoSplitIsUnfolded()) return NO;
+    // Only the Posts tab's split has a feed column; its host owns the control.
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(controller.navigationController, NO);
     return !state.feed;
 }
 
 // NavigationActions calls this before normalizing native items, so an async
 // Apollo action refresh cannot remove the independent layout control.
-NSArray<UIBarButtonItem *> *ApolloDuoCommentsLayoutItems(UINavigationItem *item, NSArray<UIBarButtonItem *> *items) {
-    ApolloDuoCommentsLayoutControl *control = [sDuoCommentsLayoutOwners objectForKey:item];
+NSArray<UIBarButtonItem *> *ApolloDuoPageLayoutItems(UINavigationItem *item, NSArray<UIBarButtonItem *> *items) {
+    ApolloDuoPageLayoutControl *control = [sDuoPageLayoutOwners objectForKey:item];
     if (!control) return items;
     NSMutableArray *result = [NSMutableArray array];
-    if (ApolloDuoCommentsShowsLayoutControl(control.controller)) [result addObject:control.item];
+    if (ApolloDuoPageShowsLayoutControl(control.controller)) [result addObject:control.item];
     for (UIBarButtonItem *candidate in items)
-        if (![candidate.accessibilityIdentifier isEqualToString:kApolloDuoCommentsLayoutID]) [result addObject:candidate];
+        if (![candidate.accessibilityIdentifier isEqualToString:kApolloDuoPageLayoutID]) [result addObject:candidate];
     return result;
 }
 
-@implementation ApolloDuoCommentsLayoutControl
+@implementation ApolloDuoPageLayoutControl
 - (void)updateFeedLayoutButton { ApolloDuoRefreshLayoutButton(nil, self.item); }
 - (void)toggle {
-    if (ApolloDuoCommentsShowsLayoutControl(self.controller))
+    if (ApolloDuoPageShowsLayoutControl(self.controller))
         ApolloDuoToggleVisibleFeedLayout(self.controller, self.item.enabled);
 }
 - (void)update {
     [self updateFeedLayoutButton];
     UINavigationItem *navigationItem = self.controller.navigationItem;
-    NSArray *items = ApolloDuoCommentsLayoutItems(navigationItem, navigationItem.rightBarButtonItems);
+    NSArray *items = ApolloDuoPageLayoutItems(navigationItem, navigationItem.rightBarButtonItems);
     if (![(navigationItem.rightBarButtonItems ?: @[]) isEqualToArray:items])
         [navigationItem setRightBarButtonItems:items animated:NO];
 }
 @end
 
-static void ApolloDuoCommentsUpdateLayoutControl(UIViewController *controller) {
-    ApolloDuoCommentsLayoutControl *control = objc_getAssociatedObject(controller, &kApolloDuoCommentsLayoutKey);
-    if (!control && !ApolloDuoCommentsShowsLayoutControl(controller)) return;
+static void ApolloDuoPageUpdateLayoutControl(UIViewController *controller) {
+    ApolloDuoPageLayoutControl *control = objc_getAssociatedObject(controller, &kApolloDuoPageLayoutKey);
+    if (!control && !ApolloDuoPageShowsLayoutControl(controller)) return;
     if (!control) {
-        control = [ApolloDuoCommentsLayoutControl new];
+        control = [ApolloDuoPageLayoutControl new];
         control.controller = controller;
         // A native image item lets UIKit own glyph visibility, accessibility,
         // sizing and glass. No configured UIButton or custom wrapper is needed.
@@ -2059,32 +2063,32 @@ static void ApolloDuoCommentsUpdateLayoutControl(UIViewController *controller) {
             style:UIBarButtonItemStylePlain target:control action:@selector(toggle)];
         control.item.title = @"Feed Layout";
         control.item.accessibilityLabel = @"Feed Layout";
-        control.item.accessibilityIdentifier = kApolloDuoCommentsLayoutID;
+        control.item.accessibilityIdentifier = kApolloDuoPageLayoutID;
         control.item.tintColor = ApolloNavigationChromeColor();
         if (@available(iOS 26.0, *)) {
             control.item.hidesSharedBackground = NO;
             control.item.sharesBackground = NO;
         }
         if (@available(iOS 27.1, *)) control.item.axisBehavior = UIBarButtonItemAxisBehaviorHorizontalOnly;
-        objc_setAssociatedObject(controller, &kApolloDuoCommentsLayoutKey, control, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        if (!sDuoCommentsLayoutOwners) sDuoCommentsLayoutOwners = [NSMapTable weakToWeakObjectsMapTable];
-        [sDuoCommentsLayoutOwners setObject:control forKey:controller.navigationItem];
+        objc_setAssociatedObject(controller, &kApolloDuoPageLayoutKey, control, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (!sDuoPageLayoutOwners) sDuoPageLayoutOwners = [NSMapTable weakToWeakObjectsMapTable];
+        [sDuoPageLayoutOwners setObject:control forKey:controller.navigationItem];
         ApolloDuoRegisterLayoutControl(control);
     }
     [control update];
 }
 
-static void ApolloDuoCommentsScheduleLayoutControl(UIViewController *controller) {
-    ApolloDuoCommentsLayoutControl *control = objc_getAssociatedObject(controller, &kApolloDuoCommentsLayoutKey);
-    if (objc_getAssociatedObject(controller, &kApolloDuoCommentsLayoutPendingKey)
-        || (!control && !ApolloDuoCommentsShowsLayoutControl(controller))) return;
-    objc_setAssociatedObject(controller, &kApolloDuoCommentsLayoutPendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+static void ApolloDuoPageScheduleLayoutControl(UIViewController *controller) {
+    ApolloDuoPageLayoutControl *control = objc_getAssociatedObject(controller, &kApolloDuoPageLayoutKey);
+    if (objc_getAssociatedObject(controller, &kApolloDuoPageLayoutPendingKey)
+        || (!control && !ApolloDuoPageShowsLayoutControl(controller))) return;
+    objc_setAssociatedObject(controller, &kApolloDuoPageLayoutPendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     __weak UIViewController *weakController = controller;
     dispatch_async(dispatch_get_main_queue(), ^{
         UIViewController *page = weakController;
         if (!page) return;
-        objc_setAssociatedObject(page, &kApolloDuoCommentsLayoutPendingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        ApolloDuoCommentsUpdateLayoutControl(page);
+        objc_setAssociatedObject(page, &kApolloDuoPageLayoutPendingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ApolloDuoPageUpdateLayoutControl(page);
     });
 }
 
@@ -3135,7 +3139,7 @@ static void ApolloDuoSplitClose(ApolloDuoSplitState *state, BOOL preserveDetail)
     ApolloDuoSearchRestoreBackItem(state);
     NSArray *detail = [state.secondary.viewControllers copy];
     if (state.feed) {
-        ApolloNativeFeedSearchSetDuoControls(state.host.feedControlsOwner, nil, nil, nil);
+        ApolloNativeFeedSearchSetDuoControls(state.host.feedControlsOwner, nil, nil, nil, NO);
         state.host.feedControlsOwner = nil;
         ApolloDuoPostsStopGeometry(state.feed.viewIfLoaded);
         ApolloDuoPostsStopGeometry(state.secondary.viewIfLoaded);
@@ -4285,19 +4289,40 @@ static CGFloat ApolloDuoEmptyStateCenterX(UILabel *label, CGFloat nativeX) {
 %end
 
 @interface ApolloDuoCommentsPage : UIViewController @end
+@interface ApolloDuoFeedPage : UIViewController @end
 %group ApolloDuoCommentsLayoutHooks
 %hook ApolloDuoCommentsPage
 - (void)viewWillAppear:(BOOL)animated {
     %orig(animated);
-    ApolloDuoCommentsUpdateLayoutControl((UIViewController *)self);
+    ApolloDuoPageUpdateLayoutControl((UIViewController *)self);
 }
 - (void)viewDidLayoutSubviews {
     %orig;
-    ApolloDuoCommentsScheduleLayoutControl((UIViewController *)self);
+    ApolloDuoPageScheduleLayoutControl((UIViewController *)self);
 }
 - (void)viewWillDisappear:(BOOL)animated {
-    if (objc_getAssociatedObject(self, &kApolloDuoCommentsLayoutKey)
+    if (objc_getAssociatedObject(self, &kApolloDuoPageLayoutKey)
         || ApolloDuoSplitStateForNavigation(((UIViewController *)self).navigationController, NO).feed)
+        ApolloDuoPostsStopGeometry(((UIViewController *)self).viewIfLoaded);
+    %orig(animated);
+}
+%end
+%end
+
+%group ApolloDuoFeedLayoutHooks
+%hook ApolloDuoFeedPage
+- (void)viewWillAppear:(BOOL)animated {
+    %orig(animated);
+    ApolloDuoPageUpdateLayoutControl((UIViewController *)self);
+}
+- (void)viewDidLayoutSubviews {
+    %orig;
+    ApolloDuoPageScheduleLayoutControl((UIViewController *)self);
+}
+- (void)viewWillDisappear:(BOOL)animated {
+    // Posts-tab feeds keep the host's geometry handling; only a standalone
+    // feed stops its own layout animation here.
+    if (objc_getAssociatedObject(self, &kApolloDuoPageLayoutKey))
         ApolloDuoPostsStopGeometry(((UIViewController *)self).viewIfLoaded);
     %orig(animated);
 }
@@ -4395,6 +4420,8 @@ static void ApolloDuoSlideFitDisplay(id builder) {
     }
     Class comments = NSClassFromString(@"Apollo.CommentsViewController");
     if (comments) %init(ApolloDuoCommentsLayoutHooks, ApolloDuoCommentsPage = comments);
+    Class feed = NSClassFromString(@"Apollo.PostsViewController");
+    if (feed) %init(ApolloDuoFeedLayoutHooks, ApolloDuoFeedPage = feed);
     [NSNotificationCenter.defaultCenter addObserverForName:@"ApolloDuoFeedLayoutDidChange"
         object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {
             ApolloDuoRefreshLayoutControls();

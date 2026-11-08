@@ -3747,7 +3747,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyIPadTabBarBottom: @NO,
                                     UDKeySettingsIconAppearance: @(ApolloSettingsIconAppearanceLight),
                                     UDKeyTabBarSwipeNavigation: @NO,
-                                    UDKeyDuoLandscapeFeedLayout: @0,
+                                    UDKeyDuoUnfoldedFeedLayout: @0,
                                     UDKeyDuoSubredditPanelGlassEnabled: @NO,
                                     UDKeySubredditSwitcherSheetEnabled: @(ApolloDeviceIsDuo()),
                                     UDKeyIPadPaneLayout: @NO,
@@ -4072,14 +4072,14 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     // sLiquidGlassEnabled was already latched in ApolloCommon +load. Do not
     // reload it here: UIKit and early hook constructors use that launch choice.
     sTabBarSwipeNavigation = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyTabBarSwipeNavigation];
-    sDuoLandscapeFeedLayout = [standardDefaults integerForKey:UDKeyDuoLandscapeFeedLayout];
+    sDuoUnfoldedFeedLayout = [standardDefaults integerForKey:UDKeyDuoUnfoldedFeedLayout];
     sDuoSubredditPanelGlassEnabled = [standardDefaults boolForKey:UDKeyDuoSubredditPanelGlassEnabled];
     sSubredditSwitcherSheetEnabled = [standardDefaults boolForKey:UDKeySubredditSwitcherSheetEnabled];
     // Value 1 belonged to the removed side-by-side experiment. Keep Focused
     // feed at 2 so existing selections survive this menu cleanup.
-    if (sDuoLandscapeFeedLayout != 0 && sDuoLandscapeFeedLayout != 2) {
-        sDuoLandscapeFeedLayout = 0;
-        [standardDefaults setInteger:0 forKey:UDKeyDuoLandscapeFeedLayout];
+    if (sDuoUnfoldedFeedLayout != 0 && sDuoUnfoldedFeedLayout != 2) {
+        sDuoUnfoldedFeedLayout = 0;
+        [standardDefaults setInteger:0 forKey:UDKeyDuoUnfoldedFeedLayout];
     }
     // Read once here: ApolloPaneInstall.xm builds the split controllers during
     // scene connect, which happens after %ctor and never again for the process.
