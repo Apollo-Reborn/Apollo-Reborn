@@ -250,6 +250,10 @@ static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat
 @property(nonatomic, strong) UIControl *listDismiss;
 @property(nonatomic, strong) UIButton *listButton;
 @property(nonatomic) BOOL listVisible;
+// Unfolded from the folded subreddit list: the drawer stays open over an empty
+// feed until the reader picks a subreddit or feed.
+@property(nonatomic) BOOL listPinned;
+@property(nonatomic, strong) UIStackView *pinnedPrompt;
 @property(nonatomic) BOOL postsShowingDetail;
 @property(nonatomic) BOOL postsSplitEnabled;
 @property(nonatomic) BOOL postsColumnsPaired;
@@ -319,6 +323,26 @@ static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat
         [self.listDismiss addTarget:self action:@selector(dismissList) forControlEvents:UIControlEventTouchUpInside];
         self.listDismiss.hidden = YES;
         [self.view addSubview:self.listDismiss];
+        // Stands in for the feed while the pinned drawer waits for a pick.
+        UILabel *promptTitle = [UILabel new];
+        promptTitle.text = @"No Subreddit Selected";
+        promptTitle.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle3];
+        UILabel *promptDetail = [UILabel new];
+        promptDetail.text = @"Choose a subreddit or feed from the list.";
+        promptDetail.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+        for (UILabel *label in @[promptTitle, promptDetail]) {
+            label.textColor = UIColor.secondaryLabelColor;
+            label.textAlignment = NSTextAlignmentCenter;
+            label.numberOfLines = 0;
+            label.adjustsFontForContentSizeCategory = YES;
+        }
+        self.pinnedPrompt = [[UIStackView alloc] initWithArrangedSubviews:@[promptTitle, promptDetail]];
+        self.pinnedPrompt.axis = UILayoutConstraintAxisVertical;
+        self.pinnedPrompt.spacing = 6;
+        self.pinnedPrompt.alignment = UIStackViewAlignmentFill;
+        self.pinnedPrompt.isAccessibilityElement = NO;
+        self.pinnedPrompt.hidden = !self.listPinned;
+        [self.view addSubview:self.pinnedPrompt];
         self.listGlass = [[UIVisualEffectView alloc] initWithEffect:nil];
         self.listGlass.clipsToBounds = YES;
         // Move a plain container so the material and list travel together.
@@ -496,9 +520,8 @@ static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat
         self.listGlass.effect = effect;
         self.listStyleApplied = YES;
     }
-    NSString *panelTitle = self.listUsesGlass ? @"" : @"Subreddits";
-    if (![self.listNavigationBar.topItem.title isEqualToString:panelTitle])
-        self.listNavigationBar.topItem.title = panelTitle;
+    if (![self.listNavigationBar.topItem.title isEqualToString:@"Subreddits"])
+        self.listNavigationBar.topItem.title = @"Subreddits";
     self.listGlass.backgroundColor = self.listUsesGlass ? UIColor.clearColor
         : (ApolloThemeSubredditListBackgroundColor() ?: UIColor.systemBackgroundColor);
     // Re-vend only on an explicit style change, never on scroll/layout.
@@ -612,6 +635,33 @@ static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat
     }
     ApolloLog(@"[DuoSplit] revealing %lu restored feed controls", (unsigned long)buttons.count);
 }
+// Drawer drags that close the list (named ApolloReborn.Duo.ListClose…)
+// can't take a pinned drawer, so it never stops partway off screen.
+static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
+    for (UIGestureRecognizer *gesture in view.gestureRecognizers) {
+        if ([gesture.name hasPrefix:@"ApolloReborn.Duo.ListClose"] && gesture.enabled != enabled)
+            gesture.enabled = enabled;
+    }
+}
+- (void)updateListCloseDrags {
+    ApolloDuoEnableListCloseDrags(self.listDismiss, !self.listPinned);
+    ApolloDuoEnableListCloseDrags(self.listContainer, !self.listPinned);
+}
+- (void)setListPinned:(BOOL)listPinned {
+    if (_listPinned == listPinned) return;
+    _listPinned = listPinned;
+    [self updateListCloseDrags];
+    if (!self.pinnedPrompt || self.pinnedPrompt.hidden == !listPinned) return;
+    if (listPinned) {
+        self.pinnedPrompt.hidden = NO;
+        return;
+    }
+    [UIView animateWithDuration:0.2 animations:^{ self.pinnedPrompt.alpha = 0; } completion:^(BOOL finished) {
+        if (self.listPinned) return;
+        self.pinnedPrompt.hidden = YES;
+        self.pinnedPrompt.alpha = 1;
+    }];
+}
 - (void)toggleList { [self setListVisible:!self.listVisible animated:YES]; }
 - (void)dismissList { [self setListVisible:NO animated:YES]; }
 - (void)setListVisible:(BOOL)visible animated:(BOOL)animated {
@@ -619,6 +669,9 @@ static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat
 }
 - (void)setListVisible:(BOOL)visible animated:(BOOL)animated velocity:(CGFloat)velocity {
     if (!self.subredditList) return;
+    // A pinned drawer only settles open, so a drag already under way springs back.
+    if (!visible && self.listPinned) visible = YES;
+    [self updateListCloseDrags];
     if (!visible) [self endListEditing];
     if (self.listVisible == visible) return;
     [self.view layoutIfNeeded];
@@ -633,9 +686,11 @@ static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat
         [self.subredditList.view layoutIfNeeded];
         UITableView *table = ApolloDuoSplitFindTable(self.subredditList.view);
         // Reset before the first reveal frame, after the drawer's safe-area
-        // layout, so reopening always starts with the feed shortcuts.
-        [table setContentOffset:CGPointMake(-table.adjustedContentInset.left,
-                                           -table.adjustedContentInset.top) animated:NO];
+        // layout, so reopening always starts with the feed shortcuts. A pinned
+        // drawer continues the folded list, so it keeps that scroll position.
+        if (!self.listPinned)
+            [table setContentOffset:CGPointMake(-table.adjustedContentInset.left,
+                                               -table.adjustedContentInset.top) animated:NO];
         [table layoutIfNeeded];
         [self updateListAppearance];
     }
@@ -842,6 +897,17 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
         self.listContainer.bounds = CGRectMake(0, 0, width, height);
         self.listContainer.center = CGPointMake(12 + width / 2, 12 + height / 2);
         self.listGlass.frame = self.listContainer.bounds;
+        if (!self.pinnedPrompt.hidden) {
+            // Center in the open area beside the drawer, level with its middle.
+            CGFloat leading = 12 + width;
+            CGFloat trailing = CGRectGetMaxX(self.view.bounds) - self.view.safeAreaInsets.right;
+            CGFloat available = MAX(0, trailing - leading - 48);
+            CGSize size = [self.pinnedPrompt systemLayoutSizeFittingSize:CGSizeMake(available, UILayoutFittingCompressedSize.height)
+                                           withHorizontalFittingPriority:UILayoutPriorityRequired
+                                                 verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+            self.pinnedPrompt.bounds = CGRectMake(0, 0, available, size.height);
+            self.pinnedPrompt.center = CGPointMake((leading + trailing) / 2, 12 + height / 2);
+        }
         // The drawer covers/intercepts its underlying controls. Keep the
         // navigation items installed so opening it never reflows the bar.
         self.listButton.hidden = NO;
@@ -947,6 +1013,10 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
 @property(nonatomic, strong) ApolloDuoPostsClosedThread *closedThread;
 @property(nonatomic) BOOL navigationBarWasHidden;
 @property(nonatomic) BOOL needsDefault;
+// When the folded Posts tab last showed its bare subreddit list (0 otherwise).
+@property(nonatomic) CFTimeInterval foldedListShownAt;
+// Unfolding from that list opens the pinned drawer instead of a feed.
+@property(nonatomic) BOOL pinListOnOpen;
 @property(nonatomic) BOOL halfWidthSidebar;
 @property(nonatomic, weak) id<UIViewControllerTransitionCoordinator> pendingNavigationTransition;
 @property(nonatomic, weak) UIViewController *searchBackPage;
@@ -1258,7 +1328,13 @@ BOOL ApolloDuoSplitIsSidebarController(UIViewController *controller) {
 BOOL ApolloDuoSplitDismissPostsList(UINavigationController *nav) {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
     if (!state.split || !state.feed || state.changing || !state.host.listVisible) return NO;
+    // A pinned drawer has no feed behind it; the tab reselect does nothing.
+    if (state.host.listPinned) {
+        ApolloLog(@"[PostsTab] Kept the pinned subreddit list open");
+        return YES;
+    }
     [state.host setListVisible:NO animated:!UIAccessibilityIsReduceMotionEnabled()];
+    ApolloLog(@"[PostsTab] Closed subreddit list");
     return YES;
 }
 
@@ -2502,6 +2578,14 @@ static void ApolloDuoSplitForgetForward(UINavigationController *nav, NSArray<UIV
               NSStringFromClass(forward.class), NSStringFromClass(nav.topViewController.class));
 }
 
+// "Default Reddit to Load: Lists" is stored as ["redditsList"] (Apollo's
+// DefaultRedditToLoad.redditsList; read from its settings comparison).
+static BOOL ApolloDuoSplitStartupShowsList(void) {
+    NSArray *choice = [NSUserDefaults.standardUserDefaults arrayForKey:@"DefaultRedditToLoad"];
+    id kind = choice.firstObject;
+    return [kind isKindOfClass:NSString.class] && [kind caseInsensitiveCompare:@"redditsList"] == NSOrderedSame;
+}
+
 static BOOL ApolloDuoSplitOpenStartupFeed(ApolloDuoSplitState *state) {
     // Native General stores ["subreddit", name], ["multireddit", user, name],
     // or a one-element built-in-feed choice (verified in Apollo's setter).
@@ -2833,6 +2917,14 @@ static void ApolloDuoSplitOpen(ApolloDuoSplitState *state) {
         [sDuoSplitDeferredPresentations removeObject:state];
         return;
     }
+    // Unfolding on the folded subreddit list keeps that list open as the
+    // drawer. Decided at the unfold, since the install below can be deferred.
+    // The settle time excludes a launch resize before Apollo's default feed.
+    if (sDuoSplitResizingTabs && [state.kind isEqualToString:@"subreddits"]
+        && outer.viewControllers.count == 1 && outer.tabBarController.selectedViewController == outer
+        && state.foldedListShownAt > 0 && CACurrentMediaTime() - state.foldedListShownAt >= 0.5) {
+        state.pinListOnOpen = YES;
+    }
     if (outer.presentedViewController) {
         // An over-fullscreen modal such as Pixel Pals can stay open through
         // unfolding without another appearance callback on its presenter.
@@ -2860,7 +2952,10 @@ static void ApolloDuoSplitOpen(ApolloDuoSplitState *state) {
         return;
     }
     state.changing = YES;
-    if ([state.kind isEqualToString:@"subreddits"] && outer.viewControllers.count == 1) {
+    BOOL pinList = state.pinListOnOpen && outer.viewControllers.count == 1;
+    state.pinListOnOpen = NO;
+    state.foldedListShownAt = 0;
+    if ([state.kind isEqualToString:@"subreddits"] && outer.viewControllers.count == 1 && !pinList) {
         UIViewController *forward = ApolloDuoSplitForwardPage(outer);
         if (forward) {
             // goForward calls Apollo's Swift push helper directly with
@@ -2908,6 +3003,13 @@ static void ApolloDuoSplitOpen(ApolloDuoSplitState *state) {
     }
     NSArray *detail = stack.count > rootIndex + 1
         ? [stack subarrayWithRange:NSMakeRange(rootIndex + 1, stack.count - rootIndex - 1)] : @[];
+    // With Lists as the default, an empty Posts split (a launch or unfold with
+    // no feed open) shows the list as the pinned drawer instead of Home.
+    if (!pinList && detail.count == 0 && [state.kind isEqualToString:@"subreddits"]
+        && ApolloDuoSplitStartupShowsList()) {
+        pinList = YES;
+        ApolloLog(@"[DuoSplit] Default Reddit to Load is Lists; pinning the subreddit list");
+    }
     state.navigationBarWasHidden = outer.navigationBarHidden;
     state.sidebarTitle = state.root.navigationItem.title;
     UISplitViewController *split = [[UISplitViewController alloc] initWithStyle:UISplitViewControllerStyleDoubleColumn];
@@ -2988,6 +3090,7 @@ static void ApolloDuoSplitOpen(ApolloDuoSplitState *state) {
         postsHost.subredditList = state.primary;
         postsHost.postsNavigation = state.feed;
         postsHost.pendingFeedControlsReveal = revealFeedControls;
+        postsHost.listPinned = pinList;
         postsHost.postsSplitEnabled = ![NSUserDefaults.standardUserDefaults boolForKey:@"ApolloDuoPostsSplitDisabled"];
         split.displayModeButtonVisibility = UISplitViewControllerDisplayModeButtonVisibilityNever;
         split.presentsWithGesture = NO;
@@ -3042,10 +3145,11 @@ static void ApolloDuoSplitOpen(ApolloDuoSplitState *state) {
     // regular when unfolded, both pins can become trait observation instead.
     [outer setOverrideTraitCollection:[UITraitCollection traitCollectionWithHorizontalSizeClass:UIUserInterfaceSizeClassRegular]
               forChildViewController:host];
-    state.needsDefault = detail.count == 0;
+    state.needsDefault = detail.count == 0 && !pinList;
     state.changing = NO;
     ApolloDuoSearchUpdateBackItem(state);
-    ApolloLog(@"[DuoSplit] opened native %@ sidebar/detail", state.kind);
+    ApolloLog(@"[DuoSplit] opened native %@ sidebar/detail pinnedList=%d", state.kind, pinList);
+    if (pinList) [host setListVisible:YES animated:NO];
     dispatch_async(dispatch_get_main_queue(), ^{ ApolloDuoSplitOpenDefault(state); });
 }
 
@@ -3597,6 +3701,12 @@ static BOOL ApolloDuoSplitRoutePush(UINavigationController *nav, UIViewControlle
         [page isKindOfClass:UISplitViewController.class]) return NO;
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, YES);
     if (ApolloDuoSplitRouteSettingsRedditContent(state, page, animated)) return YES;
+    if (state.feed && !state.changing && state.host.listPinned) {
+        // Any navigation (a list pick, a shortcut, an opened link) ends the
+        // pinned drawer; the paths below place the page in its column.
+        state.host.listPinned = NO;
+        [state.host setListVisible:NO animated:animated && !UIAccessibilityIsReduceMotionEnabled()];
+    }
     if (state.split && !state.changing && [ApolloDuoSplitKind(page) isEqualToString:@"account"]) {
         if (ApolloDuoSplitShouldOpen((id)state.outer.tabBarController)) {
             ApolloDuoSplitNavigateProfile(state, page, YES);
@@ -3868,6 +3978,9 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     if (state.feed && !((UIViewController *)self).isEditing)
         ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventFeedOpened, 0.0);
     if (!state.feed || state.changing || ((UIViewController *)self).isEditing) return;
+    // Apollo can fetch before it pushes the picked feed; the pick itself ends
+    // the pinned drawer.
+    state.host.listPinned = NO;
     __weak ApolloDuoSplitHost *host = state.host;
     __weak UITableView *table = tableView;
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -3891,7 +4004,13 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
 - (void)navigationController:(UINavigationController *)navigation didShowViewController:(UIViewController *)controller animated:(BOOL)animated {
     %orig(navigation, controller, animated);
     ApolloDuoInstallBackSwipe(navigation);
-    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(navigation, NO);
+    BOOL postsTab = [ApolloDuoSplitKind(navigation.viewControllers.firstObject) isEqualToString:@"subreddits"];
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(navigation, postsTab);
+    // A fold restores the bare list while the split is still closing.
+    if (postsTab && navigation == state.outer && (!state.split || state.changing)) {
+        BOOL bareList = controller == state.root && navigation.viewControllers.count == 1;
+        state.foldedListShownAt = bareList ? CACurrentMediaTime() : 0;
+    }
     // Native didShow finalizes the bar after push/pop and column migration.
     // Relayout the host then so it does not keep the outgoing Back reservation.
     if (navigation == state.feed) {
