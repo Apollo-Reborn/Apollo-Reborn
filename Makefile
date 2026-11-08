@@ -237,6 +237,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloCrosspostTitle.xm \
     $(SRC_DIR)/ApolloMessagesKeyboardInset.xm \
     $(SRC_DIR)/ApolloTrueBlackKeyboard.xm \
+    $(SRC_DIR)/ApolloSpelling.xm \
     $(SRC_DIR)/ApolloAutoHideTabBar.xm \
     $(SRC_DIR)/ApolloTopBarScrollPresentation.m \
     $(SRC_DIR)/ApolloCompactTabBarView.m \
