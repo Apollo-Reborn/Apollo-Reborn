@@ -1062,12 +1062,14 @@ static void NSBUpdateDuoControls(UIViewController *vc) {
 }
 
 void ApolloNativeFeedSearchSetDuoControls(UIViewController *vc, UIBarButtonItem *list,
-                                        UIBarButtonItem *split, UIBarButtonItem *layout) {
+                                        UIBarButtonItem *split, UIBarButtonItem *layout,
+                                        BOOL layoutLeading) {
     if (!vc) return;
     NSMutableArray *leading = [NSMutableArray array];
     if (list) [leading addObject:list];
+    if (layout && layoutLeading) [leading addObject:layout];
     if (split) [leading addObject:split];
-    NSArray *trailing = layout ? @[layout] : @[];
+    NSArray *trailing = layout && !layoutLeading ? @[layout] : @[];
     for (UIBarButtonItem *control in [leading arrayByAddingObjectsFromArray:trailing])
         control.accessibilityIdentifier = @"ApolloDuoFeedControl";
     objc_setAssociatedObject(vc, &kNSBDuoLeadingControlsKey, [leading copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);

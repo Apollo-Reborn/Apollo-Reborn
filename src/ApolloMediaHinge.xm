@@ -35,6 +35,8 @@ static NSHashTable<UITableView *> *sApolloDuoFeedTables;
 @property (nonatomic) CGFloat centerOffset;
 @property (nonatomic) NSInteger layout;
 @property (nonatomic) BOOL comments;
+// Focused card width; only meaningful when layout == 2.
+@property (nonatomic) CGFloat columnWidth;
 @end
 @implementation ApolloDuoFeedGeometry
 @end
@@ -156,22 +158,31 @@ static BOOL ApolloDuoMediaUpdateViewport(UITableView *table) {
     [sApolloDuoFeedTables addObject:table];
     CGFloat height = 0.0;
     CGFloat centerOffset = 0.0;
+    CGFloat columnWidth = 640.0;
     NSInteger layout = 0;
     UIWindow *window = table.window;
     UIViewController *owner = ApolloDuoMediaTableController(table);
     BOOL comments = [owner isKindOfClass:NSClassFromString(@"Apollo.CommentsViewController")];
-    if (window && ApolloDuoSplitIsUnfolded() && !ApolloDuoSplitIsUnfoldedPortrait()
-        && CGRectGetWidth(window.bounds) > CGRectGetHeight(window.bounds)) {
+    if (window && ApolloDuoSplitIsUnfolded()) {
         // The requested limit is the full display height, not the currently
         // unobscured table area. Do not subtract the navigation/search bar or
         // home-indicator insets, which vary as the feed scrolls.
-        height = floor(CGRectGetHeight(window.bounds));
-        if (!isfinite(height) || height < 100.0) height = 0.0;
-        if (height > 0.0 && sDuoLandscapeFeedLayout == 2) {
-            // Focused narrows the post column only. Media keeps the same
-            // display-height cap as Original, so a tall image fills the column
-            // instead of shrinking; wide media is already limited by its width.
-            layout = sDuoLandscapeFeedLayout;
+        CGFloat displayHeight = floor(CGRectGetHeight(window.bounds));
+        if (!isfinite(displayHeight) || displayHeight < 100.0) displayHeight = 0.0;
+        BOOL landscape = !ApolloDuoSplitIsUnfoldedPortrait()
+            && CGRectGetWidth(window.bounds) > CGRectGetHeight(window.bounds);
+        // Original keeps native media in portrait; landscape caps it at the
+        // display height so one preview can't span several screens.
+        if (landscape) height = displayHeight;
+        if (displayHeight > 0.0 && sDuoUnfoldedFeedLayout == 2) {
+            // Focused narrows the post column only, in either pose. Media keeps
+            // the display-height cap, so a tall image fills the column instead
+            // of shrinking; wide media is already limited by its width.
+            layout = sDuoUnfoldedFeedLayout;
+            height = displayHeight;
+            // The ~669pt portrait display would leave a 640pt card almost
+            // edge to edge, so portrait uses a narrower card.
+            if (!landscape) columnWidth = 560.0;
             centerOffset = ApolloDuoFeedCenterOffset(table, window, owner);
         }
     }
@@ -180,7 +191,7 @@ static BOOL ApolloDuoMediaUpdateViewport(UITableView *table) {
     BOOL changed = !previous || fabs(previous.height - height) > 0.5
         || fabs(previous.width - width) > 0.5
         || fabs(previous.centerOffset - centerOffset) > 0.5 || previous.layout != layout
-        || previous.comments != comments;
+        || previous.comments != comments || fabs(previous.columnWidth - columnWidth) > 0.5;
     if (changed) {
         ApolloDuoFeedGeometry *geometry = [ApolloDuoFeedGeometry new];
         geometry.height = height;
@@ -188,6 +199,7 @@ static BOOL ApolloDuoMediaUpdateViewport(UITableView *table) {
         geometry.centerOffset = centerOffset;
         geometry.layout = layout;
         geometry.comments = comments;
+        geometry.columnWidth = columnWidth;
         objc_setAssociatedObject(node, &kApolloDuoFeedGeometryKey, geometry, OBJC_ASSOCIATION_RETAIN);
     }
     if (changed) ApolloDuoMediaRefreshAfterGeometryChange(table);
@@ -357,7 +369,7 @@ static ApolloDuoFeedGeometry *ApolloDuoFeedPrepareCell(id cell, struct ApolloTex
         }
     }
     if (range && geometry.layout == 2 && isfinite(range->max.width) && range->max.width > 0.0) {
-        range->max.width = MIN(range->max.width, 640.0);
+        range->max.width = MIN(range->max.width, geometry.columnWidth);
         range->min.width = MIN(range->min.width, range->max.width);
     }
     return geometry;
@@ -382,7 +394,7 @@ static id ApolloDuoFeedLayoutSpec(id spec, CGFloat availableWidth, ApolloDuoFeed
     if (!spec || geometry.layout != 2 || !isfinite(availableWidth) || availableWidth <= 0.0) return spec;
     // Wrap either native post style wholesale: compact keeps its thumbnail,
     // title, metadata, vote controls, and gestures in their original hierarchy.
-    CGFloat columnWidth = MIN(availableWidth, 640.0);
+    CGFloat columnWidth = MIN(availableWidth, geometry.columnWidth);
     id column = ApolloDuoFeedColumn(spec, columnWidth);
     CGFloat margin = MAX(0.0, (availableWidth - columnWidth) * 0.5);
     CGFloat offset = MIN(margin, MAX(-margin, geometry.centerOffset));
@@ -582,6 +594,6 @@ static id ApolloDuoFeedLayoutSpec(id spec, CGFloat availableWidth, ApolloDuoFeed
     [[NSNotificationCenter defaultCenter] addObserverForName:@"ApolloDuoFeedLayoutDidChange"
         object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {
             for (UITableView *table in sApolloDuoFeedTables.allObjects) ApolloDuoMediaUpdateViewport(table);
-            ApolloLog(@"[DuoFeed] landscape layout changed to %ld", (long)sDuoLandscapeFeedLayout);
+            ApolloLog(@"[DuoFeed] unfolded layout changed to %ld", (long)sDuoUnfoldedFeedLayout);
         }];
 }

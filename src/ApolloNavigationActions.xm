@@ -17,7 +17,7 @@
 #import <QuartzCore/QuartzCore.h>
 #import "ApolloClasses.h"
 
-extern NSArray<UIBarButtonItem *> *ApolloDuoCommentsLayoutItems(UINavigationItem *item, NSArray<UIBarButtonItem *> *items);
+extern NSArray<UIBarButtonItem *> *ApolloDuoPageLayoutItems(UINavigationItem *item, NSArray<UIBarButtonItem *> *items);
 
 // Use the pill's spring for glyphs without changing button frames,
 // which translation measures when inserting its globe.
@@ -687,7 +687,7 @@ static BOOL ApolloActionsArraysIdentical(NSArray *a, NSArray *b) {
 
 static BOOL ApolloActionsIsDuoFeedControl(UINavigationItem *item, UIBarButtonItem *candidate) {
     if ([candidate.accessibilityIdentifier isEqualToString:@"ApolloDuoFeedControl"] ||
-        [candidate.accessibilityIdentifier isEqualToString:@"ApolloDuoCommentsLayoutControl"]) return YES;
+        [candidate.accessibilityIdentifier isEqualToString:@"ApolloDuoPageLayoutControl"]) return YES;
     if (@available(iOS 27.0, *)) return candidate == item.searchBarPlacementBarButtonItem;
     return NO;
 }
@@ -1305,7 +1305,7 @@ static BOOL ApolloActionsInstallSystemOverflow(UINavigationItem *item, UIButton 
 static NSArray<UIBarButtonItem *> *ApolloActionsDuoNativeItems(UINavigationItem *item,
                                                                NSArray<UIBarButtonItem *> *items) {
     items = ApolloNativeFeedSearchDuoTrailingItems(item, items);
-    items = ApolloDuoCommentsLayoutItems(item, items);
+    items = ApolloDuoPageLayoutItems(item, items);
     ApolloNavigationActionsControllerBox *box = objc_getAssociatedObject(item, &kActionsControllerKey);
     // Inbox owns its reversible compact/native mapping below.
     if ([NSStringFromClass(box.controller.class) isEqualToString:@"Apollo.InboxViewController"]) return items;
