@@ -8139,14 +8139,17 @@ static void ApolloApplyGlobeMergeForNavItem(UINavigationItem *navItem) {
     if (ApolloDeferGlobeGeometry(globe, container, ^{
         ApolloApplyGlobeMergeForNavItem(weakItem);
     })) return;
-    // Liquid Glass uses the same neutral chrome in standalone and merged slots.
+    // Liquid Glass uses the other navigation buttons' color in standalone and
+    // merged slots: neutral chrome, or the accent with Accent Navigation Buttons.
     // Classic builds keep their accent and translated-state tint.
     id target = globe.allTargets.anyObject;
     UIViewController *controller = [target isKindOfClass:UIViewController.class] ? target : nil;
     BOOL visibleTranslationApplied = [objc_getAssociatedObject(controller, kApolloVisibleTranslationAppliedKey) boolValue];
-    globe.tintColor = IsLiquidGlass() ? ApolloNavigationChromeColor()
+    UIColor *buttonAccent = ApolloNavigationButtonAccentColor();
+    globe.tintColor = IsLiquidGlass() ? (buttonAccent ?: ApolloNavigationChromeColor())
         : (visibleTranslationApplied ? UIColor.systemGreenColor
             : (ApolloThemeAccentColor() ?: controller.viewIfLoaded.tintColor ?: UIColor.systemBlueColor));
+    if (IsLiquidGlass()) ApolloNavigationActionsAccentControl(globe);
     UIBarButtonItem *standalone = objc_getAssociatedObject(navItem, kApolloGlobeStandaloneItemKey);
 
     // The Duo rail already mirrors the merged globe as a native item. Leave it
@@ -8254,6 +8257,7 @@ static void ApolloApplyGlobeMergeForNavItem(UINavigationItem *navItem) {
             ApolloLog(@"[Translation] Globe: hosting as a native Duo rail item (title length %lu)", (unsigned long)navItem.title.length);
         }
         if (standalone.image != railImage) standalone.image = railImage;
+        if (standalone.tintColor != buttonAccent) standalone.tintColor = buttonAccent;
         if (standalone.primaryAction.image != railImage) standalone.primaryAction.image = railImage;
         if (![standalone.primaryAction.title isEqualToString:@"Translate"])
             standalone.primaryAction.title = @"Translate";
@@ -11779,7 +11783,23 @@ static void ApolloDbgPurgeNSCaches(CFNotificationCenterRef c, void *o, CFStringR
 #endif
 // ==============================================================================
 
+static void ApolloGlobeCollectNavigationItems(UIView *view, NSMutableArray<UINavigationItem *> *items) {
+    if ([view isKindOfClass:UINavigationBar.class]) {
+        [items addObjectsFromArray:((UINavigationBar *)view).items ?: @[]];
+        return;
+    }
+    for (UIView *subview in view.subviews) ApolloGlobeCollectNavigationItems(subview, items);
+}
+
 %ctor {
+    // Accent Navigation Buttons: recolor the globes already in navigation bars.
+    [NSNotificationCenter.defaultCenter addObserverForName:ApolloNavigationButtonColorDidChangeNotification
+                                                    object:nil queue:NSOperationQueue.mainQueue
+                                                usingBlock:^(__unused NSNotification *note) {
+        NSMutableArray<UINavigationItem *> *items = [NSMutableArray array];
+        for (UIWindow *window in ApolloAllWindows()) ApolloGlobeCollectNavigationItems(window, items);
+        for (UINavigationItem *item in items) ApolloApplyGlobeMergeForNavItem(item);
+    }];
     // Apollo's native General > Other section has an "Always Offer Translate" row
     // that is redundant (and confusing) next to this module's own Translation
     // feature; hide it. The underlying Apollo setting is untouched, and the table

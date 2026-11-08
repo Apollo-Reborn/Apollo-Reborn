@@ -237,10 +237,14 @@ static void ApolloSwitcherApplyBarAccent(UINavigationBar *bar) {
         self.navigationItem.hidesBackButton = YES;
         UIButton *button = [UIButton systemButtonWithImage:[UIImage systemImageNamed:@"chevron.backward"]
                                                     target:self action:@selector(backTapped:)];
-        button.tintColor = UIColor.labelColor;
+        // Accent Navigation Buttons; the editor cannot outlive a change of the setting.
+        button.tintColor = ApolloNavigationButtonAccentColor() ?: UIColor.labelColor;
+        ApolloNavigationActionsAccentControl(button);
         button.accessibilityLabel = @"Back";
         self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:button];
     }
+    // Accent Navigation Buttons fills Save with the accent, like the switcher's Done.
+    ApolloNavigationActionsAccentItem(self.navigationItem.rightBarButtonItem);
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 64;
 }
@@ -808,7 +812,24 @@ static BOOL ApolloAccountReorderSchedulePersist(
     self.pendingAccountRemovals = [NSMutableSet set];
     [[NSNotificationCenter defaultCenter] addObserver:self
         selector:@selector(accountStoreDidChange:) name:NSUserDefaultsDidChangeNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+        selector:@selector(applyNavigationButtonAccent) name:ApolloNavigationButtonColorDidChangeNotification object:nil];
+    [self applyNavigationButtonAccent];
     [self reloadRows];
+}
+
+// Accent Navigation Buttons: Add and Edit follow the setting like Apollo's own
+// navigation buttons; NavigationActions does not manage this panel's bar.
+- (void)applyNavigationButtonAccent {
+    NSMutableArray<UIBarButtonItem *> *items = [NSMutableArray array];
+    if (@available(iOS 16.0, *)) {
+        for (UIBarButtonItemGroup *group in self.navigationItem.leadingItemGroups)
+            [items addObjectsFromArray:group.barButtonItems];
+    } else if (self.navigationItem.leftBarButtonItem) {
+        [items addObject:self.navigationItem.leftBarButtonItem];
+    }
+    [items addObject:self.editButtonItem];
+    for (UIBarButtonItem *item in items) ApolloNavigationActionsAccentItem(item);
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -816,6 +837,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
     // Apollo can change its stock or custom theme while this controller is
     // retained, so refresh the dynamic palette each time the panel appears.
     [self applyApolloThemeColors];
+    [self applyNavigationButtonAccent];
 
     [self updateDuoEditButton];
     if (@available(iOS 15.0, *)) {
