@@ -3744,6 +3744,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyHideTopBarOnScroll: @NO,
                                     UDKeyTabBarCollapseSide: @0,
                                     UDKeyKeepSearchBarInPlace: @NO,
+                                    UDKeySearchBarMode: @(ApolloSearchBarModeOn),
                                     UDKeyIPadTabBarBottom: @NO,
                                     UDKeySettingsIconAppearance: @(ApolloSettingsIconAppearanceLight),
                                     UDKeyTabBarSwipeNavigation: @NO,
@@ -4065,6 +4066,9 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     }
     sTabBarHideStyle = (ApolloTabBarHideStyle)storedTabBarHideStyle;
     sKeepSearchBarInPlace = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyKeepSearchBarInPlace];
+    NSInteger searchBarMode = [standardDefaults integerForKey:UDKeySearchBarMode];
+    sSearchBarMode = searchBarMode >= ApolloSearchBarModeOn && searchBarMode <= ApolloSearchBarModeOff
+        ? searchBarMode : ApolloSearchBarModeOn;
     sIPadTabBarBottom = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyIPadTabBarBottom];
     NSInteger settingsIconAppearance = [standardDefaults integerForKey:UDKeySettingsIconAppearance];
     sSettingsIconAppearance = settingsIconAppearance >= ApolloSettingsIconAppearanceSystem && settingsIconAppearance <= ApolloSettingsIconAppearanceDark

@@ -344,6 +344,11 @@ static NSString *const UDKeyTabBarCollapseSide = @"TabBarCollapseSide";
 // "search takeover" (nav slides away + fades, field docks to the top and grows). Mutually
 // exclusive with the default nav-hide mode. Liquid Glass only. Default NO. See ApolloSearchInPlace.xm.
 static NSString *const UDKeyKeepSearchBarInPlace = @"KeepSearchBarInPlace";
+// Liquid Glass, iOS 26+. The feed's search bar and a thread's Find in Comments
+// bar: ApolloSearchBarMode (On, Hidden until pulled down at the top, Off). Off
+// keeps no search on the screen; the thread's ••• Find in Comments still opens
+// one. Default On. See ApolloSearchNativeBar.xm.
+static NSString *const UDKeySearchBarMode = @"SearchBarMode";
 // iPad only, Liquid Glass only. When ON, forces the iOS 26 floating tab bar to
 // dock at the BOTTOM (classic tab bar) instead of the top-center pill, which on
 // iPad overlaps Apollo's search bar. Temporary stopgap for issue #387 until the
