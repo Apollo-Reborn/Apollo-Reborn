@@ -4028,15 +4028,21 @@ void ApolloDuoSplitEndCoverDrag(UINavigationController *navigation, BOOL commit,
     CGFloat partnerScale = parallax ? 0.3 : 1.0;
     BOOL animated = cover.window != nil;
     __weak ApolloDuoSplitState *weakState = state;
-    ApolloDuoSlideDrawer(partner, partnerFrom, partnerTo, velocity * partnerScale, animated, nil);
-    ApolloDuoSlideDrawer(lead, leadFrom, leadTo, velocity, animated, ^{
+    // A transaction completion also runs when a fold or the app leaving
+    // removes the springs early; the slide's own completion runs only for
+    // a finished one, which left coverDrag set and refused every later drag.
+    [CATransaction begin];
+    [CATransaction setCompletionBlock:^{
         ApolloDuoSplitState *current = weakState;
         if (current.coverDrag == cover) current.coverDrag = nil;
         // The commit re-checks that what it changes is still in place (a
         // fold or rotation mid-drag may have rebuilt the split meanwhile).
         if (commit && action) action(leftPicture);
         [cover removeFromSuperview];
-    });
+    }];
+    ApolloDuoSlideDrawer(partner, partnerFrom, partnerTo, velocity * partnerScale, animated, nil);
+    ApolloDuoSlideDrawer(lead, leadFrom, leadTo, velocity, animated, nil);
+    [CATransaction commit];
 }
 
 // Leaving a visited profile, and a forward swipe back into it, slide across
