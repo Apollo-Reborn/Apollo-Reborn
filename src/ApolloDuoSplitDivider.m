@@ -159,8 +159,6 @@
     [self updatePreview:self.divider feedback:NO];
     self.appliedWidth = self.divider;
     self.displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(resizeFrame:)];
-    // Ask for ProMotion's full rate while held; the app opts in to >60Hz.
-    if (@available(iOS 15.0, *)) self.displayLink.preferredFrameRateRange = CAFrameRateRangeMake(80, 120, 120);
     [self.displayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
     ApolloLog(@"[DuoDivider] grabbed at %.1f", self.divider);
 }
