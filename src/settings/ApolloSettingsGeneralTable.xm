@@ -54,6 +54,7 @@
 
 #import "ApolloCommon.h"
 #import "ApolloSettingsGeneralTable.h"
+#import "ApolloSpelling.h"
 #import "ApolloSettingsTableViewController.h"
 
 @interface SettingsGeneralViewController : UIViewController
@@ -126,7 +127,9 @@ void ApolloGeneralTableConfigureNativeRow(NSString *title,
 static BOOL ApolloGTStringMatchesTitle(NSString *text, NSString *title) {
     if (![text isKindOfClass:[NSString class]]) return NO;
     NSString *trimmed = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-    return [trimmed isEqualToString:title];
+    return [trimmed isEqualToString:title] ||
+        // Labels show British spelling when that style is picked; titles are written American.
+        [trimmed isEqualToString:ApolloSpellingApply(title)];
 }
 
 static BOOL ApolloGTLabelTreeHasTitle(UIView *view, NSString *title, int depth) {

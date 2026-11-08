@@ -317,7 +317,7 @@ API_AVAILABLE(ios(18.0))
         ]];
 
         UILabel *heading = [UILabel new];
-        heading.text = @"Favourites";
+        heading.text = @"Favorites";
         heading.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
         heading.adjustsFontForContentSizeCategory = YES;
         heading.textColor = UIColor.secondaryLabelColor;
@@ -340,7 +340,7 @@ API_AVAILABLE(ios(18.0))
         _table.delegate = self;
         _table.dragDelegate = self;
         _table.dragInteractionEnabled = YES;
-        _table.accessibilityLabel = @"Favourite subreddits";
+        _table.accessibilityLabel = @"Favorite subreddits";
         [_table registerClass:ApolloPaneFavoriteCell.class forCellReuseIdentifier:@"favorite"];
         [stack addArrangedSubview:_table];
         _tableHeight = [_table.heightAnchor constraintEqualToConstant:0];

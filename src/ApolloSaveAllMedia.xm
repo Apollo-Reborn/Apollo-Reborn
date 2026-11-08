@@ -461,8 +461,8 @@ static void ApolloSaveAllMediaRemoveFile(NSURL *fileURL) {
     NSString *detail = nil;
     if (self.cancelled && skipped > 0) {
         detail = self.failedCount > 0
-            ? [NSString stringWithFormat:@"Cancelled · %lu failed · %lu skipped", (unsigned long)self.failedCount, (unsigned long)skipped]
-            : [NSString stringWithFormat:@"Cancelled · %lu skipped", (unsigned long)skipped];
+            ? [NSString stringWithFormat:@"Canceled · %lu failed · %lu skipped", (unsigned long)self.failedCount, (unsigned long)skipped]
+            : [NSString stringWithFormat:@"Canceled · %lu skipped", (unsigned long)skipped];
     } else if (self.failedCount > 0) {
         detail = [NSString stringWithFormat:@"%lu could not be saved to Photos.", (unsigned long)self.failedCount];
     }

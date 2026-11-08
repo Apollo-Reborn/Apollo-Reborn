@@ -77,11 +77,14 @@
 
 @interface ApolloDuoSplitHost : NSObject
 @property (nonatomic) BOOL listVisible;
+@property (nonatomic) BOOL listPinned;
 @property (nonatomic) BOOL lastListAnimated;
 - (void)setListVisible:(BOOL)visible animated:(BOOL)animated;
 @end
 @implementation ApolloDuoSplitHost
 - (void)setListVisible:(BOOL)visible animated:(BOOL)animated {
+    // Mirrors the host: a pinned drawer only settles open.
+    if (!visible && self.listPinned) visible = YES;
     self.listVisible = visible;
     self.lastListAnimated = animated;
 }
@@ -114,6 +117,7 @@ static BOOL ApolloDuoSplitShouldOpen(__unused id tabs) { return landscape; }
 // paths under test never set it.
 static BOOL sDuoSplitPushingFeedLink;
 static BOOL ApolloDuoSplitIsUnfolded(void) { return unfolded; }
+__unused static BOOL UIAccessibilityIsReduceMotionEnabled(void) { return NO; }
 static NSString *ApolloDuoSplitKind(UIViewController *page) { return page.kind; }
 static ApolloDuoSplitState *ApolloDuoSplitStateForNavigation(UINavigationController *nav,
                                                           __unused BOOL create) { return nav.duoState; }
@@ -354,6 +358,14 @@ int main(void) {
                 Check(!state.host.listVisible && state.feed.lastPushAnimated == animated
                       && state.host.lastListAnimated == animated, @"portrait push dismisses the drawer and preserves animation preference");
             }
+        }
+        for (NSUInteger animation = 0; animation < 2; animation++) {
+            BOOL animated = animation != 0;
+            ApolloDuoSplitState *pinned = Posts();
+            pinned.host.listPinned = YES;
+            Check(ApolloDuoSplitRoutePush(pinned.primary, profile, animated), @"pinned drawer profile push is handled");
+            Check(!pinned.host.listPinned && !pinned.host.listVisible && pinned.host.lastListAnimated == animated,
+                  @"navigating from the pinned drawer unpins and closes it");
         }
         Check(dashboardNavigations == 0, @"portrait never starts landscape dashboard navigation");
         ApolloDuoSplitState *state = Posts();
