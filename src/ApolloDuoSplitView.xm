@@ -265,6 +265,13 @@ static void ApolloDuoSettleThreadDrag(UIView *view, CGFloat from, CGFloat veloci
     spring.damping = 2 * omega;
     spring.initialVelocity = ApolloDuoDrawerSpringInitialVelocity(from, 0, velocity);
     spring.duration = spring.settlingDuration;
+    // The app opts into ProMotion, but an explicit animation without a range
+    // can run at 60 Hz. Ask for the display's full rate for the settle.
+    if (@available(iOS 15.0, *)) {
+        float maximum = (float)UIScreen.mainScreen.maximumFramesPerSecond;
+        if (maximum > 60)
+            spring.preferredFrameRateRange = CAFrameRateRangeMake(MIN(80.0f, maximum), maximum, maximum);
+    }
     [view.layer addAnimation:spring forKey:@"ApolloDuoThreadDrag"];
 }
 
