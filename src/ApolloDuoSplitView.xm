@@ -2553,9 +2553,15 @@ static void ApolloDuoPostsSetDetailPagesFromDrag(ApolloDuoSplitState *state, NSA
             ApolloDuoSplitScheduleUpdate();
         };
         // A dragged thread is already dragOffset along; the rest of the way
-        // rides the drawer's spring from the finger's speed.
-        if (dragOffset > 0) ApolloDuoSlideDrawer(snapshot, 0, MAX(0, travel - dragOffset), dragVelocity, YES, finished);
-        else ApolloDuoSlideView(snapshot, 0, travel, 0.32, finished);
+        // rides the drawer's spring from the finger's speed. Clean up from a
+        // transaction completion, which also runs when a fold or the app
+        // leaving removes the slide early; the slide's own completion runs
+        // only for a finished one and would leave the snapshot over the feed.
+        [CATransaction begin];
+        [CATransaction setCompletionBlock:finished];
+        if (dragOffset > 0) ApolloDuoSlideDrawer(snapshot, 0, MAX(0, travel - dragOffset), dragVelocity, YES, nil);
+        else ApolloDuoSlideView(snapshot, 0, travel, 0.32, nil);
+        [CATransaction commit];
         ApolloDuoRemoveThreadDragFiller(state.host.threadDragFiller, 0.32);
         state.host.threadDragFiller = nil;
     }
@@ -2657,9 +2663,14 @@ void ApolloDuoSplitEndRestoreDrag(UINavigationController *nav, BOOL restore, CGF
     }
     if (!picture) return;
     CGFloat from = (picture.layer.presentationLayer ?: picture.layer).transform.m41;
-    ApolloDuoSlideDrawer(picture, from, travel, velocity, picture.window != nil, ^{
+    // As with the cover drag: a transaction completion still runs when a fold
+    // or the app leaving cuts the slide short, so the picture never lingers.
+    [CATransaction begin];
+    [CATransaction setCompletionBlock:^{
         if (!state.host.restoreDragPicture || state.host.restoreDragPicture != picture) [picture removeFromSuperview];
-    });
+    }];
+    ApolloDuoSlideDrawer(picture, from, travel, velocity, picture.window != nil, nil);
+    [CATransaction commit];
 }
 
 // The feed's scroll expiry (Forget Forward Swipe After Scrolling) asks about
