@@ -63,8 +63,8 @@ UIColor *ApolloUnreadBadgeTextColor(void) {
 NSString *ApolloUnreadBadgeTabBarDisplayValue(NSString *value) {
     if (!sUnreadBadgeCompactTabBar || value.length == 0) return value;
     // An empty string keeps UIKit's badge (nil would remove it) but with no
-    // text; ApolloUnreadBadgeUpdateDotMask then trims that blank badge to the
-    // dot whenever UIKit lays it out.
+    // text; ApolloUnreadBadgeUpdateDot then turns that blank badge into the
+    // dot on the icon's corner whenever UIKit lays it out.
     return @"";
 }
 
@@ -129,58 +129,155 @@ NSString *ApolloUnreadBadgeCountValue(UITabBarItem *item) {
 #pragma mark - Tab bar dot
 
 // UIKit draws an empty badge as a blank circle the size of a one-digit count
-// (18pt), not a dot. Rather than place a view of our own next to every copy
-// of the Inbox tab (iOS 26 keeps badges inside each _UITabButton, iOS 27 in
-// the platter's badge container, Classic inside UITabBarButton, plus the Duo
-// rail), the blank badge itself is masked down to a dot from its own
-// -layoutSubviews. UIKit still owns where it is, when it shows, and its fill
-// (red, or the theme accent swapped in below); the mask only trims it.
-static const CGFloat kApolloUnreadTabDotSize = 10.0;
+// (18pt), not a dot. Rather than add views of our own next to every copy of
+// the Inbox tab (iOS 26 keeps badges inside each _UITabButton, iOS 27 in the
+// platter's badge container, Classic inside UITabBarButton, plus the Duo
+// rail), the dot lives inside UIKit's blank badge, so UIKit still owns when
+// it shows, where it goes with the tab, its fill (red, or the theme accent
+// swapped in below) and its teardown. The dot is centered on the tab icon's
+// top-trailing corner (the corner of the envelope), the spot AcornElf tuned
+// in #1332. That corner is outside the blank badge's circle on most layouts,
+// so the dot is a subview carrying the badge's fill (neither badge class
+// clips; both draw their fill as the view's backgroundColor), and a mask the
+// size of the dot trims the blank circle away around it.
+static const CGFloat kApolloUnreadTabDotSize = 8.0;
+// How far the icon's corner may be from the badge's center and still be this
+// badge's icon. The Inbox icon's corner is under 15pt away on every layout;
+// the neighbouring tabs' icons are 40pt and more.
+static const CGFloat kApolloUnreadDotIconReach = 24.0;
 static NSString *const kApolloUnreadDotMaskName = @"ApolloUnreadBadgeDot";
+static char kApolloUnreadDotViewKey;
 
-static void ApolloUnreadBadgeUpdateDotMask(UIView *badge) {
+static NSString *ApolloUnreadBadgeText(UIView *badge) {
+    return [badge respondsToSelector:@selector(text)]
+        ? ((NSString *(*)(id, SEL))objc_msgSend)(badge, @selector(text)) : nil;
+}
+
+// Visible icons under `view`, skipping the badge itself and hidden subtrees
+// (iOS 27 keeps a hidden spare platter and fades some tab copies to 0).
+static void ApolloUnreadBadgeCollectIcons(UIView *view, UIView *badge, NSInteger depth,
+                                          NSMutableArray<UIImageView *> *icons) {
+    if (view == badge || view.hidden || view.alpha < 0.01) return;
+    if ([view isKindOfClass:UIImageView.class] && ((UIImageView *)view).image) {
+        [icons addObject:(UIImageView *)view];
+        return;
+    }
+    if (depth <= 0) return;
+    for (UIView *subview in view.subviews) ApolloUnreadBadgeCollectIcons(subview, badge, depth - 1, icons);
+}
+
+// The top-trailing corner of the icon this badge belongs to, in the badge's
+// coordinates. Classic and iOS 26 Liquid Glass keep the icon next to the badge
+// in the tab button; iOS 27 keeps it in the platter's content view while the
+// badge sits in a sibling badge container. So look under the badge's
+// superview, then one level up, and take the nearest icon corner. Duplicate
+// copies of a tab (the selection lens) sit at the same spot, so any of them
+// gives the same corner.
+static BOOL ApolloUnreadBadgeIconCorner(UIView *badge, CGPoint *corner) {
+    BOOL rtl = badge.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft;
+    CGPoint badgeCenter = CGPointMake(CGRectGetMidX(badge.bounds), CGRectGetMidY(badge.bounds));
+    UIView *root = badge.superview;
+    for (NSInteger level = 0; level < 2 && root; level++, root = root.superview) {
+        NSMutableArray<UIImageView *> *icons = [NSMutableArray array];
+        ApolloUnreadBadgeCollectIcons(root, badge, 4, icons);
+        CGFloat best = kApolloUnreadDotIconReach;
+        BOOL found = NO;
+        for (UIImageView *icon in icons) {
+            CGRect frame = [badge convertRect:icon.bounds fromView:icon];
+            CGPoint point = CGPointMake(rtl ? CGRectGetMinX(frame) : CGRectGetMaxX(frame), CGRectGetMinY(frame));
+            CGFloat distance = hypot(point.x - badgeCenter.x, point.y - badgeCenter.y);
+            if (distance < best) {
+                best = distance;
+                *corner = point;
+                found = YES;
+            }
+        }
+        if (found) return YES;
+    }
+    return NO;
+}
+
+static void ApolloUnreadBadgeRemoveDot(UIView *badge) {
+    if ([badge.layer.mask.name isEqualToString:kApolloUnreadDotMaskName]) badge.layer.mask = nil;
+    UIView *dot = objc_getAssociatedObject(badge, &kApolloUnreadDotViewKey);
+    [dot removeFromSuperview];
+    objc_setAssociatedObject(badge, &kApolloUnreadDotViewKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void ApolloUnreadBadgeUpdateDot(UIView *badge) {
     CALayer *mask = badge.layer.mask;
     BOOL ours = [mask.name isEqualToString:kApolloUnreadDotMaskName];
     if (!sUnreadBadgeCompactTabBar && !ours) return;   // main's path: nothing to do
 
     // Only the blank badge ApolloUnreadBadgeTabBarDisplayValue produced; a
     // count badge (any tab, or compact turned off) gets its full shape back.
-    NSString *text = [badge respondsToSelector:@selector(text)]
-        ? ((NSString *(*)(id, SEL))objc_msgSend)(badge, @selector(text)) : nil;
-    BOOL wantsDot = sUnreadBadgeCompactTabBar && text.length == 0 &&
+    BOOL wantsDot = sUnreadBadgeCompactTabBar && ApolloUnreadBadgeText(badge).length == 0 &&
         CGRectGetHeight(badge.bounds) > kApolloUnreadTabDotSize;
     if (!wantsDot) {
-        if (ours) badge.layer.mask = nil;
+        if (ours) ApolloUnreadBadgeRemoveDot(badge);
         return;
     }
     if (mask && !ours) return;   // UIKit's own mask: leave the badge alone
 
-    // The count badge overlaps the icon's top-trailing corner by a different
-    // amount on each layout (iOS 26 vs 27 Liquid Glass, Classic, the Duo rail,
-    // labeled vs icon-only tabs), so the dot takes the part of the badge
-    // farthest from the icon: its top-trailing edge along the diagonal. It then
-    // sits just outside the icon's corner without touching the glyph, which
-    // also keeps a Theme Color dot from merging into a selected, accent-tinted
-    // icon. The badge clips to its own circle, so the dot stays inside it (half
-    // a point short of the edge, where UIKit's continuous corner runs inside a
-    // true circle), which also means it never reaches past the count badge.
-    CGRect bounds = badge.bounds;
-    BOOL rtl = badge.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft;
-    CGFloat inset = MAX(0.0, MIN(CGRectGetWidth(bounds), CGRectGetHeight(bounds)) / 2.0 -
-                             kApolloUnreadTabDotSize / 2.0 - 0.5) / M_SQRT2;
-    CGPoint center = CGPointMake(CGRectGetMidX(bounds) + (rtl ? -inset : inset), CGRectGetMidY(bounds) - inset);
-    CGRect dot = CGRectMake(center.x - kApolloUnreadTabDotSize / 2.0, center.y - kApolloUnreadTabDotSize / 2.0,
-                            kApolloUnreadTabDotSize, kApolloUnreadTabDotSize);
+    CGPoint center;
+    if (!ApolloUnreadBadgeIconCorner(badge, &center)) {
+        // Unknown tab layout: the dot takes the badge's own spot instead.
+        center = CGPointMake(CGRectGetMidX(badge.bounds), CGRectGetMidY(badge.bounds));
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{
+            ApolloLog(@"[UnreadBadges] no tab icon near the %@ (in %@); the dot stays at the badge's center",
+                      NSStringFromClass(badge.class), NSStringFromClass(badge.superview.class));
+        });
+    }
+    CGFloat scale = MAX(badge.traitCollection.displayScale, 1.0);
+    CGFloat half = kApolloUnreadTabDotSize / 2.0;
+    CGRect dotRect = CGRectMake(round((center.x - half) * scale) / scale, round((center.y - half) * scale) / scale,
+                                kApolloUnreadTabDotSize, kApolloUnreadTabDotSize);
+
+    UIView *dot = objc_getAssociatedObject(badge, &kApolloUnreadDotViewKey);
+    if (!dot) {
+        dot = [[UIView alloc] initWithFrame:dotRect];
+        dot.userInteractionEnabled = NO;
+        dot.layer.cornerRadius = half;
+        objc_setAssociatedObject(badge, &kApolloUnreadDotViewKey, dot, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (dot.superview != badge) [badge addSubview:dot];
+    else if (badge.subviews.lastObject != dot) [badge bringSubviewToFront:dot];
+    // The badge's fill as UIKit set it (already themed by -setBadgeColor:
+    // below); a dynamic color, so the dot follows light/dark on its own.
+    dot.backgroundColor = badge.backgroundColor;
+
     CAShapeLayer *shape = ours ? (CAShapeLayer *)mask : [CAShapeLayer layer];
     if (!ours) {
         shape.name = kApolloUnreadDotMaskName;
         badge.layer.mask = shape;
     }
+    // Dot and mask move together, without UIKit's or Core Animation's
+    // implicit animations pulling them apart.
+    [UIView performWithoutAnimation:^{ dot.frame = dotRect; }];
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
-    shape.frame = bounds;
-    shape.path = [UIBezierPath bezierPathWithOvalInRect:dot].CGPath;
+    shape.frame = dotRect;
+    shape.path = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(0, 0, kApolloUnreadTabDotSize,
+                                                                   kApolloUnreadTabDotSize)].CGPath;
     [CATransaction commit];
+}
+
+// UIKit moves a badge with its tab (Minimize, Icon-Only Tab Bar, rotation, a
+// Duo pose) without resizing it, which doesn't lay it out again. Re-place the
+// dot on the next layout pass, after the icons have moved too. First line
+// bails unless this badge shows a dot.
+static void ApolloUnreadBadgeDotBadgeMoved(UIView *badge) {
+    // Off: nothing to follow. A dot left from turning it off goes away in the
+    // layout the restored count triggers (ApolloUnreadBadgeUpdateDot).
+    if (!sUnreadBadgeCompactTabBar) return;
+    if (objc_getAssociatedObject(badge, &kApolloUnreadDotViewKey)) [badge setNeedsLayout];
+}
+
+static void ApolloUnreadBadgeDotFillChanged(UIView *badge) {
+    if (!sUnreadBadgeCompactTabBar) return;
+    UIView *dot = objc_getAssociatedObject(badge, &kApolloUnreadDotViewKey);
+    if (dot) dot.backgroundColor = badge.backgroundColor;
 }
 
 // Whether a badge view is a tab's. Classic _UIBadgeView is also UIKit's
@@ -216,14 +313,26 @@ static NSDictionary *ApolloUnreadBadgeThemedTextAttributes(UIView *badge, BOOL c
 
 // Classic badges (UITabBarButton) are _UIBadgeView; Liquid Glass and the Duo
 // rail use _UIBarBadgeView (iOS 26+). Both re-run -layoutSubviews when their
-// text or size changes, which is exactly when the dot mask needs updating.
+// text or size changes; a move alone is caught by -setCenter:/-setFrame:.
 %group ApolloUnreadBadgeClassic
 %hook _UIBadgeView
 - (void)layoutSubviews {
     %orig;
-    if (ApolloUnreadBadgeViewIsTabBadge((UIView *)self, YES)) ApolloUnreadBadgeUpdateDotMask((UIView *)self);
+    if (ApolloUnreadBadgeViewIsTabBadge((UIView *)self, YES)) ApolloUnreadBadgeUpdateDot((UIView *)self);
 }
 
+- (void)setCenter:(CGPoint)center {
+    %orig;
+    ApolloUnreadBadgeDotBadgeMoved((UIView *)self);
+}
+
+- (void)setFrame:(CGRect)frame {
+    %orig;
+    ApolloUnreadBadgeDotBadgeMoved((UIView *)self);
+}
+
+// Classic applies the color in -layoutSubviews (setBadgeColor: only marks it
+// for layout), so the dot picks it up there.
 - (void)setBadgeColor:(UIColor *)color {
     %orig(ApolloUnreadBadgeThemedFill((UIView *)self, YES, color));
 }
@@ -238,11 +347,23 @@ static NSDictionary *ApolloUnreadBadgeThemedTextAttributes(UIView *badge, BOOL c
 %hook _UIBarBadgeView
 - (void)layoutSubviews {
     %orig;
-    ApolloUnreadBadgeUpdateDotMask((UIView *)self);
+    ApolloUnreadBadgeUpdateDot((UIView *)self);
 }
 
+- (void)setCenter:(CGPoint)center {
+    %orig;
+    ApolloUnreadBadgeDotBadgeMoved((UIView *)self);
+}
+
+- (void)setFrame:(CGRect)frame {
+    %orig;
+    ApolloUnreadBadgeDotBadgeMoved((UIView *)self);
+}
+
+// Liquid Glass sets the fill (backgroundColor) right here, not in layout.
 - (void)setBadgeColor:(UIColor *)color {
     %orig(ApolloUnreadBadgeThemedFill((UIView *)self, NO, color));
+    ApolloUnreadBadgeDotFillChanged((UIView *)self);
 }
 
 - (void)setTextAttributes:(NSDictionary *)attributes {

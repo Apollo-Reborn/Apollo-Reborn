@@ -3111,9 +3111,10 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
                       inboxItem.accessibilityValue ?: @"(nil)");
             return;
         }
-        // "unreadbadges <tab|inbox|theme> <on|off>": the Interface > Unread
-        // Badges setters the switches call, so a style change can be made
-        // while the Inbox is on screen.
+        // "unreadbadges <tab|inbox|theme|icononly> <on|off>": the Interface >
+        // Unread Badges setters the switches call, so a style change can be
+        // made while the Inbox is on screen. "icononly" flips Icon-Only Tab Bar
+        // the way its switch does, to watch the dot follow the icon.
         if ([contents hasPrefix:@"unreadbadges "]) {
             NSArray<NSString *> *parts = [[[contents substringFromIndex:13]
                 stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]
@@ -3123,6 +3124,7 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
             if ([which isEqualToString:@"tab"]) ApolloUnreadBadgesSetCompactTabBar(on);
             else if ([which isEqualToString:@"inbox"]) ApolloUnreadBadgesSetCompactInbox(on);
             else if ([which isEqualToString:@"theme"]) ApolloUnreadBadgesSetThemeColor(on);
+            else if ([which isEqualToString:@"icononly"]) ApolloSetHideTabBarTitlesEnabled(on);
             return;
         }
         if ([contents hasPrefix:@"chatbadge "]) {

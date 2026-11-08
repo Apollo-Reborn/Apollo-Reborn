@@ -12,8 +12,9 @@
 //     value through ApolloUnreadBadgeTabBarDisplayValue() and
 //     ApolloUnreadBadgeStyleTabBarItem(), so the dot and the color ride UIKit's
 //     own badge: its visibility, both Liquid Glass copies of a tab, Minimize,
-//     icon-only tabs and the Duo rail keep working with no view of ours. The
-//     dot is UIKit's blank badge, masked to a dot in its own -layoutSubviews.
+//     icon-only tabs and the Duo rail keep working with no view of ours
+//     beside it. The dot sits inside UIKit's blank badge, centered on the
+//     icon's top-trailing corner, with the blank circle masked away.
 //   - The Notifications / Chat switcher at the top of the Inbox
 //     (ApolloInboxModeSwitcherView), which draws its own Chat pill and asks
 //     for the colors and the compact flag here.
