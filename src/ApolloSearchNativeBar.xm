@@ -1021,20 +1021,16 @@ static void NSBUpdateDuoControls(UIViewController *vc) {
     if (@available(iOS 27.0, *)) {
         UINavigationItem *item = vc.navigationItem;
         NSArray *leading = objc_getAssociatedObject(vc, &kNSBDuoLeadingControlsKey) ?: @[];
-        BOOL hasSplitControl = NO;
-        for (UIBarButtonItem *control in leading) {
-            if ([control.identifier isEqualToString:@"ApolloReborn.duo-split"]) hasSplitControl = YES;
-        }
         NSMutableArray *left = [NSMutableArray array];
         NSMutableArray *right = [NSMutableArray array];
         NSMutableArray *returnItems = [NSMutableArray array];
         for (UIBarButtonItem *candidate in item.leftBarButtonItems) {
             if ([candidate.accessibilityIdentifier isEqualToString:@"ApolloDuoFeedControl"]) continue;
-            // In opened landscape, keep List and Split anchored at the edge
-            // when Return appears. Native Back stays ahead of those controls.
-            // The host's registered Split item also follows rotation, without
-            // imposing this order on ordinary phones or opened portrait.
-            if (hasSplitControl && [candidate.customView.accessibilityIdentifier isEqualToString:@"apollo.scrollReturn"])
+            // Keep the host's controls anchored at the edge when Return
+            // appears, in every pose. Native Back stays ahead of them. Putting
+            // Return first in portrait moved it to the edge whenever the
+            // drawer or a layout pass rebuilt these items.
+            if ([candidate.customView.accessibilityIdentifier isEqualToString:@"apollo.scrollReturn"])
                 [returnItems addObject:candidate];
             else
                 [left addObject:candidate];
