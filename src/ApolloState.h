@@ -125,6 +125,12 @@ extern BOOL sUseProfileAvatarTabIcon;
 // Hide the visible main-tab labels while retaining/restoring the underlying
 // UITabBarItem titles. Opt-in; default OFF via registerDefaults.
 extern BOOL sHideTabBarTitles;
+// Unread badge style; all opt-in, default OFF via registerDefaults
+// (UDKeyUnreadBadge*). Change them through ApolloUnreadBadgesSet* so the
+// badges on screen restyle at once.
+extern BOOL sUnreadBadgeCompactTabBar;
+extern BOOL sUnreadBadgeCompactInbox;
+extern BOOL sUnreadBadgeThemeColor;
 #ifdef __cplusplus
 extern "C" {
 #endif

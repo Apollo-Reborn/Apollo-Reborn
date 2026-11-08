@@ -3718,6 +3718,9 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyShowUserAvatars: @NO,
                                     UDKeyUseProfileAvatarTabIcon: @NO,
                                     UDKeyHideTabBarTitles: @NO,
+                                    UDKeyUnreadBadgeCompactTabBar: @NO,
+                                    UDKeyUnreadBadgeCompactInbox: @NO,
+                                    UDKeyUnreadBadgeThemeColor: @NO,
                                     UDKeyShowDetailedProfiles: @YES,
                                     UDKeyBadgeBookEnabled: @YES,
                                     UDKeyProfileHeaderImmersive: @YES,
@@ -4015,6 +4018,9 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     sShowUserAvatars = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars];
     sUseProfileAvatarTabIcon = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseProfileAvatarTabIcon];
     sHideTabBarTitles = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyHideTabBarTitles];
+    sUnreadBadgeCompactTabBar = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUnreadBadgeCompactTabBar];
+    sUnreadBadgeCompactInbox = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUnreadBadgeCompactInbox];
+    sUnreadBadgeThemeColor = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUnreadBadgeThemeColor];
     ApolloNormalizeNativeHideUsernameForIconOnlyTabBar();
     // Profile Layout exposes this master again as its Native density. The
     // registered default remains ON for new installs; an explicit OFF now

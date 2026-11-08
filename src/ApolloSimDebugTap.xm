@@ -20,6 +20,9 @@
 #import "ApolloAsyncDisplayGuard.h"
 #import "ApolloTiledText.h"
 #import "ApolloChatRoomDirectory.h"
+#import "ApolloDirectChatWeb.h"
+#import "ApolloWebSessionStore.h"
+#import "ApolloUnreadBadges.h"
 #import "ApolloCommentVoteInsights.h"
 #import <AVFoundation/AVFoundation.h>
 #import <objc/runtime.h>
@@ -3078,6 +3081,62 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
                 }
                 ApolloLog(@"[PaneMenuTest] %@ allowed=%d", name, allowed);
             }
+            return;
+        }
+        // Unread Badges QA without creating messages or touching the account:
+        // "inboxbadge <value|none>" sends the value through the Inbox tab item's
+        // real -setBadgeValue: (so the ChatsFilter hook treats it as Apollo's
+        // own count), "chatbadge <unread> [requests]" publishes a poll-shaped
+        // Chat status for the active account. Apollo's next inbox refresh and
+        // the Chat poller's next poll put the real values back.
+        if ([contents hasPrefix:@"inboxbadge "]) {
+            NSString *value = [[contents substringFromIndex:11]
+                stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            UITabBarController *tabs = (id)ApolloMainTabBarController();
+            UITabBarItem *inboxItem = nil;
+            if ([tabs isKindOfClass:UITabBarController.class]) {
+                // By the tab's root controller (Apollo's Inbox tab roots at its
+                // mailbox list, an Inbox* class): Icon-Only Tab Bar clears titles.
+                for (UIViewController *child in tabs.viewControllers) {
+                    UIViewController *root = [child isKindOfClass:UINavigationController.class]
+                        ? ((UINavigationController *)child).viewControllers.firstObject : child;
+                    if (!inboxItem && [NSStringFromClass(root.class) containsString:@"Inbox"]) {
+                        inboxItem = child.tabBarItem;
+                    }
+                }
+            }
+            inboxItem.badgeValue = [value isEqualToString:@"none"] ? nil : value;
+            ApolloLog(@"[SimDebugTap] inboxbadge %@ -> item=%@ shown=%@ spoken=%@", value,
+                      inboxItem ? @"found" : @"MISSING", inboxItem.badgeValue ?: @"(nil)",
+                      inboxItem.accessibilityValue ?: @"(nil)");
+            return;
+        }
+        // "unreadbadges <tab|inbox|theme> <on|off>": the Interface > Unread
+        // Badges setters the switches call, so a style change can be made
+        // while the Inbox is on screen.
+        if ([contents hasPrefix:@"unreadbadges "]) {
+            NSArray<NSString *> *parts = [[[contents substringFromIndex:13]
+                stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]
+                componentsSeparatedByString:@" "];
+            NSString *which = parts.firstObject ?: @"";
+            BOOL on = parts.count > 1 && [parts[1] isEqualToString:@"on"];
+            if ([which isEqualToString:@"tab"]) ApolloUnreadBadgesSetCompactTabBar(on);
+            else if ([which isEqualToString:@"inbox"]) ApolloUnreadBadgesSetCompactInbox(on);
+            else if ([which isEqualToString:@"theme"]) ApolloUnreadBadgesSetThemeColor(on);
+            return;
+        }
+        if ([contents hasPrefix:@"chatbadge "]) {
+            NSArray<NSString *> *parts = [[[contents substringFromIndex:10]
+                stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]
+                componentsSeparatedByString:@" "];
+            NSInteger unread = MAX(0, parts.firstObject.integerValue);
+            NSInteger requests = parts.count > 1 ? MAX(0, parts[1].integerValue) : 0;
+            NSString *username = ApolloActiveWebSessionUsername().lowercaseString ?: @"";
+            ApolloModernChatPublishPolledStatus(@{ @"username": username,
+                                                   @"unreadCount": @(unread),
+                                                   @"requestsCount": @(requests) });
+            ApolloLog(@"[SimDebugTap] chatbadge unread=%ld requests=%ld for u/%@",
+                      (long)unread, (long)requests, username);
             return;
         }
         // Exercise the real native badge setter without creating messages or
