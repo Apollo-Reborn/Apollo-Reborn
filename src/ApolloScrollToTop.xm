@@ -8,6 +8,8 @@
 #import "ApolloScrollToTop.h"
 #import "ApolloSearchNativeBar.h"
 #import "ApolloDuoSplitView.h"
+#import "ApolloDuoRail.h"
+#import "ApolloDuoCompatibility.h"
 #import "ApolloSubredditSwitcherSheet.h"
 #import "ApolloState.h"
 
@@ -60,6 +62,29 @@ static NSString *ApolloReturnItemID(id node) {
         }
     }
     return nil;
+}
+
+// Keeps the glass a circle centered in whatever slot the bar gives the
+// button, so a slot wider or shorter than requested can't make an oval.
+@interface ApolloScrollReturnButton : UIButton
+@property (nonatomic, weak) UIView *glass;
+@end
+@implementation ApolloScrollReturnButton
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGFloat side = MIN(CGRectGetWidth(self.bounds), CGRectGetHeight(self.bounds));
+    if (side <= 0) return;
+    CGRect circle = CGRectMake(CGRectGetMidX(self.bounds) - side / 2, CGRectGetMidY(self.bounds) - side / 2, side, side);
+    if (self.glass && !CGRectEqualToRect(self.glass.frame, circle)) self.glass.frame = circle;
+    if (self.layer.cornerRadius != side / 2) self.layer.cornerRadius = side / 2;
+}
+@end
+
+static BOOL ApolloScrollReturnUsesDuoChrome(void) {
+    if (!ApolloDeviceIsDuo()) return NO;
+    if (ApolloDuoSplitIsUnfolded()) return YES;
+    // Closed: portrait classifies as Closed; landscape as Phone with the rail.
+    return ApolloDuoCurrentMode() != ApolloDuoModePhone || ApolloDuoRailHasVisibleSideBar();
 }
 
 @interface ApolloScrollReturn : NSObject <UIGestureRecognizerDelegate>
@@ -452,14 +477,12 @@ static NSString *ApolloReturnItemID(id node) {
         [item setLeftBarButtonItems:leftItems animated:!UIAccessibilityIsReduceMotionEnabled()];
         return;
     }
-    // Match the bar's own glass buttons. The unfolded Duo's regular-width bar
-    // uses 48-point buttons and widened a 44-point circle into an oval; iPad's
-    // regular bar keeps 44-point buttons and caps their height there.
+    // Match the bar's own glass buttons. The Duo's bar (opened, or closed with
+    // its side rail) uses 48-point buttons and widened a 44-point circle into
+    // an oval; iPhone and iPad bars keep 44-point buttons.
     UINavigationBar *bar = self.owner.navigationController.navigationBar;
-    BOOL duoRegular = ApolloDuoSplitIsUnfolded() &&
-        bar.traitCollection.horizontalSizeClass == UIUserInterfaceSizeClassRegular;
-    CGFloat diameter = duoRegular ? 48 : 44;
-    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    CGFloat diameter = ApolloScrollReturnUsesDuoChrome() ? 48 : 44;
+    ApolloScrollReturnButton *button = [ApolloScrollReturnButton buttonWithType:UIButtonTypeSystem];
     button.frame = CGRectMake(0, 0, diameter, diameter);
     button.translatesAutoresizingMaskIntoConstraints = NO;
     [button setImage:[UIImage systemImageNamed:@"arrow.uturn.down"] forState:UIControlStateNormal];
@@ -474,7 +497,7 @@ static NSString *ApolloReturnItemID(id node) {
             effect.interactive = YES;
             UIVisualEffectView *glass = [[UIVisualEffectView alloc] initWithEffect:effect];
             glass.frame = CGRectMake(0, 0, diameter, diameter);
-            glass.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+            button.glass = glass;
             glass.userInteractionEnabled = NO;
             glass.clipsToBounds = YES;
             glass.cornerConfiguration = [UICornerConfiguration capsuleConfiguration];
@@ -604,8 +627,10 @@ static ApolloScrollReturn *ApolloScrollReturnState(UIViewController *owner) {
 
 // Posts-tab jumps also support UIKit lists outside Apollo's Texture base class.
 // Tear down their observers and return affordance when leaving the page too.
+// viewDidDisappear, not viewWillDisappear: a cancelled swipe-back sends
+// viewWillDisappear and then keeps the page, which removed the button.
 %hook UIViewController
-- (void)viewWillDisappear:(BOOL)animated {
+- (void)viewDidDisappear:(BOOL)animated {
     [objc_getAssociatedObject(self, &kApolloScrollReturn) clearAnimated:NO];
     %orig;
 }
