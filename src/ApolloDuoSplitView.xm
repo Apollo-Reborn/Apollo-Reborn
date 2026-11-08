@@ -255,6 +255,9 @@ static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat
 @property(nonatomic) BOOL postsColumnsPaired;
 @property(nonatomic, strong) ApolloDuoSplitDivider *dividerGrip;
 @property(nonatomic, strong) NSNumber *dividerPreviewWidth;
+// Text nodes drawing synchronously while the divider resizes the columns.
+@property(nonatomic, strong) NSHashTable *dividerHeldText;
+@property(nonatomic) NSUInteger dividerHeldTextGeneration;
 @property(nonatomic, strong) UIView *postsTransitionSnapshot;
 @property(nonatomic, weak) UINavigationController *searchNavigation;
 @property(nonatomic) NSUInteger listAnimationGeneration;
@@ -1391,6 +1394,41 @@ static BOOL ApolloDuoDividerAvailable(ApolloDuoSplitHost *host) {
         && !thread.topViewController.presentedViewController;
 }
 
+// Texture redraws text asynchronously, a frame or more after a resize gives
+// its layer new bounds; meanwhile the layer stretches the old bitmap to fit.
+// The divider resizes both columns every frame, so the text would stay
+// stretched for the whole drag. Draw it synchronously while the divider is
+// held: each redraw then lands in the same frame as its new bounds.
+static void ApolloDuoDividerHoldText(CALayer *layer, NSHashTable *held) {
+    id node = ApolloSendObject(layer, @selector(asyncdisplaykit_node));
+    if (node && ![held containsObject:node]
+        && ((ApolloClassASTextNode && [node isKindOfClass:ApolloClassASTextNode])
+            || (ApolloClassASTextNode2 && [node isKindOfClass:ApolloClassASTextNode2]))
+        && ((BOOL (*)(id, SEL))objc_msgSend)(node, @selector(displaysAsynchronously))) {
+        [held addObject:node];
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(node, @selector(setDisplaysAsynchronously:), NO);
+    }
+    for (CALayer *sublayer in layer.sublayers) ApolloDuoDividerHoldText(sublayer, held);
+}
+
+static void ApolloDuoDividerReleaseText(ApolloDuoSplitHost *host) {
+    if (!host.dividerHeldText.count) return;
+    // The release's own relayout redraws once more; keep it synchronous so it
+    // can't stretch either. Restore after it lands, unless a new drag has
+    // taken the text over by then.
+    NSUInteger generation = ++host.dividerHeldTextGeneration;
+    __weak ApolloDuoSplitHost *weakHost = host;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        ApolloDuoSplitHost *strongHost = weakHost;
+        if (!strongHost || strongHost.dividerHeldTextGeneration != generation || strongHost.dividerGrip.dragging) return;
+        NSHashTable *held = strongHost.dividerHeldText;
+        strongHost.dividerHeldText = nil;
+        for (id node in held)
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(node, @selector(setDisplaysAsynchronously:), YES);
+        ApolloLog(@"[DuoDivider] restored %lu text node(s)", (unsigned long)held.count);
+    });
+}
+
 static void ApolloDuoUpdateDivider(ApolloDuoSplitHost *host) {
     if (!host.postsNavigation) return;
     if (!host.dividerGrip) {
@@ -1405,6 +1443,14 @@ static void ApolloDuoUpdateDivider(ApolloDuoSplitHost *host) {
             if (commit) [NSUserDefaults.standardUserDefaults setDouble:width / MAX(1, strongHost.view.bounds.size.width)
                                                                 forKey:UDKeyDuoDividerFeedShare];
             strongHost.dividerPreviewWidth = strongHost.dividerGrip.dragging ? @(width) : nil;
+            // Before this frame's layout gives the text new bounds.
+            if (strongHost.dividerGrip.dragging) {
+                strongHost.dividerHeldTextGeneration++;
+                if (!strongHost.dividerHeldText) strongHost.dividerHeldText = [NSHashTable weakObjectsHashTable];
+                ApolloDuoDividerHoldText(strongHost.split.view.layer, strongHost.dividerHeldText);
+            } else {
+                ApolloDuoDividerReleaseText(strongHost);
+            }
             ApolloDuoSplitApplySidebarWidth(state, state.halfWidthSidebar);
             [strongHost.split.view setNeedsLayout];
             [strongHost.split.view layoutIfNeeded];
