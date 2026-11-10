@@ -2078,11 +2078,23 @@ static void ApolloActionsPrepare(UINavigationItem *item, NSArray *items) {
     ApolloNavigationActionsControllerBox *box = objc_getAssociatedObject(item, &kActionsControllerKey);
     if (!box.controller || !ApolloActionsAppController(box.controller)) return;
     if (ApolloDuoSplitSuppressesFeedActions(box.controller)) return;
+    // Correcting the items calls this same setter again. Other navigation-item
+    // hooks may change the items on that nested call, so comparing arrays alone
+    // cannot guarantee convergence. Keep preparation to one active pass per item.
+    static char kActionsPrepareInProgressKey;
+    if (objc_getAssociatedObject(item, &kActionsPrepareInProgressKey)) return;
     NSArray *nativeItems = ApolloActionsDuoNativeItems(item, items);
     nativeItems = ApolloActionsInboxItems(item, nativeItems);
     if (!ApolloActionsArraysIdentical(items, nativeItems)) {
-        [item setRightBarButtonItems:nativeItems animated:NO];
-        return;
+        objc_setAssociatedObject(item, &kActionsPrepareInProgressKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        @try {
+            [item setRightBarButtonItems:nativeItems animated:NO];
+        } @finally {
+            objc_setAssociatedObject(item, &kActionsPrepareInProgressKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        // The nested setter publishes the corrected model while its own
+        // Prepare calls are guarded. Prepare that actual published model.
+        items = item.rightBarButtonItems;
     }
     [ApolloActionsOwner(item, YES) prepareItems:items];
 }
