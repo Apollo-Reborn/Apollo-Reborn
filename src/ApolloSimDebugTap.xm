@@ -27,6 +27,8 @@
 #import <AVFoundation/AVFoundation.h>
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
+#import "ApolloDuoRail.h"
+#import "ApolloDuoSplitView.h"
 #import "ApolloImageUploadHost.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloFloatingTabs.h"
@@ -2320,6 +2322,51 @@ static void ApolloSimDebugNavChurn(NSString *mode) {
 %end
 %end
 
+// "shortpane" state: while set, Apollo's normal-level windows keep the
+// simulated bottom-pane frame. Apollo's canvas fit (ApolloDeviceDisplay) and
+// UIKit's scene layout otherwise snap them back to the full scene.
+static CGFloat sApolloSimShortPaneHeight;
+
+static BOOL ApolloSimShortPaneFrame(UIWindow *window, CGRect *frame) {
+    if (sApolloSimShortPaneHeight <= 0.0 || window.windowLevel != UIWindowLevelNormal
+        || !window.windowScene) return NO;
+    CGRect full = window.windowScene.coordinateSpace.bounds;
+    CGFloat height = MIN(sApolloSimShortPaneHeight, CGRectGetHeight(full));
+    *frame = CGRectMake(0.0, CGRectGetHeight(full) - height, CGRectGetWidth(full), height);
+    return YES;
+}
+
+%group ApolloSimShortPane
+%hook UIWindow
+- (void)setFrame:(CGRect)frame {
+    ApolloSimShortPaneFrame(self, &frame);
+    %orig(frame);
+}
+%end
+// UIKit derives the root controller's overlay insets as if its window began
+// at the scene origin, so the full display's 82pt status inset survives on a
+// window moved to the bottom pane. The window's own safe area is right; a
+// real pane (its own scene) gives the root controller exactly that.
+%hook UIViewController
+- (void)_setContentOverlayInsets:(UIEdgeInsets)insets {
+    UIWindow *window = self.viewIfLoaded.window;
+    CGRect pane;
+    if (window && window.rootViewController == self && ApolloSimShortPaneFrame(window, &pane)) {
+        insets = window.safeAreaInsets;
+    }
+    %orig(insets);
+}
+- (void)_setContentOverlayInsets:(UIEdgeInsets)insets andLeftMargin:(CGFloat)left rightMargin:(CGFloat)right {
+    UIWindow *window = self.viewIfLoaded.window;
+    CGRect pane;
+    if (window && window.rootViewController == self && ApolloSimShortPaneFrame(window, &pane)) {
+        insets = window.safeAreaInsets;
+    }
+    %orig(insets, left, right);
+}
+%end
+%end
+
 // "scrollto Y" command support: pin the tallest on-screen scroll view (the
 // comments table on a thread) to a content offset, so a test can land on the
 // same comments every run — a synthesized flick's inertia varies run to run.
@@ -2383,7 +2430,192 @@ static void ApolloSimInstallLowPowerModeOverride(void) {
     ApolloLog(@"[SimDebugTap] lpm override installed on %@", NSStringFromClass(cls));
 }
 
+// "duogeom": log the Duo pose numbers the short-pane feed layout depends on:
+// window/screen geometry, safe area, mode, tab bar placement, and each
+// visible feed table's measured width against its visible cells.
+static void ApolloSimDebugCollectFeedTables(UIView *view, NSMutableArray<UITableView *> *out, NSUInteger depth) {
+    if (!view || depth > 30) return;
+    if (ApolloClassASTableView && [view isKindOfClass:ApolloClassASTableView]) [out addObject:(UITableView *)view];
+    for (UIView *subview in view.subviews) ApolloSimDebugCollectFeedTables(subview, out, depth + 1);
+}
+
+static void ApolloSimDebugLogDuoGeometry(void) {
+    UITabBarController *tabs = (id)ApolloMainTabBarController();
+    UIWindow *window = tabs.isViewLoaded ? tabs.view.window : nil;
+    UIWindowScene *scene = window.windowScene;
+    NSMutableString *out = [NSMutableString string];
+    [out appendFormat:@"mode=%d unfolded=%d unfoldedPortrait=%d shortPane=%d sideBar=%d coverInsets=%d\n",
+        ApolloDuoCurrentMode(), ApolloDuoSplitIsUnfolded(), ApolloDuoSplitIsUnfoldedPortrait(),
+        ApolloDuoSplitIsShortPane(), ApolloDuoRailHasVisibleSideBar(), ApolloDuoUsesCoverContentInsets()];
+    [out appendFormat:@"window frame=%@ bounds=%@ safe=%@\n", NSStringFromCGRect(window.frame),
+        NSStringFromCGRect(window.bounds), NSStringFromUIEdgeInsets(window.safeAreaInsets)];
+    [out appendFormat:@"screen bounds=%@ scene=%@ screens=%lu hsc=%ld vsc=%ld\n",
+        NSStringFromCGRect(scene.screen.bounds), NSStringFromCGRect(scene.coordinateSpace.bounds),
+        (unsigned long)UIScreen.screens.count, (long)window.traitCollection.horizontalSizeClass,
+        (long)window.traitCollection.verticalSizeClass];
+    UITabBar *bar = tabs.tabBar;
+    UIViewController *root = window.rootViewController;
+    [out appendFormat:@"root %@ view=%@ safe=%@ additional=%@ tabsAdditional=%@\n", NSStringFromClass(root.class),
+        NSStringFromCGRect(root.view.frame), NSStringFromUIEdgeInsets(root.view.safeAreaInsets),
+        NSStringFromUIEdgeInsets(root.additionalSafeAreaInsets),
+        NSStringFromUIEdgeInsets(tabs.additionalSafeAreaInsets)];
+    [out appendFormat:@"tabs view=%@ safe=%@ bar=%@ hidden=%d\n", NSStringFromCGRect(tabs.view.bounds),
+        NSStringFromUIEdgeInsets(tabs.view.safeAreaInsets),
+        NSStringFromCGRect([bar convertRect:bar.bounds toView:tabs.view]), bar.hidden];
+    NSMutableArray<UITableView *> *tables = [NSMutableArray array];
+    ApolloSimDebugCollectFeedTables(tabs.selectedViewController.viewIfLoaded, tables, 0);
+    for (UITableView *table in tables) {
+        if (!table.window) continue;
+        [out appendFormat:@"table %p bounds=%@ safe=%@ inset=%@ feedWidth=%.1f\n", table,
+            NSStringFromCGRect(table.bounds), NSStringFromUIEdgeInsets(table.safeAreaInsets),
+            NSStringFromUIEdgeInsets(table.contentInset), ApolloDuoRailFeedContentWidth(table)];
+        NSUInteger count = 0;
+        for (UITableViewCell *cell in table.visibleCells) {
+            if (count++ >= 3) break;
+            UIView *nodeView = cell.contentView.subviews.firstObject;
+            [out appendFormat:@"  cell width=%.1f content=%.1f node=%@\n", CGRectGetWidth(cell.bounds),
+                CGRectGetWidth(cell.contentView.bounds), NSStringFromCGRect(nodeView.frame)];
+        }
+    }
+    ApolloLog(@"[SimDebugTap] duogeom\n%@", out);
+}
+
+// "shortpane <height>|off": sim-only stand-in for the inner display's bottom
+// split pane (the simulator cannot tile a second app or PiP above Apollo).
+// Pins Apollo's windows on this scene to the full display width x <height>
+// (default 440), at the bottom edge; "off" restores the scene frame.
+// A real pane resize reaches the root controller as viewWillTransitionToSize:
+// with an animating coordinator; a bare window.frame write skips that, so the
+// command drives the same sequence through this minimal coordinator.
+@interface ApolloSimResizeCoordinator : NSObject <UIViewControllerTransitionCoordinator>
+@property (nonatomic, strong) NSMutableArray *alongside;
+@property (nonatomic, strong) NSMutableArray *completions;
+@property (nonatomic, weak) UIView *container;
+@end
+
+@implementation ApolloSimResizeCoordinator
+- (instancetype)init {
+    if ((self = [super init])) {
+        _alongside = [NSMutableArray array];
+        _completions = [NSMutableArray array];
+    }
+    return self;
+}
+- (BOOL)animateAlongsideTransition:(void (^)(id<UIViewControllerTransitionCoordinatorContext>))animation
+                        completion:(void (^)(id<UIViewControllerTransitionCoordinatorContext>))completion {
+    if (animation) [self.alongside addObject:[animation copy]];
+    if (completion) [self.completions addObject:[completion copy]];
+    return YES;
+}
+- (BOOL)animateAlongsideTransitionInView:(UIView *)view
+                               animation:(void (^)(id<UIViewControllerTransitionCoordinatorContext>))animation
+                              completion:(void (^)(id<UIViewControllerTransitionCoordinatorContext>))completion {
+    return [self animateAlongsideTransition:animation completion:completion];
+}
+- (void)notifyWhenInteractionEndsUsingBlock:(void (^)(id<UIViewControllerTransitionCoordinatorContext>))handler {}
+- (void)notifyWhenInteractionChangesUsingBlock:(void (^)(id<UIViewControllerTransitionCoordinatorContext>))handler {}
+- (BOOL)isAnimated { return YES; }
+- (UIModalPresentationStyle)presentationStyle { return UIModalPresentationNone; }
+- (BOOL)initiallyInteractive { return NO; }
+- (BOOL)isInterruptible { return NO; }
+- (BOOL)isInteractive { return NO; }
+- (BOOL)isCancelled { return NO; }
+- (NSTimeInterval)transitionDuration { return 0.3; }
+- (CGFloat)percentComplete { return 0.0; }
+- (CGFloat)completionVelocity { return 1.0; }
+- (UIViewAnimationCurve)completionCurve { return UIViewAnimationCurveEaseInOut; }
+- (UIViewController *)viewControllerForKey:(UITransitionContextViewControllerKey)key { return nil; }
+- (UIView *)viewForKey:(UITransitionContextViewKey)key { return nil; }
+- (UIView *)containerView { return self.container; }
+- (CGAffineTransform)targetTransform { return CGAffineTransformIdentity; }
+@end
+
+static void ApolloSimDebugSetShortPane(NSString *arg) {
+    UITabBarController *tabs = (id)ApolloMainTabBarController();
+    UIWindowScene *scene = tabs.view.window.windowScene;
+    if (!scene) { ApolloLog(@"[SimDebugTap] shortpane: no window scene"); return; }
+    sApolloSimShortPaneHeight = [arg isEqualToString:@"off"] ? 0.0 : (arg.doubleValue > 0.0 ? arg.doubleValue : 440.0);
+    CGRect frame = scene.coordinateSpace.bounds;
+    UIWindow *main = tabs.view.window;
+    ApolloSimShortPaneFrame(main, &frame);
+    ApolloSimResizeCoordinator *coordinator = [ApolloSimResizeCoordinator new];
+    coordinator.container = main;
+    UIViewController *root = main.rootViewController;
+    [root viewWillTransitionToSize:frame.size withTransitionCoordinator:coordinator];
+    [UIView animateWithDuration:coordinator.transitionDuration animations:^{
+        for (UIWindow *window in scene.windows) {
+            // Only the app's own full-scene windows; leave keyboards and overlays.
+            if (window.windowLevel != UIWindowLevelNormal) continue;
+            window.frame = frame;
+            [window layoutIfNeeded];
+        }
+        for (void (^block)(id) in coordinator.alongside) block(coordinator);
+    } completion:^(BOOL finished) {
+        // Re-derive the root's overlay insets (see the _setContentOverlayInsets:
+        // hook) now that the window has its pane frame.
+        SEL refresh = NSSelectorFromString(@"_updateContentOverlayInsetsForSelfAndChildren");
+        if ([root respondsToSelector:refresh]) {
+            ((void (*)(id, SEL))objc_msgSend)(root, refresh);
+            [root.view setNeedsLayout];
+            [root.view layoutIfNeeded];
+        }
+        for (void (^block)(id) in coordinator.completions) block(coordinator);
+        ApolloLog(@"[SimDebugTap] shortpane settled %@ (shortPane=%d)", NSStringFromCGRect(main.frame),
+                  ApolloDuoSplitIsShortPane());
+    }];
+    ApolloLog(@"[SimDebugTap] shortpane -> %@", NSStringFromCGRect(frame));
+}
+
 static BOOL ApolloSimDebugHandleIntegratedMainCommand(NSString *contents) {
+    if ([contents hasPrefix:@"duogeom"]) {
+        ApolloSimDebugLogDuoGeometry();
+        return YES;
+    }
+    if ([contents hasPrefix:@"safemethods"]) {
+        UIWindow *window = ((UIViewController *)ApolloMainTabBarController()).view.window;
+        NSMutableString *out = [NSMutableString string];
+        for (id target in @[window, window.rootViewController, window.rootViewController.view]) {
+            for (Class cls = [target class]; cls && cls != NSObject.class; cls = class_getSuperclass(cls)) {
+                unsigned count = 0;
+                Method *methods = class_copyMethodList(cls, &count);
+                for (unsigned i = 0; i < count; i++) {
+                    SEL sel = method_getName(methods[i]);
+                    NSString *name = NSStringFromSelector(sel);
+                    if (![name.lowercaseString containsString:@"safearea"] && ![name containsString:@"OverlayInset"]) continue;
+                    const char *type = method_getTypeEncoding(methods[i]);
+                    NSString *value = @"";
+                    // Read-only no-argument UIEdgeInsets getters only.
+                    if (type && strncmp(type, "{UIEdgeInsets=dddd}16@0:8", 25) == 0) {
+                        UIEdgeInsets insets = ((UIEdgeInsets (*)(id, SEL))objc_msgSend)(target, sel);
+                        value = NSStringFromUIEdgeInsets(insets);
+                    }
+                    [out appendFormat:@"%@ %@ %@\n", NSStringFromClass(cls), name, value];
+                }
+                free(methods);
+            }
+        }
+        [out writeToFile:@"/tmp/apollofix-safemethods.txt" atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        ApolloLog(@"[SimDebugTap] safemethods written");
+        return YES;
+    }
+    if ([contents hasPrefix:@"saferefresh"]) {
+        UIViewController *root = ((UIViewController *)ApolloMainTabBarController()).view.window.rootViewController;
+        for (NSString *name in @[@"_updateContentOverlayInsetsFromParentIfNecessary",
+                                 @"_updateContentOverlayInsetsForSelfAndChildren", @"_updateSafeAreaInsets"]) {
+            SEL sel = NSSelectorFromString(name);
+            id target = [name isEqualToString:@"_updateSafeAreaInsets"] ? root.view : root;
+            BOOL responds = [target respondsToSelector:sel];
+            if (responds) ((void (*)(id, SEL))objc_msgSend)(target, sel);
+            ApolloLog(@"[SimDebugTap] saferefresh %@ responds=%d -> safe=%@", name, responds,
+                      NSStringFromUIEdgeInsets(root.view.safeAreaInsets));
+        }
+        return YES;
+    }
+    if ([contents hasPrefix:@"shortpane"]) {
+        ApolloSimDebugSetShortPane([[contents substringFromIndex:9]
+            stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]);
+        return YES;
+    }
     if ([contents hasPrefix:@"listdiag"]) {
         ApolloSubredditListDiagRearm();
         return YES;
@@ -3532,6 +3764,7 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
 
 %ctor {
     %init(ApolloSimNavChurn);
+    %init(ApolloSimShortPane);
     ApolloSimInstallLowPowerModeOverride();
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
         ApolloSimDebugTapNotification, (__bridge CFStringRef)ApolloSimTapNotify(), NULL,

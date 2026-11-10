@@ -65,6 +65,23 @@ int main(void) {
     Check(!ApolloDuoIsLandscapeSized(400.0, 900.0),
           "Closed window is portrait-sized");
 
+    Check(ApolloDuoIsShortPane(669.0, 440.0, 669.0, 951.0),
+          "bottom pane under a portrait PiP is a short pane");
+    Check(ApolloDuoIsShortPane(951.0, 320.0, 951.0, 669.0),
+          "a stacked pane in landscape is a short pane");
+    Check(!ApolloDuoIsShortPane(669.0, 951.0, 669.0, 951.0),
+          "the full opened display is not a short pane");
+    Check(!ApolloDuoIsShortPane(951.0, 669.0, 951.0, 669.0),
+          "full landscape is not a short pane");
+    Check(!ApolloDuoIsShortPane(330.0, 951.0, 669.0, 951.0),
+          "a narrow side-by-side slice stays a phone layout");
+    Check(!ApolloDuoIsShortPane(466.0, 678.0, 466.0, 678.0),
+          "the cover display is not a short pane");
+    Check(!ApolloDuoIsShortPane(466.0, 300.0, 466.0, 678.0),
+          "a short window on the cover display is not a short pane");
+    Check(!ApolloDuoIsShortPane(0.0, 0.0, 669.0, 951.0),
+          "an unsized window is not a short pane");
+
     printf("OK: %u checks\n", checks);
     return 0;
 }

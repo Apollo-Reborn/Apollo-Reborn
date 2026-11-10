@@ -41,6 +41,24 @@ static inline int ApolloDuoModeFromBounds(int dualDisplay,
     return ApolloDuoModePhone;
 }
 
+enum {
+    ApolloDuoUnfoldedMinimumSide = 600, /* points; MIN(w,h) of the opened display */
+};
+
+// A short pane is Apollo sharing the opened display with another window
+// stacked above or below it (a Picture in Picture or second app on top): the
+// screen is the opened display, the window keeps a column-width side, but its
+// other side drops under the unfolded minimum. Narrow side-by-side slices and
+// the cover display stay phone layouts.
+static inline int ApolloDuoIsShortPane(double windowWidth, double windowHeight,
+                                       double screenWidth, double screenHeight) {
+    double screenMin = screenWidth < screenHeight ? screenWidth : screenHeight;
+    if (windowWidth <= 0.0 || windowHeight <= 0.0
+        || screenMin < (double)ApolloDuoUnfoldedMinimumSide) return 0;
+    return windowWidth >= (double)ApolloDuoUnfoldedMinimumSide
+        && windowHeight < (double)ApolloDuoUnfoldedMinimumSide;
+}
+
 // Expand when the window is letterboxed *or* still phone-narrow on a
 // Duo-wide canvas. Origin / scene assignment is the caller's job.
 static inline int ApolloDuoNeedsCanvasFill(double windowWidth,

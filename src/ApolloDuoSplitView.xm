@@ -1357,6 +1357,32 @@ BOOL ApolloDuoSplitIsUnfoldedPortrait(void) {
     return size.height > size.width;
 }
 
+BOOL ApolloDuoSplitIsShortPane(void) {
+    if (!ApolloDeviceIsDuo() || !NSThread.isMainThread) return NO;
+    UITabBarController *tabs = (id)ApolloMainTabBarController();
+    if (UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPhone
+        || ![tabs isKindOfClass:UITabBarController.class] || !tabs.isViewLoaded) return NO;
+    UIWindow *window = tabs.view.window;
+    UIScreen *screen = window.windowScene.screen ?: window.screen;
+    if (!window || !screen) return NO;
+    CGSize size = ApolloDuoLayoutSize(tabs == sDuoSplitResizingTabs ? sDuoSplitTargetSize : window.bounds.size);
+    CGSize screenSize = screen.bounds.size;
+    BOOL shortPane = ApolloDuoIsShortPane(size.width, size.height, screenSize.width, screenSize.height);
+    // Log each change of pose once, with the sizes that decided it.
+    static int sLastShortPane = -1;
+    if (sLastShortPane != (int)shortPane) {
+        sLastShortPane = shortPane;
+        ApolloLog(@"[DuoFeed] short pane=%d window=%@ screen=%@ safe=%@", shortPane,
+                  NSStringFromCGSize(size), NSStringFromCGSize(screenSize),
+                  NSStringFromUIEdgeInsets(window.safeAreaInsets));
+    }
+    return shortPane;
+}
+
+BOOL ApolloDuoSplitShowsFeedLayout(void) {
+    return ApolloDuoSplitIsUnfolded() || ApolloDuoSplitIsShortPane();
+}
+
 // Apollo's native navigation delegate tests a 70pt edge band in its view.
 // UIKit extends the secondary view under the sidebar and the trailing rail;
 // translate only that delegate's location query into the visible pane's band.
@@ -2356,7 +2382,7 @@ static void ApolloDuoPostsAnimateGeometry(NSArray<ApolloDuoPostsGeometry *> *geo
 static void ApolloDuoToggleVisibleFeedLayout(UIViewController *controller, BOOL enabled) {
     UIWindow *window = controller.viewIfLoaded.window;
     if (!window || !enabled || sDuoFeedLayoutChanging || ApolloDuoSplitIsResizing()
-        || !ApolloDuoSplitIsUnfolded()) return;
+        || !ApolloDuoSplitShowsFeedLayout()) return;
     [window layoutIfNeeded];
     BOOL animate = !UIAccessibilityIsReduceMotionEnabled();
     NSMutableArray<ApolloDuoLayoutTransition *> *transitions = [NSMutableArray array];
@@ -2431,7 +2457,7 @@ static void ApolloDuoToggleVisibleFeedLayout(UIViewController *controller, BOOL 
             }];
             [transition.cover removeFromSuperview];
             if (animate && CGSizeEqualToSize(transition.size, surface.bounds.size)
-                && ApolloDuoSplitIsUnfolded())
+                && ApolloDuoSplitShowsFeedLayout())
                 ApolloDuoPostsAnimateGeometry(transition.geometry, surface, surface, 0.32);
         }
         sDuoFeedLayoutChanging = NO;
@@ -2457,7 +2483,9 @@ static char kApolloDuoPageLayoutKey, kApolloDuoPageLayoutPendingKey;
 static NSMapTable<UINavigationItem *, ApolloDuoPageLayoutControl *> *sDuoPageLayoutOwners;
 
 static BOOL ApolloDuoPageShowsLayoutControl(UIViewController *controller) {
-    if (!ApolloDuoSplitIsUnfolded()) return NO;
+    // A short pane under a Picture in Picture has no columns: every feed and
+    // thread, the Posts tab's included, carries its own control there.
+    if (!ApolloDuoSplitShowsFeedLayout()) return NO;
     // Only the Posts tab's split has a feed column; its host owns the control.
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(controller.navigationController, NO);
     return !state.feed;
@@ -2465,14 +2493,28 @@ static BOOL ApolloDuoPageShowsLayoutControl(UIViewController *controller) {
 
 // NavigationActions calls this before normalizing native items, so an async
 // Apollo action refresh cannot remove the independent layout control.
+// A short pane places the control on the leading side, beside Back, as the
+// opened portrait display does beside List; elsewhere it leads the trailing
+// actions.
+static BOOL ApolloDuoPageLayoutLeads(void) {
+    return ApolloDuoSplitIsShortPane();
+}
+
+static NSArray<UIBarButtonItem *> *ApolloDuoPageLayoutItemsOnSide(ApolloDuoPageLayoutControl *control,
+                                                                  NSArray<UIBarButtonItem *> *items, BOOL leading) {
+    NSMutableArray *result = [NSMutableArray array];
+    BOOL shows = ApolloDuoPageShowsLayoutControl(control.controller) && ApolloDuoPageLayoutLeads() == leading;
+    if (shows && !leading) [result addObject:control.item];
+    for (UIBarButtonItem *candidate in items)
+        if (![candidate.accessibilityIdentifier isEqualToString:kApolloDuoPageLayoutID]) [result addObject:candidate];
+    if (shows && leading) [result addObject:control.item];
+    return result;
+}
+
 NSArray<UIBarButtonItem *> *ApolloDuoPageLayoutItems(UINavigationItem *item, NSArray<UIBarButtonItem *> *items) {
     ApolloDuoPageLayoutControl *control = [sDuoPageLayoutOwners objectForKey:item];
     if (!control) return items;
-    NSMutableArray *result = [NSMutableArray array];
-    if (ApolloDuoPageShowsLayoutControl(control.controller)) [result addObject:control.item];
-    for (UIBarButtonItem *candidate in items)
-        if (![candidate.accessibilityIdentifier isEqualToString:kApolloDuoPageLayoutID]) [result addObject:candidate];
-    return result;
+    return ApolloDuoPageLayoutItemsOnSide(control, items, NO);
 }
 
 @implementation ApolloDuoPageLayoutControl
@@ -2491,6 +2533,14 @@ NSArray<UIBarButtonItem *> *ApolloDuoPageLayoutItems(UINavigationItem *item, NSA
     NSArray *items = ApolloDuoPageLayoutItems(navigationItem, navigationItem.rightBarButtonItems);
     if (![(navigationItem.rightBarButtonItems ?: @[]) isEqualToArray:items])
         [navigationItem setRightBarButtonItems:items animated:NO];
+    NSArray *leading = ApolloDuoPageLayoutItemsOnSide(self, navigationItem.leftBarButtonItems, YES);
+    if (![(navigationItem.leftBarButtonItems ?: @[]) isEqualToArray:leading]) {
+        // Keep Back: the control sits beside it rather than replacing it.
+        // Pages with their own leading items keep their own Back choice.
+        if (leading.count == 1 && leading.firstObject == self.item)
+            navigationItem.leftItemsSupplementBackButton = YES;
+        [navigationItem setLeftBarButtonItems:leading animated:NO];
+    }
 }
 @end
 
