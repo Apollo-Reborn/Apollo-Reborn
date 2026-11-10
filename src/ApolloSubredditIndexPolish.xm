@@ -2,6 +2,7 @@
 #import <QuartzCore/QuartzCore.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import <UIKit/UIGestureRecognizerSubclass.h>
 
 #import "ApolloCommon.h"
 #import "ApolloFavoriteConfirm.h"
@@ -236,7 +237,7 @@ static BOOL ApolloMetaFeedTableIsInEditMode(UITableView *tableView) {
 @property (nonatomic, strong) UISelectionFeedbackGenerator *selectionFeedbackGenerator;
 @property (nonatomic) NSInteger activeIndex;
 @property (nonatomic) NSInteger lastScrolledIndex;
-@property (nonatomic, strong) UILongPressGestureRecognizer *scrubGesture;
+@property (nonatomic, strong) UIGestureRecognizer *scrubGesture;
 - (void)apollo_applyThemeTintToLabels;
 - (void)apollo_scheduleDeferredThemeTintRefresh;
 - (void)updateWithTableView:(UITableView *)tableView titles:(NSArray<NSString *> *)titles;
@@ -1588,6 +1589,79 @@ static void ApolloSubredditIndexRemoveStarProxyFromCell(UITableViewCell *cell) {
 
 @end
 
+// The index's scrub recognizer. It claims every touch that lands on the index
+// (ancestor navigation pans are required to wait for it, see
+// -gestureRecognizer:shouldBeRequiredToFailByGestureRecognizer:) but stays
+// Possible until the finger has moved past the slop, then decides once:
+//   - a drag that is mostly leftward (Apollo's right-edge forward swipe
+//     starting on the index) fails it, so the waiting navigation pan takes
+//     over and the list is never scrolled;
+//   - any other movement past the slop begins the scrub;
+//   - a touch lifted without moving ends it as a tap (jump to that letter).
+// A UILongPressGestureRecognizer with minimumPressDuration 0 began at
+// touch-down instead, so a forward swipe from the index scrubbed the list
+// (issue #1695).
+static const CGFloat ApolloSubredditIndexScrubSlop = 6.0;
+
+@interface ApolloSubredditIndexScrubGestureRecognizer : UIGestureRecognizer
+@property (nonatomic) CGPoint apollo_startPoint;
+@end
+
+@implementation ApolloSubredditIndexScrubGestureRecognizer
+
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesBegan:touches withEvent:event];
+    if (touches.count != 1 || self.numberOfTouches > 1) {
+        self.state = UIGestureRecognizerStateFailed;
+        return;
+    }
+    self.apollo_startPoint = [touches.anyObject locationInView:self.view];
+}
+
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesMoved:touches withEvent:event];
+    if (self.state == UIGestureRecognizerStatePossible) {
+        CGPoint point = [touches.anyObject locationInView:self.view];
+        CGFloat dx = point.x - self.apollo_startPoint.x;
+        CGFloat dy = point.y - self.apollo_startPoint.y;
+        if (hypot(dx, dy) < ApolloSubredditIndexScrubSlop) return;
+        // Decide once, at the slop: mostly leftward means a navigation swipe.
+        if (dx < 0.0 && fabs(dx) > fabs(dy) * 1.5) {
+            ApolloLog(@"[SubredditIndex] scrub yields to a horizontal swipe (dx %.0f, dy %.0f)", dx, dy);
+            self.state = UIGestureRecognizerStateFailed;
+        } else {
+            self.state = UIGestureRecognizerStateBegan;
+        }
+    } else if (self.state == UIGestureRecognizerStateBegan ||
+               self.state == UIGestureRecognizerStateChanged) {
+        self.state = UIGestureRecognizerStateChanged;
+    }
+}
+
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesEnded:touches withEvent:event];
+    // From Possible this is a tap; the action sees Ended with nothing scrolled.
+    self.state = UIGestureRecognizerStateEnded;
+}
+
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesCancelled:touches withEvent:event];
+    self.state = self.state == UIGestureRecognizerStatePossible
+        ? UIGestureRecognizerStateFailed
+        : UIGestureRecognizerStateCancelled;
+}
+
+@end
+
+// YES while the list's navigation controller is in an interactive push/pop
+// (e.g. a forward swipe already revealing the next page). The index must not
+// scroll the list underneath that transition.
+static BOOL ApolloSubredditIndexNavigationTransitionIsInteractive(UIView *view) {
+    UINavigationController *nav = ApolloSubredditIndexOwningViewController(view).navigationController;
+    id<UIViewControllerTransitionCoordinator> coordinator = nav.transitionCoordinator;
+    return coordinator && coordinator.isInteractive;
+}
+
 @implementation ApolloSubredditIndexOverlayView
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -1600,10 +1674,8 @@ static void ApolloSubredditIndexRemoveStarProxyFromCell(UITableViewCell *cell) {
         self.clipsToBounds = NO;
         // Claim the index touch at touch-down. Raw touches can be delayed or
         // cancelled by the extra navigation/split ancestors in the Duo sidebar.
-        self.scrubGesture = [[UILongPressGestureRecognizer alloc]
+        self.scrubGesture = [[ApolloSubredditIndexScrubGestureRecognizer alloc]
             initWithTarget:self action:@selector(apollo_scrub:)];
-        self.scrubGesture.minimumPressDuration = 0.0;
-        self.scrubGesture.allowableMovement = CGFLOAT_MAX;
         self.scrubGesture.delegate = self;
         [self addGestureRecognizer:self.scrubGesture];
     }
@@ -1752,9 +1824,17 @@ static void ApolloSubredditIndexRemoveStarProxyFromCell(UITableViewCell *cell) {
         [other isKindOfClass:UIPanGestureRecognizer.class];
 }
 
-- (void)apollo_scrub:(UILongPressGestureRecognizer *)gesture {
+- (void)apollo_scrub:(UIGestureRecognizer *)gesture {
+    BOOL tapped = gesture.state == UIGestureRecognizerStateEnded &&
+        self.lastScrolledIndex == NSNotFound;
     if (gesture.state == UIGestureRecognizerStateBegan ||
-        gesture.state == UIGestureRecognizerStateChanged) {
+        gesture.state == UIGestureRecognizerStateChanged || tapped) {
+        if (ApolloSubredditIndexNavigationTransitionIsInteractive(self)) {
+            // A navigation swipe already owns this touch: leave the list alone.
+            self.activeIndex = NSNotFound;
+            [self applyMagnificationForIndex:NSNotFound animated:YES];
+            return;
+        }
         NSInteger index = [self indexForPoint:[gesture locationInView:self]];
         if (index == NSNotFound || index >= (NSInteger)self.titles.count) return;
         self.activeIndex = index;
@@ -1764,6 +1844,11 @@ static void ApolloSubredditIndexRemoveStarProxyFromCell(UITableViewCell *cell) {
         [self.selectionFeedbackGenerator selectionChanged];
         [self.selectionFeedbackGenerator prepare];
         ApolloSubredditIndexScrollToTitle(self.tableView, self.titles[index], index);
+        if (tapped) {
+            self.activeIndex = NSNotFound;
+            self.lastScrolledIndex = NSNotFound;
+            [self applyMagnificationForIndex:NSNotFound animated:YES];
+        }
     } else if (gesture.state == UIGestureRecognizerStateEnded ||
                gesture.state == UIGestureRecognizerStateCancelled ||
                gesture.state == UIGestureRecognizerStateFailed) {
