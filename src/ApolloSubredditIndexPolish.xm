@@ -3111,6 +3111,108 @@ static void ApolloSubredditIndexScheduleGeometryRefresh(UITableView *tableView, 
     });
 }
 
+#pragma mark - Native index (Subreddit List Enhancements off)
+
+// With Subreddit List Enhancements off the Subreddits list keeps UIKit's own
+// section index (UITableViewIndex). It picks a section, and scrolls the list,
+// from touch-down on, so a right-edge forward swipe that starts on it scrolls
+// the list as the finger moves (issue #1695: the swipe can even be revealing
+// the next page while the list keeps jumping between letters).
+//
+// Same rule as the enhanced index's recognizer: hold the section change until
+// the finger has moved past the slop, then decide once. Mostly leftward means a
+// navigation swipe, so the index never moves the list for that touch; anything
+// else scrubs exactly as before; a touch lifted without moving still jumps to
+// its letter. While the navigation controller is in an interactive transition
+// the index never moves the list either. Scoped to the Subreddits list table.
+@interface UITableViewIndex : UIControl
+- (BOOL)_updateSectionForTouch:(UITouch *)touch withEvent:(UIEvent *)event;
+@end
+
+@interface ApolloNativeIndexTouchState : NSObject
+@property (nonatomic) CGPoint startPoint;
+@property (nonatomic) BOOL deciding;
+@property (nonatomic) BOOL yielded;
+@end
+
+@implementation ApolloNativeIndexTouchState
+@end
+
+static char kApolloNativeIndexTouchStateKey;
+
+static UITableView *ApolloNativeIndexSubredditTable(UIView *index) {
+    for (UIView *view = index.superview; view; view = view.superview) {
+        if ([view isKindOfClass:[UITableView class]]) {
+            UITableView *table = (UITableView *)view;
+            return ApolloSubredditIndexEnsureSelectionTable(table) ? table : nil;
+        }
+    }
+    return nil;
+}
+
+%hook UITableViewIndex
+
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    ApolloNativeIndexTouchState *state = nil;
+    if (touches.count == 1 && ApolloNativeIndexSubredditTable((UIView *)self)) {
+        state = [ApolloNativeIndexTouchState new];
+        state.startPoint = [touches.anyObject locationInView:(UIView *)self];
+        state.deciding = YES;
+    }
+    objc_setAssociatedObject(self, &kApolloNativeIndexTouchStateKey, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    %orig;
+}
+
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    ApolloNativeIndexTouchState *state = objc_getAssociatedObject(self, &kApolloNativeIndexTouchStateKey);
+    if (state && state.deciding) {
+        CGPoint point = [touches.anyObject locationInView:(UIView *)self];
+        CGFloat dx = point.x - state.startPoint.x;
+        CGFloat dy = point.y - state.startPoint.y;
+        if (hypot(dx, dy) >= ApolloSubredditIndexScrubSlop) {
+            state.deciding = NO;
+            if (dx < 0.0 && fabs(dx) > fabs(dy) * 1.5) {
+                state.yielded = YES;
+                ApolloLog(@"[SubredditIndex] native index yields to a horizontal swipe (dx %.0f, dy %.0f)", dx, dy);
+            }
+        }
+    }
+    if (state && !state.yielded && ApolloSubredditIndexNavigationTransitionIsInteractive((UIView *)self)) {
+        state.deciding = NO;
+        state.yielded = YES;
+        ApolloLog(@"[SubredditIndex] native index stops: navigation transition is interactive");
+    }
+    %orig;
+}
+
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    ApolloNativeIndexTouchState *state = objc_getAssociatedObject(self, &kApolloNativeIndexTouchStateKey);
+    if (state && state.deciding && !state.yielded) {
+        // A touch that never moved past the slop is a tap: jump to its letter.
+        // _updateSectionForTouch: only moves the index's selection; its caller
+        // sends the value-changed action the table scrolls on.
+        state.deciding = NO;
+        if ([(UITableViewIndex *)self _updateSectionForTouch:touches.anyObject withEvent:event]) {
+            [(UIControl *)self sendActionsForControlEvents:UIControlEventValueChanged];
+        }
+    }
+    %orig;
+    objc_setAssociatedObject(self, &kApolloNativeIndexTouchStateKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    objc_setAssociatedObject(self, &kApolloNativeIndexTouchStateKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    %orig;
+}
+
+- (BOOL)_updateSectionForTouch:(UITouch *)touch withEvent:(UIEvent *)event {
+    ApolloNativeIndexTouchState *state = objc_getAssociatedObject(self, &kApolloNativeIndexTouchStateKey);
+    if (state && (state.deciding || state.yielded)) return NO;
+    return %orig;
+}
+
+%end
+
 %hook UITableView
 
 - (void)setEditing:(BOOL)editing animated:(BOOL)animated {
