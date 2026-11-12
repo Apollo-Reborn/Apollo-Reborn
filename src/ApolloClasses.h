@@ -91,6 +91,7 @@ extern Class ApolloClassPostsSearchResultsViewController;
 extern Class ApolloClassPostsViewController;
 extern Class ApolloClassProfileFeatureCellNode;
 extern Class ApolloClassProfileViewController;
+extern Class ApolloClassQuickBarKeyboardView;
 extern Class ApolloClassRDKClient;
 extern Class ApolloClassRDKComment;
 extern Class ApolloClassRDKFlair;
