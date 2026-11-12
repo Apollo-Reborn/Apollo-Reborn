@@ -13,6 +13,8 @@ fixture = (root / 'tests/duo_back_swipe_tests.m').read_text()
 split = (root / 'src/ApolloDuoSplitView.xm').read_text()
 policies = []
 for signature in ['UINavigationController *ApolloDuoSplitDetailNavigation(',
+                  'UINavigationController *ApolloDuoSplitFeedNavigation(',
+                  'BOOL ApolloDuoSplitPostsListCanClose(',
                   'BOOL ApolloDuoSplitAllowsNavigationSwipe(',
                   'BOOL ApolloDuoSplitCanRevealPostsListWithSwipe(',
                   'static BOOL ApolloDuoSplitStateCanReturnFromProfile(',

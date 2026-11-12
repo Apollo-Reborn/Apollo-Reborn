@@ -6,6 +6,7 @@
 #import "ApolloDuoSplitDivider.h"
 #import "ApolloDuoDividerGeometry.h"
 #import "ApolloDuoNavigationGestures.h"
+#import "ApolloFrameRate.h"
 #import "ApolloMediaHinge.h"
 #import "ApolloSearchRecents.h"
 #import "ApolloSearchVisitRecording.h"
@@ -210,6 +211,7 @@ static void ApolloDuoSlideView(UIView *view, CGFloat from, CGFloat to, NSTimeInt
     slide.toValue = [NSValue valueWithCATransform3D:CATransform3DMakeTranslation(to, 0, 0)];
     slide.duration = duration;
     slide.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+    ApolloAnimationUsesFullFrameRate(slide);
     // Tie cleanup to this animation, not UIKit's surrounding transaction.
     // A disabled-action navigation transaction can finish before the explicit
     // slide and otherwise hide the drawer at the beginning of dismissal.
@@ -241,6 +243,7 @@ static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat
     slide.damping = 2 * omega;
     slide.initialVelocity = ApolloDuoDrawerSpringInitialVelocity(from, to, velocity);
     slide.duration = slide.settlingDuration;
+    ApolloAnimationUsesFullFrameRate(slide);
     ApolloDuoSlideCompletion *delegate = [ApolloDuoSlideCompletion new];
     delegate.completion = completion;
     delegate.started = CACurrentMediaTime();
@@ -281,13 +284,7 @@ static void ApolloDuoSettleThreadDrag(UIView *view, CGFloat from, CGFloat veloci
     spring.damping = 2 * omega;
     spring.initialVelocity = ApolloDuoDrawerSpringInitialVelocity(from, 0, velocity);
     spring.duration = spring.settlingDuration;
-    // The app opts into ProMotion, but an explicit animation without a range
-    // can run at 60 Hz. Ask for the display's full rate for the settle.
-    if (@available(iOS 15.0, *)) {
-        float maximum = (float)UIScreen.mainScreen.maximumFramesPerSecond;
-        if (maximum > 60)
-            spring.preferredFrameRateRange = CAFrameRateRangeMake(MIN(80.0f, maximum), maximum, maximum);
-    }
+    ApolloAnimationUsesFullFrameRate(spring);
     [view.layer addAnimation:spring forKey:@"ApolloDuoThreadDrag"];
 }
 
@@ -906,6 +903,7 @@ static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
         && !([other.view isKindOfClass:UIScrollView.class] && other == ((UIScrollView *)other.view).panGestureRecognizer);
 }
 - (void)listClosePanned:(UIPanGestureRecognizer *)pan {
+    ApolloFullFrameRateFollowGesture(pan, 0.5);
     CGFloat dx = [pan translationInView:self.view].x;
     CGFloat vx = [pan velocityInView:self.view].x;
     switch (pan.state) {
@@ -1444,7 +1442,18 @@ CGRect ApolloDuoSplitContentFrame(UIViewController *controller, UIView *coordina
     // strip. Only the leading sidebar is excluded from this alignment band.
     insets.right = 0.0;
     CGRect content = UIEdgeInsetsInsetRect(view.bounds, insets);
-    return [coordinateView convertRect:content fromView:view];
+    CGRect column = [coordinateView convertRect:content fromView:view];
+    // A page rests at its navigation view's origin, but a push parks the
+    // outgoing page at its parallax offset as soon as an interactive peek
+    // begins. Map views inside the page through the page at rest, so what
+    // lays out mid-transition moves with the page instead of across it.
+    UIViewController *page = controller == nav ? nil : controller;
+    while (page.parentViewController && page.parentViewController != nav) page = page.parentViewController;
+    UIView *pageView = page.parentViewController == nav ? page.viewIfLoaded : nil;
+    if (pageView && [coordinateView isDescendantOfView:pageView]) {
+        column.origin.x = CGRectGetMinX([coordinateView convertRect:content fromView:pageView]);
+    }
+    return column;
 }
 
 // Media covering the screen from a column's navigation view covers the whole
@@ -1587,6 +1596,11 @@ BOOL ApolloDuoSplitDismissPostsList(UINavigationController *nav) {
     [state.host setListVisible:NO animated:!UIAccessibilityIsReduceMotionEnabled()];
     ApolloLog(@"[PostsTab] Closed subreddit list");
     return YES;
+}
+
+BOOL ApolloDuoSplitPostsListCanClose(UINavigationController *nav) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    return state.split && state.feed && !state.changing && state.host.listVisible && !state.host.listPinned;
 }
 
 // A Posts-tab reselect at the feed root reveals the drawer. Other tabs and the
@@ -3061,6 +3075,11 @@ BOOL ApolloDuoSplitBeginListDrag(UINavigationController *nav) {
     if (!state.split || !state.feed || state.changing) return NO;
     return [state.host beginListDrag:YES];
 }
+BOOL ApolloDuoSplitBeginListCloseDrag(UINavigationController *nav) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    if (!state.split || !state.feed || state.changing || !state.host.listVisible) return NO;
+    return [state.host beginListDrag:NO];
+}
 CGFloat ApolloDuoSplitListDragTravel(UINavigationController *nav) {
     return [ApolloDuoSplitStateForNavigation(nav, NO).host listTravel];
 }
@@ -3083,6 +3102,15 @@ void ApolloDuoSplitEndListDrag(UINavigationController *nav, BOOL show, CGFloat v
 static __thread void *sDuoSplitReleaseGesture;
 static __thread void *sDuoSplitReleaseView;
 static __thread CGFloat sDuoSplitReleaseScale = 1.0;
+// The rail's pan swaps its axes after this hook, so its scale goes on y.
+static __thread BOOL sDuoSplitReleaseAlongY;
+
+static __weak UINavigationController *sDuoTabBarNativeNav;
+static __weak UIGestureRecognizer *sDuoTabBarNativePan;
+void ApolloDuoSplitSetTabBarNativePan(UINavigationController *nav, UIGestureRecognizer *pan) {
+    sDuoTabBarNativeNav = nav;
+    sDuoTabBarNativePan = pan;
+}
 
 static CGFloat ApolloDuoSplitNativeReleaseScale(UINavigationController *nav, UIPanGestureRecognizer *gesture) {
     if (gesture.state != UIGestureRecognizerStateEnded && gesture.state != UIGestureRecognizerStateCancelled) return 1.0;
@@ -3095,6 +3123,11 @@ static CGFloat ApolloDuoSplitNativeReleaseScale(UINavigationController *nav, UIP
     CGFloat viewWidth = CGRectGetWidth(nav.view.bounds);
     CGFloat visibleRight = MIN(CGRectGetMaxX(pane), viewWidth - nav.view.safeAreaInsets.right);
     CGFloat paneWidth = CGRectIsNull(pane) ? 0 : visibleRight - CGRectGetMinX(pane);
+    // Tab bar swipe: half the visible bar also completes (the rail is shorter than a wide pane).
+    if (gesture == sDuoTabBarNativePan) {
+        CGFloat barLength = ApolloDuoTabBarSwipeLength(gesture);
+        if (barLength > 0 && (paneWidth <= 0 || barLength < paneWidth)) paneWidth = barLength;
+    }
     return paneWidth > 0 && paneWidth < viewWidth ? viewWidth / paneWidth : 1.0;
 }
 
@@ -3106,24 +3139,34 @@ static void ApolloDuoSplitRunNativePan(UINavigationController *nav, UIPanGesture
     }
     void *previousGesture = sDuoSplitReleaseGesture, *previousView = sDuoSplitReleaseView;
     CGFloat previousScale = sDuoSplitReleaseScale;
+    BOOL previousAlongY = sDuoSplitReleaseAlongY;
     sDuoSplitReleaseGesture = (__bridge void *)gesture;
     sDuoSplitReleaseView = (__bridge void *)nav.view;
     sDuoSplitReleaseScale = scale;
+    sDuoSplitReleaseAlongY = gesture == sDuoTabBarNativePan
+        && CGRectGetHeight(gesture.view.bounds) > CGRectGetWidth(gesture.view.bounds);
     handler();
     sDuoSplitReleaseGesture = previousGesture;
     sDuoSplitReleaseView = previousView;
     sDuoSplitReleaseScale = previousScale;
+    sDuoSplitReleaseAlongY = previousAlongY;
 }
 
-// Apollo's own interactive Back is following the finger (or releasing) on
-// `nav`. A pop it drives is a page pop, never one of the split's own.
-static BOOL ApolloDuoSplitNativeBackActive(UINavigationController *nav) {
-    Ivar ivar = class_getInstanceVariable(nav.class, "leftScreenEdgePanGestureRecognizer");
-    UIGestureRecognizer *pan = ivar ? object_getIvar(nav, ivar) : nil;
-    if (![pan isKindOfClass:UIGestureRecognizer.class]) return NO;
+static BOOL ApolloDuoSplitGestureIsActive(UIGestureRecognizer *pan) {
     UIGestureRecognizerState state = pan.state;
     return state == UIGestureRecognizerStateBegan || state == UIGestureRecognizerStateChanged
         || state == UIGestureRecognizerStateEnded;
+}
+
+// Apollo's own interactive Back is following the finger (or releasing) on
+// `nav`, from its edge pan or the tab bar's. A pop it drives is a page pop,
+// never one of the split's own.
+static BOOL ApolloDuoSplitNativeBackActive(UINavigationController *nav) {
+    UIGestureRecognizer *tabBarPan = sDuoTabBarNativePan;
+    if (tabBarPan && nav == sDuoTabBarNativeNav && ApolloDuoSplitGestureIsActive(tabBarPan)) return YES;
+    Ivar ivar = class_getInstanceVariable(nav.class, "leftScreenEdgePanGestureRecognizer");
+    UIGestureRecognizer *pan = ivar ? object_getIvar(nav, ivar) : nil;
+    return [pan isKindOfClass:UIGestureRecognizer.class] && ApolloDuoSplitGestureIsActive(pan);
 }
 
 static UITableView *ApolloDuoSplitFindTable(UIView *view) {
@@ -3234,6 +3277,10 @@ static UIViewController *ApolloDuoSplitForwardPage(UINavigationController *nav) 
     if (![storage respondsToSelector:@selector(firstObject)]) return nil;
     id page = [storage firstObject];
     return [page isKindOfClass:UIViewController.class] ? page : nil;
+}
+
+BOOL ApolloDuoSplitHasForwardPage(UINavigationController *nav) {
+    return ApolloDuoSplitForwardPage(nav) != nil;
 }
 
 // Apollo records forward pages when its own pop override runs, and forgets
@@ -5629,7 +5676,8 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
 - (CGPoint)translationInView:(UIView *)view {
     CGPoint translation = %orig(view);
     if ((__bridge void *)self == sDuoSplitReleaseGesture && (__bridge void *)view == sDuoSplitReleaseView) {
-        translation.x *= sDuoSplitReleaseScale;
+        if (sDuoSplitReleaseAlongY) translation.y *= sDuoSplitReleaseScale;
+        else translation.x *= sDuoSplitReleaseScale;
     }
     return translation;
 }

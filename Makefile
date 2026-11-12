@@ -225,6 +225,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloPerPostCommentSort.xm \
     $(SRC_DIR)/ApolloURLOpenCommentSort.xm \
     $(SRC_DIR)/ApolloLiquidGlass.xm \
+    $(SRC_DIR)/ApolloFrameRate.m \
     $(SRC_DIR)/ApolloNavigationActions.xm \
     $(SRC_DIR)/ApolloNavigationTitlePresentation.xm \
     $(SRC_DIR)/ApolloTabBarTitles.xm \

@@ -2,7 +2,9 @@
 #import "ApolloDuoSplitView.h"
 #import "ApolloCommon.h"
 #import "ApolloDuoPaneDrag.h"
+#import "ApolloFrameRate.h"
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import <UIKit/UIGestureRecognizerSubclass.h>
 
 // Apollo's pans use the whole navigation surface for edge checks. On Duo a
@@ -14,9 +16,8 @@
 // a thread above the Posts backstop slides out with the finger and closes its
 // column; any other Back runs the split's own animated pop. Keep row swipe
 // actions elsewhere, and honor Apollo's navigation-gesture opt-out.
-static BOOL ApolloDuoSwipeEnvironmentAllows(UINavigationController *navigation) {
+static BOOL ApolloDuoNavigationEnvironmentAllows(UINavigationController *navigation) {
     BOOL eligible = ApolloDeviceIsDuo() && navigation.viewIfLoaded.window
-        && ![NSUserDefaults.standardUserDefaults boolForKey:@"DisableNavigationGestures"]
         && !ApolloDuoSplitIsResizing() && !navigation.transitionCoordinator
         && !navigation.presentedViewController && !navigation.topViewController.presentedViewController
         && !navigation.isBeingDismissed;
@@ -29,13 +30,24 @@ static BOOL ApolloDuoSwipeEnvironmentAllows(UINavigationController *navigation) 
     return YES;
 }
 
-static BOOL ApolloDuoBackSwipeCanNavigate(UINavigationController *navigation) {
+static BOOL ApolloDuoSwipeEnvironmentAllows(UINavigationController *navigation) {
+    return ![NSUserDefaults.standardUserDefaults boolForKey:@"DisableNavigationGestures"]
+        && ApolloDuoNavigationEnvironmentAllows(navigation);
+}
+
+// `honorOptOut` NO: Swipe Tab Bar to Navigate, which Disable Navigation Gestures doesn't cover.
+static BOOL ApolloDuoBackCanNavigate(UINavigationController *navigation, BOOL honorOptOut) {
     // A visited profile is a visit of the whole account split, header column
     // included: from either column, Back leaves the profile.
     BOOL pane = (navigation.viewControllers.count > 1 || ApolloDuoSplitCanRevealPostsListWithSwipe(navigation))
         && ApolloDuoSplitAllowsNavigationSwipe(navigation)
         && ApolloDuoSplitDetailNavigation(navigation) == navigation;
-    return (pane || ApolloDuoSplitCanReturnFromVisitedProfile(navigation)) && ApolloDuoSwipeEnvironmentAllows(navigation);
+    if (!pane && !ApolloDuoSplitCanReturnFromVisitedProfile(navigation)) return NO;
+    return honorOptOut ? ApolloDuoSwipeEnvironmentAllows(navigation) : ApolloDuoNavigationEnvironmentAllows(navigation);
+}
+
+static BOOL ApolloDuoBackSwipeCanNavigate(UINavigationController *navigation) {
+    return ApolloDuoBackCanNavigate(navigation, YES);
 }
 
 // Gestures > Disable Left Swipes turns off the row actions a right swipe would
@@ -199,12 +211,16 @@ BOOL ApolloDuoPaneBackIsNative(UINavigationController *navigation) {
         && ApolloDuoSplitPopRevealsContent(navigation);
 }
 
-static ApolloDuoBackRoute ApolloDuoPaneBackRoute(UINavigationController *navigation) {
-    return ApolloDuoBackRouteFor(ApolloDuoBackSwipeCanNavigate(navigation),
+static ApolloDuoBackRoute ApolloDuoBackRouteIn(UINavigationController *navigation, BOOL honorOptOut) {
+    return ApolloDuoBackRouteFor(ApolloDuoBackCanNavigate(navigation, honorOptOut),
                                  ApolloDuoPaneBackIsNative(navigation),
                                  ApolloDuoSplitCanRevealPostsListWithSwipe(navigation)
                                      && ApolloDuoBackSwipeRevealsAtRoot(navigation),
                                  ApolloDuoSplitCanDragThreadClosed(navigation));
+}
+
+static ApolloDuoBackRoute ApolloDuoPaneBackRoute(UINavigationController *navigation) {
+    return ApolloDuoBackRouteIn(navigation, YES);
 }
 
 static UIGestureRecognizer *ApolloDuoNativeBackPan(UINavigationController *navigation) {
@@ -235,6 +251,8 @@ static BOOL ApolloDuoIsScrollPan(UIGestureRecognizer *gesture) {
 @property(nonatomic) BOOL forwardSplit;
 // A Pop-route Back follows the finger over the split's pictures.
 @property(nonatomic) BOOL coverFollows;
+// The tab bar's length when the tab bar drives this drag, else 0.
+@property(nonatomic) CGFloat barLength;
 // Recognizes as soon as a touch the Back drag accepts moves clearly sideways,
 // so the row under the finger gets touchesCancelled and drops its highlight
 // before the drag itself is sure. Either direction: a leftward move is a row
@@ -298,6 +316,7 @@ static NSHashTable<ApolloDuoBackSwipe *> *sDuoPaneDrags;
     // Nothing to do: recognizing is the point (cancelsTouchesInView clears the row highlight).
 }
 - (void)forwardPanned:(UIPanGestureRecognizer *)pan {
+    ApolloFullFrameRateFollowGesture(pan, 0.5);
     UINavigationController *navigation = self.navigation;
     CGFloat shown = -[pan translationInView:nil].x;
     CGFloat vx = [pan velocityInView:nil].x;
@@ -321,7 +340,7 @@ static NSHashTable<ApolloDuoBackSwipe *> *sDuoPaneDrags;
             BOOL splitOwned = self.forwardSplit;
             CGFloat travel = splitOwned ? ApolloDuoSplitCoverDragTravel(navigation) : ApolloDuoSplitRestoreDragTravel(navigation);
             if (travel <= 0) travel = CGRectGetWidth(navigation.view.bounds) / 2;
-            BOOL restore = ApolloDuoDragCommits(ApolloDuoDragClamp(shown, travel), travel, -vx);
+            BOOL restore = ApolloDuoBarDragCommits(ApolloDuoDragClamp(shown, travel), travel, -vx, self.barLength);
             if (self.forwardFollows && splitOwned) ApolloDuoSplitEndCoverDrag(navigation, restore, shown, vx);
             else if (self.forwardFollows) ApolloDuoSplitEndRestoreDrag(navigation, restore, shown, vx);
             else if (restore && splitOwned) ApolloDuoSplitForwardInSplit(navigation);
@@ -357,6 +376,7 @@ static NSHashTable<ApolloDuoBackSwipe *> *sDuoPaneDrags;
     [self cancelRecognizer:self.forwardSwipe];
 }
 - (void)panned:(UIPanGestureRecognizer *)pan {
+    ApolloFullFrameRateFollowGesture(pan, 0.5);
     UINavigationController *navigation = self.navigation;
     CGFloat dx = [pan translationInView:nil].x;
     CGFloat vx = [pan velocityInView:nil].x;
@@ -436,17 +456,17 @@ static NSHashTable<ApolloDuoBackSwipe *> *sDuoPaneDrags;
         self.coverFollows = NO;
         CGFloat travel = ApolloDuoSplitCoverDragTravel(navigation);
         CGFloat shown = ApolloDuoDragClamp(dx, travel);
-        ApolloDuoSplitEndCoverDrag(navigation, !cancelled && ApolloDuoDragCommits(shown, travel, vx), shown, vx);
+        ApolloDuoSplitEndCoverDrag(navigation, !cancelled && ApolloDuoBarDragCommits(shown, travel, vx, self.barLength), shown, vx);
         return;
     }
     if (route == ApolloDuoBackRouteDrawer) {
         CGFloat travel = ApolloDuoSplitListDragTravel(navigation);
         CGFloat shown = ApolloDuoDragClamp(self.start + dx, travel);
-        ApolloDuoSplitEndListDrag(navigation, !cancelled && ApolloDuoDragCommits(shown, travel, vx), vx);
+        ApolloDuoSplitEndListDrag(navigation, !cancelled && ApolloDuoBarDragCommits(shown, travel, vx, self.barLength), vx);
     } else if (route == ApolloDuoBackRouteCloseThread) {
         CGFloat travel = ApolloDuoSplitThreadDragTravel(navigation);
         CGFloat offset = ApolloDuoDragClamp(self.start + dx, travel);
-        ApolloDuoSplitEndThreadDrag(navigation, !cancelled && ApolloDuoDragCommits(offset, travel, vx), offset, vx);
+        ApolloDuoSplitEndThreadDrag(navigation, !cancelled && ApolloDuoBarDragCommits(offset, travel, vx, self.barLength), offset, vx);
     }
 }
 @end
@@ -456,8 +476,10 @@ BOOL ApolloDuoHasBackSwipe(UINavigationController *navigation) {
     return objc_getAssociatedObject(navigation, &kApolloDuoBackSwipe) != nil;
 }
 
+static void ApolloDuoCancelTabBarSwipe(void);
 void ApolloDuoCancelPaneDrags(void) {
     for (ApolloDuoBackSwipe *owner in sDuoPaneDrags.allObjects) [owner cancel];
+    ApolloDuoCancelTabBarSwipe();
 }
 
 void ApolloDuoInstallBackSwipe(UINavigationController *navigation) {
@@ -490,4 +512,179 @@ void ApolloDuoInstallBackSwipe(UINavigationController *navigation) {
             queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) { ApolloDuoCancelPaneDrags(); }];
     });
     [sDuoPaneDrags addObject:owner];
+}
+
+// Swipe Tab Bar to Navigate while the tab shows columns. Apollo's handler
+// would navigate the tab's outer stack, which holds the columns as one page,
+// so the swipe runs the pane drags on the pane a Back addresses instead.
+// With nothing left in that direction it does nothing.
+typedef NS_ENUM(NSInteger, ApolloDuoTabBarSwipeKind) {
+    ApolloDuoTabBarSwipeApollo = 0, // Apollo's handler runs
+    ApolloDuoTabBarSwipeIgnore,     // nothing that way
+    ApolloDuoTabBarSwipeNative,     // Apollo's interactive Back/Forward on the pane
+    ApolloDuoTabBarSwipeBack,       // pane drag Back
+    ApolloDuoTabBarSwipeForward,    // restore or split forward
+    ApolloDuoTabBarSwipeCloseList,  // subreddit list closes
+};
+
+static ApolloDuoTabBarSwipeKind sDuoTabBarSwipeKind;
+static __weak UINavigationController *sDuoTabBarSwipeNavigation;
+static __weak ApolloDuoBackSwipe *sDuoTabBarSwipeOwner;
+static __weak UIPanGestureRecognizer *sDuoTabBarSwipePan;
+static CGFloat sDuoTabBarSwipeListStart;
+
+static ApolloDuoBackSwipe *ApolloDuoPaneDragOwner(UINavigationController *navigation) {
+    if (!navigation) return nil;
+    ApolloDuoInstallBackSwipe(navigation);
+    return objc_getAssociatedObject(navigation, &kApolloDuoBackSwipe);
+}
+
+static void ApolloDuoCancelTabBarSwipe(void) {
+    UIPanGestureRecognizer *pan = sDuoTabBarSwipePan;
+    if (sDuoTabBarSwipeKind <= ApolloDuoTabBarSwipeIgnore || !pan) return;
+    UIGestureRecognizerState state = pan.state;
+    if (state != UIGestureRecognizerStateBegan && state != UIGestureRecognizerStateChanged) return;
+    // Delivers Cancelled, which springs the drag back.
+    pan.enabled = NO;
+    pan.enabled = YES;
+}
+
+static ApolloDuoTabBarSwipeKind ApolloDuoTabBarSwipeBegin(UINavigationController *outer, UIPanGestureRecognizer *pan,
+                                                          UINavigationController **target) {
+    UINavigationController *pane = ApolloDuoSplitDetailNavigation(outer);
+    if (!pane || pane == outer) return ApolloDuoTabBarSwipeApollo;
+    if (!ApolloDuoNavigationEnvironmentAllows(pane)) return ApolloDuoTabBarSwipeIgnore;
+    // The rail's down reads as rightward (ApolloTabBarSwipePanGestureRecognizer).
+    CGFloat along = [pan velocityInView:pan.view].x;
+    if (fabs(along) < 1.0) along = [pan translationInView:pan.view].x;
+    UINavigationController *feed = ApolloDuoSplitFeedNavigation(outer);
+    if (along < 0.0) {
+        // Back from the feed's root opened the subreddit list; Forward closes it.
+        if (feed && ApolloDuoSplitPostsListCanClose(feed)) {
+            *target = feed;
+            return ApolloDuoTabBarSwipeCloseList;
+        }
+        if (feed && ApolloDuoSplitCanRestoreClosedThread(feed)) {
+            *target = feed;
+            return ApolloDuoTabBarSwipeForward;
+        }
+        *target = pane;
+        if (ApolloDuoSplitCanForwardInSplit(pane)) return ApolloDuoTabBarSwipeForward;
+        return ApolloDuoSplitHasForwardPage(pane) ? ApolloDuoTabBarSwipeNative : ApolloDuoTabBarSwipeIgnore;
+    }
+    *target = pane;
+    switch (ApolloDuoBackRouteIn(pane, NO)) {
+        case ApolloDuoBackRouteNative:
+            return ApolloDuoTabBarSwipeNative;
+        case ApolloDuoBackRouteDrawer:
+        case ApolloDuoBackRouteCloseThread:
+        case ApolloDuoBackRoutePop:
+            return ApolloDuoTabBarSwipeBack;
+        default:
+            return ApolloDuoTabBarSwipeIgnore;
+    }
+}
+
+// Liquid Glass's item platter: the pan's view on the rail, a child of the bottom UITabBar.
+CGFloat ApolloDuoTabBarSwipeLength(UIGestureRecognizer *pan) {
+    UIView *bar = pan.view;
+    if (bar && !strstr(class_getName(bar.class), "TabBarItemPlatterView")) {
+        for (UIView *child in bar.subviews) {
+            if (!child.hidden && strstr(class_getName(child.class), "TabBarItemPlatterView")) {
+                bar = child;
+                break;
+            }
+        }
+    }
+    CGRect bounds = bar.bounds;
+    return MAX(CGRectGetWidth(bounds), CGRectGetHeight(bounds));
+}
+
+static void ApolloDuoTabBarSwipeCloseListPanned(UINavigationController *feed, UIPanGestureRecognizer *pan) {
+    CGFloat dx = [pan translationInView:nil].x;
+    CGFloat vx = [pan velocityInView:nil].x;
+    CGFloat start = sDuoTabBarSwipeListStart;
+    switch (pan.state) {
+        case UIGestureRecognizerStateBegan:
+        case UIGestureRecognizerStateChanged:
+            if (pan.state == UIGestureRecognizerStateChanged && ApolloDuoSplitIsResizing()) {
+                ApolloDuoCancelTabBarSwipe();
+                break;
+            }
+            ApolloDuoSplitMoveListDrag(feed, start + dx);
+            break;
+        case UIGestureRecognizerStateEnded: {
+            CGFloat hidden = start - ApolloDuoDragClamp(start + dx, ApolloDuoSplitListDragTravel(feed));
+            ApolloDuoSplitEndListDrag(feed, !ApolloDuoBarDragCommits(hidden, start, -vx, ApolloDuoTabBarSwipeLength(pan)), vx);
+            break;
+        }
+        case UIGestureRecognizerStateCancelled:
+        case UIGestureRecognizerStateFailed:
+            ApolloDuoSplitEndListDrag(feed, YES, 0);
+            break;
+        default:
+            break;
+    }
+}
+
+BOOL ApolloDuoTabBarSwipePanned(UINavigationController *outer, UIPanGestureRecognizer *pan) {
+    UIGestureRecognizerState state = pan.state;
+    if (state == UIGestureRecognizerStateBegan) {
+        sDuoTabBarSwipeKind = ApolloDuoTabBarSwipeApollo;
+        sDuoTabBarSwipeNavigation = nil;
+        sDuoTabBarSwipeOwner = nil;
+        sDuoTabBarSwipePan = pan;
+        UINavigationController *target = nil;
+        ApolloDuoTabBarSwipeKind kind = ApolloDeviceIsDuo() && outer
+            ? ApolloDuoTabBarSwipeBegin(outer, pan, &target) : ApolloDuoTabBarSwipeApollo;
+        ApolloDuoBackSwipe *owner = nil;
+        if (kind == ApolloDuoTabBarSwipeBack || kind == ApolloDuoTabBarSwipeForward) {
+            owner = ApolloDuoPaneDragOwner(target);
+            if (!owner) kind = ApolloDuoTabBarSwipeIgnore;
+        } else if (kind == ApolloDuoTabBarSwipeCloseList) {
+            if (ApolloDuoSplitBeginListCloseDrag(target)) sDuoTabBarSwipeListStart = ApolloDuoSplitListDragStart(target);
+            else kind = ApolloDuoTabBarSwipeIgnore;
+        }
+        if (kind == ApolloDuoTabBarSwipeBack) owner.route = ApolloDuoBackRouteIn(target, NO);
+        owner.barLength = ApolloDuoTabBarSwipeLength(pan);
+        sDuoTabBarSwipeKind = kind;
+        sDuoTabBarSwipeNavigation = target;
+        sDuoTabBarSwipeOwner = owner;
+        if (kind != ApolloDuoTabBarSwipeApollo)
+            ApolloLog(@"[DuoSwipe] tab bar swipe began kind=%ld pages=%lu", (long)kind,
+                      (unsigned long)target.viewControllers.count);
+        if (kind == ApolloDuoTabBarSwipeNative) ApolloDuoSplitSetTabBarNativePan(target, pan);
+    }
+    ApolloDuoTabBarSwipeKind kind = sDuoTabBarSwipeKind;
+    UINavigationController *navigation = sDuoTabBarSwipeNavigation;
+    switch (kind) {
+        case ApolloDuoTabBarSwipeApollo:
+            return NO;
+        case ApolloDuoTabBarSwipeNative:
+            // Apollo's interactive handler, shared with its edge pans.
+            if ([navigation respondsToSelector:@selector(screenEdgePanned:)])
+                ((void (*)(id, SEL, id))objc_msgSend)(navigation, @selector(screenEdgePanned:), pan);
+            break;
+        case ApolloDuoTabBarSwipeBack:
+            [sDuoTabBarSwipeOwner panned:pan];
+            break;
+        case ApolloDuoTabBarSwipeForward:
+            [sDuoTabBarSwipeOwner forwardPanned:pan];
+            break;
+        case ApolloDuoTabBarSwipeCloseList:
+            ApolloDuoTabBarSwipeCloseListPanned(navigation, pan);
+            break;
+        default:
+            break;
+    }
+    if (state == UIGestureRecognizerStateEnded || state == UIGestureRecognizerStateCancelled
+        || state == UIGestureRecognizerStateFailed) {
+        if (kind == ApolloDuoTabBarSwipeNative) ApolloDuoSplitSetTabBarNativePan(nil, nil);
+        sDuoTabBarSwipeOwner.barLength = 0;
+        sDuoTabBarSwipeKind = ApolloDuoTabBarSwipeApollo;
+        sDuoTabBarSwipeNavigation = nil;
+        sDuoTabBarSwipeOwner = nil;
+        sDuoTabBarSwipePan = nil;
+    }
+    return YES;
 }

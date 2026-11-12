@@ -8,4 +8,9 @@ BOOL ApolloDuoHasBackSwipe(UINavigationController *navigation);
 BOOL ApolloDuoPaneBackIsNative(UINavigationController *navigation);
 /// Cancels every pane drag in flight (fold, rotation, hinge); each springs back.
 void ApolloDuoCancelPaneDrags(void);
+/// Swipe Tab Bar to Navigate while the tab shows columns. Send every state of
+/// Apollo's tab bar pan; NO when the tab shows no columns (Apollo's handler runs).
+BOOL ApolloDuoTabBarSwipePanned(UINavigationController *outer, UIPanGestureRecognizer *pan);
+/// The visible tab bar's length; half of it completes a held release.
+CGFloat ApolloDuoTabBarSwipeLength(UIGestureRecognizer *pan);
 __END_DECLS

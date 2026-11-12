@@ -2395,7 +2395,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         ? @"Swipe across the tab bar to navigate between screens."
         : nil;
     if (ApolloDuoUsesAdaptiveBars()) {
-        NSString *duoFooter = @"On iPhone Duo, Hide Tab Bar on Scroll, Hide Style, Scroll Behavior, and Swipe Tab Bar to Navigate apply only while open in portrait. The side rail always stays visible. Hide Header on Scroll works independently in every pose.";
+        NSString *duoFooter = @"On iPhone Duo, Hide Tab Bar on Scroll, Hide Style, and Scroll Behavior apply only while open in portrait. The side rail always stays visible. Hide Header on Scroll works independently in every pose. On the side rail, Swipe Tab Bar to Navigate goes back with a swipe down and forward with a swipe up.";
         footer = footer.length > 0
             ? [footer stringByAppendingFormat:@"\n\n%@", duoFooter]
             : duoFooter;

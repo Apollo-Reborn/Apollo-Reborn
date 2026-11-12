@@ -32,6 +32,12 @@ int main(void) {
     check(!ApolloDuoDragCommits(400, 500, -400), "a flick back cancels at any distance");
     check(!ApolloDuoDragCommits(0, 500, 900), "a flick that never moved does nothing");
     check(!ApolloDuoDragCommits(100, 0, 0), "no travel, no commit");
+    check(ApolloDuoBarDragCommits(130, 900, 0, 256), "a held release past half a short bar completes a long travel");
+    check(!ApolloDuoBarDragCommits(120, 900, 0, 256), "short of half the bar and of 35% springs back");
+    check(!ApolloDuoBarDragCommits(130, 900, -400, 256), "a flick back still cancels past half the bar");
+    check(ApolloDuoBarDragCommits(180, 500, 0, 0) && !ApolloDuoBarDragCommits(170, 500, 0, 0),
+          "without a bar the pane rule applies unchanged");
+    check(ApolloDuoBarDragCommits(140, 392, 0, 700), "35% of the travel still completes before half a long bar");
 
     // Clamp.
     check(ApolloDuoDragClamp(-10, 300) == 0 && ApolloDuoDragClamp(350, 300) == 300
