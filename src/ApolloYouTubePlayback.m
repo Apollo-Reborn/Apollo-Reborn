@@ -29,9 +29,18 @@
 // call play() again in that frame through callAsyncJavaScript. WebKit runs
 // script from the app as a user action (WKWebView's evaluate/call APIs force a
 // user gesture), so the retry is allowed and the video goes fullscreen as
-// usual. One retry per page, and only while Apollo's loading screen is up.
-// Low Power Mode keeps Apollo's own Play Video screen: when the loading screen
-// has that button, we leave it alone.
+// usual. Low Power Mode keeps Apollo's own Play Video screen: when the loading
+// screen has that button, we leave it alone.
+//
+// Only an autoplay refusal is handled here. When the video's owner doesn't
+// allow it to be embedded (YouTube's onError 101/150), Apollo's own error
+// screen and its YouTube/Safari handoff stay as they are.
+//
+// The message handler can be reached by any script in any frame of the page,
+// so the decision to retry is native (ApolloYouTubePlaybackRetryDecision): the
+// message has to come from YouTube's HTTPS player frame, and each playback
+// (one YouTubeLoadingView) gets one retry, recorded on that loading view before
+// the retry runs. A duplicate or forged message after that does nothing.
 
 #import "ApolloYouTubePlayback.h"
 
@@ -78,7 +87,42 @@ static NSString *const kApolloYouTubePlaybackRetryScript = @""
 "await video.play();"
 "return 'playing';";
 
+// BEGIN_YOUTUBE_RETRY_DECISION (tests/run_youtube_playback_retry_tests.sh
+// compiles this part on the Mac.)
+
+// The IFrame API puts the player in an https://www.youtube.com/embed/... frame
+// (www.youtube-nocookie.com when a page asks for privacy-enhanced mode). Apollo's
+// own page around it is http://<bundle id>, and the player can hold other
+// frames (ads, sign-in). Only the player frame's refusal is ours to retry.
+BOOL ApolloYouTubePlaybackIsPlayerFrame(BOOL isMainFrame, NSString *scheme, NSString *host, NSInteger port) {
+    if (isMainFrame) return NO;
+    // Checked first: a compare sent to nil returns 0, which reads as NSOrderedSame.
+    if (scheme.length == 0 || host.length == 0) return NO;
+    if ([scheme caseInsensitiveCompare:@"https"] != NSOrderedSame) return NO;
+    if (port != 0 && port != 443) return NO;
+    return [host caseInsensitiveCompare:@"www.youtube.com"] == NSOrderedSame ||
+           [host caseInsensitiveCompare:@"www.youtube-nocookie.com"] == NSOrderedSame;
+}
+
+ApolloYouTubePlaybackRetryDecision ApolloYouTubePlaybackRetryDecisionFor(id body, BOOL isPlayerFrame,
+                                                                         BOOL hasLoadingView, BOOL loadingClosing,
+                                                                         BOOL errorOccurred, BOOL lowPowerPlayButton,
+                                                                         BOOL alreadyRetried) {
+    if (![body isEqual:@"refused"]) return ApolloYouTubePlaybackRetryIgnoreMessage;
+    if (!isPlayerFrame) return ApolloYouTubePlaybackRetryIgnoreFrame;
+    if (!hasLoadingView) return ApolloYouTubePlaybackRetryPlayerClosed;
+    if (loadingClosing) return ApolloYouTubePlaybackRetryPlayerClosing;
+    if (errorOccurred) return ApolloYouTubePlaybackRetryErrorScreen;
+    if (lowPowerPlayButton) return ApolloYouTubePlaybackRetryLowPowerScreen;
+    if (alreadyRetried) return ApolloYouTubePlaybackRetryAlreadyRetried;
+    return ApolloYouTubePlaybackRetryNow;
+}
+
+// END_YOUTUBE_RETRY_DECISION
+
 static Class sApolloYouTubeLoadingViewClass;
+// On the YouTubeLoadingView: this playback already got its retry.
+static char kApolloYouTubePlaybackRetriedKey;
 
 // Apollo adds its loading screen and the web view to the same window
 // (FUN_10072f28c) and removes both when the player closes. No loading screen
@@ -108,30 +152,53 @@ static BOOL ApolloYouTubeLoadingIsClosing(UIView *loading) {
 
 - (void)userContentController:(WKUserContentController *)userContentController
       didReceiveScriptMessage:(WKScriptMessage *)message {
-    // Any script in the embed frame can post here; only act on our own code.
-    if (![message.body isEqual:@"refused"]) return;
     WKWebView *webView = message.webView;
     WKFrameInfo *frame = message.frameInfo;
     if (!webView || !frame) return;
+    WKSecurityOrigin *origin = frame.securityOrigin;
+    BOOL playerFrame = ApolloYouTubePlaybackIsPlayerFrame(frame.isMainFrame, origin.protocol, origin.host, origin.port);
     UIView *loading = ApolloYouTubeLoadingViewForWebView(webView);
-    if (!loading || ApolloYouTubeLoadingIsClosing(loading)) {
-        ApolloLog(@"[YouTubePlayback] WebKit refused to autoplay, but the player is %@; leaving it",
-                  loading ? @"closing (Cancel)" : @"closed");
-        return;
-    }
-    if (ApolloReadBoolIvar(loading, "errorOccurred", NO)) {
-        ApolloLog(@"[YouTubePlayback] WebKit refused to autoplay after Apollo's YouTube error screen; leaving it");
-        return;
-    }
     // Apollo builds its Low Power Mode "Play Video" button only when Low Power
     // Mode is on as the loading screen is made. That screen is Apollo's answer
     // to this same refusal, so it stays the user's tap.
-    if (ApolloObjectIvar(loading, "lowPowerModePlayButton")) {
-        ApolloLog(@"[YouTubePlayback] WebKit refused to autoplay; Apollo's Low Power Mode Play Video button is up, leaving it to the user");
-        return;
+    ApolloYouTubePlaybackRetryDecision decision = ApolloYouTubePlaybackRetryDecisionFor(
+        message.body, playerFrame,
+        loading != nil,
+        loading && ApolloYouTubeLoadingIsClosing(loading),
+        loading && ApolloReadBoolIvar(loading, "errorOccurred", NO),
+        loading && ApolloObjectIvar(loading, "lowPowerModePlayButton") != nil,
+        loading && objc_getAssociatedObject(loading, &kApolloYouTubePlaybackRetriedKey) != nil);
+
+    switch (decision) {
+        case ApolloYouTubePlaybackRetryIgnoreMessage:
+            return;   // not our watcher's message
+        case ApolloYouTubePlaybackRetryIgnoreFrame:
+            ApolloLog(@"[YouTubePlayback] ignored a refusal from %@ (%@://%@:%ld), not YouTube's player frame",
+                      frame.isMainFrame ? @"the main frame" : @"a subframe", origin.protocol ?: @"?", origin.host ?: @"?", (long)origin.port);
+            return;
+        case ApolloYouTubePlaybackRetryPlayerClosed:
+            ApolloLog(@"[YouTubePlayback] WebKit refused to autoplay, but the player is closed; leaving it");
+            return;
+        case ApolloYouTubePlaybackRetryPlayerClosing:
+            ApolloLog(@"[YouTubePlayback] WebKit refused to autoplay, but the player is closing (Cancel); leaving it");
+            return;
+        case ApolloYouTubePlaybackRetryErrorScreen:
+            ApolloLog(@"[YouTubePlayback] WebKit refused to autoplay after Apollo's YouTube error screen; leaving it");
+            return;
+        case ApolloYouTubePlaybackRetryLowPowerScreen:
+            ApolloLog(@"[YouTubePlayback] WebKit refused to autoplay; Apollo's Low Power Mode Play Video button is up, leaving it to the user");
+            return;
+        case ApolloYouTubePlaybackRetryAlreadyRetried:
+            ApolloLog(@"[YouTubePlayback] another refusal for this playback; it already had its one retry, leaving it");
+            return;
+        case ApolloYouTubePlaybackRetryNow:
+            break;
     }
-    ApolloLog(@"[YouTubePlayback] WebKit refused to autoplay the video (lowPower=%d thermal=%ld); starting it as a user action",
-              NSProcessInfo.processInfo.isLowPowerModeEnabled, (long)NSProcessInfo.processInfo.thermalState);
+    // Recorded before the call, so a message that arrives while the retry is
+    // still running can't start a second one.
+    objc_setAssociatedObject(loading, &kApolloYouTubePlaybackRetriedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloLog(@"[YouTubePlayback] WebKit refused to autoplay the video in %@ (lowPower=%d thermal=%ld); starting it as a user action",
+              origin.host, NSProcessInfo.processInfo.isLowPowerModeEnabled, (long)NSProcessInfo.processInfo.thermalState);
     [webView callAsyncJavaScript:kApolloYouTubePlaybackRetryScript
                        arguments:nil
                          inFrame:frame
