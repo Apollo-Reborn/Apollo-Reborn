@@ -7,6 +7,10 @@
 #import "ApolloMarkdownToolbarGif.h"
 #import "fishhook.h"
 
+// BEGIN_ORIGINAL_GIF_STORE (tests/run_upload_original_gif_tests.sh compiles from
+// here to END_ORIGINAL_GIF_STORE on the Mac, with stubs for ApolloLog and the
+// active-composer lookup).
+
 // Reddit's native image limit is about 20 MB, and Imgur and Image Chest take at
 // least that. A bigger GIF keeps Apollo's still rather than failing the upload.
 static const unsigned long long kApolloOriginalGIFMaxBytes = 20ULL * 1024ULL * 1024ULL;
@@ -19,7 +23,7 @@ static NSString *const kApolloOriginalGIFCaptureKey = @"ApolloUploadOriginalGIFC
 // One pass of Apollo's prep chain on the current thread (the item provider's
 // completion queue). Pointers are compared, never dereferenced.
 @interface ApolloOriginalGIFCapture : NSObject
-@property (nonatomic, strong) NSURL *gifURL;
+@property (nonatomic, strong) NSURL *gifURL;   // nil: a still (or one-frame GIF) pick
 @property (nonatomic) size_t frameCount;
 @property (nonatomic) const void *destination;
 @property (nonatomic, strong) NSMutableData *destinationData;
@@ -28,20 +32,24 @@ static NSString *const kApolloOriginalGIFCaptureKey = @"ApolloUploadOriginalGIFC
 @implementation ApolloOriginalGIFCapture
 @end
 
+// One pick in a comment/reply composer, filed under the digest of the JPEG
+// Apollo made from it. Stills are filed too (no GIF kept): a still whose JPEG
+// matches a kept GIF's must not be able to claim that GIF.
 @interface ApolloOriginalGIFEntry : NSObject
 @property (nonatomic, copy) NSData *jpegDigest;
-@property (nonatomic, strong) NSURL *gifFileURL;
+@property (nonatomic, copy) NSData *gifDigest;     // nil for a still
+@property (nonatomic, strong) NSURL *gifFileURL;   // nil for a still
+@property (nonatomic, weak) id composer;           // the composer it was picked in
 @property (nonatomic, strong) NSDate *createdAt;
+// Another pick in the same composer made the same JPEG from different content,
+// so the uploads can't be told apart (see ApolloOriginalGIFTakeEntryForDigest).
+@property (nonatomic) BOOL ambiguous;
 @end
 
 @implementation ApolloOriginalGIFEntry
 @end
 
 static NSMutableArray<ApolloOriginalGIFEntry *> *sApolloOriginalGIFEntries = nil;
-
-static CGImageSourceRef (*orig_CGImageSourceCreateWithURL)(CFURLRef, CFDictionaryRef) = NULL;
-static CGImageDestinationRef (*orig_CGImageDestinationCreateWithData)(CFMutableDataRef, CFStringRef, size_t, CFDictionaryRef) = NULL;
-static bool (*orig_CGImageDestinationFinalize)(CGImageDestinationRef) = NULL;
 
 BOOL ApolloUploadDataIsGIF(NSData *data) {
     if (data.length < 6) return NO;
@@ -71,12 +79,22 @@ static NSURL *ApolloOriginalGIFDirectory(void) {
     return directory;
 }
 
-// Caller holds the entries lock.
-static void ApolloOriginalGIFPruneLocked(void) {
+// Caller holds the entries lock. Drops entries that expired, whose composer is
+// gone (the draft was posted or discarded), or that belong to an earlier
+// composer once a different one is active, and deletes their kept files. So a
+// GIF from a draft that never uploaded can't be matched by a later composer.
+static void ApolloOriginalGIFPruneLocked(id currentComposer) {
     NSDate *cutoff = [NSDate dateWithTimeIntervalSinceNow:-kApolloOriginalGIFLifetime];
     NSMutableIndexSet *stale = [NSMutableIndexSet indexSet];
+    __block NSUInteger closedComposerEntries = 0;
     [sApolloOriginalGIFEntries enumerateObjectsUsingBlock:^(ApolloOriginalGIFEntry *entry, NSUInteger idx, __unused BOOL *stop) {
-        if ([entry.createdAt compare:cutoff] == NSOrderedAscending) [stale addIndex:idx];
+        id owner = entry.composer;
+        if (!owner || (currentComposer && owner != currentComposer)) {
+            [stale addIndex:idx];
+            closedComposerEntries++;
+        } else if ([entry.createdAt compare:cutoff] == NSOrderedAscending) {
+            [stale addIndex:idx];
+        }
     }];
     NSUInteger live = sApolloOriginalGIFEntries.count - stale.count;
     for (NSUInteger idx = 0; idx < sApolloOriginalGIFEntries.count && live > kApolloOriginalGIFMaxEntries; idx++) {
@@ -84,64 +102,121 @@ static void ApolloOriginalGIFPruneLocked(void) {
         [stale addIndex:idx];   // oldest first
         live--;
     }
+    if (stale.count == 0) return;
     [[sApolloOriginalGIFEntries objectsAtIndexes:stale] enumerateObjectsUsingBlock:^(ApolloOriginalGIFEntry *entry, __unused NSUInteger idx, __unused BOOL *stop) {
-        [[NSFileManager defaultManager] removeItemAtURL:entry.gifFileURL error:nil];
+        if (entry.gifFileURL) [[NSFileManager defaultManager] removeItemAtURL:entry.gifFileURL error:nil];
     }];
     [sApolloOriginalGIFEntries removeObjectsAtIndexes:stale];
+    if (closedComposerEntries > 0) {
+        ApolloLog(@"[OriginalGIF] Dropped %lu kept pick(s) from a composer that's no longer open", (unsigned long)closedComposerEntries);
+    }
 }
 
 // Apollo's JPEG is final: copy the GIF out of the item provider's temporary file
-// (deleted once its completion returns) and file it under the JPEG's digest.
+// (deleted once its completion returns) and file it under the JPEG's digest. A
+// still (gifURL nil) is filed with no GIF.
 static void ApolloOriginalGIFRemember(NSData *jpegData, NSURL *gifURL, size_t frameCount) {
     // Comments only: the post composer (galleries, video posters) and chat keep
     // Apollo's still for now.
-    if (ApolloActiveCommentComposerSubreddit().length == 0) return;
-    NSNumber *size = nil;
-    [gifURL getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
-    if (size.unsignedLongLongValue == 0 || size.unsignedLongLongValue > kApolloOriginalGIFMaxBytes) {
-        ApolloLog(@"[OriginalGIF] GIF is %@ bytes (limit %llu); uploading Apollo's still instead", size ?: @"?", kApolloOriginalGIFMaxBytes);
-        return;
-    }
+    id composer = ApolloActiveCommentComposer();
+    if (!composer) return;
     NSData *digest = ApolloOriginalGIFDigest(jpegData);
     if (!digest) return;
 
-    NSURL *directory = ApolloOriginalGIFDirectory();
-    [[NSFileManager defaultManager] createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:nil];
-    NSURL *copyURL = [directory URLByAppendingPathComponent:[NSUUID.UUID.UUIDString stringByAppendingPathExtension:@"gif"]];
-    NSError *copyError = nil;
-    if (![[NSFileManager defaultManager] copyItemAtURL:gifURL toURL:copyURL error:&copyError]) {
-        ApolloLog(@"[OriginalGIF] Could not keep the picked GIF (%@); uploading Apollo's still", copyError.localizedDescription ?: @"copy failed");
-        return;
+    NSURL *copyURL = nil;
+    NSData *gifDigest = nil;
+    NSNumber *size = nil;
+    if (gifURL) {
+        [gifURL getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
+        if (size.unsignedLongLongValue == 0 || size.unsignedLongLongValue > kApolloOriginalGIFMaxBytes) {
+            ApolloLog(@"[OriginalGIF] GIF is %@ bytes (limit %llu); uploading Apollo's still instead", size ?: @"?", kApolloOriginalGIFMaxBytes);
+        } else {
+            NSURL *directory = ApolloOriginalGIFDirectory();
+            [[NSFileManager defaultManager] createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:nil];
+            copyURL = [directory URLByAppendingPathComponent:[NSUUID.UUID.UUIDString stringByAppendingPathExtension:@"gif"]];
+            NSError *copyError = nil;
+            if ([[NSFileManager defaultManager] copyItemAtURL:gifURL toURL:copyURL error:&copyError]) {
+                gifDigest = ApolloOriginalGIFDigest([NSData dataWithContentsOfURL:copyURL options:NSDataReadingMappedIfSafe error:nil]);
+            } else {
+                ApolloLog(@"[OriginalGIF] Could not keep the picked GIF (%@); uploading Apollo's still", copyError.localizedDescription ?: @"copy failed");
+            }
+            if (!gifDigest) {
+                [[NSFileManager defaultManager] removeItemAtURL:copyURL error:nil];
+                copyURL = nil;
+            }
+        }
     }
 
     ApolloOriginalGIFEntry *entry = [ApolloOriginalGIFEntry new];
     entry.jpegDigest = digest;
+    entry.gifDigest = gifDigest;
     entry.gifFileURL = copyURL;
+    entry.composer = composer;
     entry.createdAt = [NSDate date];
     @synchronized([ApolloOriginalGIFEntry class]) {
         if (!sApolloOriginalGIFEntries) sApolloOriginalGIFEntries = [NSMutableArray array];
+        ApolloOriginalGIFPruneLocked(composer);
         [sApolloOriginalGIFEntries addObject:entry];
-        ApolloOriginalGIFPruneLocked();
     }
-    ApolloLog(@"[OriginalGIF] Kept picked GIF (%zu frames, %@ bytes) behind Apollo's %lu-byte still",
-              frameCount, size, (unsigned long)jpegData.length);
+    if (copyURL) {
+        ApolloLog(@"[OriginalGIF] Kept picked GIF (%zu frames, %@ bytes) behind Apollo's %lu-byte still",
+                  frameCount, size, (unsigned long)jpegData.length);
+    } else {
+        ApolloLog(@"[OriginalGIF] Noted a still pick (%lu-byte JPEG)", (unsigned long)jpegData.length);
+    }
 }
 
-// Removes and returns the oldest entry for this JPEG. Two GIFs with the same
-// first frame produce the same JPEG; consuming in pick order gives each upload
-// its own GIF instead of both getting the newest.
+// The kept GIF for an upload of this JPEG, removed from the store; nil uploads
+// Apollo's still.
+//
+// The JPEG is the only thing the upload carries back, and two picks can make the
+// same one: GIFs that share a first frame, or a still of that frame. Apollo
+// prepares every photo of a pick before uploading any of them (the picker's
+// completion counter, FUN_1001ce750, starts the uploads once all are done), but
+// it prepares them in parallel, so the order they reach the store isn't the
+// order they upload in. So a JPEG matched by picks with different content is
+// ambiguous: that upload and every later one for the same JPEG in this composer
+// get Apollo's still instead of a guess. Picks of the same GIF are
+// interchangeable and keep their animation.
 static ApolloOriginalGIFEntry *ApolloOriginalGIFTakeEntryForDigest(NSData *digest) {
     if (!digest) return nil;
+    id composer = ApolloActiveCommentComposer();
+    if (!composer) return nil;
     @synchronized([ApolloOriginalGIFEntry class]) {
-        ApolloOriginalGIFPruneLocked();
-        NSUInteger index = [sApolloOriginalGIFEntries indexOfObjectPassingTest:^BOOL(ApolloOriginalGIFEntry *entry, __unused NSUInteger idx, __unused BOOL *stop) {
-            return [entry.jpegDigest isEqualToData:digest];
+        ApolloOriginalGIFPruneLocked(composer);
+        NSIndexSet *matches = [sApolloOriginalGIFEntries indexesOfObjectsPassingTest:^BOOL(ApolloOriginalGIFEntry *entry, __unused NSUInteger idx, __unused BOOL *stop) {
+            return entry.composer == composer && [entry.jpegDigest isEqualToData:digest];
         }];
-        if (index == NSNotFound) return nil;
-        // Hold it strongly before the array lets go (a for-in variable isn't retained).
-        ApolloOriginalGIFEntry *entry = sApolloOriginalGIFEntries[index];
-        [sApolloOriginalGIFEntries removeObjectAtIndex:index];
-        return entry;
+        if (matches.count == 0) return nil;
+
+        __block BOOL ambiguous = NO;
+        __block NSData *firstGIFDigest = nil;
+        [[sApolloOriginalGIFEntries objectsAtIndexes:matches] enumerateObjectsUsingBlock:^(ApolloOriginalGIFEntry *entry, __unused NSUInteger idx, __unused BOOL *stop) {
+            if (entry.ambiguous || !entry.gifDigest) {
+                ambiguous = YES;
+            } else if (!firstGIFDigest) {
+                firstGIFDigest = entry.gifDigest;
+            } else if (![firstGIFDigest isEqualToData:entry.gifDigest]) {
+                ambiguous = YES;
+            }
+        }];
+
+        // Hold it strongly before the array lets go.
+        ApolloOriginalGIFEntry *entry = sApolloOriginalGIFEntries[matches.firstIndex];
+        [sApolloOriginalGIFEntries removeObjectAtIndex:matches.firstIndex];
+        if (!ambiguous) return entry;
+
+        // Every pick still waiting on this JPEG uploads as a still too, even once
+        // only one is left: it may be the other pick's upload that's next.
+        for (ApolloOriginalGIFEntry *other in sApolloOriginalGIFEntries) {
+            if (other.composer == composer && [other.jpegDigest isEqualToData:digest]) other.ambiguous = YES;
+        }
+        if (entry.gifFileURL) [[NSFileManager defaultManager] removeItemAtURL:entry.gifFileURL error:nil];
+        if (matches.count > 1 || entry.ambiguous) {
+            ApolloLog(@"[OriginalGIF] Picks in this composer made the same still from different images (%lu still waiting); uploading Apollo's still",
+                      (unsigned long)(matches.count - 1));
+        }
+        return nil;
     }
 }
 
@@ -176,22 +251,28 @@ NSURL *ApolloUploadOriginalGIFFileForBodyFile(NSURL *fileURL) {
 
 #pragma mark - Rebound ImageIO calls (Apollo's image only)
 
+static CGImageSourceRef (*orig_CGImageSourceCreateWithURL)(CFURLRef, CFDictionaryRef) = NULL;
+static CGImageDestinationRef (*orig_CGImageDestinationCreateWithData)(CFMutableDataRef, CFStringRef, size_t, CFDictionaryRef) = NULL;
+static bool (*orig_CGImageDestinationFinalize)(CGImageDestinationRef) = NULL;
+
 // Start of a pass: a picked file opened for upload prep (Apollo's three photo
-// pickers are the only callers in its image). Only an animated GIF
-// starts a capture; any other source clears a stale one on this thread.
+// pickers are the only callers in its image). Every pass starts a capture, which
+// clears a stale one on this thread; only an animated GIF carries its file.
 static CGImageSourceRef hooked_CGImageSourceCreateWithURL(CFURLRef url, CFDictionaryRef options) {
     CGImageSourceRef source = orig_CGImageSourceCreateWithURL(url, options);
     NSMutableDictionary *threadState = NSThread.currentThread.threadDictionary;
     [threadState removeObjectForKey:kApolloOriginalGIFCaptureKey];
     if (!source || !url) return source;
-    CFStringRef type = CGImageSourceGetType(source);
-    if (!type || !CFEqual(type, CFSTR("com.compuserve.gif"))) return source;
-    size_t frames = CGImageSourceGetCount(source);
-    if (frames < 2) return source;   // a single-frame GIF loses nothing as a JPEG
 
     ApolloOriginalGIFCapture *capture = [ApolloOriginalGIFCapture new];
-    capture.gifURL = (__bridge NSURL *)url;
-    capture.frameCount = frames;
+    CFStringRef type = CGImageSourceGetType(source);
+    if (type && CFEqual(type, CFSTR("com.compuserve.gif"))) {
+        size_t frames = CGImageSourceGetCount(source);
+        if (frames >= 2) {   // a single-frame GIF loses nothing as a JPEG
+            capture.gifURL = (__bridge NSURL *)url;
+            capture.frameCount = frames;
+        }
+    }
     threadState[kApolloOriginalGIFCaptureKey] = capture;
     return source;
 }
@@ -222,6 +303,8 @@ static bool hooked_CGImageDestinationFinalize(CGImageDestinationRef destination)
     }
     return finalized;
 }
+
+// END_ORIGINAL_GIF_STORE
 
 void ApolloUploadOriginalGIFInstallRebindings(const struct mach_header *header, intptr_t slide) {
     if (!header) return;

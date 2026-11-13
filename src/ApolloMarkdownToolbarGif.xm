@@ -1463,6 +1463,10 @@ BOOL ApolloCommentNativeUploadPending(void) {
 NSString *ApolloActiveCommentComposerSubreddit(void) {
     return ApolloMarkdownGifResolveCommentSubreddit(sApolloCommentLinkArmedComposer ?: sApolloMarkdownGifActiveComposeController);
 }
+id ApolloActiveCommentComposer(void) {
+    UIViewController *composer = sApolloCommentLinkArmedComposer ?: sApolloMarkdownGifActiveComposeController;
+    return ApolloMarkdownGifResolveCommentSubreddit(composer).length > 0 ? composer : nil;
+}
 void ApolloCommentLinkClearUpload(void) {
     sApolloCommentLinkUploadUntil = 0.0;
     sApolloCommentLinkArmedComposer = nil;

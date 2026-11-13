@@ -9,9 +9,12 @@
 // a one-image JPEG CGImageDestination. A GIF comes out as a JPEG of its first
 // frame. The rebindings here (Apollo's own image only) spot that chain running on
 // an animated GIF picked in a comment/reply composer and keep a copy of the
-// original file, keyed by the JPEG Apollo produced. The upload hooks in
-// ApolloImageUploadHost.xm look the JPEG up and upload the GIF in its place.
-// Post and chat picks keep Apollo's still.
+// original file, keyed by the JPEG Apollo produced and the composer it was
+// picked in. The upload hooks in ApolloImageUploadHost.xm look the JPEG up and
+// upload the GIF in its place. When picks with different content made the same
+// JPEG (GIFs sharing a first frame, or a still of it), the upload can't be tied
+// to one of them, so those uploads keep Apollo's still. Post and chat picks keep
+// Apollo's still.
 
 #ifdef __cplusplus
 extern "C" {
