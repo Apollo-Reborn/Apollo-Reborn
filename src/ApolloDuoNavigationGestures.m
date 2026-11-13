@@ -132,6 +132,19 @@ static BOOL ApolloDuoBackSwipeTouchOwnsHorizontalDrag(UIView *view, UIView *cont
     return NO;
 }
 
+// A touch-down on a scroller that is still moving (coasting after a flick,
+// or mid-drag) only stops it. UIScrollView stops in its own touchesBegan, so
+// withholding that touch-down lets the momentum run on under a held finger
+// (#1701). No row tap or highlight comes from such a touch either.
+static BOOL ApolloDuoTouchStopsMovingScroller(UIView *view, UIView *container) {
+    for (UIView *candidate = view; candidate && candidate != container; candidate = candidate.superview) {
+        if (![candidate isKindOfClass:UIScrollView.class]) continue;
+        UIScrollView *scroll = (UIScrollView *)candidate;
+        if (scroll.isDecelerating || scroll.isDragging) return YES;
+    }
+    return NO;
+}
+
 // Mirrors the routes below. Leaving a visited profile and popping a page are
 // Back; only a plain root reveals its list.
 static BOOL ApolloDuoBackSwipeRevealsAtRoot(UINavigationController *navigation) {
@@ -249,6 +262,7 @@ static NSHashTable<ApolloDuoBackSwipe *> *sDuoPaneDrags;
     UINavigationController *navigation = self.navigation;
     CGPoint point = [touch locationInView:navigation.view];
     if (gesture != self.pan && gesture != self.forwardSwipe && gesture != self.highlightGuard) return NO;
+    if (gesture == self.highlightGuard && ApolloDuoTouchStopsMovingScroller(touch.view, navigation.view)) return NO;
     BOOL back = gesture != self.forwardSwipe && ApolloDuoBackSwipeAcceptsPoint(navigation, point)
         && (ApolloDuoBackSwipeInEdgeStrip(ApolloDuoBackSwipePane(navigation), point)
             || !ApolloDuoBackSwipeTouchOwnsHorizontalDrag(touch.view, navigation.view, ApolloDuoBackSwipeRevealsAtRoot(navigation), NO));

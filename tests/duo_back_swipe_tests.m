@@ -69,6 +69,8 @@ typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 @property(nonatomic) UIEdgeInsets adjustedContentInset;
 @property(nonatomic, getter=isScrollEnabled) BOOL scrollEnabled;
 @property(nonatomic) BOOL alwaysBounceHorizontal;
+@property(nonatomic, getter=isDragging) BOOL dragging;
+@property(nonatomic, getter=isDecelerating) BOOL decelerating;
 @end
 @implementation UIScrollView @end
 @interface UITextView : UIScrollView
@@ -398,6 +400,22 @@ int main(void) {
         Check(guard.state == UIGestureRecognizerStatePossible, @"a stale timer cannot fail the next touch after reset");
         touch.point = CGPointMake(5, 300);
         Check([owner gestureRecognizer:guard shouldReceiveTouch:touch], @"highlight guard receives the touches the swipe accepts (edge)");
+        // #1701: a touch-down on a feed still coasting from a flick must reach
+        // the table at once, or the momentum keeps going under a held finger.
+        // There is no row tap to guard then: the touch only stops the scroll.
+        UIScrollView *feedTable = [UIScrollView new]; feedTable.superview = nav.view; feedTable.scrollEnabled = YES;
+        feedTable.bounds = CGRectMake(0, 0, 600, 800); feedTable.contentSize = CGSizeMake(600, 8000);
+        UIView *feedRow = [UIView new]; feedRow.superview = feedTable;
+        UITouch *coastTouch = [UITouch new]; coastTouch.view = feedRow; coastTouch.point = CGPointMake(5, 300);
+        Check([owner gestureRecognizer:guard shouldReceiveTouch:coastTouch], @"a resting feed still guards an edge row's highlight");
+        feedTable.decelerating = YES;
+        Check(![owner gestureRecognizer:guard shouldReceiveTouch:coastTouch],
+              @"a touch on a decelerating feed is not withheld, so it stops the momentum at once");
+        Check([owner gestureRecognizer:owner.pan shouldReceiveTouch:coastTouch], @"the edge Back pan still sees a touch that stops a coasting feed");
+        feedTable.decelerating = NO; feedTable.dragging = YES;
+        Check(![owner gestureRecognizer:guard shouldReceiveTouch:coastTouch], @"a touch while the feed is still scrolling is not withheld");
+        feedTable.dragging = NO;
+        Check([owner gestureRecognizer:guard shouldReceiveTouch:coastTouch], @"the guard returns once the feed has settled");
         touch.point = CGPointMake(200, 300);
         Check(![owner gestureRecognizer:guard shouldReceiveTouch:touch], @"highlight guard ignores interior touches the swipe rejects");
         guard.velocity = CGPointMake(300, 40);
