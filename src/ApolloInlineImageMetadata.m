@@ -174,3 +174,18 @@ double ApolloInlineImageAspectRatioFromRegisteredMetadata(NSURL *url) {
     if (assetID.length == 0) return 0.0;
     return [[ApolloInlineMetadataRegisteredRatios() objectForKey:assetID] doubleValue];
 }
+
+NSString *ApolloInlineLinkCardSuppressionPathKey(NSURL *url) {
+    if (![url isKindOfClass:[NSURL class]]) return nil;
+    NSString *host = url.host.lowercaseString;
+    NSString *path = url.path;
+    if (host.length == 0 || path.length == 0) return nil;
+    // Apollo's card shows these as "redd.it/<file>" and "imgur.com/<file>".
+    // Each alias serves the same file as the host it maps to.
+    if ([host isEqualToString:@"i.redd.it"] || [host isEqualToString:@"preview.redd.it"]) {
+        host = @"redd.it";
+    } else if ([host isEqualToString:@"i.imgur.com"]) {
+        host = @"imgur.com";
+    }
+    return [NSString stringWithFormat:@"path:%@%@", host, path];
+}
