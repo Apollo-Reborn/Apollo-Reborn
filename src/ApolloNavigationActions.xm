@@ -11,6 +11,7 @@
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloSearchNativeBar.h"
+#import "UserDefaultConstants.h"
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <dlfcn.h>
@@ -93,6 +94,32 @@ static UIColor *ApolloActionsAccentSubmitColor(void) {
     return color;
 }
 
+// Accent Navigation Buttons: the color pinned navigation buttons take. The
+// accent provider is rebuilt when the theme changes, or the buttons would
+// keep the old provider's last render. Providers built from one block compare
+// equal, so each captures its own generation for the pins to see a new color.
+static UIColor *sActionsButtonAccent;
+static NSUInteger sActionsButtonAccentGeneration;
+static NSHashTable *sActionsPinned;   // weak; everything ApolloActionsPinChrome tinted
+
+NSNotificationName const ApolloNavigationButtonColorDidChangeNotification = @"ApolloNavigationButtonColorDidChangeNotification";
+
+UIColor *ApolloNavigationButtonAccentColor(void) {
+    if (!sAccentNavigationButtons || !IsLiquidGlass()) return nil;
+    if (!sActionsButtonAccent) {
+        NSUInteger generation = ++sActionsButtonAccentGeneration;
+        sActionsButtonAccent = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
+            (void)generation;
+            return [(ApolloThemeAccentColor() ?: UIColor.systemBlueColor) resolvedColorWithTraitCollection:traits];
+        }];
+    }
+    return sActionsButtonAccent;
+}
+
+static UIColor *ApolloActionsButtonColor(void) {
+    return ApolloNavigationButtonAccentColor() ?: ApolloNavigationChromeColor();
+}
+
 // Keep right-item chrome neutral before it appears, including lone actions on
 // profile feeds. Mark only the actual item content, never the whole nav bar.
 static UIColor *ApolloActionsChromeColor(id object) {
@@ -111,10 +138,12 @@ static UIColor *ApolloActionsChromeColor(id object) {
         return ApolloActionsAccentSubmitColor();
     }
     return [objc_getAssociatedObject(object, &kActionsBlueDoneKey) boolValue]
-        ? UIColor.systemBlueColor : ApolloNavigationChromeColor();
+        ? UIColor.systemBlueColor : ApolloActionsButtonColor();
 }
 
 static void ApolloActionsPinChrome(id object) {
+    if (!sActionsPinned) sActionsPinned = [NSHashTable weakObjectsHashTable];
+    [sActionsPinned addObject:object];
     UIColor *chrome = ApolloActionsChromeColor(object);
     if (!objc_getAssociatedObject(object, &kActionsChromeKey) ||
         ![[object tintColor] isEqual:chrome]) {
@@ -1666,7 +1695,7 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
                 UIControlState state = stateValue.unsignedIntegerValue;
                 NSMutableDictionary *attributes = [[item titleTextAttributesForState:state] mutableCopy]
                     ?: [NSMutableDictionary dictionary];
-                UIColor *color = ApolloNavigationChromeColor();
+                UIColor *color = ApolloActionsButtonColor();
                 if (state == UIControlStateDisabled) color = [color colorWithAlphaComponent:0.45];
                 if (![attributes[NSForegroundColorAttributeName] isEqual:color]) {
                     attributes[NSForegroundColorAttributeName] = color;
@@ -2131,6 +2160,32 @@ static NSArray<UIBarButtonItem *> *ApolloActionsPresentedItems(UINavigationItem 
     return items;
 }
 
+static char kActionsLeadingAccentKey;
+
+// Leading items (the Subreddits list's +) are not otherwise pinned: glass draws
+// an untinted item in the label color. While Accent Navigation Buttons is on
+// they are pinned like the trailing actions; turning it off unpins only the
+// items pinned here. Custom views keep their own styling.
+void ApolloNavigationActionsAccentItem(UIBarButtonItem *item) {
+    if (!item || !IsLiquidGlass() || item.customView) return;
+    BOOL marked = [objc_getAssociatedObject(item, &kActionsLeadingAccentKey) boolValue];
+    if (sAccentNavigationButtons) {
+        if (!marked && objc_getAssociatedObject(item, &kActionsChromeKey)) return;   // pinned elsewhere
+        objc_setAssociatedObject(item, &kActionsLeadingAccentKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ApolloActionsPinChrome(item);
+    } else if (marked) {
+        objc_setAssociatedObject(item, &kActionsLeadingAccentKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(item, &kActionsChromeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [sActionsPinned removeObject:item];
+        item.tintColor = nil;
+    }
+}
+
+static void ApolloActionsPrepareLeadingItems(UIViewController *controller) {
+    if (!IsLiquidGlass() || !controller || !ApolloActionsAppController(controller)) return;
+    for (UIBarButtonItem *item in controller.navigationItem.leftBarButtonItems) ApolloNavigationActionsAccentItem(item);
+}
+
 void ApolloNavigationActionsRefresh(UINavigationBar *bar) {
     if (!bar || !IsLiquidGlass() || [objc_getAssociatedObject(bar, &kActionsRefreshKey) boolValue]) return;
     objc_setAssociatedObject(bar, &kActionsRefreshKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -2142,7 +2197,39 @@ void ApolloNavigationActionsRefresh(UINavigationBar *bar) {
         UIViewController *top = ApolloActionsNavigation(bar).topViewController;
         if (!top || bar.topItem != top.navigationItem) return;
         ApolloActionsPrepare(top.navigationItem, top.navigationItem.rightBarButtonItems);
+        ApolloActionsPrepareLeadingItems(top);
     });
+}
+
+static void ApolloActionsCollectNavigationBars(UIView *view, NSMutableArray<UINavigationBar *> *bars) {
+    if ([view isKindOfClass:UINavigationBar.class]) {
+        [bars addObject:(UINavigationBar *)view];
+        return;
+    }
+    for (UIView *subview in view.subviews) ApolloActionsCollectNavigationBars(subview, bars);
+}
+
+static void ApolloActionsUpdateBarButtonAccents(void);
+
+// Re-tints every pinned button (the pins compare and only write on change),
+// then lets each visible bar re-prepare its items, leading ones included.
+static void ApolloActionsRefreshButtonColors(void) {
+    for (id object in sActionsPinned.allObjects) {
+        if (objc_getAssociatedObject(object, &kActionsChromeKey)) ApolloActionsPinChrome(object);
+    }
+    NSMutableArray<UINavigationBar *> *bars = [NSMutableArray array];
+    for (UIWindow *window in ApolloAllWindows()) ApolloActionsCollectNavigationBars(window, bars);
+    for (UINavigationBar *bar in bars) ApolloNavigationActionsRefresh(bar);
+    ApolloActionsUpdateBarButtonAccents();
+}
+
+void ApolloNavigationActionsSetAccentButtons(BOOL enabled) {
+    if (sAccentNavigationButtons == enabled) return;
+    sAccentNavigationButtons = enabled;
+    [NSUserDefaults.standardUserDefaults setBool:enabled forKey:UDKeyAccentNavigationButtons];
+    ApolloActionsRefreshButtonColors();
+    [NSNotificationCenter.defaultCenter postNotificationName:ApolloNavigationButtonColorDidChangeNotification object:nil];
+    ApolloLog(@"[NavigationActions] Accent navigation buttons %@", enabled ? @"on" : @"off");
 }
 
 void ApolloNavigationActionsCollapse(UINavigationItem *item) {
@@ -2244,10 +2331,241 @@ static void ApolloActionsUpdateBackGlass(UIView *button, UIBarButtonItem *item) 
 
 @interface _UIButtonBarButtonVisualProviderIOS : NSObject
 @property (nonatomic, readonly) UIBarButtonItem *barButtonItem;
+@property (nonatomic, readonly) UIView *backIndicatorView;
 @end
 @interface _UIButtonBarButton : UIView
 @property (nonatomic, readonly) _UIButtonBarButtonVisualProviderIOS *visualProvider;
 @end
+
+// Accent Navigation Buttons on Liquid Glass. UIKit draws bar glyphs (the
+// Back chevron, the Duo's own glass controls) through the same "monochromatic
+// treatment" as the tab icons, which replaces their tint with black or white.
+// While the setting is on, an accented glyph keeps the treatment off so its
+// tint shows; turning it off hands the glyph back to UIKit with the treatment
+// it had (else 2, as on unselected tab icons).
+static char kActionsAccentGlyphKey;       // an image view accented here
+static char kActionsAccentGlyphTintKey;   // ...whose tint was set here
+static char kActionsAccentGlyphPriorTintKey;   // ...the tint it had before the accent (NSNull when inherited)
+static char kActionsAccentGlyphUIKitKey;  // ...and UIKit's treatment before: @[mode, enabled]
+static char kActionsAccentContentKey;     // a control whose glyphs take the accent
+static char kActionsBackButtonKey;        // a _UIButtonBarButton configured as Back
+static BOOL sActionsAccentGlyphApplying;
+static BOOL sActionsHasAccentedControls;   // set once a control is accented; keeps the image view hooks cheap until then
+
+static BOOL ApolloActionsInAccentedControl(UIView *view) {
+    if (!sActionsHasAccentedControls) return NO;
+    NSInteger depth = 0;
+    for (UIView *ancestor = view.superview; ancestor && depth < 6; ancestor = ancestor.superview, depth++) {
+        if ([objc_getAssociatedObject(ancestor, &kActionsAccentContentKey) boolValue]) return YES;
+    }
+    return NO;
+}
+
+static BOOL ApolloActionsGlyphIsAccented(UIImageView *imageView) {
+    if (!sAccentNavigationButtons) return NO;
+    if ([objc_getAssociatedObject(imageView, &kActionsAccentGlyphKey) boolValue]) return YES;
+    // A glyph UIKit rebuilds inside an accented control (a new button configuration).
+    if (!ApolloActionsInAccentedControl(imageView)) return NO;
+    objc_setAssociatedObject(imageView, &kActionsAccentGlyphKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return YES;
+}
+
+// UIKit picks a glyph's treatment while the glyph is already accented (a button
+// built after the setting was on), and the hooks below then override it, so the
+// stock values would never be seen. Keep what UIKit asked for, to hand it back
+// when the setting turns off.
+static void ApolloActionsRecordUIKitTreatment(UIImageView *glyph, NSNumber *mode, NSNumber *enabled) {
+    NSArray *current = objc_getAssociatedObject(glyph, &kActionsAccentGlyphUIKitKey);
+    NSNumber *newMode = mode ?: current[0] ?: @2;
+    NSNumber *newEnabled = enabled ?: current[1] ?: @YES;
+    objc_setAssociatedObject(glyph, &kActionsAccentGlyphUIKitKey, @[ newMode, newEnabled ], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+// With setTint, the glyph itself takes the accent (the Back chevron otherwise
+// inherits the bar's tint); a control that already draws in it passes NO.
+static void ApolloActionsSetGlyphAccent(UIImageView *glyph, UIColor *accent, BOOL setTint) {
+    SEL suppressSel = @selector(_setSuppressMonochromaticTreatment:);
+    SEL enableSel = @selector(_setEnableMonochromaticTreatment:);
+    SEL modeSel = @selector(_setMonochromaticTreatment:);
+    if (![glyph respondsToSelector:modeSel]) return;
+    BOOL on = accent != nil;
+    BOOL wasAccented = [objc_getAssociatedObject(glyph, &kActionsAccentGlyphKey) boolValue];
+    SEL modeGet = @selector(_monochromaticTreatment), enableGet = @selector(_enableMonochromaticTreatment);
+    if (on && !wasAccented && [glyph respondsToSelector:modeGet] && [glyph respondsToSelector:enableGet]) {
+        NSArray *uikit = @[ @(((long long (*)(id, SEL))objc_msgSend)(glyph, modeGet)),
+                            @(((BOOL (*)(id, SEL))objc_msgSend)(glyph, enableGet)) ];
+        objc_setAssociatedObject(glyph, &kActionsAccentGlyphUIKitKey, uikit, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    NSArray *uikit = on ? nil : objc_getAssociatedObject(glyph, &kActionsAccentGlyphUIKitKey);
+    int64_t restoredMode = uikit ? [uikit[0] longLongValue] : 2;
+    // Always enabled: while a glyph is accented our own overrides turn the flag off, so
+    // a value read from it afterwards is ours, not UIKit's. Bar glyphs are enabled in stock.
+    BOOL restoredEnabled = YES;
+    if (!on) objc_setAssociatedObject(glyph, &kActionsAccentGlyphUIKitKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(glyph, &kActionsAccentGlyphKey, on ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    sActionsAccentGlyphApplying = YES;
+    if (on && setTint) {
+        if (![objc_getAssociatedObject(glyph, &kActionsAccentGlyphTintKey) boolValue]) {
+            // Remember what the chevron drew in before the accent. A chevron that
+            // only inherited its parent's tint goes back to inheriting; one UIKit
+            // or the Duo rail tinted itself (black, not the rail's blue) gets that
+            // color back. Clearing it blindly turned the Duo rail's Back blue.
+            UIColor *prior = glyph.tintColor;
+            BOOL inherited = !prior || [prior isEqual:glyph.superview.tintColor];
+            objc_setAssociatedObject(glyph, &kActionsAccentGlyphPriorTintKey, inherited ? (id)NSNull.null : prior,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        if (glyph.tintColor != accent) glyph.tintColor = accent;
+        objc_setAssociatedObject(glyph, &kActionsAccentGlyphTintKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    } else if (!on && [objc_getAssociatedObject(glyph, &kActionsAccentGlyphTintKey) boolValue]) {
+        id prior = objc_getAssociatedObject(glyph, &kActionsAccentGlyphPriorTintKey);
+        objc_setAssociatedObject(glyph, &kActionsAccentGlyphTintKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(glyph, &kActionsAccentGlyphPriorTintKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        glyph.tintColor = [prior isKindOfClass:UIColor.class] ? prior : nil;
+    }
+    if ([glyph respondsToSelector:suppressSel]) ((void (*)(id, SEL, BOOL))objc_msgSend)(glyph, suppressSel, on);
+    ((void (*)(id, SEL, int64_t))objc_msgSend)(glyph, modeSel, on ? 0 : restoredMode);
+    if ([glyph respondsToSelector:enableSel]) ((void (*)(id, SEL, BOOL))objc_msgSend)(glyph, enableSel, on ? NO : restoredEnabled);
+    sActionsAccentGlyphApplying = NO;
+}
+
+static void ApolloActionsCollectGlyphs(UIView *view, NSMutableArray<UIImageView *> *glyphs) {
+    if ([view isKindOfClass:UIImageView.class]) [glyphs addObject:(UIImageView *)view];
+    for (UIView *subview in view.subviews) ApolloActionsCollectGlyphs(subview, glyphs);
+}
+
+void ApolloNavigationActionsAccentControl(UIView *control) {
+    if (!control || !IsLiquidGlass()) return;
+    UIColor *accent = ApolloNavigationButtonAccentColor();
+    if (!accent && ![objc_getAssociatedObject(control, &kActionsAccentContentKey) boolValue]) return;
+    if (accent) sActionsHasAccentedControls = YES;
+    objc_setAssociatedObject(control, &kActionsAccentContentKey, accent ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NSMutableArray<UIImageView *> *glyphs = [NSMutableArray array];
+    ApolloActionsCollectGlyphs(control, glyphs);
+    for (UIImageView *glyph in glyphs) {
+        if (accent || [objc_getAssociatedObject(glyph, &kActionsAccentGlyphKey) boolValue])
+            ApolloActionsSetGlyphAccent(glyph, accent, NO);
+    }
+}
+
+static void ApolloActionsUpdateBackAccent(UIView *button) {
+    if (![objc_getAssociatedObject(button, &kActionsBackButtonKey) boolValue]) return;
+    _UIButtonBarButtonVisualProviderIOS *provider = ((_UIButtonBarButton *)button).visualProvider;
+    if (![provider respondsToSelector:@selector(backIndicatorView)]) return;
+    UIColor *accent = ApolloNavigationButtonAccentColor();
+    for (UIView *subview in provider.backIndicatorView.subviews) {
+        if (![subview isKindOfClass:UIImageView.class]) continue;
+        BOOL accented = [objc_getAssociatedObject(subview, &kActionsAccentGlyphKey) boolValue];
+        if (accent || accented) ApolloActionsSetGlyphAccent((UIImageView *)subview, accent, YES);
+    }
+}
+
+static BOOL ApolloActionsIsSystemMoreItem(UIBarButtonItem *item);
+
+// A split view's own sidebar toggle (Settings and Inbox on the Duo), which
+// UIKit targets at its private split implementation.
+static BOOL ApolloActionsIsSidebarToggle(UIBarButtonItem *item) {
+    static SEL toggle;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ toggle = sel_registerName("_handlePrimaryEdgeBarButtonItem:"); });
+    return item.action == toggle || [item.target isKindOfClass:UISplitViewController.class];
+}
+
+// UIKit's own items, which NavigationActions never pins: the Duo overflow •••
+// and the sidebar toggle. A changed tint reconfigures the button.
+static void ApolloActionsAccentSystemItem(UIBarButtonItem *item) {
+    if (!item || (!ApolloActionsIsSystemMoreItem(item) && !ApolloActionsIsSidebarToggle(item))) return;
+    UIColor *accent = ApolloNavigationButtonAccentColor();
+    if (item.tintColor != accent) item.tintColor = accent;
+}
+
+static void ApolloActionsCollectBarButtons(UIView *view, NSMutableArray<UIView *> *buttons) {
+    if ([view isKindOfClass:ApolloClassUIButtonBarButton]) {
+        [buttons addObject:view];
+        return;
+    }
+    for (UIView *subview in view.subviews) ApolloActionsCollectBarButtons(subview, buttons);
+}
+
+// Whole windows: the Duo rails host bar buttons outside UINavigationBar.
+static void ApolloActionsUpdateBarButtonAccents(void) {
+    if (!IsLiquidGlass() || !ApolloClassUIButtonBarButton) return;
+    NSMutableArray<UIView *> *buttons = [NSMutableArray array];
+    for (UIWindow *window in ApolloAllWindows()) ApolloActionsCollectBarButtons(window, buttons);
+    for (UIView *button in buttons) {
+        ApolloActionsUpdateBackAccent(button);
+        ApolloActionsAccentSystemItem(((_UIButtonBarButton *)button).visualProvider.barButtonItem);
+    }
+}
+
+// Accent Navigation Buttons, Back (every Liquid Glass version).
+%group ApolloNavigationActionsBackAccentHooks
+%hook _UIButtonBarButton
+- (void)_configureFromBarItem:(UIBarButtonItem *)item appearanceDelegate:(id)delegate isBackButton:(BOOL)back useBreadcrumbStyle:(BOOL)breadcrumb {
+    if (!back) ApolloActionsAccentSystemItem(item);
+    %orig(item, delegate, back, breadcrumb);
+    objc_setAssociatedObject(self, &kActionsBackButtonKey, back ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloActionsUpdateBackAccent((UIView *)self);
+}
+- (void)willMoveToWindow:(UIWindow *)window {
+    %orig(window);
+    // The chevron is installed after the initial configuration.
+    if (window) ApolloActionsUpdateBackAccent((UIView *)self);
+}
+%end
+
+%end
+
+// UIKit re-derives a glyph's treatment (trait and tint changes, Control
+// Center, a rebuilt button); keep it off while the glyph carries the accent.
+%group ApolloNavigationActionsAccentGlyphHooks
+%hook UIImageView
+- (void)_applyMonochromaticInputsWithPreferredTreatment:(int64_t)treatment suppressTreatment:(BOOL)suppress {
+    if (!sActionsAccentGlyphApplying && ApolloActionsGlyphIsAccented(self)) {
+        if (treatment != 0) ApolloActionsRecordUIKitTreatment(self, @(treatment), nil);
+        suppress = YES;
+    }
+    %orig(treatment, suppress);
+}
+- (void)_setEnableMonochromaticTreatment:(BOOL)enable {
+    if (enable && !sActionsAccentGlyphApplying && ApolloActionsGlyphIsAccented(self)) {
+        ApolloActionsRecordUIKitTreatment(self, nil, @YES);
+        %orig(NO);
+        return;
+    }
+    %orig(enable);
+}
+- (void)_setMonochromaticTreatment:(int64_t)treatment {
+    if (treatment != 0 && !sActionsAccentGlyphApplying && ApolloActionsGlyphIsAccented(self)) {
+        ApolloActionsRecordUIKitTreatment(self, @(treatment), nil);
+        %orig(0);
+        return;
+    }
+    %orig(treatment);
+}
+// UIKit rebuilds the Back chevron on rotation and resets its tint, which
+// left the Duo rail's chevron in the inherited system blue. Keep the accent.
+- (void)setTintColor:(UIColor *)color {
+    if (!sActionsAccentGlyphApplying && sAccentNavigationButtons &&
+        [objc_getAssociatedObject(self, &kActionsAccentGlyphTintKey) boolValue]) {
+        // What UIKit wanted is the tint to give back when the setting turns off.
+        objc_setAssociatedObject(self, &kActionsAccentGlyphPriorTintKey, color ?: (id)NSNull.null,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        color = ApolloNavigationButtonAccentColor() ?: color;
+    }
+    %orig(color);
+}
+// A glyph added to an accented control after its treatment was chosen.
+- (void)didMoveToWindow {
+    %orig;
+    if (sAccentNavigationButtons && self.window && !sActionsAccentGlyphApplying &&
+        ![objc_getAssociatedObject(self, &kActionsAccentGlyphKey) boolValue] &&
+        ApolloActionsInAccentedControl(self)) {
+        ApolloActionsSetGlyphAccent(self, ApolloNavigationButtonAccentColor(), NO);
+    }
+}
+%end
+%end
 
 %group ApolloNavigationActionsBackGlassHooks
 %hook _UIButtonBarButton
@@ -2624,6 +2942,28 @@ static BOOL ApolloActionsIsSystemMoreItem(UIBarButtonItem *item) {
         }
         if (IsLiquidGlass()) {
             %init(ApolloNavigationActionsChromeHooks);
+            // Accent Navigation Buttons needs UIKit's glyph treatment setters.
+            if (class_getInstanceMethod(UIImageView.class, @selector(_setMonochromaticTreatment:))) {
+                %init(ApolloNavigationActionsAccentGlyphHooks);
+                SEL configure = @selector(_configureFromBarItem:appearanceDelegate:isBackButton:useBreadcrumbStyle:);
+                if (ApolloClassUIButtonBarButton && class_getInstanceMethod(ApolloClassUIButtonBarButton, configure))
+                    %init(ApolloNavigationActionsBackAccentHooks);
+                else ApolloLog(@"[NavigationActions] Back accent unavailable: no Back configuration hook");
+            } else {
+                ApolloLog(@"[NavigationActions] Accent glyphs unavailable: no treatment setters");
+            }
+            [NSNotificationCenter.defaultCenter addObserverForName:@"com.christianselig.ApolloSpecificThemeChanged"
+                                                            object:nil
+                                                             queue:NSOperationQueue.mainQueue
+                                                        usingBlock:^(__unused NSNotification *note) {
+                // Apollo finishes applying the theme after posting.
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    sActionsButtonAccent = nil;
+                    if (!sAccentNavigationButtons) return;
+                    ApolloActionsRefreshButtonColors();
+                    [NSNotificationCenter.defaultCenter postNotificationName:ApolloNavigationButtonColorDidChangeNotification object:nil];
+                });
+            }];
         }
         if (ApolloDeviceIsDuo()) {
             if (ApolloClassUIButtonBarButton

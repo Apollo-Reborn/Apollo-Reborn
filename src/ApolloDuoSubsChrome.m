@@ -107,6 +107,7 @@ static void ApolloDuoSubsChromeApplyPopupItems(UIViewController *controller, UIN
     NSArray *right = edit ? @[edit] : @[];
     if (![popupItem.leftBarButtonItems ?: @[] isEqualToArray:left]) popupItem.leftBarButtonItems = left;
     if (![popupItem.rightBarButtonItems ?: @[] isEqualToArray:right]) popupItem.rightBarButtonItems = right;
+    ApolloNavigationActionsAccentItem(add);
 }
 
 void ApolloDuoSubsChromeSetPopupNavigationBar(UIViewController *controller, UINavigationBar *bar) {
@@ -262,8 +263,42 @@ static UIButton *ApolloDuoSubsChromeMakeEditButton(UIViewController *controller)
     return button;
 }
 
+@interface ApolloDuoSubsChromeEditOwner : NSObject
+@property(nonatomic, weak) UIViewController *controller;
+@end
+@implementation ApolloDuoSubsChromeEditOwner @end
+
+static char kApolloDuoSubsChromeEditOwnerKey;
+static NSHashTable<UIButton *> *sApolloDuoSubsChromeEditButtons;   // weak
+
+static void ApolloDuoSubsChromeUpdateEditButton(UIButton *button, UIViewController *controller);
+
+// Accent Navigation Buttons restyles the edit buttons already on screen.
+static void ApolloDuoSubsChromeTrackEditButton(UIButton *button, UIViewController *controller) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        sApolloDuoSubsChromeEditButtons = [NSHashTable weakObjectsHashTable];
+        [NSNotificationCenter.defaultCenter addObserverForName:ApolloNavigationButtonColorDidChangeNotification
+                                                        object:nil queue:NSOperationQueue.mainQueue
+                                                    usingBlock:^(__unused NSNotification *note) {
+            for (UIButton *tracked in sApolloDuoSubsChromeEditButtons.allObjects) {
+                ApolloDuoSubsChromeEditOwner *owner = objc_getAssociatedObject(tracked, &kApolloDuoSubsChromeEditOwnerKey);
+                if (owner.controller) ApolloDuoSubsChromeUpdateEditButton(tracked, owner.controller);
+            }
+        }];
+    });
+    ApolloDuoSubsChromeEditOwner *owner = objc_getAssociatedObject(button, &kApolloDuoSubsChromeEditOwnerKey);
+    if (owner.controller == controller) return;
+    owner = [ApolloDuoSubsChromeEditOwner new];
+    owner.controller = controller;
+    objc_setAssociatedObject(button, &kApolloDuoSubsChromeEditOwnerKey, owner, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [sApolloDuoSubsChromeEditButtons addObject:button];
+}
+
 static void ApolloDuoSubsChromeUpdateEditButton(UIButton *button,
                                                  UIViewController *controller) {
+    if (!button) return;
+    ApolloDuoSubsChromeTrackEditButton(button, controller);
     BOOL editing = controller.isEditing;
     NSString *title = editing ? @"Done" : @"Edit";
     NSString *symbolName = editing ? @"checkmark" : @"pencil";
@@ -275,8 +310,14 @@ static void ApolloDuoSubsChromeUpdateEditButton(UIButton *button,
     // Rebuild the Edit state from a neutral semantic colour. UIKit can retain
     // the previous prominent configuration's blue base tint after the button
     // leaves the screen and is reattached, which made the pencil blue after a
-    // Done -> tab switch -> Edit cycle.
-    UIColor *foreground = editing ? UIColor.whiteColor : UIColor.labelColor;
+    // Done -> tab switch -> Edit cycle. Accent Navigation Buttons draws the
+    // pencil and Done's fill in the accent instead.
+    UIColor *accent = ApolloNavigationButtonAccentColor();
+    UIColor *fill = accent ?: UIColor.systemBlueColor;
+    UIColor *foreground = editing
+        ? (accent && ApolloColorIsLight([accent resolvedColorWithTraitCollection:button.traitCollection])
+            ? UIColor.blackColor : UIColor.whiteColor)
+        : (accent ?: UIColor.labelColor);
     symbol = [symbol imageWithTintColor:foreground
                           renderingMode:UIImageRenderingModeAlwaysOriginal];
     button.accessibilityLabel = title;
@@ -287,17 +328,18 @@ static void ApolloDuoSubsChromeUpdateEditButton(UIButton *button,
         configuration.title = nil;
         configuration.image = symbol;
         configuration.baseForegroundColor = foreground;
-        if (editing) configuration.baseBackgroundColor = UIColor.systemBlueColor;
+        if (editing) configuration.baseBackgroundColor = fill;
         configuration.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
         configuration.contentInsets = NSDirectionalEdgeInsetsZero;
         button.configuration = configuration;
     } else {
         [button setTitle:nil forState:UIControlStateNormal];
         [button setImage:symbol forState:UIControlStateNormal];
-        button.backgroundColor = editing ? UIColor.systemBlueColor : UIColor.tertiarySystemFillColor;
+        button.backgroundColor = editing ? fill : UIColor.tertiarySystemFillColor;
         button.layer.cornerRadius = 24.0;
     }
     button.tintColor = foreground;
+    ApolloNavigationActionsAccentControl(button);
 }
 
 static void ApolloDuoSubsChromeRemoveSideEdit(UIViewController *controller) {
