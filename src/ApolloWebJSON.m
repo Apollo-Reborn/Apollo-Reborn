@@ -95,7 +95,7 @@ static NSString *const kApolloWebJSONProbeMarker = @"apollo-webjson-probe";
 // its per-account block-page streak correctly even if the active account has
 // since changed (e.g. the user switched accounts while the request was
 // in-flight).
-static NSString *const kApolloWebJSONAccountMarkerPrefix = @"apollo-webjson-account=";
+static NSString *const kApolloWebJSONAccountMarkerPrefix = APOLLO_WEBJSON_ACCOUNT_MARKER_PREFIX;
 
 // Returns a copy of `url` with its fragment replaced (any existing fragment —
 // there shouldn't be one on a Reddit API URL — is overwritten).
@@ -510,6 +510,28 @@ void ApolloWebJSONSimSetBlockedRoutes(NSUInteger routeMask) {
     }
     ApolloLog(@"[WebJSON] (sim) Routes forced to get the block page: %@",
               names.count ? [names componentsJoinedByString:@", "] : @"none");
+}
+
+// "oauthblock on|off": an API-key account's /api/info and /api/morechildren
+// reads at their usual path go to oauth.reddit.com without its token, which
+// oauth answers with its real block page (checked 2026-10-30), as it does some
+// API keys' tokens (ApolloOAuthReadPathAfterResponse). The /.json resend keeps
+// the account's own token.
+static _Atomic BOOL sApolloWebJSONSimOAuthBlock = NO;
+
+void ApolloWebJSONSimSetOAuthBlockedReads(BOOL on) {
+    atomic_store(&sApolloWebJSONSimOAuthBlock, on);
+    ApolloLog(@"[WebJSON] (sim) API-key /api/info and /api/morechildren sent to get oauth's block page: %@", on ? @"on" : @"off");
+}
+
+void ApolloWebJSONSimBlockOAuthRead(NSMutableURLRequest *request) {
+    if (!atomic_load(&sApolloWebJSONSimOAuthBlock)) return;
+    NSURL *url = request.URL;
+    if (![url.host.lowercaseString isEqualToString:@"oauth.reddit.com"]) return;
+    NSString *method = request.HTTPMethod ?: @"GET";
+    if (!ApolloOAuthReadIsRetryable(method, url.path ?: @"/")) return;
+    [request setValue:nil forHTTPHeaderField:@"Authorization"];
+    ApolloLog(@"[WebJSON] (sim) oauthblock: %@ %@ sent without its token", method, url.path);
 }
 #endif
 
@@ -1893,7 +1915,8 @@ void ApolloWebJSONPrefetchModernThingData(NSString *fullname, void (^completion)
     NSString *bearer = cookie.length == 0 ? [sLatestRedditBearerToken copy] : nil;
     if (cookie.length == 0 && bearer.length == 0) { completion(nil); return; }
 
-    NSString *base = @"https://oauth.reddit.com/api/info.json";
+    // An API key's bearer: the /.json form once oauth refused /api/info (ApolloOAuthReadPathToSend).
+    NSString *base = [@"https://oauth.reddit.com" stringByAppendingString:ApolloOAuthReadPathToSend(@"GET", @"/api/info.json")];
     if (cookie.length > 0) {
         // The first route that takes the cookie: this probe has no bearer.
         ApolloWebJSONRoute route = ApolloWebJSONRouteWww;

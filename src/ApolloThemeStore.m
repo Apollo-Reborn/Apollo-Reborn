@@ -792,7 +792,7 @@ static ApolloThemeGalleryResolver sGalleryResolver = nil;
     } else if ([obj[@"colors"] isKindOfClass:[NSDictionary class]]) {
         input = [self v2ThemeFromV1:obj][@"input"];
     } else {
-        FAIL(@"Theme file is missing colours.");
+        FAIL(@"Theme file is missing colors.");
     }
     #undef FAIL
 

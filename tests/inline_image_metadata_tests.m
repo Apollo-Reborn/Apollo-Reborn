@@ -199,6 +199,34 @@ int main(void) {
                        @"concurrent registration is immediately visible to lookup");
         });
 
+        // Link-card suppression keys. Positive: the display-text URL Apollo's
+        // card yields on iOS 26+ ("https://imgur.com/<file>") matches the
+        // inlined i.imgur.com image; the redd.it aliases keep matching.
+        NSString *(^key)(NSString *) = ^NSString *(NSString *string) {
+            return ApolloInlineLinkCardSuppressionPathKey([NSURL URLWithString:string]);
+        };
+        Check([key(@"https://i.imgur.com/mEw31a3.jpeg") isEqualToString:key(@"https://imgur.com/mEw31a3.jpeg")],
+              @"i.imgur.com image matches its imgur.com card");
+        Check([key(@"https://I.IMGUR.COM/mEw31a3.jpeg") isEqualToString:key(@"https://imgur.com/mEw31a3.jpeg")],
+              @"host case does not matter");
+        Check([key(@"https://i.redd.it/asset.jpeg") isEqualToString:key(@"https://redd.it/asset.jpeg")] &&
+              [key(@"https://preview.redd.it/asset.jpeg?width=640") isEqualToString:key(@"https://redd.it/asset.jpeg")],
+              @"i.redd.it and preview.redd.it images match their redd.it card");
+
+        // Negative: the same path on a different origin keeps its own key.
+        NSString *tenorImage = key(@"https://i.tenor.com/image.gif");
+        NSString *tenorPreview = key(@"https://preview.tenor.com/image.gif");
+        NSString *tenorBare = key(@"https://tenor.com/image.gif");
+        Check(![tenorImage isEqualToString:tenorPreview] && ![tenorImage isEqualToString:tenorBare] &&
+              ![tenorPreview isEqualToString:tenorBare],
+              @"i./preview. on other hosts are distinct origins");
+        Check(![key(@"https://m.imgur.com/mEw31a3.jpeg") isEqualToString:key(@"https://imgur.com/mEw31a3.jpeg")],
+              @"only the i.imgur.com alias maps to imgur.com");
+        Check(![key(@"https://i.imgur.com/mEw31a3.jpeg") isEqualToString:key(@"https://i.imgur.com/other.jpeg")],
+              @"different paths never match");
+        Check(key(@"https://imgur.com") == nil && key(@"imgur.com/mEw31a3.jpeg") == nil,
+              @"no path or no host -> no key");
+
         NSLog(@"PASS: %lu inline image metadata checks",
               (unsigned long)atomic_load(&checks));
     }

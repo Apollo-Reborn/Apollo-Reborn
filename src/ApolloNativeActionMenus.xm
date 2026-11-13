@@ -792,6 +792,22 @@ static void ApolloNativeActionMenuEndCapture(void) {
     }
 }
 
+static void ApolloNativeActionMenuBeginPointCapture(UIView *source, CGPoint point, id owner) {
+    ApolloNativeActionMenuBeginCapture(source, owner);
+    if (sApolloNativeActionMenuSourceView == source)
+        ApolloNativeActionMenuSetSourcePoint(source, [NSValue valueWithCGPoint:point]);
+}
+
+void ApolloNativeActionMenuPresentFromPoint(UIView *source, CGPoint point, id owner, dispatch_block_t build) {
+    if (!build) return;
+    ApolloNativeActionMenuBeginPointCapture(source, point, owner);
+    @try {
+        build();
+    } @finally {
+        ApolloNativeActionMenuEndCapture();
+    }
+}
+
 static UITableView *ApolloNativeActionMenuTableView(id actionController) {
     UITableView *tableView = ApolloReadObjectIvar(actionController, "tableView");
     return [tableView isKindOfClass:[UITableView class]] ? tableView : nil;
@@ -2428,6 +2444,22 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
 }
 %end
 
+// The red Delete button of a row swiped open: _UISwipeActionDynamicButton on
+// iOS 26, UISwipeActionStandardButton before it.
+static UIView *ApolloNativeActionMenuSwipeDeleteButton(UIView *view, NSUInteger depth) {
+    for (UIView *subview in view.subviews) {
+        if (subview.hidden || subview.alpha <= 0.01) continue;
+        NSString *name = NSStringFromClass(subview.class);
+        if ([name containsString:@"SwipeAction"] && [name hasSuffix:@"Button"]) return subview;
+        // Swipe actions sit beside the cell, never inside its content.
+        if (depth < 5 && ![subview isKindOfClass:UITableViewCell.class]) {
+            UIView *found = ApolloNativeActionMenuSwipeDeleteButton(subview, depth + 1);
+            if (found) return found;
+        }
+    }
+    return nil;
+}
+
 %hook _TtC6Apollo24RedditListViewController
 - (void)tappedAddBarButtonItem:(id)sender {
     UIView *sourceView = ApolloNativeActionMenuViewForObject(sender);
@@ -2437,6 +2469,26 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
     ApolloNativeActionMenuBeginCapture(sourceView ?: sender, self);
     %orig;
     ApolloNativeActionMenuEndCapture();
+}
+
+// A swiped row's Delete reaches Apollo's "Delete Multireddit" / "Unsubscribe
+// from …" sheet with no sender; open it where that button is, not from the
+// whole list. Anchored in the table: UIKit removes the swipe button right
+// away on iOS 26.5, which closed a menu attached to it.
+- (void)tableView:(UITableView *)tableView commitEditingStyle:(NSInteger)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath {
+    UIView *button = tableView.window ? ApolloNativeActionMenuSwipeDeleteButton(tableView, 0) : nil;
+    if (!button) {
+        %orig;
+        return;
+    }
+    CGPoint point = [button convertPoint:CGPointMake(CGRectGetMidX(button.bounds), CGRectGetMidY(button.bounds))
+                                  toView:tableView];
+    ApolloNativeActionMenuBeginPointCapture(tableView, point, self);
+    @try {
+        %orig;
+    } @finally {
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 %end
 

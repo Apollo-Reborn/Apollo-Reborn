@@ -3747,6 +3747,84 @@ static NSString *ApolloExtractGoogleSourceLanguage(id jsonObject) {
     return nil;
 }
 
+// How sure gtx is of that source language, 0–1: seventh at the top level —
+// [[segments…], null, "tl", null, null, null, 0.31, …]. clients5 reports none.
+static NSNumber *ApolloExtractGoogleSourceConfidence(id jsonObject) {
+    if (![jsonObject isKindOfClass:[NSArray class]]) return nil;
+    NSArray *array = (NSArray *)jsonObject;
+    if (array.count <= 6 || ![array[6] isKindOfClass:[NSNumber class]]) return nil;
+    double confidence = [array[6] doubleValue];
+    return (confidence >= 0.0 && confidence <= 1.0) ? array[6] : nil;
+}
+
+// At most 4 words by the system word breaker, which segments scripts written
+// without spaces (a Japanese paragraph is 17 words, not 1), and at most 40
+// characters as a backstop for a script it can't segment. Emoji and
+// punctuation alone have no words: nothing for a language guess to judge.
+static BOOL ApolloTextIsShortForLanguageGuess(NSString *text) {
+    static const NSUInteger kMaxWords = 4;
+    static const NSUInteger kMaxCharacters = 40;
+    if (![text isKindOfClass:[NSString class]] || text.length == 0) return NO;
+    NSRange all = NSMakeRange(0, text.length);
+    __block NSUInteger characters = 0;
+    [text enumerateSubstringsInRange:all
+                             options:NSStringEnumerationByComposedCharacterSequences | NSStringEnumerationSubstringNotRequired
+                          usingBlock:^(__unused NSString *s, __unused NSRange r, __unused NSRange e, BOOL *stop) {
+        if (++characters > kMaxCharacters) *stop = YES;
+    }];
+    if (characters > kMaxCharacters) return NO;
+    __block NSUInteger words = 0;
+    [text enumerateSubstringsInRange:all
+                             options:NSStringEnumerationByWords | NSStringEnumerationSubstringNotRequired
+                          usingBlock:^(__unused NSString *s, __unused NSRange r, __unused NSRange e, BOOL *stop) {
+        if (++words > kMaxWords) *stop = YES;
+    }];
+    return words > 0 && words <= kMaxWords;
+}
+
+// Accents folded away and any run of 3+ of one character counted as two.
+// Already case/whitespace-normalized input.
+static NSString *ApolloFoldSpellingNoiseForCompare(NSString *normalized) {
+    static NSRegularExpression *repeatedCharacterRun;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        repeatedCharacterRun = [NSRegularExpression regularExpressionWithPattern:@"(.)\\1{2,}" options:0 error:NULL];
+    });
+    NSString *folded = [normalized stringByFoldingWithOptions:NSDiacriticInsensitiveSearch locale:nil];
+    return [repeatedCharacterRun stringByReplacingMatchesInString:folded options:0
+                                                            range:NSMakeRange(0, folded.length)
+                                                     withTemplate:@"$1$1"];
+}
+
+// YES when the reply is the request re-spelled: a stretched word a letter
+// longer or shorter, or accents dropped or added. Only meaningful when Google
+// is unsure of the language; accents are real spelling, and a confident reply
+// that only changes them ("sí" → "sì", Spanish to Italian) is a translation.
+static BOOL ApolloGoogleReplyOnlyRespellsText(NSString *requestText, NSString *reply) {
+    NSString *requestNorm = ApolloNormalizeTextForCompare(ApolloStripInlineMediaTokens(requestText ?: @""));
+    NSString *replyNorm = ApolloNormalizeTextForCompare(ApolloStripInlineMediaTokens(reply ?: @""));
+    if (requestNorm.length == 0 || replyNorm.length == 0) return NO;
+    return [ApolloFoldSpellingNoiseForCompare(requestNorm) isEqualToString:ApolloFoldSpellingNoiseForCompare(replyNorm)];
+}
+
+// YES when Google's reply should give way to the original text: Google is
+// under 0.5 sure of the language, and the text is short or the reply only
+// re-spells it. Short text Google can't place is a name, slang or a stretched
+// word it guessed a language for, not a translation (#1665): "LUKA" + 25 A's
+// came back with 26 A's from Tagalog at 0.31, "Kuminga" as "Kumiga" from Maori
+// at 0.33, "Luka Luka Luka Luka" as "Wounds Wounds…" from Indonesian at 0.46,
+// "Vando szn" as "No. Vando" from Hungarian at 0.48. Real short foreign text
+// scores higher (Hola 1.0, Grazie 0.96, Danke 0.66, Golazo 0.52). Longer text
+// keeps Google's answer unless it only re-spells the original, since low
+// confidence there means mixed languages, which still translate fine. A long
+// post's short last chunk is judged the same way; Google misreads those too
+// ("Ja." → "And." from Estonian).
+static BOOL ApolloGoogleReplyIsUnsureGuess(NSString *requestText, NSString *reply, NSNumber *confidence) {
+    static const double kMinConfidence = 0.5;
+    if (![confidence isKindOfClass:[NSNumber class]] || confidence.doubleValue >= kMinConfidence) return NO;
+    return ApolloTextIsShortForLanguageGuess(requestText) || ApolloGoogleReplyOnlyRespellsText(requestText, reply);
+}
+
 // Completion for one provider leg: the translation plus the source language the
 // provider reports translating FROM (nil when it gave none).
 typedef void (^ApolloTranslationLegCompletion)(NSString *translated, NSString *sourceLanguage, NSError *error);
@@ -3788,8 +3866,10 @@ static NSURL *ApolloGoogleTranslateFallbackURL(NSString *text, NSString *targetL
 }
 
 // One GET against a Google translate endpoint + shared response parsing.
-// `endpointLabel` only feeds the local diagnostic log.
+// `requestText` is the text the URL carries; `endpointLabel` only feeds the
+// local diagnostic log.
 static void ApolloGoogleTranslateFetch(NSURL *url,
+                                       NSString *requestText,
                                        NSString *endpointLabel,
                                        ApolloTranslationLegCompletion completion) {
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:12.0];
@@ -3840,6 +3920,15 @@ static void ApolloGoogleTranslateFetch(NSURL *url,
         }
 
         NSString *sourceLanguage = ApolloExtractGoogleSourceLanguage(jsonObject);
+        NSNumber *confidence = ApolloExtractGoogleSourceConfidence(jsonObject);
+        if (ApolloGoogleReplyIsUnsureGuess(requestText, translated, confidence)) {
+            // Hand the original back, the way a skip-listed language is: callers
+            // treat it as nothing to translate, so no rewrite and no marker.
+            ApolloLog(@"[Translation] Google(%@) only %.2f sure the %lu-char text is %@ — keeping the original",
+                      endpointLabel, confidence.doubleValue, (unsigned long)requestText.length, sourceLanguage ?: @"(none)");
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(requestText, nil, nil); });
+            return;
+        }
         dispatch_async(dispatch_get_main_queue(), ^{ completion(translated, sourceLanguage, nil); });
     }];
 
@@ -3868,7 +3957,7 @@ static void ApolloTranslateViaGoogle(NSString *text,
             completion(nil, nil, primaryError);
             return;
         }
-        ApolloGoogleTranslateFetch(fallbackURL, @"clients5", ^(NSString *retried, NSString *retriedSource, NSError *fallbackError) {
+        ApolloGoogleTranslateFetch(fallbackURL, text, @"clients5", ^(NSString *retried, NSString *retriedSource, NSError *fallbackError) {
             if ([retried isKindOfClass:[NSString class]] && retried.length > 0) {
                 completion(retried, retriedSource, nil);
                 return;
@@ -3895,7 +3984,7 @@ static void ApolloTranslateViaGoogle(NSString *text,
         dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, nil, error); });
         return;
     }
-    ApolloGoogleTranslateFetch(primaryURL, @"gtx", ^(NSString *translated, NSString *sourceLanguage, NSError *primaryError) {
+    ApolloGoogleTranslateFetch(primaryURL, text, @"gtx", ^(NSString *translated, NSString *sourceLanguage, NSError *primaryError) {
         if ([translated isKindOfClass:[NSString class]] && translated.length > 0) {
             completion(translated, sourceLanguage, nil);
             return;
@@ -5052,7 +5141,7 @@ void ApolloTranslationDebugProbe(NSString *spec) {
     } else if ([leg isEqualToString:@"google2"]) {
         NSURL *fallbackURL = ApolloGoogleTranslateFallbackURL(text, target);
         if (!fallbackURL) { ApolloLog(@"[Translation][Probe] clients5 URL build failed"); return; }
-        ApolloGoogleTranslateFetch(fallbackURL, @"clients5", report);
+        ApolloGoogleTranslateFetch(fallbackURL, text, @"clients5", report);
     } else if ([leg isEqualToString:@"libre"]) {
         ApolloTranslateViaLibre(text, target, report);
     } else if ([leg isEqualToString:@"microsoft"]) {
@@ -8139,14 +8228,17 @@ static void ApolloApplyGlobeMergeForNavItem(UINavigationItem *navItem) {
     if (ApolloDeferGlobeGeometry(globe, container, ^{
         ApolloApplyGlobeMergeForNavItem(weakItem);
     })) return;
-    // Liquid Glass uses the same neutral chrome in standalone and merged slots.
+    // Liquid Glass uses the other navigation buttons' color in standalone and
+    // merged slots: neutral chrome, or the accent with Accent Navigation Buttons.
     // Classic builds keep their accent and translated-state tint.
     id target = globe.allTargets.anyObject;
     UIViewController *controller = [target isKindOfClass:UIViewController.class] ? target : nil;
     BOOL visibleTranslationApplied = [objc_getAssociatedObject(controller, kApolloVisibleTranslationAppliedKey) boolValue];
-    globe.tintColor = IsLiquidGlass() ? ApolloNavigationChromeColor()
+    UIColor *buttonAccent = ApolloNavigationButtonAccentColor();
+    globe.tintColor = IsLiquidGlass() ? (buttonAccent ?: ApolloNavigationChromeColor())
         : (visibleTranslationApplied ? UIColor.systemGreenColor
             : (ApolloThemeAccentColor() ?: controller.viewIfLoaded.tintColor ?: UIColor.systemBlueColor));
+    if (IsLiquidGlass()) ApolloNavigationActionsAccentControl(globe);
     UIBarButtonItem *standalone = objc_getAssociatedObject(navItem, kApolloGlobeStandaloneItemKey);
 
     // The Duo rail already mirrors the merged globe as a native item. Leave it
@@ -8254,6 +8346,7 @@ static void ApolloApplyGlobeMergeForNavItem(UINavigationItem *navItem) {
             ApolloLog(@"[Translation] Globe: hosting as a native Duo rail item (title length %lu)", (unsigned long)navItem.title.length);
         }
         if (standalone.image != railImage) standalone.image = railImage;
+        if (standalone.tintColor != buttonAccent) standalone.tintColor = buttonAccent;
         if (standalone.primaryAction.image != railImage) standalone.primaryAction.image = railImage;
         if (![standalone.primaryAction.title isEqualToString:@"Translate"])
             standalone.primaryAction.title = @"Translate";
@@ -11779,7 +11872,23 @@ static void ApolloDbgPurgeNSCaches(CFNotificationCenterRef c, void *o, CFStringR
 #endif
 // ==============================================================================
 
+static void ApolloGlobeCollectNavigationItems(UIView *view, NSMutableArray<UINavigationItem *> *items) {
+    if ([view isKindOfClass:UINavigationBar.class]) {
+        [items addObjectsFromArray:((UINavigationBar *)view).items ?: @[]];
+        return;
+    }
+    for (UIView *subview in view.subviews) ApolloGlobeCollectNavigationItems(subview, items);
+}
+
 %ctor {
+    // Accent Navigation Buttons: recolor the globes already in navigation bars.
+    [NSNotificationCenter.defaultCenter addObserverForName:ApolloNavigationButtonColorDidChangeNotification
+                                                    object:nil queue:NSOperationQueue.mainQueue
+                                                usingBlock:^(__unused NSNotification *note) {
+        NSMutableArray<UINavigationItem *> *items = [NSMutableArray array];
+        for (UIWindow *window in ApolloAllWindows()) ApolloGlobeCollectNavigationItems(window, items);
+        for (UINavigationItem *item in items) ApolloApplyGlobeMergeForNavItem(item);
+    }];
     // Apollo's native General > Other section has an "Always Offer Translate" row
     // that is redundant (and confusing) next to this module's own Translation
     // feature; hide it. The underlying Apollo setting is untouched, and the table

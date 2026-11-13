@@ -209,6 +209,9 @@ static void ApolloSwitcherApplyBarAccent(UINavigationBar *bar) {
 @property (nonatomic, strong) ApolloAccountCredentialEntry *entry;
 @property (nonatomic, copy) void (^onSave)(NSString *clientId, NSString *secret, NSString *redirectURI);
 @property (nonatomic, copy, nullable) void (^onClear)(void);
+// Runs before the editor pops itself, ahead of UIKit setting up the bar's
+// transition back to the list.
+@property (nonatomic, copy, nullable) void (^willClose)(void);
 @end
 
 @implementation ApolloAccountCredentialEditorViewController {
@@ -225,6 +228,23 @@ static void ApolloSwitcherApplyBarAccent(UINavigationBar *bar) {
     [super viewDidLoad];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemSave target:self action:@selector(saveTapped:)];
+    if (ApolloDeviceIsDuo()) {
+        // On Duo, UIKit treats a bar item showing the back chevron, the system
+        // Back or our own, as a navigation control and moves it into its
+        // trailing vertical bar beside the rail, outside this sheet: next to
+        // the status column, or on top of Save. A custom-view button stays in
+        // the sheet's own bar, where the account list's + sits.
+        self.navigationItem.hidesBackButton = YES;
+        UIButton *button = [UIButton systemButtonWithImage:[UIImage systemImageNamed:@"chevron.backward"]
+                                                    target:self action:@selector(backTapped:)];
+        // Accent Navigation Buttons; the editor cannot outlive a change of the setting.
+        button.tintColor = ApolloNavigationButtonAccentColor() ?: UIColor.labelColor;
+        ApolloNavigationActionsAccentControl(button);
+        button.accessibilityLabel = @"Back";
+        self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:button];
+    }
+    // Accent Navigation Buttons fills Save with the accent, like the switcher's Done.
+    ApolloNavigationActionsAccentItem(self.navigationItem.rightBarButtonItem);
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 64;
 }
@@ -251,6 +271,15 @@ static void ApolloSwitcherApplyBarAccent(UINavigationBar *bar) {
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self applyCredentialEditorTheme];
+}
+
+- (void)backTapped:(id)sender {
+    [self close];
+}
+
+- (void)close {
+    if (self.willClose) self.willClose();
+    [self.navigationController popViewControllerAnimated:YES];
 }
 
 - (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
@@ -340,7 +369,7 @@ static void ApolloSwitcherApplyBarAccent(UINavigationBar *bar) {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     if (indexPath.section == 1 && self.onClear) {
         self.onClear();
-        [self.navigationController popViewControllerAnimated:YES];
+        [self close];
     }
 }
 
@@ -359,7 +388,7 @@ static void ApolloSwitcherApplyBarAccent(UINavigationBar *bar) {
 - (void)saveTapped:(id)sender {
     [self.view endEditing:YES];
     self.onSave(_clientIdField.text ?: @"", _secretField.text ?: @"", _redirectField.text ?: @"");
-    [self.navigationController popViewControllerAnimated:YES];
+    [self close];
 }
 
 @end
@@ -383,6 +412,8 @@ static void ApolloSwitcherApplyBarAccent(UINavigationBar *bar) {
 // already-valid instance, covering its table view. All switch/add/delete
 // actions are driven on that same live `liveManager` instance via its
 // existing ObjC-visible selectors, never on anything we constructed.
+static BOOL ApolloAccountSwitcherUsesNativeSheet(void);
+
 @interface ApolloAccountSwitcherViewController () <UIGestureRecognizerDelegate>
 @property (nonatomic, strong) NSMutableSet<NSString *> *pendingAccountRemovals;
 @property (nonatomic) BOOL accountRemovalRefreshScheduled;
@@ -411,6 +442,9 @@ static void ApolloSwitcherApplyBarAccent(UINavigationBar *bar) {
 // ApolloIsAccountSheetContent), and whether a re-push is already queued.
 @property (nonatomic, strong, nullable) NSNumber *duoRailClearedApplied;
 @property (nonatomic) BOOL duoRailRefreshScheduled;
+// The sheet detent the list had when the key editor opened full height; Back
+// returns to it.
+@property (nonatomic, copy, nullable) NSString *detentBeforeEditor;
 - (BOOL)driveLiveMoveRowFromIndexPath:(NSIndexPath *)fromPath toIndexPath:(NSIndexPath *)toPath;
 - (void)updateDuoEditButton;
 @end
@@ -778,7 +812,24 @@ static BOOL ApolloAccountReorderSchedulePersist(
     self.pendingAccountRemovals = [NSMutableSet set];
     [[NSNotificationCenter defaultCenter] addObserver:self
         selector:@selector(accountStoreDidChange:) name:NSUserDefaultsDidChangeNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+        selector:@selector(applyNavigationButtonAccent) name:ApolloNavigationButtonColorDidChangeNotification object:nil];
+    [self applyNavigationButtonAccent];
     [self reloadRows];
+}
+
+// Accent Navigation Buttons: Add and Edit follow the setting like Apollo's own
+// navigation buttons; NavigationActions does not manage this panel's bar.
+- (void)applyNavigationButtonAccent {
+    NSMutableArray<UIBarButtonItem *> *items = [NSMutableArray array];
+    if (@available(iOS 16.0, *)) {
+        for (UIBarButtonItemGroup *group in self.navigationItem.leadingItemGroups)
+            [items addObjectsFromArray:group.barButtonItems];
+    } else if (self.navigationItem.leftBarButtonItem) {
+        [items addObject:self.navigationItem.leftBarButtonItem];
+    }
+    [items addObject:self.editButtonItem];
+    for (UIBarButtonItem *item in items) ApolloNavigationActionsAccentItem(item);
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -786,8 +837,25 @@ static BOOL ApolloAccountReorderSchedulePersist(
     // Apollo can change its stock or custom theme while this controller is
     // retained, so refresh the dynamic palette each time the panel appears.
     [self applyApolloThemeColors];
+    [self applyNavigationButtonAccent];
 
     [self updateDuoEditButton];
+    if (@available(iOS 15.0, *)) {
+        UIViewController *host = self.liveManager;
+        if (host) [host setContentScrollView:self.tableView forEdge:NSDirectionalRectEdgeAll];
+    }
+    // Back from the key editor (the system Back off Duo): shrink to the
+    // height the list had, unless the editor's own close already did. A
+    // swipe back can still be cancelled, leaving the editor up; wait for it.
+    id<UIViewControllerTransitionCoordinator> coordinator = self.transitionCoordinator;
+    if (coordinator.isInteractive) {
+        __weak typeof(self) weakSelf = self;
+        [coordinator animateAlongsideTransition:nil completion:^(id<UIViewControllerTransitionCoordinatorContext> context) {
+            if (!context.isCancelled) [weakSelf restoreDetentBeforeEditor];
+        }];
+    } else {
+        [self restoreDetentBeforeEditor];
+    }
     self.tableView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentAutomatic;
     UIView *header = self.tableView.tableHeaderView;
     if (CGRectGetHeight(header.frame) > 0.5) {
@@ -960,16 +1028,40 @@ static BOOL ApolloAccountReorderSchedulePersist(
     dispatch_async(dispatch_get_main_queue(), ^{
         typeof(self) owner = weakSelf;
         owner.duoRailRefreshScheduled = NO;
-        UINavigationController *navigation = owner.navigationController;
-        if (!navigation.viewIfLoaded.window) return;
-        // Changing the extra insets makes UIKit recompute and push this
-        // subtree's safe areas; restoring them leaves the final push exact.
-        UIEdgeInsets extra = navigation.additionalSafeAreaInsets;
-        UIEdgeInsets nudged = extra;
-        nudged.bottom += 1.0;
-        navigation.additionalSafeAreaInsets = nudged;
-        navigation.additionalSafeAreaInsets = extra;
+        [owner pushDuoRailSafeAreas];
     });
+}
+
+// Back from the key editor: the height the list had before it, and the rail
+// reservation that height implies, in one animation. Run before the pop when
+// possible: the bar sets up its transition (Save morphing into Edit) as the
+// pop starts, so a later change leaves Edit at its full-height spot until the
+// transition ends and it snaps across.
+- (void)restoreDetentBeforeEditor {
+    NSString *detent = self.detentBeforeEditor;
+    self.detentBeforeEditor = nil;
+    if (@available(iOS 15.0, *)) {
+        UISheetPresentationController *sheet = detent && ApolloAccountSwitcherUsesNativeSheet()
+            ? self.liveManager.sheetPresentationController : nil;
+        if (!sheet || [sheet.selectedDetentIdentifier isEqualToString:detent]) return;
+        [sheet animateChanges:^{
+            sheet.selectedDetentIdentifier = detent;
+            self.duoRailClearedApplied = @(ApolloIsAccountSheetContent(self.navigationController.view));
+            [self pushDuoRailSafeAreas];
+        }];
+    }
+}
+
+- (void)pushDuoRailSafeAreas {
+    UINavigationController *navigation = self.navigationController;
+    if (!navigation.viewIfLoaded.window) return;
+    // Changing the extra insets makes UIKit recompute and push this
+    // subtree's safe areas; restoring them leaves the final push exact.
+    UIEdgeInsets extra = navigation.additionalSafeAreaInsets;
+    UIEdgeInsets nudged = extra;
+    nudged.bottom += 1.0;
+    navigation.additionalSafeAreaInsets = nudged;
+    navigation.additionalSafeAreaInsets = extra;
 }
 
 #pragma mark - UITableViewDataSource
@@ -1574,6 +1666,27 @@ static BOOL ApolloAccountReorderSchedulePersist(
 
 #pragma mark - Per-account credential editor
 
+// Lays the editor's rows out at the sheet's current size and checks that its
+// last row, Clear, ends above the sheet's bottom safe area.
+- (BOOL)credentialEditorFitsSheet:(UITableViewController *)editor {
+    UINavigationController *navigation = self.navigationController;
+    UIView *container = navigation.viewIfLoaded;
+    if (!container) return NO;
+    UITableView *table = editor.tableView;
+    table.frame = container.bounds;
+    [table reloadData];
+    [table layoutIfNeeded];
+    NSInteger lastSection = table.numberOfSections - 1;
+    NSInteger lastRow = lastSection >= 0 ? [table numberOfRowsInSection:lastSection] - 1 : -1;
+    if (lastRow < 0) return YES;
+    CGFloat rowBottom = CGRectGetMaxY([table rectForRowAtIndexPath:[NSIndexPath indexPathForRow:lastRow inSection:lastSection]]);
+    CGFloat needed = CGRectGetMaxY(navigation.navigationBar.frame) + rowBottom;
+    CGFloat available = CGRectGetHeight(container.bounds) - container.safeAreaInsets.bottom;
+    ApolloLog(@"[AccountSwitcher] Key editor needs %.0f of %.0f pt (bottom inset %.0f)",
+              needed, available, container.safeAreaInsets.bottom);
+    return needed <= available;
+}
+
 - (void)presentCredentialEditorForUsername:(NSString *)username {
     ApolloAccountCredentialEntry *existing = ApolloAccountCredentialsFor(username) ?: [ApolloAccountCredentialEntry new];
     ApolloAccountCredentialEditorViewController *editor = [ApolloAccountCredentialEditorViewController new];
@@ -1587,6 +1700,30 @@ static BOOL ApolloAccountReorderSchedulePersist(
         ApolloAccountCredentialsRemove(username);
         [self reloadRows];
     };
+    __weak typeof(self) weakSelf = self;
+    editor.willClose = ^{ [weakSelf restoreDetentBeforeEditor]; };
+    if (@available(iOS 15.0, *)) {
+        // Not presentationController: on the narrow closed Duo UIKit adapts
+        // the form sheet, and only this reaches the sheet in every width.
+        UIViewController *host = self.liveManager;
+        UISheetPresentationController *sheet = ApolloAccountSwitcherUsesNativeSheet() ? host.sheetPresentationController : nil;
+        if (sheet) {
+            // Where the editor's fields and Clear row don't fit the sheet's
+            // current height (the closed Duo, landscape), open it full height
+            // and return to the list's own height on Back.
+            NSString *detent = sheet.selectedDetentIdentifier ?: UISheetPresentationControllerDetentIdentifierMedium;
+            if (![detent isEqualToString:UISheetPresentationControllerDetentIdentifierLarge] &&
+                ![self credentialEditorFitsSheet:editor]) {
+                self.detentBeforeEditor = detent;
+                [sheet animateChanges:^{
+                    sheet.selectedDetentIdentifier = UISheetPresentationControllerDetentIdentifierLarge;
+                }];
+            }
+            // The sheet tracks the visible list's scrolling; the switcher
+            // names its own list again when it reappears.
+            [host setContentScrollView:editor.tableView forEdge:NSDirectionalRectEdgeAll];
+        }
+    }
     [self.navigationController pushViewController:editor animated:YES];
 }
 

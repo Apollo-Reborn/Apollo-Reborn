@@ -4,7 +4,9 @@ set -eu
 # Translation markers name the language the PROVIDER reported translating from,
 # and stay off text the provider handed back unchanged (issue #1345): Google
 # response parsing, reported-code normalization, the source-language store key,
-# and the unchanged-text compare (src/ApolloTranslation.xm).
+# and the unchanged-text compare (src/ApolloTranslation.xm). Short text Google
+# can't place, and a reply that only re-spells text Google can't place, hand the
+# original back (issue #1665).
 repo=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 build=$(mktemp -d "${TMPDIR:-/tmp}/apollo-translation-source.XXXXXX")
 trap 'rm -rf -- "$build"' EXIT HUP INT TERM
@@ -28,6 +30,11 @@ pieces = [function(signature) for signature in (
     'static NSString *ApolloTranslationSourceLanguageKey(NSString *sourceText) {',
     'static NSString *ApolloNormalizedReportedSourceLanguage(NSString *reported) {',
     'static NSString *ApolloExtractGoogleSourceLanguage(id jsonObject) {',
+    'static NSNumber *ApolloExtractGoogleSourceConfidence(id jsonObject) {',
+    'static BOOL ApolloTextIsShortForLanguageGuess(NSString *text) {',
+    'static NSString *ApolloFoldSpellingNoiseForCompare(NSString *normalized) {',
+    'static BOOL ApolloGoogleReplyOnlyRespellsText(NSString *requestText, NSString *reply) {',
+    'static BOOL ApolloGoogleReplyIsUnsureGuess(NSString *requestText, NSString *reply, NSNumber *confidence) {',
 )]
 Path(sys.argv[2]).write_text('\n'.join(pieces), encoding='utf-8')
 PY

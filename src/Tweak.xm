@@ -42,8 +42,10 @@
 #import "Defaults.h"
 #import "ApolloMarkdownToolbarGif.h"
 #import "ApolloWebAuthViewController.h"
+#import "settings/ApolloSettingsRouter.h"
 #import "ApolloToast.h"
 #import "ApolloWebJSON.h"
+#import "ApolloWebJSONRoutes.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloReduceRateLimiting.h"
 #import "ApolloWebSessionLoginViewController.h"
@@ -2056,6 +2058,45 @@ static const char kARScheme     = '\0';
 static const char kARAuthURL    = '\0';
 static const char kARCompletion = '\0';
 
+// Apollo's own presentationContextProvider is set before start is called and
+// returns the correct window.
+static UIWindow *ApolloWebAuthPresentationWindow(ASWebAuthenticationSession *session) {
+    UIWindow *window = [[session presentationContextProvider] presentationAnchorForWebAuthenticationSession:session];
+    return window ?: (ApolloKeyWindow() ?: ApolloAllWindows().firstObject);
+}
+
+// Every interactive Reddit sign-in (the signed-out splash, Add Account, Setup)
+// runs through AccountManager's one ASWebAuthenticationSession (FUN_10082edc4),
+// right after -authenticateWithClientIdentifier:redirectURI: picked its key.
+// Other hosts (an Imgur sign-in) never match.
+static BOOL ApolloIsRedditAuthorizeURL(NSURL *url) {
+    NSString *host = url.host.lowercaseString;
+    if (!([host isEqualToString:@"reddit.com"] || [host hasSuffix:@".reddit.com"])) return NO;
+    return [url.path hasPrefix:@"/api/v1/authorize"];
+}
+
+static void ApolloExplainMissingRedditAPIKey(UIWindow *window) {
+    UIViewController *top = window.rootViewController;
+    while (top.presentedViewController) top = top.presentedViewController;
+    if (!top) {
+        ApolloLog(@"[WebAuth] No view controller to explain the missing API key from");
+        return;
+    }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Reddit API Key Required"
+                                                                   message:@"No Reddit API key is set yet. Add yours in Accounts & API Keys, or sign in without an API key."
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Not Now" style:UIAlertActionStyleCancel handler:nil]];
+    UIAlertAction *addKey = [UIAlertAction actionWithTitle:@"Add API Key"
+                                                     style:UIAlertActionStyleDefault
+                                                   handler:^(__unused UIAlertAction *action) {
+        ApolloLog(@"[WebAuth] Opening Accounts & API Keys to add the missing API key");
+        ApolloSettingsRouteOpen(@"accounts-api-keys");
+    }];
+    [alert addAction:addKey];
+    alert.preferredAction = addKey;
+    [top presentViewController:alert animated:YES completion:nil];
+}
+
 // Replace ASWebAuthenticationSession with a WKWebView-based flow for all
 // Reddit OAuth sign-ins. WKNavigationDelegate fires decidePolicyForNavigationAction
 // for every URL before iOS URL routing, so the callback can be intercepted
@@ -2091,13 +2132,37 @@ static const char kARCompletion = '\0';
 }
 
 - (BOOL)start {
+    NSURL *authURL = objc_getAssociatedObject(self, &kARAuthURL);
+    void (^completion)(NSURL *, NSError *) = objc_getAssociatedObject(self, &kARCompletion);
+
+    // Checked before either sign-in UI. With no API key in Settings and none on
+    // the active account (a fresh install, or a keyless account adding an
+    // API-key one) the sign-in can't succeed, and Reddit only says so after the
+    // person has logged in ("Invalid or missing client_id parameter"). So say
+    // what's missing instead of opening Reddit.
+    // The completion is deliberately never called. A cancel would make
+    // AccountManager (FUN_10082f4d8, code 1 -> FUN_100831ebc) put its "Why did
+    // you cancel?" survey up under this alert, and any other error shows its
+    // own failure alert. Nothing is left waiting on it: the next sign-in
+    // (FUN_10082edc4) reassigns trigger, stage, completion handler,
+    // newAccount and this session, and `stage` is otherwise only read by the
+    // SFSafariViewController flow. Nothing was armed either:
+    // ApolloNoteInteractiveOAuthSignIn arms only on a callback with a code.
+    // Async so the alert goes up after Apollo's sign-in call has returned.
+    if (completion && ApolloIsRedditAuthorizeURL(authURL) && !ApolloAccountCredentialsNewSignInHasAPIKey()) {
+        ApolloLog(@"[WebAuth] Reddit sign-in has no API key; explaining instead of opening Reddit");
+        UIWindow *window = ApolloWebAuthPresentationWindow(self);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ApolloExplainMissingRedditAPIKey(window);
+        });
+        return YES;
+    }
+
     if (![[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseCustomOAuthSignIn]) {
         return %orig;
     }
 
     NSString *callbackScheme = objc_getAssociatedObject(self, &kARScheme);
-    NSURL *authURL            = objc_getAssociatedObject(self, &kARAuthURL);
-    void (^completion)(NSURL *, NSError *) = objc_getAssociatedObject(self, &kARCompletion);
 
     if (!authURL || !completion) {
         ApolloLog(@"[WebAuth] missing authURL or completion — falling back to %%orig");
@@ -2121,12 +2186,8 @@ static const char kARCompletion = '\0';
 
     ApolloLog(@"[WebAuth] using WKWebView, intercepting redirectURI=%@", interceptRedirectURI);
 
-    // Use Apollo's own presentationContextProvider — it's set before start is called
-    // and returns the correct window. start is already on the main queue.
-    id<ASWebAuthenticationPresentationContextProviding> provider = [self presentationContextProvider];
-    UIWindow *window = [provider presentationAnchorForWebAuthenticationSession:self];
-
-    if (!window) window = ApolloKeyWindow() ?: ApolloAllWindows().firstObject;
+    // start is already on the main queue.
+    UIWindow *window = ApolloWebAuthPresentationWindow(self);
 
     ApolloLog(@"[WebAuth] presenting from window=%@", window);
 
@@ -3203,6 +3264,24 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
                 ApolloLog(@"[RecentlyRead] Rerouted unauthenticated info.json to oauth.reddit.com");
             }
         }
+        // API-key accounts: /api/info and /api/morechildren go by their /.json
+        // form once oauth.reddit.com refused their usual path this launch
+        // (ApolloWebJSONRoutes.h), whoever sends them. RedditKit's are already
+        // sent that way (ApolloWebJSONIdentity.xm); this covers the direct
+        // lookups too (link previews, Hidden & Deleted, URL search, the Recently
+        // Read reroute above). Refusals are noted in _onqueue_didFinishWithError.
+        if ([mutableRequest.URL.host isEqualToString:@"oauth.reddit.com"]) {
+            NSString *readPath = mutableRequest.URL.path ?: @"";
+            NSString *sendPath = ApolloOAuthReadPathToSend(mutableRequest.HTTPMethod ?: @"GET", readPath);
+            if (![sendPath isEqualToString:readPath]) {
+                NSURLComponents *components = [NSURLComponents componentsWithURL:mutableRequest.URL resolvingAgainstBaseURL:NO];
+                components.path = sendPath;
+                if (components.URL) [mutableRequest setURL:components.URL];
+            }
+        }
+#if APOLLO_SIM_BUILD
+        ApolloWebJSONSimBlockOAuthRead(mutableRequest);
+#endif
 
         [self setValue:mutableRequest forKey:@"_originalRequest"];
         [self setValue:mutableRequest forKey:@"_currentRequest"];
@@ -3233,12 +3312,26 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
 // Reddit's 403 HTML block page (signalling the harvested cookie expired). It's a
 // cheap predicate when the flag is off, so this is safe on the hot path.
 - (void)_onqueue_didFinishWithError:(id)error {
+    NSURLSessionTask *task = (NSURLSessionTask *)self;
+    // The request as sent (the rewrite above installs it as both). After a
+    // redirect, such as Old Reddit's sign-in gate, the current request is
+    // the redirect target, whose path isn't the read's.
+    NSURLRequest *sent = task.originalRequest ?: task.currentRequest;
+    // oauth.reddit.com's block page for an API-key account's /api/info or
+    // /api/morechildren: later reads of that endpoint go by its /.json form
+    // (ApolloOAuthReadPathToSend). API-Key-Free reads routed to oauth (they
+    // carry the rewrite's account marker, ApolloWebJSONRouteFromURL >= 0) are
+    // left to their own route table, which already tries the next route.
+    if ([sent.URL.host isEqualToString:@"oauth.reddit.com"] && ApolloWebJSONRouteFromURL(sent.URL) < 0
+        && [task.response isKindOfClass:[NSHTTPURLResponse class]]) {
+        NSString *dotJSONPath = ApolloOAuthReadPathAfterResponse(sent.HTTPMethod ?: @"GET", sent.URL.path ?: @"/",
+                                                                 (NSHTTPURLResponse *)task.response, NULL);
+        if (dotJSONPath) {
+            ApolloLog(@"[OAuthReads] oauth.reddit.com sent Reddit's block page for %@ %@; later reads go by %@",
+                      sent.HTTPMethod ?: @"GET", sent.URL.path, dotJSONPath);
+        }
+    }
     if (sWebJSONEnabled) {
-        NSURLSessionTask *task = (NSURLSessionTask *)self;
-        // The request as sent (the rewrite above installs it as both). After a
-        // redirect, such as Old Reddit's sign-in gate, the current request is
-        // the redirect target, whose path isn't the read's.
-        NSURLRequest *sent = task.originalRequest ?: task.currentRequest;
         ApolloWebJSONNoteResponse(sent, task.response);
     }
     %orig;
@@ -3721,6 +3814,8 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyUnreadBadgeCompactTabBar: @NO,
                                     UDKeyUnreadBadgeCompactInbox: @NO,
                                     UDKeyUnreadBadgeThemeColor: @NO,
+                                    UDKeyTintInactiveTabIcons: @NO,
+                                    UDKeyAccentNavigationButtons: @NO,
                                     UDKeyShowDetailedProfiles: @YES,
                                     UDKeyBadgeBookEnabled: @YES,
                                     UDKeyProfileHeaderImmersive: @YES,
@@ -3750,7 +3845,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyIPadTabBarBottom: @NO,
                                     UDKeySettingsIconAppearance: @(ApolloSettingsIconAppearanceLight),
                                     UDKeyTabBarSwipeNavigation: @NO,
-                                    UDKeyDuoLandscapeFeedLayout: @0,
+                                    UDKeyDuoUnfoldedFeedLayout: @0,
                                     UDKeyDuoSubredditPanelGlassEnabled: @NO,
                                     UDKeySubredditSwitcherSheetEnabled: @(ApolloDeviceIsDuo()),
                                     UDKeyIPadPaneLayout: @NO,
@@ -4021,6 +4116,8 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     sUnreadBadgeCompactTabBar = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUnreadBadgeCompactTabBar];
     sUnreadBadgeCompactInbox = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUnreadBadgeCompactInbox];
     sUnreadBadgeThemeColor = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUnreadBadgeThemeColor];
+    sTintInactiveTabIcons = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyTintInactiveTabIcons];
+    sAccentNavigationButtons = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyAccentNavigationButtons];
     ApolloNormalizeNativeHideUsernameForIconOnlyTabBar();
     // Profile Layout exposes this master again as its Native density. The
     // registered default remains ON for new installs; an explicit OFF now
@@ -4078,14 +4175,14 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     // sLiquidGlassEnabled was already latched in ApolloCommon +load. Do not
     // reload it here: UIKit and early hook constructors use that launch choice.
     sTabBarSwipeNavigation = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyTabBarSwipeNavigation];
-    sDuoLandscapeFeedLayout = [standardDefaults integerForKey:UDKeyDuoLandscapeFeedLayout];
+    sDuoUnfoldedFeedLayout = [standardDefaults integerForKey:UDKeyDuoUnfoldedFeedLayout];
     sDuoSubredditPanelGlassEnabled = [standardDefaults boolForKey:UDKeyDuoSubredditPanelGlassEnabled];
     sSubredditSwitcherSheetEnabled = [standardDefaults boolForKey:UDKeySubredditSwitcherSheetEnabled];
     // Value 1 belonged to the removed side-by-side experiment. Keep Focused
     // feed at 2 so existing selections survive this menu cleanup.
-    if (sDuoLandscapeFeedLayout != 0 && sDuoLandscapeFeedLayout != 2) {
-        sDuoLandscapeFeedLayout = 0;
-        [standardDefaults setInteger:0 forKey:UDKeyDuoLandscapeFeedLayout];
+    if (sDuoUnfoldedFeedLayout != 0 && sDuoUnfoldedFeedLayout != 2) {
+        sDuoUnfoldedFeedLayout = 0;
+        [standardDefaults setInteger:0 forKey:UDKeyDuoUnfoldedFeedLayout];
     }
     // Read once here: ApolloPaneInstall.xm builds the split controllers during
     // scene connect, which happens after %ctor and never again for the process.

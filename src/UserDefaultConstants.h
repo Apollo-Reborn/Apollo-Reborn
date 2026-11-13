@@ -282,6 +282,13 @@ static NSString *const ApolloTabBarTitlesChangedNotification = @"ApolloTabBarTit
 static NSString *const UDKeyUnreadBadgeCompactTabBar = @"UnreadBadgeCompactTabBar";
 static NSString *const UDKeyUnreadBadgeCompactInbox = @"UnreadBadgeCompactInbox";
 static NSString *const UDKeyUnreadBadgeThemeColor = @"UnreadBadgeThemeColor";
+// Unselected tab bar icons use a muted shade of the theme accent instead of
+// UIKit's gray. Default OFF. Theme Manager -> Options.
+static NSString *const UDKeyTintInactiveTabIcons = @"ApolloTintedTabIcons";
+// Liquid Glass only: navigation bar buttons (Back, +, Edit, sort, •••) use the
+// theme accent instead of the neutral label color; titles stay neutral.
+// Default OFF. Theme Manager -> Options. See ApolloNavigationActions.xm.
+static NSString *const UDKeyAccentNavigationButtons = @"ApolloAccentNavigationButtons";
 // When ON (default), profile pages show Reborn's detailed profile — the banner,
 // large avatar/snoovatar, display name, bio, and the Social Links band. When OFF,
 // the profile page reverts to Apollo's compact stock layout: the detailed header is
@@ -361,6 +368,8 @@ static NSString *const UDKeyIPadTabBarBottom = @"IPadTabBarBottom";
 static NSString *const ApolloIPadTabBarBottomChangedNotification = @"ApolloIPadTabBarBottomChangedNotification";
 // True Black Keyboard mode: 0 Off (default), 1 Dark Only, 2 Light Only, 3 Always.
 static NSString *const UDKeyTrueBlackKeyboardMode = @"TrueBlackKeyboardMode";
+// Spelling of interface text: 0 American (default, Apollo's own), 1 British. See ApolloSpelling.xm.
+static NSString *const UDKeySpellingStyle = @"SpellingStyle";
 // Settings icons: 0 = System, 1 = Light (default), 2 = Dark.
 static NSString *const UDKeySettingsIconAppearance = @"SettingsIconAppearance";
 // Glass builds only. Default ON. Applied once before UIKit/Logos startup;
@@ -370,9 +379,15 @@ static NSString *const UDKeyLiquidGlassEnabled = @"LiquidGlassEnabled";
 // dragging to switch tabs (an either/or; needs a relaunch to apply). Opt-in;
 // default OFF via registerDefaults. See ApolloLiquidGlass.xm.
 static NSString *const UDKeyTabBarSwipeNavigation = @"TabBarSwipeNavigation";
-// Experimental large post cards on Duo's opened landscape display:
+
+// Feed column's share (0–1) of Duo's flat landscape Posts split, saved when a
+// divider drag is released. Unset or invalid means 0.5. See ApolloDuoSplitDivider.
+static NSString *const UDKeyDuoDividerFeedShare = @"DuoDividerFeedShare";
+// Experimental large post cards on Duo's opened display, portrait and
+// landscape. The stored key keeps its landscape-only name so saved choices
+// survive:
 // 0 = Original (default), 2 = Focused feed; value 1 is retired.
-static NSString *const UDKeyDuoLandscapeFeedLayout = @"DuoLandscapeFeedLayout";
+static NSString *const UDKeyDuoUnfoldedFeedLayout = @"DuoLandscapeFeedLayout";
 // Open Duo subreddit panel appearance: NO = Standard
 // (default), YES = Liquid Glass. The panel keeps the same size and navigation.
 static NSString *const UDKeyDuoSubredditPanelGlassEnabled = @"DuoSubredditPanelGlassEnabled";

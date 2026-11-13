@@ -11,6 +11,9 @@
 #import "ApolloThemeShareImage.h"
 #import "ApolloThemeQRScanViewController.h"
 #import "ApolloCommon.h"
+#import "ApolloState.h"
+#import "ApolloTabBarStyle.h"
+#import "ApolloNavigationActions.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <PhotosUI/PhotosUI.h>
 #import <LinkPresentation/LinkPresentation.h>
@@ -366,6 +369,8 @@ typedef void (^ApolloThemeFontSelectionHandler)(ApolloThemeFont font);
 //              5 Generate | 6 Preview | 7 Share | 8 Apply | 9 Delete
 //              5 Generate | 6 Preview | 7 Apply | 8 Delete
 enum { HSCurrent, HSCreate, HSBrowse, HSMyThemes, HSImported, HSOptions, HSCount };
+// The navigation-button row exists only on Liquid Glass, where buttons are neutral.
+enum { HSOptionsLightDark, HSOptionsCommentsTheme, HSOptionsTabIconTint, HSOptionsNavButtonAccent };
 enum { ESName, ESVariant, ESColors, ESAdvanced, ESFont, ESGenerate, ESPreview, ESShare, ESApply, ESDelete, ESCount };
 
 @implementation ApolloThemeManagerViewController
@@ -627,7 +632,7 @@ static NSString *SpacedThemeName(NSString *raw) {
     NSMutableArray<NSString *> *chips = [NSMutableArray array];
     ApolloThemeFont font = ApolloThemeFontFromKey(theme[kApolloThemeFontKey]);
     if (font != ApolloThemeFontSystem) [chips addObject:ApolloThemeFontDisplayName(font)];
-    if ([theme[kApolloThemeAdvancedOptionsEnabledKey] boolValue]) [chips addObject:@"Custom Colours"];
+    if ([theme[kApolloThemeAdvancedOptionsEnabledKey] boolValue]) [chips addObject:@"Custom Colors"];
     if ([theme[kApolloThemeVoteArrowsAccentKey] boolValue]) [chips addObject:@"Accent Arrows"];
     if (chips.count == 0) return out;
 
@@ -656,8 +661,8 @@ static NSString *SpacedThemeName(NSString *raw) {
         NSDictionary *theme = [store activeTheme];
         ApolloThemeFont font = ApolloThemeFontFromKey(theme[kApolloThemeFontKey]);
         if (font != ApolloThemeFontSystem) [parts addObject:[ApolloThemeFontDetailName(font) stringByAppendingString:@" font"]];
-        if ([theme[kApolloThemeAdvancedOptionsEnabledKey] boolValue]) [parts addObject:@"Custom text and separator colours enabled"];
-        if ([theme[kApolloThemeVoteArrowsAccentKey] boolValue]) [parts addObject:@"Vote arrows use accent colour"];
+        if ([theme[kApolloThemeAdvancedOptionsEnabledKey] boolValue]) [parts addObject:@"Custom text and separator colors enabled"];
+        if ([theme[kApolloThemeVoteArrowsAccentKey] boolValue]) [parts addObject:@"Vote arrows use accent color"];
     }
     return [parts componentsJoinedByString:@", "];
 }
@@ -874,7 +879,7 @@ static NSString *SpacedThemeName(NSString *raw) {
         case HSBrowse:   return 2;
         case HSMyThemes: return MAX((NSInteger)[self myThemes].count, 1);
         case HSImported: return (NSInteger)[self importedThemes].count; // section exists only with content
-        case HSOptions:  return 2;
+        case HSOptions:  return IsLiquidGlass() ? 4 : 3;
     }
     return 0;
 }
@@ -892,7 +897,7 @@ static NSString *SpacedThemeName(NSString *raw) {
 - (NSString *)tableView:(UITableView *)tv titleForHeaderInSection:(NSInteger)section {
     if (self.editingThemeID) {
         switch (section) {
-            case ESColors:   return @"Colours";
+            case ESColors:   return @"Colors";
             case ESAdvanced: return @"Advanced (optional)";
             case ESFont:     return @"Font";
             case ESPreview:  return @"Preview";
@@ -912,7 +917,7 @@ static NSString *SpacedThemeName(NSString *raw) {
 
 - (NSString *)footerTextForSection:(NSInteger)section {
     if (self.editingThemeID && section == ESAdvanced)
-        return @"Turn on advanced options to override text and separator colours.";
+        return @"Turn on advanced options to override text and separator colors.";
     if (self.editingThemeID && section == ESFont)
         return @"Used across the app while this theme is active. Applies immediately; the odd view catches up after scrolling or reopening.";
     if (self.editingThemeID && section == ESShare)
@@ -1086,7 +1091,27 @@ static NSString *SpacedThemeName(NSString *raw) {
     }
     if (ip.section == HSOptions) {
         UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:nil];
-        if (ip.row == 0) {
+        if (ip.row == HSOptionsNavButtonAccent) {
+            cell.textLabel.text = @"Accent Navigation Buttons";
+            cell.imageView.image = [UIImage systemImageNamed:@"hand.tap"];
+            UISwitch *sw = [[UISwitch alloc] init];
+            sw.on = sAccentNavigationButtons;
+            [sw addTarget:self action:@selector(accentNavigationButtonsSwitchChanged:) forControlEvents:UIControlEventValueChanged];
+            cell.accessoryView = sw;
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            return cell;
+        }
+        if (ip.row == HSOptionsTabIconTint) {
+            cell.textLabel.text = @"Tint Tab Bar Icons";
+            cell.imageView.image = [UIImage systemImageNamed:@"paintbrush"];
+            UISwitch *sw = [[UISwitch alloc] init];
+            sw.on = sTintInactiveTabIcons;
+            [sw addTarget:self action:@selector(tintTabBarIconsSwitchChanged:) forControlEvents:UIControlEventValueChanged];
+            cell.accessoryView = sw;
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            return cell;
+        }
+        if (ip.row == HSOptionsLightDark) {
             cell.textLabel.text = @"Light/Dark Mode";
             cell.imageView.image = [UIImage systemImageNamed:@"circle.lefthalf.filled"];
         } else {
@@ -1214,8 +1239,8 @@ static NSString *SpacedThemeName(NSString *raw) {
             }
             NSInteger advancedColorCount = (ip.section == ESAdvanced && advancedEnabled) ? (NSInteger)ApolloThemeAdvancedInputKeys().count : 0;
             if (ip.section == ESAdvanced && ip.row == 1 + advancedColorCount) {
-                cell.textLabel.text = @"Colourize Vote Arrows";
-                cell.detailTextLabel.text = @"Idle arrows use the accent colour. A cast vote still shows Apollo's green/blue.";
+                cell.textLabel.text = @"Colorize Vote Arrows";
+                cell.detailTextLabel.text = @"Idle arrows use the accent color. A cast vote still shows Apollo's green/blue.";
                 cell.detailTextLabel.numberOfLines = 0;
                 UISwitch *sw = [[UISwitch alloc] init];
                 sw.on = [theme[kApolloThemeVoteArrowsAccentKey] boolValue];
@@ -1396,11 +1421,20 @@ static NSString *SpacedThemeName(NSString *raw) {
         return;
     }
     if (ip.section == HSOptions) {
-        BOOL ok = (ip.row == 0) ? ApolloThemeOpenNativeLightDarkFromHub(self)
+        if (ip.row == HSOptionsTabIconTint || ip.row == HSOptionsNavButtonAccent) return;
+        BOOL ok = (ip.row == HSOptionsLightDark) ? ApolloThemeOpenNativeLightDarkFromHub(self)
                                 : ApolloThemeOpenNativeCommentsThemeFromHub(self);
         if (!ok) [self showError:@"Apollo's settings aren't available from here. Go back and reopen Appearance."];
         return;
     }
+}
+
+- (void)tintTabBarIconsSwitchChanged:(UISwitch *)sw {
+    ApolloTabBarIconTintSetEnabled(sw.isOn);
+}
+
+- (void)accentNavigationButtonsSwitchChanged:(UISwitch *)sw {
+    ApolloNavigationActionsSetAccentButtons(sw.isOn);
 }
 
 - (void)tableView:(UITableView *)tv accessoryButtonTappedForRowWithIndexPath:(NSIndexPath *)ip {
@@ -2224,8 +2258,8 @@ static NSString *SpacedThemeName(NSString *raw) {
     ApolloThemeGenerationOverlayView *overlay =
         [self presentGenerationOverlayWithHeadline:@"Creating Themes"
                                        statusLines:@[@"Asking the on-device model…",
-                                                     @"Finding the iconic colours…",
-                                                     @"Reading the colour wheel…",
+                                                     @"Finding the iconic colors…",
+                                                     @"Reading the color wheel…",
                                                      @"Staging light & dark surfaces…",
                                                      @"Shaping subtle, balanced & bold…",
                                                      @"Checking contrast & readability…",
@@ -2263,7 +2297,7 @@ static NSString *SpacedThemeName(NSString *raw) {
 - (void)refineThemeSet:(NSDictionary *)themeSet selectedIntensity:(NSString *)intensity instruction:(NSString *)instruction {
     ApolloThemeGenerationOverlayView *overlay =
         [self presentGenerationOverlayWithHeadline:@"Updating Themes"
-                                       statusLines:@[@"Rethinking the seed colours…",
+                                       statusLines:@[@"Rethinking the seed colors…",
                                                      @"Applying your tweak…",
                                                      @"Rebuilding all three variants…",
                                                      @"Checking contrast & readability…",

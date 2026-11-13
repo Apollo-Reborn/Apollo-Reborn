@@ -17,6 +17,23 @@ void ApolloNavigationActionsRefresh(UINavigationBar *navigationBar);
 // Tint a native Edit/Done item's UIKit-owned prominent fill while editing.
 // Keeps its native target, image, style, sizing and transition unchanged.
 void ApolloNavigationActionsSetNativeEditingAccent(UIBarButtonItem *item, BOOL enabled);
+// Accent Navigation Buttons (Liquid Glass): turn the setting on or off and
+// re-tint the buttons already on screen.
+void ApolloNavigationActionsSetAccentButtons(BOOL enabled);
+// The theme accent navigation buttons take while Accent Navigation Buttons is
+// on, else nil (they keep the neutral chrome color).
+UIColor *ApolloNavigationButtonAccentColor(void);
+// Posted on the main queue when that color changes (the setting or the theme),
+// for buttons the tweak styles itself rather than through a navigation item.
+extern NSNotificationName const ApolloNavigationButtonColorDidChangeNotification;
+// For such a button in a glass bar, after setting its colors: glass draws its
+// glyphs monochrome, hiding an accent foreground, so this keeps that off while
+// the setting is on and hands the glyphs back to UIKit when it is off.
+void ApolloNavigationActionsAccentControl(UIView *control);
+// An item outside the bars NavigationActions manages (the Duo drawer's +, the
+// account switcher's Add and Edit): pinned to the accent while the setting is
+// on, released when it is off.
+void ApolloNavigationActionsAccentItem(UIBarButtonItem *item);
 // Collapse this item's action pill at once (no animation). For screens that
 // replace their trailing items in place for a while (the comments find
 // navigator) so the pill neither stays expanded under the stand-in nor comes
