@@ -46,9 +46,9 @@
 // that fails while Reddit holds the account that sent it now says it will load
 // once the limit resets, and the list reloads itself (through its own pull to
 // refresh action) when that account's hold ends, or as soon as the app is back
-// in the foreground after that. Each list waits on its own request's account:
-// switching to another account ends the wait, and an older first page that
-// finishes after a newer one has started leaves the list to the newer one.
+// in the foreground after that. Each list waits on its own request's account,
+// and switching to another account ends the wait. Like the outcome, the wait
+// follows whichever first page Apollo shows: the one that arrives last.
 
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
@@ -132,19 +132,17 @@ static NSTimeInterval ApolloListStateHold(ApolloListLoadState *state) {
     return state.account.length > 0 ? ApolloWebJSONOptionalReadBackoff(state.account) : 0;
 }
 
-// Records how the first page `request` stands for ended, if it still owns its
-// list (`current` is the list's state now). A newer first page replaces the
-// state, and an older request finishing after it must neither mark the newer
-// one waiting nor clear its wait: that returns NO and leaves `current` alone.
-// A first page that failed while Reddit held its account, on a list with
-// nothing in it yet, waits for the hold to end; a list that still shows posts
-// keeps them and isn't reloaded under the reader.
-static BOOL ApolloListRecordOutcome(ApolloListLoadState *current, ApolloListLoadState *request,
-                                    ApolloListOutcome outcome, BOOL listEmpty) {
-    if (!request || current != request) return NO;
-    request.outcome = outcome;
-    request.waitingForRateLimit = outcome == ApolloListOutcomeFailed && listEmpty && ApolloListStateHold(request) > 0;
-    return YES;
+// Records how a first page of the list whose state this is ended. Apollo shows
+// whichever first page arrives last, so its outcome goes on the list's current
+// state even if a newer first page has started since, and the wait follows it:
+// a late page that brought posts clears it, a late failure on an empty list
+// sets it. A first page that failed while Reddit held the list's account, on a
+// list with nothing in it yet, waits for the hold to end; a list that still
+// shows posts keeps them and isn't reloaded under the reader.
+static void ApolloListRecordOutcome(ApolloListLoadState *state, ApolloListOutcome outcome, BOOL listEmpty) {
+    if (!state) return;
+    state.outcome = outcome;
+    state.waitingForRateLimit = outcome == ApolloListOutcomeFailed && listEmpty && ApolloListStateHold(state) > 0;
 }
 
 typedef NS_ENUM(NSInteger, ApolloListRetryAction) {
@@ -188,6 +186,33 @@ static NSTimeInterval ApolloListPlanRetry(NSArray<ApolloListLoadState *> *states
         }
     }
     return next;
+}
+
+// Defined below this block (the tests define their own): wall-clock time now,
+// a wall-clock dispatch_after on main, and the pass itself.
+static NSTimeInterval ApolloListWallClockNow(void);
+static void ApolloListAfterWallClock(NSTimeInterval delay, dispatch_block_t block);
+static void ApolloListRetryRateLimitedLists(void);
+
+// Wall-clock time the earliest pending pass is due; 0 when none is.
+static NSTimeInterval sListRateLimitRetryAt;
+
+// Schedules a pass `delay` seconds from now unless one is already due no later
+// (that pass plans the next one from the holds as they are then). A list that
+// starts waiting on a shorter hold, such as another account's after a switch,
+// moves the next pass earlier instead of waiting behind a longer one. A pass
+// that fires after an earlier one has run finds nothing left or plans again.
+// Wall-clock time, so a device that sleeps through the reset reloads as soon
+// as the app runs again. Main thread.
+static void ApolloListScheduleRateLimitRetry(NSTimeInterval delay) {
+    delay = MAX(delay, 0.0);
+    NSTimeInterval at = ApolloListWallClockNow() + delay;
+    if (sListRateLimitRetryAt > 0 && sListRateLimitRetryAt <= at + 1.0) return;
+    sListRateLimitRetryAt = at;
+    ApolloListAfterWallClock(delay, ^{
+        if (sListRateLimitRetryAt == at) sListRateLimitRetryAt = 0;
+        ApolloListRetryRateLimitedLists();
+    });
 }
 
 // End of the rate-limit decisions.
@@ -343,25 +368,12 @@ static void ApolloListApply(id adapter) {
 
 #pragma mark - Reload once Reddit's rate limit resets
 
-// Wall-clock time (since 1970) the pending pass is due; 0 when none is.
-static NSTimeInterval sListRateLimitRetryAt;
+static NSTimeInterval ApolloListWallClockNow(void) {
+    return [[NSDate date] timeIntervalSince1970];
+}
 
-static void ApolloListRetryRateLimitedLists(void);
-
-// Schedules a pass `delay` seconds from now unless one is already due no later
-// (that pass plans the next one from the holds as they are then), so a long
-// hold on one account never postpones another account's reload. Wall-clock
-// time, so a device that sleeps through the reset reloads as soon as the app
-// runs again. Main thread.
-static void ApolloListScheduleRateLimitRetry(NSTimeInterval delay) {
-    delay = MAX(delay, 0.0);
-    NSTimeInterval at = [[NSDate date] timeIntervalSince1970] + delay;
-    if (sListRateLimitRetryAt > 0 && sListRateLimitRetryAt <= at + 1.0) return;
-    sListRateLimitRetryAt = at;
-    dispatch_after(dispatch_walltime(NULL, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (sListRateLimitRetryAt == at) sListRateLimitRetryAt = 0;
-        ApolloListRetryRateLimitedLists();
-    });
+static void ApolloListAfterWallClock(NSTimeInterval delay, dispatch_block_t block) {
+    dispatch_after(dispatch_walltime(NULL, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), block);
 }
 
 // The lowercased username of the account active now, of either kind. Reads
@@ -416,6 +428,8 @@ static void ApolloListRetryRateLimitedLists(void) {
     }
     for (ApolloListLoadState *state in reload) {
         state.waitingForRateLimit = NO;
+        // Nothing reloads under the reader: a list that has posts again keeps them.
+        if (!ApolloListInstalledSpinner(state.adapter)) continue;
         id controller = state.controller;
         SEL refresh = state.refreshSelector;
         if (!controller || !refresh || ![controller respondsToSelector:refresh]) continue;
@@ -425,17 +439,11 @@ static void ApolloListRetryRateLimitedLists(void) {
     }
 }
 
-// After Apollo has handled the first page `request` stands for. `owns` is NO
-// when a newer first page replaced the list's state while this one was in
-// flight: that page's own completion settles the list, so this one changes
-// nothing (Apollo still got the page).
-static void ApolloListFinishFirstPage(id adapter, ApolloListLoadState *request, BOOL owns, NSString *path,
-                                      ApolloListOutcome outcome, NSError *error) {
-    if (!owns) {
-        ApolloLog(@"[ListEmptyState] First page of %@ finished after a newer one started; leaving the list to the newer one", path);
-        return;
-    }
-    ApolloListLoadState *state = request;
+// After Apollo has handled a first page that ended `outcome`. Apollo shows
+// whichever page arrives last, so the outcome goes on the list's current
+// state even if a newer first page has started since this one.
+static void ApolloListFinishFirstPage(id adapter, NSString *path, ApolloListOutcome outcome, NSError *error) {
+    ApolloListLoadState *state = ApolloListStateFor(adapter);
     if (!state || outcome == ApolloListOutcomeNone) return;
     NSTimeInterval hold = ApolloListStateHold(state);
     ApolloLog(@"[ListEmptyState] First page of %@ %@; %@%@", path,
@@ -536,10 +544,7 @@ static void ApolloListRegisterController(UIViewController *controller) {
     objc_setAssociatedObject(adapter, &kApolloListStateKey, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloListApply(adapter);
 
-    // The completion keeps this request's own state: if a newer first page
-    // replaces it before this one finishes, this one only hands Apollo its page.
     __weak id weakAdapter = adapter;
-    ApolloListLoadState *requestState = state;
     ApolloListPageCompletion wrapped = ^(NSArray *items, RDKPagination *nextPagination, NSError *error) {
         ApolloListOutcome outcome = ApolloListOutcomeNone;
         if (!items || error) {
@@ -553,19 +558,17 @@ static void ApolloListRegisterController(UIViewController *controller) {
             completion(items, nextPagination, error);
             dispatch_async(dispatch_get_main_queue(), ^{
                 id strongAdapter = weakAdapter;
-                BOOL owns = ApolloListRecordOutcome(ApolloListStateFor(strongAdapter), requestState, outcome,
-                                                    ApolloListInstalledSpinner(strongAdapter) != nil);
-                ApolloListFinishFirstPage(strongAdapter, requestState, owns, path, outcome, error);
+                ApolloListRecordOutcome(ApolloListStateFor(strongAdapter), outcome, ApolloListInstalledSpinner(strongAdapter) != nil);
+                ApolloListFinishFirstPage(strongAdapter, path, outcome, error);
             });
             return;
         }
         // Record the outcome before Apollo handles the page: ListAdapter can
         // re-install its spinner synchronously inside that call.
         id strongAdapter = weakAdapter;
-        BOOL owns = ApolloListRecordOutcome(ApolloListStateFor(strongAdapter), requestState, outcome,
-                                            ApolloListInstalledSpinner(strongAdapter) != nil);
+        ApolloListRecordOutcome(ApolloListStateFor(strongAdapter), outcome, ApolloListInstalledSpinner(strongAdapter) != nil);
         completion(items, nextPagination, error);
-        ApolloListFinishFirstPage(strongAdapter, requestState, owns, path, outcome, error);
+        ApolloListFinishFirstPage(strongAdapter, path, outcome, error);
     };
     return %orig(path, parameters, pagination, wrapped);
 }

@@ -2,8 +2,8 @@
 #import <objc/runtime.h>
 
 // Exercises the shipping rate-limit decisions from ApolloListEmptyState.xm (issues #1664, #1649):
-// which first page may update a list, which lists wait on Reddit's hold, and what a retry pass does
-// with each one, with ApolloWebJSON's per-account hold stubbed.
+// which lists wait on Reddit's hold, what a retry pass does with each one, and when the next pass
+// is scheduled, with ApolloWebJSON's per-account hold, the wall clock and dispatch stubbed.
 
 static NSMutableDictionary<NSString *, NSNumber *> *sHolds;
 static NSTimeInterval ApolloWebJSONOptionalReadBackoff(NSString *username) {
@@ -11,6 +11,28 @@ static NSTimeInterval ApolloWebJSONOptionalReadBackoff(NSString *username) {
 }
 
 #include "ListRateLimit.inc"
+
+// The block's clock, dispatch and pass, recorded instead of run.
+static NSTimeInterval sNow;
+static NSMutableArray<NSArray *> *sDispatched; // @[ fire time, block ]
+static int sPasses;
+static NSTimeInterval ApolloListWallClockNow(void) { return sNow; }
+static void ApolloListAfterWallClock(NSTimeInterval delay, dispatch_block_t block) {
+    [sDispatched addObject:@[ @(sNow + delay), [block copy] ]];
+}
+static void ApolloListRetryRateLimitedLists(void) { sPasses++; }
+
+// Runs the pending dispatch due at `at` (advancing the clock to it).
+static BOOL Fire(NSTimeInterval at) {
+    for (NSArray *entry in [sDispatched copy]) {
+        if ([entry[0] doubleValue] != at) continue;
+        [sDispatched removeObject:entry];
+        sNow = at;
+        ((dispatch_block_t)entry[1])();
+        return YES;
+    }
+    return NO;
+}
 
 static int failures = 0;
 #define CHECK(cond, msg) do { if (!(cond)) { failures++; NSLog(@"FAIL: %s", msg); } } while (0)
@@ -36,36 +58,33 @@ int main(void) {
         // Which first pages wait.
         sHolds[@"a"] = @60;
         ApolloListLoadState *s = State(@"a");
-        CHECK(ApolloListRecordOutcome(s, s, ApolloListOutcomeFailed, YES) && s.waitingForRateLimit,
-              "a failed first page on an empty list waits while its account is held");
+        ApolloListRecordOutcome(s, ApolloListOutcomeFailed, YES);
+        CHECK(s.waitingForRateLimit, "a failed first page on an empty list waits while its account is held");
         s = State(@"a");
-        CHECK(ApolloListRecordOutcome(s, s, ApolloListOutcomeFailed, NO) && !s.waitingForRateLimit,
-              "a list that still shows posts never waits (nothing reloads under the reader)");
+        ApolloListRecordOutcome(s, ApolloListOutcomeFailed, NO);
+        CHECK(!s.waitingForRateLimit, "a list that still shows posts never waits (nothing reloads under the reader)");
         s = State(@"a");
-        CHECK(ApolloListRecordOutcome(s, s, ApolloListOutcomeEmpty, YES) && !s.waitingForRateLimit,
-              "an empty page isn't a rate limit");
+        ApolloListRecordOutcome(s, ApolloListOutcomeEmpty, YES);
+        CHECK(!s.waitingForRateLimit, "an empty page isn't a rate limit");
         s = State(nil);
-        CHECK(ApolloListRecordOutcome(s, s, ApolloListOutcomeFailed, YES) && !s.waitingForRateLimit,
-              "an API-key account's list never waits, even while a keyless account is held");
+        ApolloListRecordOutcome(s, ApolloListOutcomeFailed, YES);
+        CHECK(!s.waitingForRateLimit, "an API-key account's list never waits, even while a keyless account is held");
         s = State(@"b");
-        CHECK(ApolloListRecordOutcome(s, s, ApolloListOutcomeFailed, YES) && !s.waitingForRateLimit,
-              "another account's hold doesn't make this account's list wait");
+        ApolloListRecordOutcome(s, ApolloListOutcomeFailed, YES);
+        CHECK(!s.waitingForRateLimit, "another account's hold doesn't make this account's list wait");
+        ApolloListRecordOutcome(nil, ApolloListOutcomeFailed, YES); // a list with no state: no crash
 
-        // Overlapping first pages: a newer one replaces the list's state.
-        ApolloListLoadState *older = State(@"a");
-        ApolloListLoadState *newer = State(@"a");
-        CHECK(!ApolloListRecordOutcome(newer, older, ApolloListOutcomeFailed, YES),
-              "an older first page finishing after a newer one started doesn't own the list");
-        CHECK(newer.outcome == ApolloListOutcomeNone && !newer.waitingForRateLimit,
-              "the older page's failure doesn't mark the newer state waiting");
-        CHECK(older.outcome == ApolloListOutcomeNone && !older.waitingForRateLimit,
-              "the replaced state isn't updated either");
-        CHECK(ApolloListRecordOutcome(newer, newer, ApolloListOutcomeFailed, YES) && newer.waitingForRateLimit,
-              "the newer page settles the list");
-        CHECK(!ApolloListRecordOutcome(newer, older, ApolloListOutcomeNone, NO) && newer.waitingForRateLimit &&
-              newer.outcome == ApolloListOutcomeFailed,
-              "an older page that succeeds late doesn't clear the newer page's wait");
-        CHECK(!ApolloListRecordOutcome(nil, older, ApolloListOutcomeFailed, YES), "a list with no state isn't touched");
+        // Overlapping first pages: Apollo shows the one that arrives last, and the wait follows it.
+        s = State(@"a");
+        ApolloListRecordOutcome(s, ApolloListOutcomeFailed, YES);
+        ApolloListRecordOutcome(s, ApolloListOutcomeNone, NO);
+        CHECK(s.outcome == ApolloListOutcomeNone && !s.waitingForRateLimit,
+              "a late page that brought posts clears the wait (the list shows them)");
+        ApolloListRecordOutcome(s, ApolloListOutcomeFailed, NO);
+        CHECK(s.outcome == ApolloListOutcomeFailed && !s.waitingForRateLimit,
+              "a late failure while the list still shows posts doesn't start a wait");
+        ApolloListRecordOutcome(s, ApolloListOutcomeFailed, YES);
+        CHECK(s.waitingForRateLimit, "a late failure on an empty list waits like any other");
 
         // A pass, judged by each list's own account and hold.
         ApolloListLoadState *a = Waiting(@"a");
@@ -116,6 +135,36 @@ int main(void) {
               "only a failed first page waits");
         CHECK(ApolloListRetryActionFor(notWaiting, @"a", YES) == ApolloListRetryActionNone,
               "a failure that isn't waiting is left to pull to refresh");
+
+        // Scheduling (review case): A held for 600 s schedules its pass at 605; after a switch to B,
+        // B's 30 s hold must move the next pass to 35, not wait behind A's.
+        sDispatched = [NSMutableArray array];
+        sNow = 0;
+        sPasses = 0;
+        sListRateLimitRetryAt = 0;
+        ApolloListScheduleRateLimitRetry(600 + kApolloListRateLimitRetryMargin);
+        CHECK(sDispatched.count == 1 && [sDispatched[0][0] doubleValue] == 605, "A's pass is due at 605");
+        ApolloListScheduleRateLimitRetry(30 + kApolloListRateLimitRetryMargin);
+        CHECK(sDispatched.count == 2 && [sDispatched[1][0] doubleValue] == 35, "B's shorter hold schedules a pass at 35");
+        CHECK(sListRateLimitRetryAt == 35, "the earliest pending pass is B's");
+        ApolloListScheduleRateLimitRetry(300);
+        CHECK(sDispatched.count == 2, "a later deadline doesn't add a pass while an earlier one is pending");
+        ApolloListScheduleRateLimitRetry(35.5);
+        CHECK(sDispatched.count == 2, "nor one within a second of it");
+        CHECK(Fire(35) && sPasses == 1 && sListRateLimitRetryAt == 0, "B's pass runs at 35 and clears the pending time");
+        // At 35 B's own hold has ended: its list reloads, judged by B's hold, while A's longer one still runs.
+        sHolds[@"a"] = @570;
+        sHolds[@"b"] = @0;
+        ApolloListLoadState *bWaiting = Waiting(@"b");
+        [reload removeAllObjects];
+        [discard removeAllObjects];
+        CHECK(ApolloListPlanRetry(@[ bWaiting ], @"b", YES, reload, discard) < 0 && reload.count == 1,
+              "B's list reloads on B's own hold, not A's");
+        ApolloListScheduleRateLimitRetry(570 + kApolloListRateLimitRetryMargin);
+        CHECK(sDispatched.count == 2 && [sDispatched[1][0] doubleValue] == 610, "a new deadline after the pass schedules again");
+        CHECK(Fire(605) && sPasses == 2 && sListRateLimitRetryAt == 610,
+              "the stale 605 pass still runs (finding nothing new) and leaves the 610 one pending");
+        CHECK(Fire(610) && sPasses == 3 && sListRateLimitRetryAt == 0, "the 610 pass runs");
     }
     if (failures) {
         NSLog(@"%d list rate-limit check(s) failed", failures);
