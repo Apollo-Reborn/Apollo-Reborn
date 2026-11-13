@@ -5,6 +5,9 @@ BOOL ApolloDuoSplitIsResizing(void);
 BOOL ApolloDuoSplitIsUnfolded(void);
 BOOL ApolloDuoRequiresSubredditEnhancements(void);
 BOOL ApolloDuoSplitIsUnfoldedPortrait(void);
+/// The window size the Duo layout follows: while a field is edited, a
+/// height-only change keeps the size from before it.
+CGSize ApolloDuoLayoutSize(CGSize liveSize);
 CGFloat ApolloDuoSplitTransitionContentWidth(UIView *view, CGFloat trailingInset);
 UINavigationController *ApolloDuoSplitDetailNavigation(UINavigationController *navigation);
 /// The feed column's own stack while the tab shows columns, else nil.

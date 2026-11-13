@@ -55,7 +55,9 @@ static int ApolloDuoRailModeForTabs(UITabBarController *tabs) {
         return ApolloDuoModePhone;
     }
     UIWindow *window = tabs.view.window ?: ApolloDeviceAppWindow();
-    return ApolloDuoModeFromWindow(window, ApolloDuoRailDualDisplays() ? 1 : 0);
+    if (!window) return ApolloDuoModePhone;
+    CGSize size = ApolloDuoLayoutSize(window.bounds.size);
+    return ApolloDuoModeFromBounds(ApolloDuoRailDualDisplays() ? 1 : 0, size.width, size.height);
 }
 
 static int ApolloDuoRailCurrentMode(void) {

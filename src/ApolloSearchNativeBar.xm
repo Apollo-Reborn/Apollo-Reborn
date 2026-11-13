@@ -1082,10 +1082,12 @@ static void NSBUpdateSearchPlacement(UIViewController *vc) {
     if (@available(iOS 16.0, *)) {
         UINavigationItem *item = vc.navigationItem;
         // Every Duo pose keeps the field beneath the title. The live rail
-        // also identifies closed landscape, whose bounds classify as Phone.
+        // also identifies closed landscape, and the Duo check a video pinned
+        // above Apollo; both windows classify as Phone.
         BOOL stacked = ApolloDuoSplitIsUnfolded();
         if (@available(iOS 27.0, *)) {
-            stacked |= ApolloDuoCurrentMode() != ApolloDuoModePhone || ApolloDuoRailHasVisibleSideBar();
+            stacked |= ApolloDuoCurrentMode() != ApolloDuoModePhone || ApolloDuoRailHasVisibleSideBar()
+                || ApolloDuoDeviceDetected();
         }
         NSNumber *original = objc_getAssociatedObject(item, &kNSBDuoSearchPlacementKey);
         if (stacked && !original) {
