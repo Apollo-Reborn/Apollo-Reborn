@@ -2,6 +2,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import "ApolloCommon.h"
+#import "ApolloNavigationActions.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloAutoHideTabBar.h"
 #import "ApolloTopBarScrollPresentation.h"
@@ -458,6 +459,19 @@ static BOOL ApolloScrollReturnUsesDuoChrome(void) {
         shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
     return YES;
 }
+static void ApolloScrollReturnCollectArrows(UIView *view, NSMutableArray<UIImageView *> *arrows) {
+    if ([view isKindOfClass:UIImageView.class]) [arrows addObject:(UIImageView *)view];
+    for (UIView *subview in view.subviews) ApolloScrollReturnCollectArrows(subview, arrows);
+}
+// Accent Navigation Buttons: the glass arrow follows the setting and theme.
+- (void)applyNavigationButtonAccent {
+    NSMutableArray<UIImageView *> *arrows = [NSMutableArray array];
+    ApolloScrollReturnCollectArrows(self.button, arrows);
+    for (UIImageView *arrow in arrows) {
+        arrow.tintColor = ApolloNavigationButtonAccentColor() ?: UIColor.labelColor;
+        ApolloNavigationActionsAccentControl(arrow);
+    }
+}
 - (void)showButton {
     if (!sScrollReturnButton || self.returnItem) return;
     if (!IsLiquidGlass()) {
@@ -508,7 +522,11 @@ static BOOL ApolloScrollReturnUsesDuoChrome(void) {
                 withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:22 weight:UIImageSymbolWeightMedium]];
             UIImageView *arrow = [[UIImageView alloc] initWithImage:symbol];
             arrow.translatesAutoresizingMaskIntoConstraints = NO;
-            arrow.tintColor = UIColor.labelColor;
+            arrow.tintColor = ApolloNavigationButtonAccentColor() ?: UIColor.labelColor;
+            ApolloNavigationActionsAccentControl(arrow);   // Accent Navigation Buttons
+            [NSNotificationCenter.defaultCenter removeObserver:self name:ApolloNavigationButtonColorDidChangeNotification object:nil];
+            [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applyNavigationButtonAccent)
+                                                       name:ApolloNavigationButtonColorDidChangeNotification object:nil];
             arrow.isAccessibilityElement = NO;
             [glass.contentView addSubview:arrow];
             [NSLayoutConstraint activateConstraints:@[

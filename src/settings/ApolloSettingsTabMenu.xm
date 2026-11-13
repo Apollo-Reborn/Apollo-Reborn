@@ -5,6 +5,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
+#import "ApolloNavigationActions.h"
 #import "ApolloDuoSplitView.h"
 #import "ApolloDuoRail.h"
 #import "ApolloAutomaticBackupViewController.h"
@@ -550,6 +551,8 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
         UIButtonConfiguration *configuration = [UIButtonConfiguration glassButtonConfiguration];
         configuration.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
         configuration.image = [UIImage systemImageNamed:@"slider.horizontal.3"];
+        // Accent Navigation Buttons; nil keeps the neutral glass foreground.
+        configuration.baseForegroundColor = ApolloNavigationButtonAccentColor();
         edit.configuration = configuration;
     } else {
         [edit setImage:[UIImage systemImageNamed:@"slider.horizontal.3"] forState:UIControlStateNormal];
@@ -563,6 +566,7 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
     edit.alpha = 0;
     [edit addTarget:self action:@selector(editShortcuts) forControlEvents:UIControlEventTouchUpInside];
     [self.menuContainer addSubview:edit];
+    ApolloNavigationActionsAccentControl(edit);
     self.editButton = edit;
     surface.editButton = edit;
     self.editPositionLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(positionEditButton)];

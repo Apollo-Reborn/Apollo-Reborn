@@ -125,6 +125,10 @@ extern BOOL sUseProfileAvatarTabIcon;
 // Hide the visible main-tab labels while retaining/restoring the underlying
 // UITabBarItem titles. Opt-in; default OFF via registerDefaults.
 extern BOOL sHideTabBarTitles;
+// Inactive tab icon tint (ApolloTabBarStyle.xm).
+extern BOOL sTintInactiveTabIcons;
+// Liquid Glass navigation bar buttons in the theme accent (ApolloNavigationActions.xm).
+extern BOOL sAccentNavigationButtons;
 #ifdef __cplusplus
 extern "C" {
 #endif

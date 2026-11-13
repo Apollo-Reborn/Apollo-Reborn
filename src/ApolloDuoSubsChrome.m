@@ -34,7 +34,7 @@ static char kApolloDuoSubsChromeClaimedFABKey;
 static char kApolloDuoSubsChromeRetryKey;
 static char kApolloDuoSubsChromeEditPresentedKey;
 static char kApolloDuoSubsChromeNativeEditItemKey;
-static char kApolloDuoSubsChromeNativeEditButtonKey;
+static char kApolloDuoSubsChromeNativeEditStateKey;
 static char kApolloDuoEditOnlyAppliedKey;
 static char kApolloDuoEditOnlySavedLeftItemsKey;
 static char kApolloDuoEditOnlySavedRightItemsKey;
@@ -107,6 +107,7 @@ static void ApolloDuoSubsChromeApplyPopupItems(UIViewController *controller, UIN
     NSArray *right = edit ? @[edit] : @[];
     if (![popupItem.leftBarButtonItems ?: @[] isEqualToArray:left]) popupItem.leftBarButtonItems = left;
     if (![popupItem.rightBarButtonItems ?: @[] isEqualToArray:right]) popupItem.rightBarButtonItems = right;
+    ApolloNavigationActionsAccentItem(add);
 }
 
 void ApolloDuoSubsChromeSetPopupNavigationBar(UIViewController *controller, UINavigationBar *bar) {
@@ -262,8 +263,42 @@ static UIButton *ApolloDuoSubsChromeMakeEditButton(UIViewController *controller)
     return button;
 }
 
+@interface ApolloDuoSubsChromeEditOwner : NSObject
+@property(nonatomic, weak) UIViewController *controller;
+@end
+@implementation ApolloDuoSubsChromeEditOwner @end
+
+static char kApolloDuoSubsChromeEditOwnerKey;
+static NSHashTable<UIButton *> *sApolloDuoSubsChromeEditButtons;   // weak
+
+static void ApolloDuoSubsChromeUpdateEditButton(UIButton *button, UIViewController *controller);
+
+// Accent Navigation Buttons restyles the edit buttons already on screen.
+static void ApolloDuoSubsChromeTrackEditButton(UIButton *button, UIViewController *controller) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        sApolloDuoSubsChromeEditButtons = [NSHashTable weakObjectsHashTable];
+        [NSNotificationCenter.defaultCenter addObserverForName:ApolloNavigationButtonColorDidChangeNotification
+                                                        object:nil queue:NSOperationQueue.mainQueue
+                                                    usingBlock:^(__unused NSNotification *note) {
+            for (UIButton *tracked in sApolloDuoSubsChromeEditButtons.allObjects) {
+                ApolloDuoSubsChromeEditOwner *owner = objc_getAssociatedObject(tracked, &kApolloDuoSubsChromeEditOwnerKey);
+                if (owner.controller) ApolloDuoSubsChromeUpdateEditButton(tracked, owner.controller);
+            }
+        }];
+    });
+    ApolloDuoSubsChromeEditOwner *owner = objc_getAssociatedObject(button, &kApolloDuoSubsChromeEditOwnerKey);
+    if (owner.controller == controller) return;
+    owner = [ApolloDuoSubsChromeEditOwner new];
+    owner.controller = controller;
+    objc_setAssociatedObject(button, &kApolloDuoSubsChromeEditOwnerKey, owner, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [sApolloDuoSubsChromeEditButtons addObject:button];
+}
+
 static void ApolloDuoSubsChromeUpdateEditButton(UIButton *button,
                                                  UIViewController *controller) {
+    if (!button) return;
+    ApolloDuoSubsChromeTrackEditButton(button, controller);
     BOOL editing = controller.isEditing;
     NSString *title = editing ? @"Done" : @"Edit";
     NSString *symbolName = editing ? @"checkmark" : @"pencil";
@@ -275,8 +310,14 @@ static void ApolloDuoSubsChromeUpdateEditButton(UIButton *button,
     // Rebuild the Edit state from a neutral semantic colour. UIKit can retain
     // the previous prominent configuration's blue base tint after the button
     // leaves the screen and is reattached, which made the pencil blue after a
-    // Done -> tab switch -> Edit cycle.
-    UIColor *foreground = editing ? UIColor.whiteColor : UIColor.labelColor;
+    // Done -> tab switch -> Edit cycle. Accent Navigation Buttons draws the
+    // pencil and Done's fill in the accent instead.
+    UIColor *accent = ApolloNavigationButtonAccentColor();
+    UIColor *fill = accent ?: UIColor.systemBlueColor;
+    UIColor *foreground = editing
+        ? (accent && ApolloColorIsLight([accent resolvedColorWithTraitCollection:button.traitCollection])
+            ? UIColor.blackColor : UIColor.whiteColor)
+        : (accent ?: UIColor.labelColor);
     symbol = [symbol imageWithTintColor:foreground
                           renderingMode:UIImageRenderingModeAlwaysOriginal];
     button.accessibilityLabel = title;
@@ -287,17 +328,18 @@ static void ApolloDuoSubsChromeUpdateEditButton(UIButton *button,
         configuration.title = nil;
         configuration.image = symbol;
         configuration.baseForegroundColor = foreground;
-        if (editing) configuration.baseBackgroundColor = UIColor.systemBlueColor;
+        if (editing) configuration.baseBackgroundColor = fill;
         configuration.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
         configuration.contentInsets = NSDirectionalEdgeInsetsZero;
         button.configuration = configuration;
     } else {
         [button setTitle:nil forState:UIControlStateNormal];
         [button setImage:symbol forState:UIControlStateNormal];
-        button.backgroundColor = editing ? UIColor.systemBlueColor : UIColor.tertiarySystemFillColor;
+        button.backgroundColor = editing ? fill : UIColor.tertiarySystemFillColor;
         button.layer.cornerRadius = 24.0;
     }
     button.tintColor = foreground;
+    ApolloNavigationActionsAccentControl(button);
 }
 
 static void ApolloDuoSubsChromeRemoveSideEdit(UIViewController *controller) {
@@ -481,24 +523,41 @@ static UIBarButtonItem *ApolloDuoSubsChromeNativeEditItem(UIViewController *cont
     UIBarButtonItem *item = objc_getAssociatedObject(controller,
         &kApolloDuoSubsChromeNativeEditItemKey);
     if (item) return item;
-
-    __weak UIViewController *weakController = controller;
-    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
-    button.translatesAutoresizingMaskIntoConstraints = NO;
-    [NSLayoutConstraint activateConstraints:@[
-        [button.widthAnchor constraintEqualToConstant:48.0],
-        [button.heightAnchor constraintEqualToConstant:48.0],
-    ]];
-    button.accessibilityHint = @"Toggles editing for this list.";
-    [button addAction:[UIAction actionWithHandler:^(__unused UIAction *action) {
-        ApolloDuoSubsChromeToggleEditing(weakController);
-    }] forControlEvents:UIControlEventTouchUpInside];
-    item = [[UIBarButtonItem alloc] initWithCustomView:button];
+    item = [UIBarButtonItem new];
     objc_setAssociatedObject(controller, &kApolloDuoSubsChromeNativeEditItemKey,
                              item, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(controller, &kApolloDuoSubsChromeNativeEditButtonKey,
-                             button, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return item;
+}
+
+// A plain image item, so UIKit sizes it like Add and only overflows it when
+// the rail is really full.
+static void ApolloDuoSubsChromeConfigureEditItem(UIBarButtonItem *item, UIViewController *controller,
+                                                 NSString *identifier, NSString *hint) {
+    BOOL editing = controller.isEditing;
+    NSNumber *state = objc_getAssociatedObject(item, &kApolloDuoSubsChromeNativeEditStateKey);
+    if (!state || state.boolValue != editing) {
+        __weak UIViewController *weakController = controller;
+        item.primaryAction = [UIAction actionWithTitle:editing ? @"Done" : @"Edit"
+                                                 image:[UIImage systemImageNamed:editing ? @"checkmark" : @"pencil"]
+                                            identifier:nil
+                                               handler:^(__unused UIAction *action) {
+            ApolloDuoSubsChromeToggleEditing(weakController);
+        }];
+        item.accessibilityLabel = editing ? @"Done" : @"Edit";
+        objc_setAssociatedObject(item, &kApolloDuoSubsChromeNativeEditStateKey, @(editing),
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    item.accessibilityHint = hint;
+    if (@available(iOS 26.0, *)) {
+        item.identifier = identifier;
+        UIBarButtonItemStyle style = editing ? UIBarButtonItemStyleProminent : UIBarButtonItemStylePlain;
+        if (item.style != style) item.style = style;
+        item.hidesSharedBackground = NO;
+        item.sharesBackground = NO;
+    }
+    if (@available(iOS 27.1, *)) {
+        item.axisBehavior = UIBarButtonItemAxisBehaviorVerticalPreferred;
+    }
 }
 
 static BOOL ApolloDuoChromeHasVerticalNavigationRail(UIViewController *controller) {
@@ -543,21 +602,8 @@ void ApolloDuoChromeApplyEditButton(UIViewController *controller) {
 
     UIBarButtonItem *nativeEdit = controller.editButtonItem;
     UIBarButtonItem *duoEdit = ApolloDuoSubsChromeNativeEditItem(controller);
-    UIButton *button = objc_getAssociatedObject(controller, &kApolloDuoSubsChromeNativeEditButtonKey);
-    ApolloDuoSubsChromeUpdateEditButton(button, controller);
-    button.hidden = NO;
-    duoEdit.title = nil;
-    duoEdit.image = nil;
-    duoEdit.accessibilityLabel = controller.isEditing ? @"Done" : @"Edit";
-    duoEdit.accessibilityHint = @"Toggles editing for Filters & Blocks.";
-    if (@available(iOS 26.0, *)) {
-        duoEdit.identifier = @"ApolloReborn.filters.edit";
-        duoEdit.hidesSharedBackground = YES;
-        duoEdit.sharesBackground = NO;
-    }
-    if (@available(iOS 27.1, *)) {
-        duoEdit.axisBehavior = UIBarButtonItemAxisBehaviorVerticalPreferred;
-    }
+    ApolloDuoSubsChromeConfigureEditItem(duoEdit, controller, @"ApolloReborn.filters.edit",
+                                         @"Toggles editing for Filters & Blocks.");
 
     NSMutableArray<UIBarButtonItem *> *left = [NSMutableArray array];
     for (UIBarButtonItem *item in navigationItem.leftBarButtonItems ?: @[]) {
@@ -582,32 +628,49 @@ void ApolloDuoChromeApplyEditButton(UIViewController *controller) {
     }
 }
 
+// After the app returns from the background, UIKit can leave Add in the top
+// bar. Reassigning the items makes it place them in the rail again.
+static NSHashTable<UIViewController *> *sApolloDuoSubsRailAddOwners;
+
+static void ApolloDuoSubsChromeReplaceRailAdd(void) {
+    for (UIViewController *controller in sApolloDuoSubsRailAddOwners.allObjects) {
+        NSArray<UIBarButtonItem *> *left = controller.navigationItem.leftBarButtonItems;
+        if (!controller.viewIfLoaded.window || !left.count
+            || !ApolloDuoChromeHasVerticalNavigationRail(controller)) continue;
+        controller.navigationItem.leftBarButtonItems = nil;
+        controller.navigationItem.leftBarButtonItems = left;
+        ApolloLog(@"[DuoSubsChrome] re-placed Add after returning to the foreground");
+    }
+}
+
+static void ApolloDuoSubsChromeTrackRailAdd(UIViewController *controller) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        sApolloDuoSubsRailAddOwners = [NSHashTable weakObjectsHashTable];
+        [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification
+                                                        object:nil
+                                                         queue:NSOperationQueue.mainQueue
+                                                    usingBlock:^(__unused NSNotification *note) {
+            ApolloDuoSubsChromeReplaceRailAdd();
+        }];
+    });
+    [sApolloDuoSubsRailAddOwners addObject:controller];
+}
+
 static void ApolloDuoSubsChromeConfigureNativeSideItems(UIBarButtonItem *editItem,
                                                          UIBarButtonItem *addItem,
                                                          UIViewController *controller) {
-    BOOL editing = controller.isEditing;
-    NSString *accessibilityLabel = editing ? @"Done" : @"Edit";
-    UIButton *nativeButton = objc_getAssociatedObject(controller,
-        &kApolloDuoSubsChromeNativeEditButtonKey);
-    ApolloDuoSubsChromeUpdateEditButton(nativeButton, controller);
-    nativeButton.hidden = NO;
-    editItem.title = nil;
-    editItem.image = nil;
-    editItem.accessibilityLabel = accessibilityLabel;
-    editItem.accessibilityHint = @"Toggles editing for the Subreddits list.";
-
+    ApolloDuoSubsChromeConfigureEditItem(editItem, controller, @"ApolloReborn.subreddits.edit",
+                                         @"Toggles editing for the Subreddits list.");
     if (@available(iOS 26.0, *)) {
-        editItem.identifier = @"ApolloReborn.subreddits.edit";
         addItem.identifier = @"ApolloReborn.subreddits.add";
-        editItem.hidesSharedBackground = YES;
         addItem.hidesSharedBackground = NO;
-        editItem.sharesBackground = NO;
         addItem.sharesBackground = NO;
     }
     if (@available(iOS 27.1, *)) {
-        editItem.axisBehavior = UIBarButtonItemAxisBehaviorVerticalPreferred;
         addItem.axisBehavior = UIBarButtonItemAxisBehaviorVerticalPreferred;
     }
+    ApolloDuoSubsChromeTrackRailAdd(controller);
 }
 
 static UIView *ApolloDuoSubsChromeFindNativeFAB(UIViewController *controller) {
