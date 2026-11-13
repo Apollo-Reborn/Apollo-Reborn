@@ -1612,7 +1612,15 @@ static const CGFloat ApolloSubredditIndexScrubSlop = 6.0;
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     [super touchesBegan:touches withEvent:event];
     if (touches.count != 1 || self.numberOfTouches > 1) {
-        self.state = UIGestureRecognizerStateFailed;
+        // A second finger ends the index gesture. Failed is only valid while
+        // it is still undecided; a scrub that already began must cancel.
+        if (self.state == UIGestureRecognizerStatePossible) {
+            self.state = UIGestureRecognizerStateFailed;
+        } else if (self.state == UIGestureRecognizerStateBegan ||
+                   self.state == UIGestureRecognizerStateChanged) {
+            ApolloLog(@"[SubredditIndex] scrub cancelled by a second touch");
+            self.state = UIGestureRecognizerStateCancelled;
+        }
         return;
     }
     self.apollo_startPoint = [touches.anyObject locationInView:self.view];
@@ -1641,14 +1649,21 @@ static const CGFloat ApolloSubredditIndexScrubSlop = 6.0;
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     [super touchesEnded:touches withEvent:event];
     // From Possible this is a tap; the action sees Ended with nothing scrolled.
-    self.state = UIGestureRecognizerStateEnded;
+    if (self.state == UIGestureRecognizerStatePossible ||
+        self.state == UIGestureRecognizerStateBegan ||
+        self.state == UIGestureRecognizerStateChanged) {
+        self.state = UIGestureRecognizerStateEnded;
+    }
 }
 
 - (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     [super touchesCancelled:touches withEvent:event];
-    self.state = self.state == UIGestureRecognizerStatePossible
-        ? UIGestureRecognizerStateFailed
-        : UIGestureRecognizerStateCancelled;
+    if (self.state == UIGestureRecognizerStatePossible) {
+        self.state = UIGestureRecognizerStateFailed;
+    } else if (self.state == UIGestureRecognizerStateBegan ||
+               self.state == UIGestureRecognizerStateChanged) {
+        self.state = UIGestureRecognizerStateCancelled;
+    }
 }
 
 @end
@@ -3150,6 +3165,26 @@ static UITableView *ApolloNativeIndexSubredditTable(UIView *index) {
     return nil;
 }
 
+// The hooks below defer the index's section change and replay a tap through
+// the private -_updateSectionForTouch:withEvent:. That selector and signature
+// are confirmed in the iOS 26 runtime headers, not on every supported OS, so
+// the group is installed only when this runtime has UITableViewIndex as a
+// UIControl that implements it as -(BOOL)(UITouch *, UIEvent *). Otherwise the
+// native index keeps UIKit's behaviour untouched.
+static BOOL ApolloNativeIndexHooksAreCompatible(Class indexClass) {
+    if (!indexClass || ![indexClass isSubclassOfClass:[UIControl class]]) return NO;
+    Method method = class_getInstanceMethod(indexClass, @selector(_updateSectionForTouch:withEvent:));
+    if (!method || method_getNumberOfArguments(method) != 4) return NO;
+    char returnType[8] = {0}, touchType[8] = {0}, eventType[8] = {0};
+    method_getReturnType(method, returnType, sizeof(returnType));
+    method_getArgumentType(method, 2, touchType, sizeof(touchType));
+    method_getArgumentType(method, 3, eventType, sizeof(eventType));
+    BOOL returnsBool = strcmp(returnType, "B") == 0 || strcmp(returnType, "c") == 0;
+    return returnsBool && strcmp(touchType, "@") == 0 && strcmp(eventType, "@") == 0;
+}
+
+%group ApolloNativeIndexHooks
+
 %hook UITableViewIndex
 
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
@@ -3210,6 +3245,8 @@ static UITableView *ApolloNativeIndexSubredditTable(UIView *index) {
     if (state && (state.deciding || state.yielded)) return NO;
     return %orig;
 }
+
+%end
 
 %end
 
@@ -4106,4 +4143,15 @@ void ApolloSubredditIndexDebugDescribeTables(void) {
                   UIApplication.sharedApplication.preferredContentSizeCategory);
     }];
     ApolloLog(@"[SubredditIndex] polish active modernDividers=%d", sModernSubredditDividers);
+
+    // Hooks install after the setup above, as the generated ungrouped
+    // initializer did before the native-index hooks became a guarded group.
+    %init;
+    Class nativeIndexClass = objc_getClass("UITableViewIndex");
+    if (ApolloNativeIndexHooksAreCompatible(nativeIndexClass)) {
+        %init(ApolloNativeIndexHooks, UITableViewIndex = nativeIndexClass);
+    } else {
+        ApolloLog(@"[SubredditIndex] native index hooks skipped: UITableViewIndex or "
+                  @"-_updateSectionForTouch:withEvent: missing or incompatible");
+    }
 }
