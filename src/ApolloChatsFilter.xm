@@ -26,6 +26,7 @@
 #import "ApolloUserProfileCache.h"
 #import "ApolloSubredditInfoCache.h"
 #import "ApolloSubredditCustomIconCache.h"
+#import "ApolloUnreadBadges.h"
 #import "ApolloWebJSON.h"
 #import "ApolloWebSessionStore.h"
 #import <UIKit/UIKit.h>
@@ -152,6 +153,15 @@ static NSString *ApolloCombinedInboxBadgeValue(NSString *nativeValue) {
     return [NSString stringWithFormat:@"%ld", (long)chatCount];
 }
 
+// Whether a tab bar item is the Inbox's, by name. Icon-Only Tab Bar
+// (ApolloTabBarTitles.xm) clears every title and moves the name into
+// accessibilityLabel, so check both, or the Inbox goes unrecognized (no Chat
+// count, no Unread Badges style) until the Inbox screen first loads.
+static BOOL ApolloTabBarItemNamedInbox(UITabBarItem *item) {
+    NSString *name = item.title.length > 0 ? item.title : item.accessibilityLabel;
+    return name.length > 0 && [name caseInsensitiveCompare:@"Inbox"] == NSOrderedSame;
+}
+
 // The Inbox tab bar item is normally captured when Apollo touches its badge
 // or the user visits the Inbox — neither is guaranteed by launch. A chat-only
 // unread (background poller, no native unreads, Inbox never opened) must
@@ -164,8 +174,7 @@ static void ApolloEnsureInboxTabBarItemCaptured(void) {
         UIViewController *root = window.rootViewController;
         if (![root isKindOfClass:[UITabBarController class]]) continue;
         for (UITabBarItem *item in ((UITabBarController *)root).tabBar.items) {
-            if (item.title.length == 0 ||
-                [item.title caseInsensitiveCompare:@"Inbox"] != NSOrderedSame) continue;
+            if (!ApolloTabBarItemNamedInbox(item)) continue;
             sApolloInboxTabBarItem = item;
             if (![objc_getAssociatedObject(item, &kApolloInboxBadgeInitializedKey) boolValue]) {
                 objc_setAssociatedObject(item, &kApolloInboxNativeBadgeValueKey,
@@ -188,9 +197,13 @@ static void ApolloApplyCombinedInboxBadge(void) {
     UITabBarItem *item = sApolloInboxTabBarItem;
     if (!item || ![objc_getAssociatedObject(item, &kApolloInboxBadgeInitializedKey) boolValue]) return;
     NSString *nativeValue = objc_getAssociatedObject(item, &kApolloInboxNativeBadgeValueKey);
+    NSString *combinedValue = ApolloCombinedInboxBadgeValue(nativeValue);
+    // Unread Badges style (dot / theme color) rides UIKit's own badge; with
+    // every option off this writes nothing and displays combinedValue as is.
+    ApolloUnreadBadgeStyleTabBarItem(item, combinedValue);
     objc_setAssociatedObject(item, &kApolloInboxApplyingCombinedBadgeKey,
                              @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    item.badgeValue = ApolloCombinedInboxBadgeValue(nativeValue);
+    item.badgeValue = ApolloUnreadBadgeTabBarDisplayValue(combinedValue);
     objc_setAssociatedObject(item, &kApolloInboxApplyingCombinedBadgeKey,
                              nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
@@ -312,6 +325,56 @@ static void ApolloRefreshBoxesForModeratorState(NSString *reason) {
     });
 }
 
+#pragma mark - Inbox switchers: unread pills
+
+// The two tweak-drawn Inbox switchers each carry one unread pill: Chat on
+// Notifications / Chat, Requests on Messages / Requests / Threads. Unread
+// Badges (ApolloUnreadBadges.h) decides count vs dot and red vs theme accent;
+// the switchers only say where the pill sits. Both observe the style and
+// theme notifications so a settings toggle or theme change restyles them now.
+static const CGFloat kApolloInboxUnreadPillHeight = 18.0;
+static const CGFloat kApolloInboxUnreadDotSize = 8.0;
+
+// `leadingX` is the pill's leading edge and `centerY` its vertical center,
+// unchanged from the count pill, so the dot sits where the count began.
+static CGRect ApolloInboxUnreadBadgeFrame(UILabel *badge, CGFloat leadingX, CGFloat centerY) {
+    if (sUnreadBadgeCompactInbox) {
+        return CGRectMake(leadingX + 1.0, centerY - kApolloInboxUnreadDotSize / 2.0,
+                          kApolloInboxUnreadDotSize, kApolloInboxUnreadDotSize);
+    }
+    CGFloat width = kApolloInboxUnreadPillHeight;
+    if (badge.text.length > 1) {
+        CGSize textSize = [badge.text sizeWithAttributes:@{NSFontAttributeName: badge.font}];
+        width = MAX(kApolloInboxUnreadPillHeight, ceil(textSize.width) + 10.0);
+    }
+    return CGRectMake(leadingX, centerY - kApolloInboxUnreadPillHeight / 2.0,
+                      width, kApolloInboxUnreadPillHeight);
+}
+
+// `onAccent` marks a pill drawn on the theme-accent selection (the selected
+// Chat segment): a theme-colored badge there swaps to the contrast color with
+// accent text, or it would vanish into the segment. Red keeps main's look.
+static void ApolloInboxStyleUnreadBadge(UILabel *badge, NSString *countText, BOOL onAccent,
+                                        UIColor *accent, UIColor *onAccentColor) {
+    BOOL compact = sUnreadBadgeCompactInbox;
+    badge.text = compact ? nil : countText;
+    badge.layer.cornerRadius = compact ? kApolloInboxUnreadDotSize / 2.0 : kApolloInboxUnreadPillHeight / 2.0;
+    if (sUnreadBadgeThemeColor && onAccent && accent && onAccentColor) {
+        badge.backgroundColor = onAccentColor;
+        badge.textColor = accent;
+        return;
+    }
+    badge.backgroundColor = ApolloUnreadBadgeFillColor();
+    badge.textColor = ApolloUnreadBadgeTextColor();
+}
+
+static void ApolloInboxObserveUnreadBadgeStyle(id switcher, SEL refresh) {
+    for (NSString *name in @[ApolloUnreadBadgeStyleDidChangeNotification,
+                             @"com.christianselig.ApolloSpecificThemeChanged"]) {
+        [[NSNotificationCenter defaultCenter] addObserver:switcher selector:refresh name:name object:nil];
+    }
+}
+
 #pragma mark - Inbox (All): Notifications / Chat switcher
 
 typedef NS_ENUM(NSInteger, ApolloInboxMode) {
@@ -347,6 +410,7 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
 @property (nonatomic, assign) CGRect lastSegmentedFrame;
 - (void)apollo_setSelectedMode:(ApolloInboxMode)mode animated:(BOOL)animated;
 - (void)apollo_refreshForTraits:(UITraitCollection *)traits;
+- (void)apollo_refreshUnreadBadgeForTraits:(UITraitCollection *)traits;
 @end
 
 @implementation ApolloInboxModeSwitcherView
@@ -380,6 +444,7 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
         [self addSubview:self.chatUnreadBadge];
 
         _selectedMode = ApolloInboxModeNotifications;
+        ApolloInboxObserveUnreadBadgeStyle(self, @selector(apollo_unreadBadgeStyleChanged:));
         return self;
     }
 
@@ -424,7 +489,16 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
     [self.containerView addSubview:self.chatUnreadBadge];
 
     _selectedMode = ApolloInboxModeNotifications;
+    ApolloInboxObserveUnreadBadgeStyle(self, @selector(apollo_unreadBadgeStyleChanged:));
     return self;
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)apollo_unreadBadgeStyleChanged:(__unused NSNotification *)notification {
+    [self apollo_refreshForTraits:self.traitCollection];
 }
 
 // On iPhone Duo the Inbox page moves into a split detail column whose trailing
@@ -449,13 +523,6 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
     if (CGRectGetWidth(self.bounds) <= 24.0 || CGRectGetHeight(self.bounds) <= 16.0) return;
     CGRect contentBounds = [self apollo_contentBounds];
 
-    CGFloat badgeWidth = 18.0;
-    if (self.chatUnreadBadge.text.length > 1) {
-        CGSize textSize = [self.chatUnreadBadge.text sizeWithAttributes:
-                           @{NSFontAttributeName: self.chatUnreadBadge.font}];
-        badgeWidth = MAX(18.0, ceil(textSize.width) + 10.0);
-    }
-
     if (self.segmentedControl) {
         // Native control at its intrinsic Liquid Glass height, centered in
         // the same 60pt strip the custom variant fills.
@@ -478,8 +545,8 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
         // Overlay the pill beside the "Chat" title (right segment's midpoint,
         // same +20pt offset as the custom variant).
         CGFloat chatSegmentMidX = CGRectGetMinX(controlFrame) + controlFrame.size.width * 0.75;
-        self.chatUnreadBadge.frame = CGRectMake(chatSegmentMidX + 20.0,
-                                                CGRectGetMidY(controlFrame) - 9.0, badgeWidth, 18.0);
+        self.chatUnreadBadge.frame = ApolloInboxUnreadBadgeFrame(self.chatUnreadBadge, chatSegmentMidX + 20.0,
+                                                                 CGRectGetMidY(controlFrame));
         return;
     }
 
@@ -492,8 +559,8 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
     self.notificationsButton.frame = notificationsFrame;
     self.chatButton.frame = chatFrame;
     self.selectionView.frame = self.selectedMode == ApolloInboxModeChat ? chatFrame : notificationsFrame;
-    self.chatUnreadBadge.frame = CGRectMake(CGRectGetMidX(chatFrame) + 20.0,
-                                            CGRectGetMidY(chatFrame) - 9.0, badgeWidth, 18.0);
+    self.chatUnreadBadge.frame = ApolloInboxUnreadBadgeFrame(self.chatUnreadBadge, CGRectGetMidX(chatFrame) + 20.0,
+                                                             CGRectGetMidY(chatFrame));
 }
 
 - (void)apollo_buttonTapped:(UIButton *)sender {
@@ -507,7 +574,16 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
     // Deliberately no theme refresh here: nothing tap-dependent changes (the
     // selected-state title attributes are state-based, so UIKit swaps them
     // itself), and touching the control now would cancel the Liquid Glass
-    // thumb morph that this very tap just started.
+    // thumb morph that this very tap just started. The Chat pill is a label
+    // over the control, not part of it, so a theme-colored pill can follow
+    // the thumb (it inverts on the accent segment) without touching it.
+    if (sUnreadBadgeThemeColor && !self.chatUnreadBadge.hidden) {
+        [UIView transitionWithView:self.chatUnreadBadge duration:0.25
+                           options:UIViewAnimationOptionTransitionCrossDissolve |
+                                   UIViewAnimationOptionAllowUserInteraction
+                        animations:^{ [self apollo_refreshUnreadBadgeForTraits:self.traitCollection]; }
+                        completion:nil];
+    }
     [self sendActionsForControlEvents:UIControlEventValueChanged];
 }
 
@@ -541,21 +617,30 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
     [self apollo_refreshForTraits:self.traitCollection];
 }
 
-- (void)apollo_refreshForTraits:(UITraitCollection *)traits {
+// The Chat pill alone: count or dot, and its colors for the current
+// selection. Never touches the segmented control (see apollo_segmentChanged:).
+- (void)apollo_refreshUnreadBadgeForTraits:(UITraitCollection *)traits {
     NSInteger unreadCount = ApolloModernChatUnreadBadgeCount();
     self.chatUnreadBadge.hidden = unreadCount <= 0;
-    if (unreadCount > 0) {
-        self.chatUnreadBadge.text = unreadCount > 99 ? @"99+"
-            : [NSString stringWithFormat:@"%ld", (long)unreadCount];
-    }
+    NSString *countText = unreadCount > 99 ? @"99+"
+        : [NSString stringWithFormat:@"%ld", (long)MAX(1, unreadCount)];
+    UIColor *accent = ApolloModernChatThemeColor(traits, @"accent");
+    UIColor *selectedText = ApolloColorIsLight(accent) ? UIColor.blackColor : UIColor.whiteColor;
+    ApolloInboxStyleUnreadBadge(self.chatUnreadBadge, countText, self.selectedMode == ApolloInboxModeChat,
+                                accent, selectedText);
+    [self setNeedsLayout];
+}
+
+- (void)apollo_refreshForTraits:(UITraitCollection *)traits {
+    [self apollo_refreshUnreadBadgeForTraits:traits];
+    NSInteger unreadCount = ApolloModernChatUnreadBadgeCount();
+    // Spoken as a count even while the screen shows a dot.
     NSString *unreadValue = unreadCount > 0
         ? [NSString stringWithFormat:@"%ld unread", (long)unreadCount] : nil;
 
     UIColor *accent = ApolloModernChatThemeColor(traits, @"accent");
     UIColor *selectedText = ApolloColorIsLight(accent) ? UIColor.blackColor : UIColor.whiteColor;
     self.backgroundColor = ApolloModernChatThemeColor(traits, @"primary");
-    self.chatUnreadBadge.backgroundColor = UIColor.systemRedColor;
-    self.chatUnreadBadge.textColor = UIColor.whiteColor;
 
     if (self.segmentedControl) {
         // Native Liquid Glass chrome; only the tint comes from the theme.
@@ -621,6 +706,14 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
 
 @implementation ApolloInboxChatSectionSwitcherView
 
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)apollo_unreadBadgeStyleChanged:(__unused NSNotification *)notification {
+    [self apollo_refreshForTraits:self.traitCollection];
+}
+
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (!self) return nil;
@@ -651,6 +744,7 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
     // Spoken via requestsButton.accessibilityValue, not as its own element.
     self.requestsBadge.isAccessibilityElement = NO;
     [self addSubview:self.requestsBadge];
+    ApolloInboxObserveUnreadBadgeStyle(self, @selector(apollo_unreadBadgeStyleChanged:));
 
     self.bottomSeparator = [UIView new];
     self.bottomSeparator.userInteractionEnabled = NO;
@@ -698,14 +792,10 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
             self.selectionView.frame = CGRectInset(messagesFrame, 3.0, 0.0);
             break;
     }
-    CGFloat requestsBadgeWidth = 18.0;
-    if (self.requestsBadge.text.length > 1) {
-        CGSize textSize = [self.requestsBadge.text sizeWithAttributes:
-                           @{NSFontAttributeName: self.requestsBadge.font}];
-        requestsBadgeWidth = MAX(18.0, ceil(textSize.width) + 10.0);
-    }
-    self.requestsBadge.frame = CGRectMake(CGRectGetMidX(requestsFrame) + 34.0,
-                                          CGRectGetMidY(requestsFrame) - 15.0, requestsBadgeWidth, 18.0);
+    // Raised to the top right of "Requests" (the pill's center sits 6pt above
+    // the title's); the dot keeps that spot.
+    self.requestsBadge.frame = ApolloInboxUnreadBadgeFrame(self.requestsBadge, CGRectGetMidX(requestsFrame) + 34.0,
+                                                           CGRectGetMidY(requestsFrame) - 6.0);
     self.bottomSeparator.frame = CGRectMake(0, CGRectGetHeight(self.bounds) - 0.5,
                                             CGRectGetWidth(self.bounds), 0.5);
 }
@@ -746,8 +836,11 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
     NSInteger requestsCount = MAX(0, [status[@"requestsCount"] integerValue]);
     if (hasRequests && requestsCount == 0) requestsCount = 1;
     self.requestsBadge.hidden = !hasRequests;
-    self.requestsBadge.text = requestsCount > 99 ? @"99+"
-        : [NSString stringWithFormat:@"%ld", (long)MAX(1, requestsCount)];
+    // The selection here is a raised neutral pill, never the accent.
+    ApolloInboxStyleUnreadBadge(self.requestsBadge,
+                                requestsCount > 99 ? @"99+"
+                                    : [NSString stringWithFormat:@"%ld", (long)MAX(1, requestsCount)],
+                                NO, nil, nil);
     self.requestsButton.accessibilityValue = hasRequests
         ? [NSString stringWithFormat:@"%ld new", (long)requestsCount] : nil;
 
@@ -764,8 +857,6 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
                                forState:UIControlStateNormal];
     [self.threadsButton setTitleColor:self.selectedSection == ApolloModernChatInboxSectionThreads ? accent : secondaryText
                               forState:UIControlStateNormal];
-    self.requestsBadge.backgroundColor = UIColor.systemRedColor;
-    self.requestsBadge.textColor = UIColor.whiteColor;
     [self setNeedsLayout];
 }
 
@@ -2923,8 +3014,7 @@ static void ApolloInboxCellApplyAvatar(id cellNode) {
         return;
     }
 
-    BOOL titleIdentifiesInbox = self.title.length > 0 &&
-        [self.title caseInsensitiveCompare:@"Inbox"] == NSOrderedSame;
+    BOOL titleIdentifiesInbox = ApolloTabBarItemNamedInbox(self);
     if (titleIdentifiesInbox && self != sApolloInboxTabBarItem) {
         sApolloInboxTabBarItem = self;
         objc_setAssociatedObject(self, &kApolloInboxBadgeInitializedKey,
@@ -2940,10 +3030,13 @@ static void ApolloInboxCellApplyAvatar(id cellNode) {
     objc_setAssociatedObject(self, &kApolloInboxBadgeInitializedKey,
                              @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     NSString *combinedValue = ApolloCombinedInboxBadgeValue(badgeValue);
-    ChatsFilterLog("Inbox badge native=%{public}@ chat=%ld combined=%{public}@",
+    NSString *displayValue = ApolloUnreadBadgeTabBarDisplayValue(combinedValue);
+    ChatsFilterLog("Inbox badge native=%{public}@ chat=%ld combined=%{public}@ shown=%{public}@",
                    badgeValue ?: @"none", (long)ApolloModernChatUnreadBadgeCount(),
-                   combinedValue ?: @"none");
-    %orig(combinedValue);
+                   combinedValue ?: @"none",
+                   displayValue ? (displayValue.length > 0 ? displayValue : @"dot") : @"none");
+    ApolloUnreadBadgeStyleTabBarItem(self, combinedValue);
+    %orig(displayValue);
 }
 
 %end
@@ -3238,6 +3331,24 @@ static BOOL ApolloInboxShouldNoteMessageJSONForClass(Class modelClass) {
                      queue:NSOperationQueue.mainQueue
                 usingBlock:^(__unused NSNotification *notification) {
         ApolloApplyCombinedInboxBadge();
+    }];
+    // Unread Badges: a settings toggle restyles the Inbox tab now (the
+    // switchers observe the same notification themselves). A theme change only
+    // matters to a theme-colored badge; with Theme Color off the tab is left
+    // exactly as Apollo set it.
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:ApolloUnreadBadgeStyleDidChangeNotification
+                    object:nil
+                     queue:NSOperationQueue.mainQueue
+                usingBlock:^(__unused NSNotification *notification) {
+        ApolloApplyCombinedInboxBadge();
+    }];
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:@"com.christianselig.ApolloSpecificThemeChanged"
+                    object:nil
+                     queue:NSOperationQueue.mainQueue
+                usingBlock:^(__unused NSNotification *notification) {
+        if (sUnreadBadgeThemeColor) ApolloApplyCombinedInboxBadge();
     }];
     ChatsFilterLog("module loaded");
 }

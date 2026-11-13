@@ -273,6 +273,15 @@ static NSString *const UDKeyUseProfileAvatarTabIcon = @"UseProfileAvatarTabIcon"
 // Default OFF. See ApolloTabBarTitles.xm.
 static NSString *const UDKeyHideTabBarTitles = @"HideTabBarTitles";
 static NSString *const ApolloTabBarTitlesChangedNotification = @"ApolloTabBarTitlesChangedNotification";
+// Unread badge style (Interface → Unread Badges; ApolloUnreadBadges.m). All
+// default OFF, which keeps Apollo's red numbered badges untouched.
+//   CompactTabBar: the Inbox tab's badge becomes a small dot without the count.
+//   CompactInbox:  same for the Notifications / Chat switcher at the top of the
+//                  Inbox (ApolloChatsFilter.xm), independent of the tab bar.
+//   ThemeColor:    every unread badge above uses the theme accent, not red.
+static NSString *const UDKeyUnreadBadgeCompactTabBar = @"UnreadBadgeCompactTabBar";
+static NSString *const UDKeyUnreadBadgeCompactInbox = @"UnreadBadgeCompactInbox";
+static NSString *const UDKeyUnreadBadgeThemeColor = @"UnreadBadgeThemeColor";
 // Unselected tab bar icons use a muted shade of the theme accent instead of
 // UIKit's gray. Default OFF. Theme Manager -> Options.
 static NSString *const UDKeyTintInactiveTabIcons = @"ApolloTintedTabIcons";

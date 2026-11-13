@@ -385,6 +385,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloChatComposer.xm \
     $(SRC_DIR)/ApolloMessageDraftStore.m \
     $(SRC_DIR)/ApolloMessagesReplyBarRestore.xm \
+    $(SRC_DIR)/ApolloUnreadBadges.xm \
     $(SRC_DIR)/ApolloChatsFilter.xm \
     $(SRC_DIR)/ApolloDirectChatWeb.xm \
     $(SRC_DIR)/ApolloLinkCardTitleFallback.xm \

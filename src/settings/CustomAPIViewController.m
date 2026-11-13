@@ -21,6 +21,7 @@
 #import "InfoRowSettingsViewController.h"
 #import "ApolloWebSessionLoginViewController.h"
 #import "ApolloDirectChatWeb.h"
+#import "ApolloUnreadBadges.h"
 #import "ApolloMessageDraftStore.h"
 #import "ApolloDevvitPosts.h"        // ApolloDevvitFeedOwnershipChangedNotification
 #import "ApolloFloatingTabs.h"       // close-all / fan-out entry points for the toggles
@@ -2408,6 +2409,39 @@ typedef NS_ENUM(NSInteger, Tag) {
                                                       [ApolloSettingsRow disclosureRowWithID:@"interface.settingsShortcuts" title:@"Settings Shortcuts" detail:nil push:^UIViewController *{
                                                           return [[ApolloSettingsShortcutsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
                                                       }] ]];
+}
+
+// Interface → Unread Badges: how the Inbox's unread badges look. Apollo still
+// decides what is unread; see ApolloUnreadBadges.h for where each one is drawn.
+- (ApolloSettingsSection *)buildInterfaceUnreadBadgesSection {
+    ApolloSettingsRow *compactTabBar =
+        [ApolloSettingsRow switchRowWithID:@"interface.unreadBadgeCompactTabBar"
+                                     title:@"Compact Dot on Tab Bar"
+                                      isOn:^BOOL { return sUnreadBadgeCompactTabBar; }
+                                  onToggle:^(UISwitch *sender) { ApolloUnreadBadgesSetCompactTabBar(sender.isOn); }];
+
+    // The Notifications / Chat switcher (and its Requests badge) only exists
+    // with modern Chat on, so the row would do nothing without it.
+    BOOL inboxSwitcher = ApolloModernChatShouldOpen();
+    ApolloSettingsRow *compactInbox =
+        [ApolloSettingsRow switchRowWithID:@"interface.unreadBadgeCompactInbox"
+                                     title:@"Compact Dot in Inbox"
+                                      isOn:^BOOL { return sUnreadBadgeCompactInbox; }
+                                  onToggle:^(UISwitch *sender) { ApolloUnreadBadgesSetCompactInbox(sender.isOn); }];
+    compactInbox.visible = ^BOOL { return ApolloModernChatShouldOpen(); };
+
+    ApolloSettingsRow *themeColor =
+        [ApolloSettingsRow switchRowWithID:@"interface.unreadBadgeThemeColor"
+                                     title:@"Theme Color"
+                                      isOn:^BOOL { return sUnreadBadgeThemeColor; }
+                                  onToggle:^(UISwitch *sender) { ApolloUnreadBadgesSetThemeColor(sender.isOn); }];
+
+    NSString *footer = inboxSwitcher
+        ? @"A small dot replaces the unread count on the Inbox tab, or on the Notifications and Chat tabs in the Inbox. Theme Color uses your theme's accent instead of red."
+        : @"A small dot replaces the unread count on the Inbox tab. Theme Color uses your theme's accent instead of red.";
+    return [ApolloSettingsSection sectionWithTitle:@"Unread Badges"
+                                            footer:footer
+                                              rows:@[ compactTabBar, compactInbox, themeColor ]];
 }
 
 // Interface → Menus: the ••• menus' item order and visibility live on their own
@@ -6147,6 +6181,7 @@ static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
 - (NSString *)apollo_screenTitle { return @"Interface"; }
 - (NSArray<ApolloSettingsSection *> *)buildForm {
     return @[ [self buildInterfaceTabBarSection],
+              [self buildInterfaceUnreadBadgesSection],
               [self buildInterfaceDisplayNavigationSection],
               [self buildInterfaceLiquidGlassSection],
               [self buildInterfaceMenusSection] ];

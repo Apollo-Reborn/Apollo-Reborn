@@ -3811,6 +3811,9 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyShowUserAvatars: @NO,
                                     UDKeyUseProfileAvatarTabIcon: @NO,
                                     UDKeyHideTabBarTitles: @NO,
+                                    UDKeyUnreadBadgeCompactTabBar: @NO,
+                                    UDKeyUnreadBadgeCompactInbox: @NO,
+                                    UDKeyUnreadBadgeThemeColor: @NO,
                                     UDKeyTintInactiveTabIcons: @NO,
                                     UDKeyAccentNavigationButtons: @NO,
                                     UDKeyShowDetailedProfiles: @YES,
@@ -4110,6 +4113,9 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     sShowUserAvatars = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars];
     sUseProfileAvatarTabIcon = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseProfileAvatarTabIcon];
     sHideTabBarTitles = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyHideTabBarTitles];
+    sUnreadBadgeCompactTabBar = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUnreadBadgeCompactTabBar];
+    sUnreadBadgeCompactInbox = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUnreadBadgeCompactInbox];
+    sUnreadBadgeThemeColor = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUnreadBadgeThemeColor];
     sTintInactiveTabIcons = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyTintInactiveTabIcons];
     sAccentNavigationButtons = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyAccentNavigationButtons];
     ApolloNormalizeNativeHideUsernameForIconOnlyTabBar();
