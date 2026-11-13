@@ -202,6 +202,16 @@ int main(void) {
         Check(x >= 495.3 && x + 70.0 <= 882.0 - 15.0, "a centered jump button at the fold stays clear of the hinge and the rail");
     }
 
+    /* A sliding comments page keeps the jump button's resting x. */
+    Check(ApolloDuoJumpButtonKeepsRestingX(1, 1, 600.0, 600.0),
+          "a page sliding back keeps the button where it rested");
+    Check(!ApolloDuoJumpButtonKeepsRestingX(0, 1, 600.0, 600.0),
+          "a resting page measures the button again");
+    Check(!ApolloDuoJumpButtonKeepsRestingX(1, 0, 0.0, 600.0),
+          "a page that never rested leaves Apollo's frame alone");
+    Check(!ApolloDuoJumpButtonKeepsRestingX(1, 1, 393.0, 852.0),
+          "a page that changed width (rotation, fold) measures again");
+
     printf("OK: %u checks\n", checks);
     return 0;
 }

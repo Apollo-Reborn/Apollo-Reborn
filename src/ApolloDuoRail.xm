@@ -361,13 +361,18 @@ static BOOL sApolloDuoClampingFloatingButton;
 static void ApolloDuoAdjustFloatingActionButton(UIView *button) {
     if (sApolloDuoClampingFloatingButton) return;
     sApolloDuoClampingFloatingButton = YES;
+    UIViewController *owner = nil;
     for (UIResponder *responder = button.nextResponder; responder; responder = responder.nextResponder) {
         if ([responder isKindOfClass:UIViewController.class]) {
-            ApolloDuoRailAdjustHideReadButton((UIViewController *)responder);
+            owner = (UIViewController *)responder;
+            ApolloDuoRailAdjustHideReadButton(owner);
             break;
         }
     }
-    ApolloDuoCoverAdjustJumpButton(sApolloDuoActiveComments);
+    // Back to another thread makes the arriving one active first.
+    ApolloDuoCoverAdjustJumpButton(owner);
+    UIViewController *active = sApolloDuoActiveComments;
+    if (active != owner) ApolloDuoCoverAdjustJumpButton(active);
     sApolloDuoClampingFloatingButton = NO;
 }
 
@@ -599,6 +604,12 @@ static void ApolloDuoAdjustFloatingActionButton(UIView *button) {
 %hook _TtC6Apollo22CommentsViewController
 
 - (void)viewDidLayoutSubviews {
+    %orig;
+    ApolloDuoCoverAdjustJumpButton((UIViewController *)self);
+}
+
+// Starting Back moves the page's frame off screen, changing its safe area.
+- (void)viewSafeAreaInsetsDidChange {
     %orig;
     ApolloDuoCoverAdjustJumpButton((UIViewController *)self);
 }

@@ -226,6 +226,15 @@ static inline double ApolloDuoJumpButtonPaneX(int kind, int split,
     return x < paneMinX ? paneMinX : x;
 }
 
+// A sliding page keeps its jump button's resting x, unless the page's width
+// changed since (a rotation or fold measures again).
+static inline int ApolloDuoJumpButtonKeepsRestingX(int pageMoving, int hasRestingX,
+                                                   double restingWidth, double containerWidth) {
+    if (!pageMoving || !hasRestingX) return 0;
+    double difference = restingWidth - containerWidth;
+    return difference < 0.5 && difference > -0.5;
+}
+
 #ifdef __cplusplus
 }
 #endif
