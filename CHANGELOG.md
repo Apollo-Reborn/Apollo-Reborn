@@ -20,8 +20,8 @@ All notable changes to this project will be documented in this file.
   - Compact Dot on Tab Bar, Compact Dot in Inbox (shown while modern Chat is on) and Theme Color are each off by default
 - Show **Hidden & Deleted** in Apollo's own post and comment lists, so results follow your post size, thumbnails, text size, themes, swipe actions and menus, and open their threads like anywhere else (#1485: @IllIIllIllIllII)
   - Items keep their Hidden, Removed or Deleted label, removed posts keep their saved title and media, and the Posts tab has its own Compact Posts / Large Thumbnails button
-- Add a **Spelling** choice of American or British under Interface → Display & Navigation, switching Apollo's labels, menus, alerts and settings to British spelling while posts, comments, usernames and subreddit names stay as written (#1648: @IllIIllIllIllII)
-  - American by default; Apollo Reborn's own screens now use American spelling throughout to match Apollo
+- Add a **Spelling** setting under Interface → Display & Navigation: Apollo Reborn's screens now use American spelling to match Apollo, and choosing British changes the whole app's spelling to British (#1648: @IllIIllIllIllII)
+  - Posts, comments, usernames and subreddit names keep the spelling they were written with
 - Add **All+** to blend NSFW posts back into r/all by Reddit's own hot ranking, the way old Reddit's r/all showed them (#1472: @nnastasi)
   - Off by default: turn on Show NSFW in r/all under Posts & Feeds → All+; it applies to the Hot, Best and Rising sorts, and an optional NSFW boost slider moves them higher
 - Make swipes on the open **iPhone Duo** follow your finger: Back within a pane, closing a thread, opening and closing the subreddit list and leaving a profile, with a forward swipe to bring a closed thread or profile back (#1656: @IllIIllIllIllII)
