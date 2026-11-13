@@ -701,6 +701,14 @@ static NSArray<UIView *> *FGCustomViews(NSArray<UIBarButtonItem *> *items) {
     [self endSearch];
 }
 
+// MARK: UISearchControllerDelegate
+
+- (void)didDismissSearchController:(UISearchController *)searchController {
+    // A push deactivates the search UI too; the search comes back with the screen.
+    if (self.transitioning || !self.commentsVC) return;
+    ApolloNativeFeedSearchFindDismissed(self.commentsVC);
+}
+
 // MARK: - Highlight bookkeeping
 //
 // Apollo installs each match's highlight as a rendering block on the match's

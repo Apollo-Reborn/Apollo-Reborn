@@ -34,6 +34,10 @@ void ApolloNativeFeedSearchSetDuoControls(UIViewController *vc, UIBarButtonItem 
                                         UIBarButtonItem *split, UIBarButtonItem *layout,
                                         BOOL layoutLeading);
 
+// A Find in Comments search the ••• menu opened with Search Bars set to Off
+// has been dismissed: take the bar off the thread again.
+void ApolloNativeFeedSearchFindDismissed(UIViewController *vc);
+
 // Preserve registered trailing controls when Apollo replaces its action items.
 NSArray<UIBarButtonItem *> *ApolloNativeFeedSearchDuoTrailingItems(UINavigationItem *item,
                                                                 NSArray<UIBarButtonItem *> *items);

@@ -2663,13 +2663,36 @@ typedef NS_ENUM(NSInteger, Tag) {
                 });
         }];
 
+    NSArray<NSString *> *searchBarTitles = @[ @"On", @"Hidden", @"Off" ];
+    ApolloSettingsRow *searchBars =
+        [ApolloSettingsRow valueRowWithID:@"interface.searchBars"
+                                    title:@"Search Bars"
+                                   detail:^NSString * {
+            return searchBarTitles[MAX(0, MIN(sSearchBarMode, (NSInteger)searchBarTitles.count - 1))];
+        }
+                                 onSelect:^{
+            ApolloSettingsPresentPicker(weakSelf, [weakSelf cellForRowID:@"interface.searchBars"],
+                @"Search Bars", searchBarTitles, MAX(0, MIN(sSearchBarMode, (NSInteger)searchBarTitles.count - 1)),
+                ^(NSInteger picked) {
+                    sSearchBarMode = picked;
+                    [NSUserDefaults.standardUserDefaults setInteger:picked forKey:UDKeySearchBarMode];
+                    [weakSelf reloadRowWithID:@"interface.searchBars"];
+                });
+        }];
+    BOOL searchBarsRow = NO;
+    if (@available(iOS 26.0, *)) searchBarsRow = IsLiquidGlass();
+    searchBars.visible = ^BOOL { return searchBarsRow; };
+
     NSString *footer = @"Spelling applies to screens as they open; reopen Apollo to update everything. Return Button restores your scroll position after a status bar tap.";
     if (IsLiquidGlass()) {
         footer = [footer stringByAppendingString:@" Group navigation buttons under •••. Tap to expand."];
     }
+    if (searchBarsRow) {
+        footer = [footer stringByAppendingString:@"\n\nSearch Bars: the search field under a feed's title and Find in Comments on threads. Hidden keeps them out of the way until you pull down at the top of the list. Off removes them; Find in Comments stays in the thread's ••• menu."];
+    }
     return [ApolloSettingsSection sectionWithTitle:@"Display & Navigation"
                                             footer:footer
-                                              rows:@[ spelling, scrollReturnButton, trueBlackKeyboard, collapseActions, centerBetween, switcherStyle, iPadPaneLayout, scrollEdgeEffect ]];
+                                              rows:@[ spelling, scrollReturnButton, trueBlackKeyboard, collapseActions, centerBetween, switcherStyle, iPadPaneLayout, scrollEdgeEffect, searchBars ]];
 }
 
 // Display order differs from stored values; Blur is optional, while Hidden
