@@ -21,4 +21,12 @@ FOUNDATION_EXPORT void ApolloInlineImageRegisterMediaMetadata(
 /// is external or its asset has not been registered.
 FOUNDATION_EXPORT double ApolloInlineImageAspectRatioFromRegisteredMetadata(NSURL *url);
 
+/// Host + path key that matches Apollo's link card to an image the same cell
+/// inlined. On iOS 26+ the card's URL can only be read from its display text,
+/// which drops a media subdomain for some hosts, so only those known aliases
+/// share a key: i.redd.it / preview.redd.it -> redd.it, i.imgur.com ->
+/// imgur.com. Every other host keys as itself. Returns nil without a host or
+/// path.
+FOUNDATION_EXPORT NSString * _Nullable ApolloInlineLinkCardSuppressionPathKey(NSURL *url);
+
 NS_ASSUME_NONNULL_END

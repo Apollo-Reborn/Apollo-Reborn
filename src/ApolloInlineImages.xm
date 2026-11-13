@@ -257,30 +257,17 @@ static NSString *ApolloDecodedAbsoluteString(NSURL *url) {
 }
 
 static NSString *ApolloInlineSuppressionPathKey(NSURL *url) {
-    NSString *host = [[url host] lowercaseString];
-    NSString *path = [url path];
-    if (host.length == 0 || path.length == 0) return nil;
-    // Apollo's link card shows a media link without its media subdomain
-    // ("redd.it/<file>" for i.redd.it / preview.redd.it, "imgur.com/<file>" for
-    // i.imgur.com), and on iOS 26+ ApolloGetLinkButtonNodeURLString can only
-    // read that display text, so the card's URL comes back without it. Key the
-    // hosts alike so a card measured detached (an inserted or reloaded row, or
-    // a thread's first layout, before the card is attached to its cell) still
-    // matches the image the cell inlined. Without the imgur case the card drew
-    // under the inlined image and dropped out a beat later, when the cell laid
-    // out again attached: the row shrank by the card's height.
-    static NSArray<NSString *> *mediaSubdomains;
-    static dispatch_once_t mediaSubdomainsOnce;
-    dispatch_once(&mediaSubdomainsOnce, ^{
-        mediaSubdomains = @[ @"i.", @"m.", @"www.", @"preview.", @"external-preview." ];
-    });
-    for (NSString *prefix in mediaSubdomains) {
-        if ([host hasPrefix:prefix] && [[host substringFromIndex:prefix.length] containsString:@"."]) {
-            host = [host substringFromIndex:prefix.length];
-            break;
-        }
-    }
-    return [NSString stringWithFormat:@"path:%@%@", host, path];
+    // Apollo's link card shows i.redd.it / preview.redd.it links as
+    // "redd.it/<file>" and i.imgur.com links as "imgur.com/<file>", and on
+    // iOS 26+ ApolloGetLinkButtonNodeURLString can only read that display text.
+    // The key maps those aliases (and only those) to one host, so a card
+    // measured detached (an inserted or reloaded row, or a thread's first
+    // layout, before the card is attached to its cell) still matches the image
+    // the cell inlined. Without the imgur alias the card drew under the inlined
+    // image and dropped out a beat later, when the cell laid out again attached:
+    // the row shrank by the card's height. Tested in
+    // tests/inline_image_metadata_tests.m.
+    return ApolloInlineLinkCardSuppressionPathKey(url);
 }
 
 static void ApolloRegisterInlineSuppressionURL(NSURL *url) {
