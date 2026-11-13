@@ -38,6 +38,9 @@ BOOL ApolloDuoSplitCanForwardInSplit(UINavigationController *navigation);
 BOOL ApolloDuoSplitHasForwardPage(UINavigationController *navigation);
 /// The tab bar's pan drives Apollo's interactive Back on `navigation` (nil clears it).
 void ApolloDuoSplitSetTabBarNativePan(UINavigationController *navigation, UIGestureRecognizer *pan);
+/// Runs Apollo's own tab bar pan handler; on a Duo rail a held release
+/// finishes past half the rail.
+void ApolloDuoRunTabBarPanHandler(UINavigationController *navigation, UIPanGestureRecognizer *pan, void (^handler)(void));
 BOOL ApolloDuoSplitForwardInSplit(UINavigationController *navigation);
 /// Cover drags, Back and forward, for navigation the split lays out itself
 /// (a visited profile, Account's detail, Back from a feed link beside a

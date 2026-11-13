@@ -3131,25 +3131,49 @@ static CGFloat ApolloDuoSplitNativeReleaseScale(UINavigationController *nav, UIP
     return paneWidth > 0 && paneWidth < viewWidth ? viewWidth / paneWidth : 1.0;
 }
 
+// A nil view scales the translation Apollo reads in any view.
+static void ApolloDuoSplitRunScaledRelease(UIGestureRecognizer *gesture, UIView *view, CGFloat scale,
+                                           BOOL alongY, void (^handler)(void)) {
+    void *previousGesture = sDuoSplitReleaseGesture, *previousView = sDuoSplitReleaseView;
+    CGFloat previousScale = sDuoSplitReleaseScale;
+    BOOL previousAlongY = sDuoSplitReleaseAlongY;
+    sDuoSplitReleaseGesture = (__bridge void *)gesture;
+    sDuoSplitReleaseView = (__bridge void *)view;
+    sDuoSplitReleaseScale = scale;
+    sDuoSplitReleaseAlongY = alongY;
+    handler();
+    sDuoSplitReleaseGesture = previousGesture;
+    sDuoSplitReleaseView = previousView;
+    sDuoSplitReleaseScale = previousScale;
+    sDuoSplitReleaseAlongY = previousAlongY;
+}
+
 static void ApolloDuoSplitRunNativePan(UINavigationController *nav, UIPanGestureRecognizer *gesture, void (^handler)(void)) {
     CGFloat scale = ApolloDuoSplitNativeReleaseScale(nav, gesture);
     if (scale == 1.0) {
         handler();
         return;
     }
-    void *previousGesture = sDuoSplitReleaseGesture, *previousView = sDuoSplitReleaseView;
-    CGFloat previousScale = sDuoSplitReleaseScale;
-    BOOL previousAlongY = sDuoSplitReleaseAlongY;
-    sDuoSplitReleaseGesture = (__bridge void *)gesture;
-    sDuoSplitReleaseView = (__bridge void *)nav.view;
-    sDuoSplitReleaseScale = scale;
-    sDuoSplitReleaseAlongY = gesture == sDuoTabBarNativePan
+    BOOL alongY = gesture == sDuoTabBarNativePan
         && CGRectGetHeight(gesture.view.bounds) > CGRectGetWidth(gesture.view.bounds);
-    handler();
-    sDuoSplitReleaseGesture = previousGesture;
-    sDuoSplitReleaseView = previousView;
-    sDuoSplitReleaseScale = previousScale;
-    sDuoSplitReleaseAlongY = previousAlongY;
+    ApolloDuoSplitRunScaledRelease(gesture, nav.view, scale, alongY, handler);
+}
+
+// Without columns (the closed display) Apollo's handler runs the tab bar
+// swipe and finishes a held release at half its view's width, 233pt on the
+// cover, but the rail there is about 262pt long. Judge the release on the
+// rail instead, as the open display does.
+void ApolloDuoRunTabBarPanHandler(UINavigationController *nav, UIPanGestureRecognizer *pan, void (^handler)(void)) {
+    UIGestureRecognizerState state = pan.state;
+    CGFloat viewWidth = CGRectGetWidth(nav.viewIfLoaded.bounds);
+    CGFloat barLength = ApolloDuoTabBarSwipeLength(pan);
+    BOOL rail = CGRectGetHeight(pan.view.bounds) > CGRectGetWidth(pan.view.bounds);
+    if ((state != UIGestureRecognizerStateEnded && state != UIGestureRecognizerStateCancelled)
+        || !ApolloDeviceIsDuo() || !rail || barLength <= 0 || barLength >= viewWidth) {
+        handler();
+        return;
+    }
+    ApolloDuoSplitRunScaledRelease(pan, nil, viewWidth / barLength, YES, handler);
 }
 
 static BOOL ApolloDuoSplitGestureIsActive(UIGestureRecognizer *pan) {
@@ -5675,7 +5699,8 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
 }
 - (CGPoint)translationInView:(UIView *)view {
     CGPoint translation = %orig(view);
-    if ((__bridge void *)self == sDuoSplitReleaseGesture && (__bridge void *)view == sDuoSplitReleaseView) {
+    if ((__bridge void *)self == sDuoSplitReleaseGesture
+        && (!sDuoSplitReleaseView || (__bridge void *)view == sDuoSplitReleaseView)) {
         if (sDuoSplitReleaseAlongY) translation.y *= sDuoSplitReleaseScale;
         else translation.x *= sDuoSplitReleaseScale;
     }

@@ -854,7 +854,7 @@ static void ApolloInsetLiquidGlassTabBadges(UIView *tabButton) {
     if (ApolloDuoTabBarSwipePanned(outer, pan)) return;
     // A released forward peek keeps Apollo's forward pages.
     if (pan.state == UIGestureRecognizerStateBegan) ApolloForwardSwipeNoteSource(outer);
-    %orig(pan);
+    ApolloDuoRunTabBarPanHandler(outer, pan, ^{ %orig(pan); });
 }
 
 %end
