@@ -95,7 +95,7 @@ static NSString *const kApolloWebJSONProbeMarker = @"apollo-webjson-probe";
 // its per-account block-page streak correctly even if the active account has
 // since changed (e.g. the user switched accounts while the request was
 // in-flight).
-static NSString *const kApolloWebJSONAccountMarkerPrefix = @"apollo-webjson-account=";
+static NSString *const kApolloWebJSONAccountMarkerPrefix = APOLLO_WEBJSON_ACCOUNT_MARKER_PREFIX;
 
 // Returns a copy of `url` with its fragment replaced (any existing fragment —
 // there shouldn't be one on a Reddit API URL — is overwritten).

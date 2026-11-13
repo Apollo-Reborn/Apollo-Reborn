@@ -794,6 +794,10 @@ NSString *ApolloOAuthReadPathAfterResponse(NSString *method, NSString *sentPath,
     // them for the cookie and signed out too, and the /.json form there signed
     // out is refused as well.
     if (![response.URL.host.lowercaseString isEqualToString:@"oauth.reddit.com"]) return nil;
+    // An API-Key-Free read the rewrite sent to oauth with the cookie is its
+    // route table's business, whichever client sent it (the anonymous app-only
+    // client has no username but still reads as the web session).
+    if ([response.URL.fragment hasPrefix:APOLLO_WEBJSON_ACCOUNT_MARKER_PREFIX]) return nil;
     if (refused) *refused = YES;
     BOOL dotJSON = ApolloOAuthReadPathIsDotJSON(sentPath);
     @synchronized (ApolloOAuthReadLock()) {

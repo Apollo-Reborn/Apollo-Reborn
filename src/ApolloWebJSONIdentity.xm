@@ -1116,10 +1116,14 @@ static BOOL ApolloWebJSONKeepSubscriptionListAfterFailedWalk(RDKUser *user, NSAr
     }
     NSString *requestMethod = [method copy];
     NSString *requestPath = [path copy];
-    NSString *username = ApolloWebJSONShouldActForClient(self) ? ApolloWebJSONClientUsername(self) : nil;
+    // Whether the API-Key-Free layer reads for this client. Not the same as
+    // having a username: the anonymous app-only client reads as the active web
+    // session without one (ApolloWebJSONShouldActForClient).
+    BOOL keylessClient = ApolloWebJSONShouldActForClient(self);
+    NSString *username = keylessClient ? ApolloWebJSONClientUsername(self) : nil;
     // API-key accounts: /api/info and /api/morechildren go by their /.json form
     // once oauth.reddit.com refused their usual path this launch (below).
-    if (!username) requestPath = ApolloOAuthReadPathToSend(requestMethod, requestPath);
+    if (!keylessClient) requestPath = ApolloOAuthReadPathToSend(requestMethod, requestPath);
     ApolloWebJSONCheckAccountSession(username);
     // API-Key-Free account listings: 100 per page (ApolloWebJSONParametersForAccountRead).
     parameters = ApolloWebJSONParametersForAccountRead(username, requestMethod, requestPath, parameters);
@@ -1131,8 +1135,9 @@ static BOOL ApolloWebJSONKeepSubscriptionListAfterFailedWalk(RDKUser *user, NSAr
         // RedditKit reads as no answer and no error, so "more replies" puts its
         // label back and loads nothing. The same read in its /.json form is
         // still answered (ApolloWebJSONRoutes.h): send it once more that way,
-        // and only that answer reaches the caller.
-        if (!username) {
+        // and only that answer reaches the caller. API-Key-Free clients keep
+        // their route table below, the anonymous app-only one included.
+        if (!keylessClient) {
             BOOL refused = NO;
             NSString *retryPath = ApolloOAuthReadPathAfterResponse(requestMethod, requestPath, response, &refused);
             if (retryPath) {

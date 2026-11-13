@@ -235,12 +235,19 @@ void ApolloWebJSONRouteHealthReset(void);
 // ("api/info.json", RedditKit's form) stays relative, and a query is kept.
 NSString *ApolloOAuthReadPathToSend(NSString *method, NSString *path);
 
+// The URL fragment the API-Key-Free rewrite stamps on every request it sends
+// for a web session ("apollo-webjson-account=<user>[;route=<n>]",
+// ApolloWebJSON.m). It never reaches Reddit, and the response's URL keeps it.
+#define APOLLO_WEBJSON_ACCOUNT_MARKER_PREFIX @"apollo-webjson-account="
+
 // YES for these reads at their usual path: GET /api/info, GET or POST
 // /api/morechildren, not already in the /.json form.
 BOOL ApolloOAuthReadIsRetryable(NSString *method, NSString *path);
 
 // After `response` to a read sent by `sentPath`: when it's oauth.reddit.com's
-// block page for one of these endpoints, `refused` (if given) is set, and the
+// block page for one of these endpoints, sent for an API key (not an
+// API-Key-Free read the rewrite routed to oauth, whose URL carries
+// APOLLO_WEBJSON_ACCOUNT_MARKER_PREFIX), `refused` (if given) is set, and the
 // return is the path to send the read again by, its /.json form, which
 // ApolloOAuthReadPathToSend uses from then on. nil when there's nothing to
 // retry: any other answer, or the /.json form refused too, which puts the

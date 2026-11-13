@@ -792,6 +792,25 @@ static void TestOAuthReads(void) {
     CHECK([ApolloOAuthReadPathToSend(@"POST", @"api/morechildren.json") isEqualToString:@"api/morechildren.json"],
           @"still the usual path");
 
+    // The anonymous app-only client acting for a web session has no username,
+    // but its reads go out through the API-Key-Free rewrite, which sends
+    // /api/info and /api/morechildren to oauth with the cookie and stamps the
+    // account marker (bare, or with the route). oauth's block page there is the
+    // route table's business: no retry, and the API-key paths stay as they are.
+    for (NSString *marker in @[ @"#apollo-webjson-account=alice;route=4", @"#apollo-webjson-account=alice" ]) {
+        for (NSArray *read in @[ @[ @"POST", @"api/morechildren.json", @"/api/morechildren.json" ],
+                                 @[ @"GET", @"api/info.json", @"/api/info.json?id=t5_a" ] ]) {
+            NSHTTPURLResponse *keylessBlock = ResponseAt([@"https://oauth.reddit.com" stringByAppendingString:
+                                                          [read[2] stringByAppendingString:marker]], 403, @"text/html");
+            CHECK(ApolloOAuthReadPathAfterResponse(read[0], read[1], keylessBlock, &refused) == nil && !refused,
+                  @"keyless %@ %@ (%@) isn't retried as an API key's", read[0], read[1], marker);
+        }
+    }
+    CHECK([ApolloOAuthReadPathToSend(@"POST", @"api/morechildren.json") isEqualToString:@"api/morechildren.json"] &&
+          [ApolloOAuthReadPathToSend(@"GET", @"api/info.json") isEqualToString:@"api/info.json"],
+          @"keyless block pages leave the API-key paths unchanged");
+
+    // The named API-key account's own block page (no marker) still retries.
     NSString *retry = ApolloOAuthReadPathAfterResponse(@"POST", @"api/morechildren.json", block, &refused);
     CHECK([retry isEqualToString:@"api/morechildren/.json"] && refused, @"refused POST retries as /.json, got %@", retry);
     CHECK([ApolloOAuthReadPathToSend(@"POST", @"api/morechildren.json") isEqualToString:@"api/morechildren/.json"],
