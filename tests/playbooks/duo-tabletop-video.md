@@ -97,3 +97,13 @@ Host checks: `sh tests/run_duo_video_geometry_tests.sh`,
   qualifies. The Duo settings page, preference key, and layout-change
   notification are gone. Subreddit Panel Style stays under Subreddits; Landscape
   Feed Layout stays as the in-feed control.
+
+### Review revision (PR #1591)
+
+- Fold a video into tabletop, let the transport auto-hide for four seconds,
+  then unfold without tapping. Confirm play, seek, mute and skip accept taps
+  and that the slider/button artwork looks native. Repeat with chrome still
+  visible at unfold.
+- Smart Rotation Lock's "Tap to Rotate" offer stays hidden only while a
+  horizontal (tabletop) fold is active. Flat, closed, and book postures keep
+  the native offer in both the video viewer and the gallery.

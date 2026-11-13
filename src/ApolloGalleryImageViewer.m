@@ -5,6 +5,7 @@
 #import "ApolloGalleryImageLoader.h"
 #import "ApolloCommon.h"
 #import "ApolloDeviceGeometry.h"
+#import "ApolloDuoRail.h"
 #import "ApolloGalleryVideoExport.h"
 #import "ApolloGalleryMediaActions.h"
 #import "ApolloNativeActionMenus.h"
@@ -990,8 +991,10 @@ static UIInterfaceOrientation ApolloGalleryInterfaceOrientationForDevice(UIDevic
 }
 
 - (void)apollo_updateRotationOffer {
-    // Duo's fold postures read as a sideways device, so the offer misfires there.
-    if (self.isDismissing || !ApolloGallerySmartRotationLockEnabled() || ApolloDeviceIsDuo()) {
+    // A tabletop fold reads as a sideways device, so the offer misfires there.
+    // Leave Smart Rotation Lock alone when Duo is flat, closed, or in book posture.
+    BOOL tabletop = ApolloDeviceIsDuo() && !CGRectIsNull(ApolloDuoActiveHorizontalDivision(self.view));
+    if (self.isDismissing || !ApolloGallerySmartRotationLockEnabled() || tabletop) {
         [self apollo_hideRotationOffer];
         return;
     }
