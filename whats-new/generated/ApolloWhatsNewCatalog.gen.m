@@ -24,6 +24,7 @@ static const ApolloWhatsNewReleaseEntry kWhatsNewReleases[] = {
     { "3.9.0", "What's New in Apollo Reborn" },
     { "4.0.0", "What's New in Apollo Reborn" },
     { "4.0.1", "What's New in Apollo Reborn" },
+    { "4.1.0", "What's New in Apollo Reborn" },
 };
 
 static const ApolloWhatsNewItemEntry kWhatsNewItems[] = {
@@ -98,6 +99,13 @@ static const ApolloWhatsNewItemEntry kWhatsNewItems[] = {
     { "4.0.1", "house.fill", "Your Start Page Again", "Apollo opens your chosen feed at launch again; Restore Reading Session is now opt-in under Posts & Feeds." },
     { "4.0.1", "envelope.open.fill", "Straight to the Reply", "Tapping an Inbox reply opens right on the comment, without the jump and glide." },
     { "4.0.1", "wrench.and.screwdriver.fill", "Fixes Across the App", "A crash on rate-limited posts, grid icons after updates, interactive posts, Duo galleries and iPad Layout." },
+    { "4.1.0", "star.circle.fill", "Pick Your Switcher", "Apollo's classic Favorites popup is back, or choose the Modern search sheet under Display & Navigation." },
+    { "4.1.0", "arrow.down.to.line", "Jump to New Comments", "Set the jump button to step through comments posted since your last visit." },
+    { "4.1.0", "paintbrush.fill", "Tint Your Tab Bar", "Give tab icons, Liquid Glass buttons and unread badges your theme's accent, or shrink badges to a dot." },
+    { "4.1.0", "eye.slash.fill", "Hidden & Deleted, Native", "Hidden and deleted posts and comments now use Apollo's own lists, layouts and menus." },
+    { "4.1.0", "rectangle.split.2x1", "iPhone Duo, Smoother", "Swipes follow your finger, the split's divider drags, and Focused works in portrait." },
+    { "4.1.0", "textformat.abc", "British Spelling", "Switch Apollo to British spelling; posts and comments stay as written." },
+    { "4.1.0", "wrench.and.screwdriver.fill", "Fixes Across the App", "API-Key-Free feeds and More Replies load again, subscriptions stay put, and crashes are fixed." },
 };
 
 static NSString *S(const char *value) { return [NSString stringWithUTF8String:value]; }

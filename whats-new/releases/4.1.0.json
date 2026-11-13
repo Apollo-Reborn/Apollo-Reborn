@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "version": "4.1.0",
+  "headline": "What's New in Apollo Reborn",
+  "items": [
+    { "icon": "star.circle.fill", "title": "Pick Your Switcher", "subtitle": "Apollo's classic Favorites popup is back, or choose the Modern search sheet under Display & Navigation." },
+    { "icon": "arrow.down.to.line", "title": "Jump to New Comments", "subtitle": "Set the jump button to step through comments posted since your last visit." },
+    { "icon": "paintbrush.fill", "title": "Tint Your Tab Bar", "subtitle": "Give tab icons, Liquid Glass buttons and unread badges your theme's accent, or shrink badges to a dot." },
+    { "icon": "eye.slash.fill", "title": "Hidden & Deleted, Native", "subtitle": "Hidden and deleted posts and comments now use Apollo's own lists, layouts and menus." },
+    { "icon": "rectangle.split.2x1", "title": "iPhone Duo, Smoother", "subtitle": "Swipes follow your finger, the split's divider drags, and Focused works in portrait." },
+    { "icon": "textformat.abc", "title": "British Spelling", "subtitle": "Switch Apollo to British spelling; posts and comments stay as written." },
+    { "icon": "wrench.and.screwdriver.fill", "title": "Fixes Across the App", "subtitle": "API-Key-Free feeds and More Replies load again, subscriptions stay put, and crashes are fixed." }
+  ]
+}

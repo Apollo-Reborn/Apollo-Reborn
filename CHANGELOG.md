@@ -4,6 +4,68 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v4.1.0] - 2026-MM-??
+
+### Features
+
+- Add a **Subreddit Switcher** choice of **Classic** or **Modern** under Interface → Display & Navigation: Classic brings back Apollo's original Favorites popup for title taps and Posts tab holds, and Modern keeps the search sheet (#1604: @IllIIllIllIllII)
+  - Classic is the default on regular iPhones, so updating from 4.0.x brings the popup back; Modern is the default on iPhone Duo
+  - Modern now opens with the keyboard up and starts loading your pick right away, and on the iPhone Duo holding the Posts tab opens the switcher from the side rail and when unfolded
+- Add **Jump Button Navigation** so the comment jump button can step through comments posted since your last visit instead of top-level threads; press and hold to go back one (#1506: @IllIIllIllIllII)
+  - Choose Threads (default) or New Comments under Settings → General below Jump Button Position, or from a post's ••• menu; the button shows a NEW label in that mode
+- Add **Tint Tab Bar Icons** to give unselected tab icons a muted shade of your theme's accent, on the classic and Liquid Glass tab bars and the iPhone Duo side rail (#1684: @IllIIllIllIllII, @AcornElf)
+  - Add **Accent Navigation Buttons** on Liquid Glass to draw Back, toolbar and menu buttons in your theme's accent; titles stay neutral
+  - Both are off by default under Settings → Appearance → Theme Manager → Options
+- Add **Unread Badges** under Interface to show the Inbox's unread count as a small dot on the tab bar and on the Inbox's Notifications and Chat tabs, and to color unread badges with your theme's accent instead of red (#1680: @icpryde, @AcornElf)
+  - Compact Dot on Tab Bar, Compact Dot in Inbox (shown while modern Chat is on) and Theme Color are each off by default
+- Show **Hidden & Deleted** in Apollo's own post and comment lists, so results follow your post size, thumbnails, text size, themes, swipe actions and menus, and open their threads like anywhere else (#1485: @IllIIllIllIllII)
+  - Items keep their Hidden, Removed or Deleted label, removed posts keep their saved title and media, and the Posts tab has its own Compact Posts / Large Thumbnails button
+- Add a **Spelling** choice of American or British under Interface → Display & Navigation, switching Apollo's labels, menus, alerts and settings to British spelling while posts, comments, usernames and subreddit names stay as written (#1648: @IllIIllIllIllII)
+  - American by default; Apollo Reborn's own screens now use American spelling throughout to match Apollo
+- Add **All+** to blend NSFW posts back into r/all by Reddit's own hot ranking, the way old Reddit's r/all showed them (#1472: @nnastasi)
+  - Off by default: turn on Show NSFW in r/all under Posts & Feeds → All+; it applies to the Hot, Best and Rising sorts, and an optional NSFW boost slider moves them higher
+- Make swipes on the open **iPhone Duo** follow your finger: Back within a pane, closing a thread, opening and closing the subreddit list and leaving a profile, with a forward swipe to bring a closed thread or profile back (#1656: @IllIIllIllIllII)
+  - With **Disable Left Swipes** on, swipe right anywhere in a pane to go Back, folded or unfolded, while galleries and carousels keep their own swipes (#1476: @nnastasi)
+  - Turning Split View on or off no longer squashes post and comment text or makes the title bar jump, and sideways drags no longer open posts or start the text loupe
+- Add a **draggable divider** between the feed and thread in the open iPhone Duo's landscape split view: hold the grip and drag to resize, and Apollo remembers your width (#1672: @IllIIllIllIllII)
+  - It snaps near ⅓, 40%, 50% and 60%; double-tap the grip to return to 50/50
+- Use the **Focused feed** layout in open portrait on the iPhone Duo too, and switch layouts from feeds and threads opened in Inbox, Account and Search (#1682, #1652: @IllIIllIllIllII)
+  - Tall images, galleries and videos now fill the Focused column instead of half its width
+
+### Fixes
+
+- Load **hot**, **new** and **rising** feeds, **more replies** rows and subreddit icons again on **API-Key-Free** accounts after Reddit started blocking them in early November (#1657, #1666: @DeltAndy123)
+  - Installs with Use Route Updates on already picked these up; this version builds them in
+- Load **more replies** rows and Inbox replies' parent comments again for **API keys** Reddit started refusing in late October (#1620: @icpryde)
+- Keep your **subscribed subreddits** in the subreddit list when Apollo's background refresh fails, often right after returning to the app, instead of showing only Home, Popular and All until you pull to refresh (#1674: @icpryde)
+- Fix a crash right after opening Apollo on iOS 27.2 with **Liquid Glass** when you switch away while the navigation buttons are still animating in, and a crash opening Settings → General on some iPhone Duo setups (#1630: @icpryde)
+- Fix Apollo **freezing** after closing a comment thread on Liquid Glass, most often in the unfolded iPhone Duo split view (#1515: @nnastasi)
+- Show **Reddit API Key Required** when you sign in with an API key before adding one, instead of opening Reddit's login page and failing after you log in; **Add API Key** opens Accounts & API Keys (#1597: @icpryde)
+- Stop showing **"Translated from …"** under short comments, names and stretched words that Google only re-spells when it isn't sure of the language (#1675: @icpryde)
+- Open an **Inbox reply** or comment link without the Find in Comments bar flashing over the loading page, the comments jumping after they load, or an imgur image showing a link card first (#1602: @icpryde)
+- Open **Community Highlights** cards again on Apollo 1.14 (iOS 14), along with sidebar and settings links, Search tab results and profile social links that did nothing when tapped since 4.0.0 (#1619: @icpryde)
+- Open the right action from a subreddit header's **Sidebar** and **Set User Flair** buttons after reordering or hiding items with **Customize Action Menus** (#1596: @IllIIllIllIllII)
+- Swipe up on the **Account Switcher**'s list to expand it to full screen and drag down at the top to shrink it, and reorder accounts without the sheet moving (#1645: @IllIIllIllIllII)
+  - On the closed iPhone Duo the "Accounts" title is centered, and the per-account API key editor fits with Back inside the sheet and Clear Custom Key for This Account visible (#1683: @IllIIllIllIllII)
+- Keep the **Return Button** after a swipe-back you let go of, instead of it disappearing from a page that stayed open (#1678: @IllIIllIllIllII)
+  - On the iPhone Duo it is now round like the buttons beside it and stays after List and Split in open portrait
+- Point the **Touch ID** prompt at the side button when reopening Apollo in another orientation with Touch ID & Passcode on, instead of a corner of the screen (#1633: @IllIIllIllIllII)
+- Slide **navigation titles** left into free space on Liquid Glass instead of shrinking them to "…", such as beside a Live Activity on the unfolded iPhone Duo (#1632: @IllIIllIllIllII)
+- Open the **Delete Multireddit** and **Unsubscribe** confirmations beside the subreddit list's Delete button on Liquid Glass, without a dark circle over the list (#1677: @IllIIllIllIllII)
+- Polish the **classic (non-Liquid Glass) look** (#1601, #1603, #1605, #1606, #1616, #1617, #1618: @IllIIllIllIllII)
+  - Keep the feed search bar readable and in place: tapping it no longer slides the nav bar away, Cancel puts it back, and the subreddit banner stays visible; with Hide Bars on Scroll, scrolling back up and going back bring the header and nav bar back where they belong
+  - Match the rows Apollo Reborn adds to Settings to the height of Apollo's own rows, and let you reorder Settings Shortcuts by dragging
+  - Open the account switcher as the usual bottom sheet inside posts, with its buttons in your theme color instead of blue
+  - Open the ••• on your own profile as Apollo's action sheet, and show the Return Button as a normal navigation-bar button in your theme color
+- Keep the closed **iPhone Duo**'s side rail working when a Live Activity, Moderator or Translate leaves it short of room: More (•••) opens in one tap with Sort, its time ranges and Moderator tools inside, and the subreddit list keeps Edit and Add in the rail (#1473, #1688: @IllIIllIllIllII)
+- Center **subreddit headers** beside the side rail on the closed iPhone Duo, so the banner, icon and name aren't cut off by the Back button (#1655: @IllIIllIllIllII)
+- Fit the **update prompt** and **What's New** on the closed iPhone Duo, so the version line, Release Notes link and Download IPA aren't cut off and Continue is centered (#1598, #1600: @IllIIllIllIllII)
+- Open the unfolded **iPhone Duo** to the subreddit list when **Default Reddit to Load** is set to Lists, and keep the list open when unfolding from it, instead of loading Home (#1676: @IllIIllIllIllII)
+- Keep the **comment jump button** in place while swiping back from a thread on the iPhone Duo, instead of it jumping to the left edge as the swipe starts (#1699: @IllIIllIllIllII)
+- Show the color and icon behind a **swiped comment** in the unfolded iPhone Duo split, instead of an invisible swipe (#1634: @IllIIllIllIllII)
+- Keep scrolling responsive right after you fold or unfold the **iPhone Duo**, instead of the first scroll being ignored or put back (#1497: @nnastasi)
+- Stop a **forward swipe** on the open iPhone Duo reopening a page you had already left after picking a subreddit or opening a thread (#1489: @nnastasi)
+
 ## [v4.0.1] - 2026-10-30
 
 ### Performance
@@ -1194,6 +1256,7 @@ There are currently a few limitations:
 ## [v1.0.0] - 2023-10-13
 - Initial release
 
+[v4.1.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_4.0.1...v1.15.11_4.1.0
 [v4.0.1]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_4.0.0...v1.15.11_4.0.1
 [v4.0.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.9.0...v1.15.11_4.0.0
 [v3.9.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.8.5...v1.15.11_3.9.0
