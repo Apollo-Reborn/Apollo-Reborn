@@ -101,6 +101,8 @@ static char kApolloRedditCommentResponseDataKey;
 static char kApolloRedditSubmitResponseDataKey;
 static char kApolloRedditSubmitRequestKey;
 static char kApolloRedditNativeUploadAttemptKey;
+// The kept camera-roll GIF copy a fromFile: upload is sending (#1663), released by -cancel.
+static char kApolloOriginalGIFTaskFileKey;
 
 static NSObject *ApolloRedditUploadAssetMapLock(void) {
     static NSObject *lock;
@@ -3591,10 +3593,24 @@ static void ApolloCompleteRedditNativeMediaUpload(NSData *mediaData, NSURL *medi
         NSURL *originalGIFFile = ApolloUploadOriginalGIFFileForBodyFile(fileURL);
         NSString *stillReason = originalGIFFile ? ApolloOriginalGIFStillReason(request) : nil;
         if (stillReason) {
+            ApolloUploadOriginalGIFReleaseFile(originalGIFFile);   // not sent: delete the kept copy now
             ApolloLog(@"[OriginalGIF] Uploading Apollo's still: %@", stillReason);
         } else if (originalGIFFile) {
             ApolloLog(@"[OriginalGIF] Uploading the original GIF instead of Apollo's still (fromFile)");
-            return [self uploadTaskWithRequest:request fromFile:originalGIFFile completionHandler:completionHandler];
+            // Every route below reads the file before it completes (Imgur and Image
+            // Chest stream it, the Reddit path reads it after its fast-fail), so the
+            // kept copy is deleted once the upload finishes, cancellation included.
+            void (^releasingHandler)(NSData *, NSURLResponse *, NSError *) = ^(NSData *data, NSURLResponse *response, NSError *error) {
+                completionHandler(data, response, error);
+                ApolloUploadOriginalGIFReleaseFile(originalGIFFile);
+            };
+            NSURLSessionUploadTask *task = [self uploadTaskWithRequest:request fromFile:originalGIFFile completionHandler:releasingHandler];
+            // A cancelled native Reddit upload never calls its completion (its attempt
+            // stops at the next stage), so the task carries the copy and -cancel below
+            // releases it too. Apollo cancels the rest of a pick's uploads when one fails.
+            if (task) objc_setAssociatedObject(task, &kApolloOriginalGIFTaskFileKey, originalGIFFile, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            else ApolloUploadOriginalGIFReleaseFile(originalGIFFile);
+            return task;
         }
     }
 
@@ -3789,6 +3805,8 @@ static void ApolloCompleteRedditNativeMediaUpload(NSData *mediaData, NSURL *medi
     ApolloRedditNativeUploadAttempt *attempt = objc_getAssociatedObject(self, &kApolloRedditNativeUploadAttemptKey);
     if (attempt) [attempt cancelWithReason:@"NSURLSessionTask cancel"];
     ApolloImgChestCancelOperationAssociatedWithTask(self);
+    NSURL *keptGIF = objc_getAssociatedObject(self, &kApolloOriginalGIFTaskFileKey);
+    if (keptGIF) ApolloUploadOriginalGIFReleaseFile(keptGIF);
     %orig;
 }
 

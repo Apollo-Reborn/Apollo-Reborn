@@ -310,7 +310,32 @@ int main(void) {
             NSURL *body = PickedFile(jA, @"jpg");
             NSURL *gifFile = ApolloUploadOriginalGIFFileForBodyFile(body);
             CHECK(gifFile && [[NSData dataWithContentsOfURL:gifFile] isEqualToData:gifA], @"fromFile: single pick gets its GIF file");
-            [[NSFileManager defaultManager] removeItemAtURL:gifFile error:nil];
+            CHECK(EntryCount() == 0 && KeptFileCount() == 1, @"fromFile: the caller owns the file until it releases it");
+            ApolloUploadOriginalGIFReleaseFile(gifFile);
+            CHECK(KeptFileCount() == 0, @"fromFile: releasing deletes the kept copy");
+
+            // The still-only branch releases straight away instead of uploading it.
+            ResetStore();
+            NSData *jStill = ApolloPrep(PickedFile(gifB, @"gif"));
+            NSURL *unsent = ApolloUploadOriginalGIFFileForBodyFile(PickedFile(jStill, @"jpg"));
+            CHECK(unsent != nil, @"fromFile still branch: a file was handed out");
+            ApolloUploadOriginalGIFReleaseFile(unsent);
+            CHECK(KeptFileCount() == 0 && EntryCount() == 0, @"fromFile still branch: nothing left behind");
+
+            // Repeated file uploads in one launch leave the folder empty.
+            for (NSUInteger round = 0; round < 5; round++) {
+                ResetStore();
+                NSData *jRound = ApolloPrep(PickedFile(round % 2 ? gifC : gifA, @"gif"));
+                NSURL *roundFile = ApolloUploadOriginalGIFFileForBodyFile(PickedFile(jRound, @"jpg"));
+                CHECK([[NSData dataWithContentsOfURL:roundFile] isEqualToData:(round % 2 ? gifC : gifA)], @"fromFile round %lu: gets its own GIF", (unsigned long)round);
+                ApolloUploadOriginalGIFReleaseFile(roundFile);
+            }
+            CHECK(KeptFileCount() == 0 && EntryCount() == 0, @"fromFile: 5 uploads in one launch leave the folder empty");
+
+            // Release never touches a file outside the store's folder.
+            NSURL *outside = PickedFile(gifA, @"gif");
+            ApolloUploadOriginalGIFReleaseFile(outside);
+            CHECK([[NSFileManager defaultManager] fileExistsAtPath:outside.path], @"release ignores files the store didn't create");
 
             ResetStore();
             NSData *jPairA = ApolloPrep(PickedFile(gifA, @"gif"));

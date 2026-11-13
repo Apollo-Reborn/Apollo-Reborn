@@ -26,8 +26,14 @@ void ApolloUploadOriginalGIFInstallRebindings(const struct mach_header *header, 
 /// The original GIF behind an upload body Apollo flattened to a JPEG, or nil.
 NSData *ApolloUploadOriginalGIFDataForBody(NSData *body);
 
-/// Same for a file-backed upload: a temporary .gif file URL, or nil.
+/// Same for a file-backed upload: a temporary .gif file URL, or nil. The caller
+/// owns the file: pass it to ApolloUploadOriginalGIFReleaseFile once the upload
+/// that sends it has finished (or been cancelled), or right away if it isn't sent.
 NSURL *ApolloUploadOriginalGIFFileForBodyFile(NSURL *fileURL);
+
+/// Deletes a kept copy handed out by ApolloUploadOriginalGIFFileForBodyFile.
+/// Ignores anything outside the store's own folder.
+void ApolloUploadOriginalGIFReleaseFile(NSURL *gifFile);
 
 /// YES when the bytes start with a GIF signature ("GIF87a" / "GIF89a").
 BOOL ApolloUploadDataIsGIF(NSData *data);

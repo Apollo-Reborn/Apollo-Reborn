@@ -242,11 +242,20 @@ NSURL *ApolloUploadOriginalGIFFileForBodyFile(NSURL *fileURL) {
     if (size.unsignedLongLongValue == 0 || size.unsignedLongLongValue > kApolloOriginalGIFMaxBytes) return nil;
     NSData *body = [NSData dataWithContentsOfURL:fileURL options:NSDataReadingMappedIfSafe error:nil];
     if (ApolloUploadDataIsGIF(body)) return nil;
-    // The file has to outlive the upload task, so it stays in this launch's
-    // folder (cleared on the next launch).
+    // The file has to outlive the upload task, so the caller owns it from here and
+    // releases it when the upload finishes (ApolloUploadOriginalGIFReleaseFile).
+    // Only a task that is never resumed leaves it for the next launch's cleanup.
     ApolloOriginalGIFEntry *entry = ApolloOriginalGIFTakeEntryForDigest(ApolloOriginalGIFDigest(body));
     if (!entry || ![[NSFileManager defaultManager] fileExistsAtPath:entry.gifFileURL.path]) return nil;
     return entry.gifFileURL;
+}
+
+void ApolloUploadOriginalGIFReleaseFile(NSURL *gifFile) {
+    if (!gifFile.isFileURL) return;
+    NSString *folder = ApolloOriginalGIFDirectory().URLByStandardizingPath.path;
+    NSString *parent = gifFile.URLByStandardizingPath.URLByDeletingLastPathComponent.path;
+    if (![parent isEqualToString:folder]) return;   // never delete anything the store didn't create
+    [[NSFileManager defaultManager] removeItemAtURL:gifFile error:nil];
 }
 
 #pragma mark - Rebound ImageIO calls (Apollo's image only)
