@@ -792,6 +792,22 @@ static void ApolloNativeActionMenuEndCapture(void) {
     }
 }
 
+static void ApolloNativeActionMenuBeginPointCapture(UIView *source, CGPoint point, id owner) {
+    ApolloNativeActionMenuBeginCapture(source, owner);
+    if (sApolloNativeActionMenuSourceView == source)
+        ApolloNativeActionMenuSetSourcePoint(source, [NSValue valueWithCGPoint:point]);
+}
+
+void ApolloNativeActionMenuPresentFromPoint(UIView *source, CGPoint point, id owner, dispatch_block_t build) {
+    if (!build) return;
+    ApolloNativeActionMenuBeginPointCapture(source, point, owner);
+    @try {
+        build();
+    } @finally {
+        ApolloNativeActionMenuEndCapture();
+    }
+}
+
 static UITableView *ApolloNativeActionMenuTableView(id actionController) {
     UITableView *tableView = ApolloReadObjectIvar(actionController, "tableView");
     return [tableView isKindOfClass:[UITableView class]] ? tableView : nil;
@@ -859,6 +875,7 @@ static NSInteger ApolloNativeActionMenuRowForActionKind(id actionController,
 }
 
 static BOOL sApolloNativeCapturingController;
+static BOOL sApolloNativeCapturingMenuContext;
 static id sApolloNativeCapturedController;
 
 id ApolloNativeActionMenuCaptureController(UIView *source, dispatch_block_t build) {
@@ -866,12 +883,57 @@ id ApolloNativeActionMenuCaptureController(UIView *source, dispatch_block_t buil
     sApolloNativeCapturingController = YES;
     sApolloNativeCapturedController = nil;
     @try { build(); }
-    @finally { sApolloNativeCapturingController = NO; }
+    @finally {
+        sApolloNativeCapturingController = NO;
+        sApolloNativeCapturingMenuContext = NO;
+    }
     id controller = sApolloNativeCapturedController;
     sApolloNativeCapturedController = nil;
     if (controller) objc_setAssociatedObject(controller, &kApolloNativeActionMenuSourceViewKey,
         source, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return controller;
+}
+
+id ApolloNativeActionMenuCaptureMenuController(UIView *source, dispatch_block_t build) {
+    if (sApolloNativeCapturingController) return nil;
+    sApolloNativeCapturingMenuContext = YES;
+    return ApolloNativeActionMenuCaptureController(source, build);
+}
+
+// Some sheets come one run-loop turn after their row's tap (Sort by Top's time
+// ranges): keep capturing, checking every 50 ms for up to 300 ms.
+static void ApolloNativeActionMenuFinishLateCapture(UIView *source, NSUInteger attempt, void (^done)(id controller)) {
+    id controller = sApolloNativeCapturedController;
+    if (!controller && attempt < 6) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            ApolloNativeActionMenuFinishLateCapture(source, attempt + 1, done);
+        });
+        return;
+    }
+    sApolloNativeCapturingController = NO;
+    sApolloNativeCapturingMenuContext = NO;
+    sApolloNativeCapturedController = nil;
+    if (controller) objc_setAssociatedObject(controller, &kApolloNativeActionMenuSourceViewKey,
+        source, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    done(controller);
+}
+
+void ApolloNativeActionMenuCaptureLateMenuController(UIView *source, dispatch_block_t build,
+                                                     void (^done)(id _Nullable controller)) {
+    if (sApolloNativeCapturingController || !source.window || !build || !done) {
+        if (done) done(nil);
+        return;
+    }
+    sApolloNativeCapturingController = YES;
+    sApolloNativeCapturingMenuContext = YES;
+    sApolloNativeCapturedController = nil;
+    @try { build(); }
+    @catch (NSException *exception) {
+        sApolloNativeCapturingController = NO;
+        sApolloNativeCapturingMenuContext = NO;
+        @throw;
+    }
+    ApolloNativeActionMenuFinishLateCapture(source, 0, done);
 }
 
 BOOL ApolloNativeActionMenuHasAction(id controller, uint16_t kind) {
@@ -886,6 +948,9 @@ void ApolloNativeActionMenuInvokeAction(id controller, uint16_t kind) {
 static BOOL ApolloNativeActionMenuPerformPendingDirectAction(id actionController) {
     if (sApolloNativeCapturingController &&
         [actionController isKindOfClass:ApolloClassActionController]) {
+        // The tap hook that armed this sheet's context disarms it once the
+        // handler returns, before the captured menu is built: claim it now.
+        if (sApolloNativeCapturingMenuContext) ApolloActionMenuCaptureContextForController(actionController);
         sApolloNativeCapturedController = actionController;
         return YES;
     }
@@ -1952,7 +2017,9 @@ static UIViewController *ApolloNativeActionMenuTopMostPresenter(UIViewController
 }
 
 UIMenu *ApolloNativeActionMenuBuildCaptured(id controller) {
-    return ApolloNativeActionMenuBuildMenu(controller, NO);
+    // A sheet Apollo flags moderator-only keeps the moderator styling, and its
+    // page-opening rows wait for the menu to close, as when presented.
+    return ApolloNativeActionMenuBuildMenu(controller, ApolloNativeActionMenuActionControllerIsModeratorOnly(controller));
 }
 
 BOOL ApolloNativeActionMenuPresentCaptured(UIMenu *menu, UIView *source, id controller, dispatch_block_t didEnd) {
@@ -2377,6 +2444,22 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
 }
 %end
 
+// The red Delete button of a row swiped open: _UISwipeActionDynamicButton on
+// iOS 26, UISwipeActionStandardButton before it.
+static UIView *ApolloNativeActionMenuSwipeDeleteButton(UIView *view, NSUInteger depth) {
+    for (UIView *subview in view.subviews) {
+        if (subview.hidden || subview.alpha <= 0.01) continue;
+        NSString *name = NSStringFromClass(subview.class);
+        if ([name containsString:@"SwipeAction"] && [name hasSuffix:@"Button"]) return subview;
+        // Swipe actions sit beside the cell, never inside its content.
+        if (depth < 5 && ![subview isKindOfClass:UITableViewCell.class]) {
+            UIView *found = ApolloNativeActionMenuSwipeDeleteButton(subview, depth + 1);
+            if (found) return found;
+        }
+    }
+    return nil;
+}
+
 %hook _TtC6Apollo24RedditListViewController
 - (void)tappedAddBarButtonItem:(id)sender {
     UIView *sourceView = ApolloNativeActionMenuViewForObject(sender);
@@ -2386,6 +2469,26 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
     ApolloNativeActionMenuBeginCapture(sourceView ?: sender, self);
     %orig;
     ApolloNativeActionMenuEndCapture();
+}
+
+// A swiped row's Delete reaches Apollo's "Delete Multireddit" / "Unsubscribe
+// from …" sheet with no sender; open it where that button is, not from the
+// whole list. Anchored in the table: UIKit removes the swipe button right
+// away on iOS 26.5, which closed a menu attached to it.
+- (void)tableView:(UITableView *)tableView commitEditingStyle:(NSInteger)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath {
+    UIView *button = tableView.window ? ApolloNativeActionMenuSwipeDeleteButton(tableView, 0) : nil;
+    if (!button) {
+        %orig;
+        return;
+    }
+    CGPoint point = [button convertPoint:CGPointMake(CGRectGetMidX(button.bounds), CGRectGetMidY(button.bounds))
+                                  toView:tableView];
+    ApolloNativeActionMenuBeginPointCapture(tableView, point, self);
+    @try {
+        %orig;
+    } @finally {
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 %end
 

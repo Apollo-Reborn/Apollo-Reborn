@@ -4,6 +4,7 @@
 #import "ApolloFollowingSection.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloClasses.h"
+#import "ApolloNativeActionMenus.h"
 
 // Overlay confirmation buttons without shifting or clearing the row.
 static char kListConfirmation, kCellConfirmation, kEditingRightMargin, kEditingStarPriorities, kEditingSelection;
@@ -79,7 +80,7 @@ static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
 @property(nonatomic, strong) NSMutableArray<NSArray *> *reorderControls;
 - (void)dismiss;
 - (void)close;
-- (void)confirm;
+- (void)confirm:(UIButton *)button;
 @end
 
 @implementation ApolloListEditConfirmation
@@ -140,15 +141,26 @@ static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
     return YES;
 }
-- (void)confirm {
+- (void)confirm:(UIButton *)button {
     UITableView *table = self.table;
-    NSIndexPath *path = [table indexPathForCell:self.cell];
+    UITableViewCell *cell = self.cell;
+    NSIndexPath *path = [table indexPathForCell:cell];
     os_log_debug(ApolloFixLog(), "[ApolloFix] [ListEditing] confirmation tapped editing=%d validRow=%d", table.editing, path != nil);
+    // Read before dismiss removes the button.
+    CGPoint anchor = [button convertPoint:CGPointMake(CGRectGetMidX(button.bounds), CGRectGetMidY(button.bounds))
+                                   toView:cell];
     [self dismiss];
     // Resolve the current row before the remapping hooks translate its index.
     if (table.editing && path && [table.dataSource respondsToSelector:@selector(tableView:commitEditingStyle:forRowAtIndexPath:)]) {
         ApolloFollowingAnimateNextRemoval(table, path);
-        [table.dataSource tableView:table commitEditingStyle:UITableViewCellEditingStyleDelete forRowAtIndexPath:path];
+        id dataSource = table.dataSource;
+        void (^commit)(void) = ^{
+            [dataSource tableView:table commitEditingStyle:UITableViewCellEditingStyleDelete forRowAtIndexPath:path];
+        };
+        // Apollo's confirmation sheet has no sender; without this the Liquid
+        // Glass menu opens from the whole list (#1545).
+        if (cell.window) ApolloNativeActionMenuPresentFromPoint(cell, anchor, dataSource, commit);
+        else commit();
     }
 }
 @end
@@ -185,7 +197,7 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
     button.layer.cornerRadius = 16.0;
     button.layer.cornerCurve = kCACornerCurveContinuous;
     button.accessibilityIdentifier = @"ApolloListEditConfirmation";
-    [button addTarget:state action:@selector(confirm) forControlEvents:UIControlEventTouchUpInside];
+    [button addTarget:state action:@selector(confirm:) forControlEvents:UIControlEventTouchUpInside];
     UIView *panel = [UIView new];
     // Cover the grip around the rounded button with the row background.
     panel.clipsToBounds = YES;

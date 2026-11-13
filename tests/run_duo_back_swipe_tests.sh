@@ -15,7 +15,9 @@ policies = []
 for signature in ['UINavigationController *ApolloDuoSplitDetailNavigation(',
                   'BOOL ApolloDuoSplitAllowsNavigationSwipe(',
                   'BOOL ApolloDuoSplitCanRevealPostsListWithSwipe(',
-                  'BOOL ApolloDuoSplitCanReturnFromVisitedProfile(']:
+                  'static BOOL ApolloDuoSplitStateCanReturnFromProfile(',
+                  'BOOL ApolloDuoSplitCanReturnFromVisitedProfile(',
+                  'BOOL ApolloDuoSplitPopRevealsContent(']:
     start = split.index(signature)
     policies.append(split[start:split.index('\n}', start) + 2])
 # The split's memory of a closed thread keeps its forget rules in one block,
@@ -55,6 +57,6 @@ fixture = fixture.replace('// INCLUDE_PRODUCTION_GESTURES', source)
 (build / 'duo_back_swipe_tests.m').write_text(fixture)
 PY
 xcrun --sdk macosx clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
-    -fsanitize=address,undefined -framework Foundation -framework CoreGraphics \
+    -fsanitize=address,undefined -framework Foundation -framework CoreGraphics -I"$swipe_root/src" \
     "$swipe_build/duo_back_swipe_tests.m" -o "$swipe_build/duo_back_swipe_tests"
 "$swipe_build/duo_back_swipe_tests"

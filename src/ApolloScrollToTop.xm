@@ -8,6 +8,8 @@
 #import "ApolloScrollToTop.h"
 #import "ApolloSearchNativeBar.h"
 #import "ApolloDuoSplitView.h"
+#import "ApolloDuoRail.h"
+#import "ApolloDuoCompatibility.h"
 #import "ApolloSubredditSwitcherSheet.h"
 #import "ApolloState.h"
 
@@ -60,6 +62,29 @@ static NSString *ApolloReturnItemID(id node) {
         }
     }
     return nil;
+}
+
+// Keeps the glass a circle centered in whatever slot the bar gives the
+// button, so a slot wider or shorter than requested can't make an oval.
+@interface ApolloScrollReturnButton : UIButton
+@property (nonatomic, weak) UIView *glass;
+@end
+@implementation ApolloScrollReturnButton
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGFloat side = MIN(CGRectGetWidth(self.bounds), CGRectGetHeight(self.bounds));
+    if (side <= 0) return;
+    CGRect circle = CGRectMake(CGRectGetMidX(self.bounds) - side / 2, CGRectGetMidY(self.bounds) - side / 2, side, side);
+    if (self.glass && !CGRectEqualToRect(self.glass.frame, circle)) self.glass.frame = circle;
+    if (self.layer.cornerRadius != side / 2) self.layer.cornerRadius = side / 2;
+}
+@end
+
+static BOOL ApolloScrollReturnUsesDuoChrome(void) {
+    if (!ApolloDeviceIsDuo()) return NO;
+    if (ApolloDuoSplitIsUnfolded()) return YES;
+    // Closed: portrait classifies as Closed; landscape as Phone with the rail.
+    return ApolloDuoCurrentMode() != ApolloDuoModePhone || ApolloDuoRailHasVisibleSideBar();
 }
 
 @interface ApolloScrollReturn : NSObject <UIGestureRecognizerDelegate>
@@ -452,22 +477,27 @@ static NSString *ApolloReturnItemID(id node) {
         [item setLeftBarButtonItems:leftItems animated:!UIAccessibilityIsReduceMotionEnabled()];
         return;
     }
-    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
-    button.frame = CGRectMake(0, 0, 44, 44);
+    // Match the bar's own glass buttons. The Duo's bar (opened, or closed with
+    // its side rail) uses 48-point buttons and widened a 44-point circle into
+    // an oval; iPhone and iPad bars keep 44-point buttons.
+    UINavigationBar *bar = self.owner.navigationController.navigationBar;
+    CGFloat diameter = ApolloScrollReturnUsesDuoChrome() ? 48 : 44;
+    ApolloScrollReturnButton *button = [ApolloScrollReturnButton buttonWithType:UIButtonTypeSystem];
+    button.frame = CGRectMake(0, 0, diameter, diameter);
     button.translatesAutoresizingMaskIntoConstraints = NO;
     [button setImage:[UIImage systemImageNamed:@"arrow.uturn.down"] forState:UIControlStateNormal];
     [button setPreferredSymbolConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:22 weight:UIImageSymbolWeightMedium]
                             forImageInState:UIControlStateNormal];
     if (@available(iOS 26.0, *)) {
         if (IsLiquidGlass()) {
-            // Match the back button's 44-point glass surface. A configured
+            // Match the back button's glass surface. A configured
             // glass button adds optical background insets inside its bounds,
             // making the bubble smaller even when the touch target is larger.
             UIGlassEffect *effect = [UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];
             effect.interactive = YES;
             UIVisualEffectView *glass = [[UIVisualEffectView alloc] initWithEffect:effect];
-            glass.frame = CGRectMake(0, 0, 44, 44);
-            glass.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+            glass.frame = CGRectMake(0, 0, diameter, diameter);
+            button.glass = glass;
             glass.userInteractionEnabled = NO;
             glass.clipsToBounds = YES;
             glass.cornerConfiguration = [UICornerConfiguration capsuleConfiguration];
@@ -489,14 +519,14 @@ static NSString *ApolloReturnItemID(id node) {
         }
     }
     button.tintColor = UIColor.labelColor;
-    button.layer.cornerRadius = 22;
+    button.layer.cornerRadius = diameter / 2;
     button.accessibilityIdentifier = @"apollo.scrollReturn";
     button.accessibilityLabel = @"Return to your spot";
     button.alpha = 0;
     [button addTarget:self action:@selector(returnToPosition) forControlEvents:UIControlEventTouchUpInside];
     [NSLayoutConstraint activateConstraints:@[
-        [button.widthAnchor constraintEqualToConstant:44],
-        [button.heightAnchor constraintEqualToConstant:44]
+        [button.widthAnchor constraintEqualToConstant:diameter],
+        [button.heightAnchor constraintEqualToConstant:diameter]
     ]];
     self.button = button;
     UINavigationItem *item = self.owner.navigationItem;
@@ -508,7 +538,6 @@ static NSString *ApolloReturnItemID(id node) {
     if ([self.returnItem respondsToSelector:hideBackground]) {
         ((void (*)(id, SEL, BOOL))objc_msgSend)(self.returnItem, hideBackground, YES);
     }
-    UINavigationBar *bar = self.owner.navigationController.navigationBar;
     [bar layoutIfNeeded];
     BOOL reduceMotion = UIAccessibilityIsReduceMotionEnabled();
     CASpringAnimation *spring = reduceMotion ? nil : ApolloScrollReturnSpring();
@@ -598,8 +627,10 @@ static ApolloScrollReturn *ApolloScrollReturnState(UIViewController *owner) {
 
 // Posts-tab jumps also support UIKit lists outside Apollo's Texture base class.
 // Tear down their observers and return affordance when leaving the page too.
+// viewDidDisappear, not viewWillDisappear: a cancelled swipe-back sends
+// viewWillDisappear and then keeps the page, which removed the button.
 %hook UIViewController
-- (void)viewWillDisappear:(BOOL)animated {
+- (void)viewDidDisappear:(BOOL)animated {
     [objc_getAssociatedObject(self, &kApolloScrollReturn) clearAnimated:NO];
     %orig;
 }
@@ -852,10 +883,7 @@ static UIScrollView *ApolloPostsTabContentScrollView(UIView *view, CGRect viewpo
     UINavigationController *outer = (UINavigationController *)viewController;
     // An open subreddit drawer covers the feed. Close it rather than scrolling
     // or popping the hidden page underneath.
-    if (ApolloDuoSplitDismissPostsList(outer)) {
-        ApolloLog(@"[PostsTab] Closed subreddit list");
-        return NO;
-    }
+    if (ApolloDuoSplitDismissPostsList(outer)) return NO;
     // The outer Duo tab contains only a split host. Scroll/pop the actual
     // detail stack, so the sidebar and its own scroll position stay intact.
     UINavigationController *nav = ApolloDuoSplitDetailNavigation(outer);

@@ -48,7 +48,7 @@
             footer:@"Makes eligible public, non-NSFW posts loaded in Apollo and subscribed communities searchable in Spotlight and Siri. Up to 1,000 posts and 500 communities are retained for 30 days. Turning off clears this index. Private and anonymous browsing are excluded."
             rows:@[enabled, refresh]],
         [ApolloSettingsSection sectionWithTitle:@"Index Status"
-            footer:@"Search Apollo opens native search. Search Apollo Posts fetches Reddit results into a Siri card; Find Indexed Apollo Posts searches this device’s catalogue. Failed hide/unsubscribe requests still remove indexed content conservatively."
+            footer:@"Search Apollo opens native search. Search Apollo Posts fetches Reddit results into a Siri card; Find Indexed Apollo Posts searches this device’s catalog. Failed hide/unsubscribe requests still remove indexed content conservatively."
             rows:@[status, check]]
     ];
 }

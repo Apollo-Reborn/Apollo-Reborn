@@ -6,6 +6,7 @@
 #import "ApolloCommon.h"
 #import "ApolloState.h"
 #import "ApolloDuoRail.h"
+#import "ApolloSpelling.h"
 #import "settings/ApolloSettingsForm.h"
 #import "settings/ApolloSettingsRouter.h"
 #import "settings/ApolloSetupAssistant.h"
@@ -130,7 +131,8 @@ static NSString *ApolloSearchCanonicalRowTitle(NSString *title) {
 // case-insensitive compare — labels sometimes carry stray whitespace.
 static NSIndexPath *ApolloSearchFindRowTitled(UITableView *table, NSString *title) {
     __block NSIndexPath *found = nil;
-    NSString *wanted = ApolloSearchCanonicalRowTitle(title);
+    // Rows display British spelling when that style is picked; entry titles are written American.
+    NSString *wanted = ApolloSearchCanonicalRowTitle(ApolloSpellingApply(title));
     ApolloSearchScanTable(table, ^(NSIndexPath *indexPath, NSString *rowTitle, __unused NSString *header, __unused BOOL disclosure, __unused UIImage *icon) {
         if (found) return;
         NSString *trimmed = ApolloSearchCanonicalRowTitle(rowTitle);

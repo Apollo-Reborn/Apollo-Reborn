@@ -1,6 +1,7 @@
 #import "ApolloIPadLayoutWelcome.h"
 #import "ApolloPaneLayout.h"
 #import "../ApolloCommon.h"
+#import "../ApolloSpelling.h"
 #import "../ApolloThemeRuntime.h"
 #import "../UserDefaultConstants.h"
 
@@ -53,9 +54,10 @@ static UIImage *ApolloWelcomePreview(UITraitCollection *traits) {
         [accent setFill];
         [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(42, 85, 116, 30) cornerRadius:12] fill];
         UIColor *onAccent = ApolloColorIsLight(accent) ? UIColor.blackColor : UIColor.whiteColor;
-        NSArray *items = @[@"Posts", @"Subreddits", @"Inbox", @"Favourites"];
+        NSArray *items = @[@"Posts", @"Subreddits", @"Inbox", @"Favorites"];
         for (NSUInteger index = 0; index < items.count; index++) {
-            [items[index] drawAtPoint:CGPointMake(54, 93 + index * 39) withAttributes:@{NSFontAttributeName:[UIFont systemFontOfSize:12 weight:index == 0 ? UIFontWeightSemibold : UIFontWeightRegular], NSForegroundColorAttributeName:index == 0 ? onAccent : ink}];
+            // Drawn into an image, so the label hooks never see it.
+            [ApolloSpellingApply(items[index]) drawAtPoint:CGPointMake(54, 93 + index * 39) withAttributes:@{NSFontAttributeName:[UIFont systemFontOfSize:12 weight:index == 0 ? UIFontWeightSemibold : UIFontWeightRegular], NSForegroundColorAttributeName:index == 0 ? onAccent : ink}];
         }
         [@"Posts" drawAtPoint:CGPointMake(186, 50) withAttributes:heading];
         [@"Comments" drawAtPoint:CGPointMake(392, 50) withAttributes:heading];
@@ -116,12 +118,12 @@ static UIImage *ApolloWelcomePreview(UITraitCollection *traits) {
     self.preview = [UIImageView new];
     self.preview.contentMode = UIViewContentModeScaleAspectFit;
     self.preview.isAccessibilityElement = YES;
-    self.preview.accessibilityLabel = @"Preview of Apollo on iPad, with a favourites sidebar, posts and comments side by side";
+    self.preview.accessibilityLabel = @"Preview of Apollo on iPad, with a favorites sidebar, posts and comments side by side";
     self.titleLabel = [self label:@"iPad Layout" style:UIFontTextStyleTitle1];
     self.titleLabel.accessibilityTraits |= UIAccessibilityTraitHeader;
     self.titleLabel.accessibilityLabel = @"iPad Layout, Beta";
     self.titleLabel.textColor = ApolloThemeSettingsTextColor() ?: UIColor.labelColor;
-    UILabel *description = [self label:@"A little more room for Apollo.\nKeep your favourites close and read posts and comments side by side." style:UIFontTextStyleBody];
+    UILabel *description = [self label:@"A little more room for Apollo.\nKeep your favorites close and read posts and comments side by side." style:UIFontTextStyleBody];
     UILabel *beta = [self label:@"This layout is in beta. You can switch back anytime in Apollo Reborn → Interface." style:UIFontTextStyleSubheadline];
     UILabel *restart = [self label:@"Requires reopening Apollo." style:UIFontTextStyleFootnote];
     self.tryButton = [UIButton buttonWithType:UIButtonTypeSystem];
