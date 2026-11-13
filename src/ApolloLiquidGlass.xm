@@ -301,7 +301,10 @@ static UIViewController *ApolloProfileViewControllerForWindow(UIWindow *sourceWi
     UIViewController *rootVC = lastKeyWindow.rootViewController;
 
     UITabBarController *tabBarController = nil;
-    id mainTabs = ApolloMainTabBarController();
+    // The source window's own scene first: with two iPad windows the app-wide
+    // lookup can answer with the other window's tabs, and Accounts would
+    // open there.
+    id mainTabs = ApolloMainTabBarControllerForScene(lastKeyWindow.windowScene);
     if ([mainTabs isKindOfClass:[UITabBarController class]]) {
         tabBarController = (UITabBarController *)mainTabs;
     }
