@@ -16,6 +16,7 @@
 #import "ApolloDuoRail.h"
 #import "ApolloDuoNavigationGestures.h"
 #import "ApolloFrameRate.h"
+#import "ApolloForwardSwipeCancellation.h"
 #import "ApolloClasses.h"
 #import "ApolloSubredditSwitcherSheet.h"
 #import "ApolloTabBarStyle.h"
@@ -851,6 +852,8 @@ static void ApolloInsetLiquidGlassTabBadges(UIView *tabButton) {
     UIViewController *selected = ((UITabBarController *)self).selectedViewController;
     UINavigationController *outer = [selected isKindOfClass:UINavigationController.class] ? (id)selected : nil;
     if (ApolloDuoTabBarSwipePanned(outer, pan)) return;
+    // A released forward peek keeps Apollo's forward pages.
+    if (pan.state == UIGestureRecognizerStateBegan) ApolloForwardSwipeNoteSource(outer);
     %orig(pan);
 }
 
