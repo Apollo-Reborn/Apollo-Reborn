@@ -101,7 +101,8 @@ static UIColor *ApolloActionsChromeColor(id object) {
     }
     if (@available(iOS 26.0, *)) {
         if ([object isKindOfClass:UIBarButtonItem.class]
-            && [((UIBarButtonItem *)object).identifier isEqualToString:@"ApolloReborn.subreddits.edit"]
+            && ([((UIBarButtonItem *)object).identifier isEqualToString:@"ApolloReborn.subreddits.edit"]
+                || [((UIBarButtonItem *)object).identifier isEqualToString:@"ApolloReborn.filters.edit"])
             && ((UIBarButtonItem *)object).style == UIBarButtonItemStyleProminent) {
             return UIColor.systemBlueColor;
         }
