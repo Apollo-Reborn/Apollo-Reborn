@@ -1,17 +1,22 @@
 #import "ApolloSubscriptionRefreshGuard.h"
 
-// Lowercased usernames whose failed refresh page is being delivered right now,
-// innermost last. Pushed and popped on the thread that delivers the page (RedditKit
-// calls taskWithMethod completions on the main queue); read from whichever thread
-// sets a list (Mantle also sets it while decoding a stored account), so every
-// access is under the lock.
-static NSMutableArray<NSString *> *sApolloSubscriptionRefreshFailing;
+// Lowercased usernames whose failed refresh page is being delivered on THIS
+// thread, innermost last, kept in the thread's own dictionary. RedditKit calls a
+// page's completion on the main queue and the walker and AccountManager's closure
+// store the list synchronously from it, on the same thread. So a list set on any
+// other thread meanwhile is a separate write (Mantle decoding a stored account,
+// an unsubscribe on another queue) and must never see this delivery's mark, even
+// for the same account. Per-thread storage also means no lock.
+static NSString *const kApolloSubscriptionRefreshFailingKey = @"ApolloSubscriptionRefreshFailing";
 
-static NSObject *ApolloSubscriptionRefreshLock(void) {
-    static NSObject *lock;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ lock = [NSObject new]; });
-    return lock;
+static NSMutableArray<NSString *> *ApolloSubscriptionRefreshFailingOnThisThread(BOOL create) {
+    NSMutableDictionary *threadDictionary = NSThread.currentThread.threadDictionary;
+    NSMutableArray<NSString *> *stack = threadDictionary[kApolloSubscriptionRefreshFailingKey];
+    if (!stack && create) {
+        stack = [NSMutableArray array];
+        threadDictionary[kApolloSubscriptionRefreshFailingKey] = stack;
+    }
+    return stack;
 }
 
 void ApolloSubscriptionRefreshDeliverFailedPage(NSString *username, void (NS_NOESCAPE ^deliver)(void)) {
@@ -20,31 +25,24 @@ void ApolloSubscriptionRefreshDeliverFailedPage(NSString *username, void (NS_NOE
         deliver();
         return;
     }
-    @synchronized (ApolloSubscriptionRefreshLock()) {
-        if (!sApolloSubscriptionRefreshFailing) sApolloSubscriptionRefreshFailing = [NSMutableArray array];
-        [sApolloSubscriptionRefreshFailing addObject:user];
-    }
+    NSMutableArray<NSString *> *stack = ApolloSubscriptionRefreshFailingOnThisThread(YES);
+    [stack addObject:user];
     @try {
         deliver();
     } @finally {
-        @synchronized (ApolloSubscriptionRefreshLock()) {
-            NSUInteger index = [sApolloSubscriptionRefreshFailing indexOfObjectWithOptions:NSEnumerationReverse
-                                                                               passingTest:^BOOL(NSString *entry, __unused NSUInteger idx, __unused BOOL *stop) {
-                return [entry isEqualToString:user];
-            }];
-            if (index != NSNotFound) [sApolloSubscriptionRefreshFailing removeObjectAtIndex:index];
-        }
+        NSUInteger index = [stack indexOfObjectWithOptions:NSEnumerationReverse
+                                               passingTest:^BOOL(NSString *entry, __unused NSUInteger idx, __unused BOOL *stop) {
+            return [entry isEqualToString:user];
+        }];
+        if (index != NSNotFound) [stack removeObjectAtIndex:index];
+        if (stack.count == 0) [NSThread.currentThread.threadDictionary removeObjectForKey:kApolloSubscriptionRefreshFailingKey];
     }
 }
 
 ApolloSubscriptionListDecision ApolloSubscriptionRefreshDecideList(NSString *username, NSArray *current, NSArray *incoming) {
     NSString *user = username.lowercaseString;
     if (user.length == 0) return ApolloSubscriptionListDecisionApply;
-    BOOL failing = NO;
-    @synchronized (ApolloSubscriptionRefreshLock()) {
-        failing = [sApolloSubscriptionRefreshFailing containsObject:user];
-    }
-    if (!failing) return ApolloSubscriptionListDecisionApply;
+    if (![ApolloSubscriptionRefreshFailingOnThisThread(NO) containsObject:user]) return ApolloSubscriptionListDecisionApply;
     if (![current isKindOfClass:[NSArray class]] || current.count == 0) return ApolloSubscriptionListDecisionApplyNothingToKeep;
     if ([incoming isKindOfClass:[NSArray class]] && incoming.count >= current.count) return ApolloSubscriptionListDecisionApplyNotShorter;
     return ApolloSubscriptionListDecisionKeep;

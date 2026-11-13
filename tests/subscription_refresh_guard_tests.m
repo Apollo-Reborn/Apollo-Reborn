@@ -88,14 +88,47 @@ int main(void) {
         Check(ApolloSubscriptionRefreshDecideList(@"carol", seventyEight, @[]) == ApolloSubscriptionListDecisionApply,
               @"a throwing completion does not leave carol guarded");
 
-        // Thread safety: setters on other threads while pages are delivered on this one.
+        // Same account, another queue (review on PR #1674): while frank's failed page is being
+        // delivered on one thread, a legitimate two-to-one change for frank made on another queue
+        // is a separate write and goes through. Only the delivering thread's own store is refused.
+        NSArray *two = Subs(2), *one = Subs(1);
+        dispatch_semaphore_t entered = dispatch_semaphore_create(0);
+        dispatch_semaphore_t release = dispatch_semaphore_create(0);
+        dispatch_semaphore_t finished = dispatch_semaphore_create(0);
+        __block ApolloSubscriptionListDecision onDeliveringThread = ApolloSubscriptionListDecisionApply;
+        dispatch_async(dispatch_queue_create("failed-delivery", DISPATCH_QUEUE_SERIAL), ^{
+            ApolloSubscriptionRefreshDeliverFailedPage(@"frank", ^{
+                dispatch_semaphore_signal(entered);
+                dispatch_semaphore_wait(release, DISPATCH_TIME_FOREVER);
+                onDeliveringThread = ApolloSubscriptionRefreshDecideList(@"frank", two, one);
+            });
+            dispatch_semaphore_signal(finished);
+        });
+        dispatch_semaphore_wait(entered, DISPATCH_TIME_FOREVER);
+        Check(ApolloSubscriptionRefreshDecideList(@"frank", two, one) == ApolloSubscriptionListDecisionApply,
+              @"same account, this thread, during another thread's failed delivery: the unsubscribe is stored");
+        __block ApolloSubscriptionListDecision onOtherQueue = ApolloSubscriptionListDecisionKeep;
+        dispatch_sync(dispatch_queue_create("unsubscribe", DISPATCH_QUEUE_SERIAL), ^{
+            onOtherQueue = ApolloSubscriptionRefreshDecideList(@"FRANK", two, one);
+        });
+        Check(onOtherQueue == ApolloSubscriptionListDecisionApply,
+              @"same account, a third queue, during the failed delivery: the unsubscribe is stored");
+        dispatch_semaphore_signal(release);
+        dispatch_semaphore_wait(finished, DISPATCH_TIME_FOREVER);
+        Check(onDeliveringThread == ApolloSubscriptionListDecisionKeep,
+              @"the delivering thread's own shorter list is still refused");
+
+        // The same under load: setters for the SAME account on other threads while its failed
+        // pages are delivered over and over on this one are never refused, and every delivery
+        // still refuses its own shorter list.
         dispatch_group_t group = dispatch_group_create();
         __block NSUInteger keptElsewhere = 0;
+        __block NSUInteger keptHere = 0;
         NSObject *countLock = [NSObject new];
         for (int i = 0; i < 8; i++) {
             dispatch_group_async(group, dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
                 for (int j = 0; j < 2000; j++) {
-                    if (ApolloSubscriptionRefreshDecideList(@"dave", seventyEight, @[]) == ApolloSubscriptionListDecisionKeep) {
+                    if (ApolloSubscriptionRefreshDecideList(@"erin", seventyEight, @[]) == ApolloSubscriptionListDecisionKeep) {
                         @synchronized (countLock) { keptElsewhere++; }
                     }
                 }
@@ -103,11 +136,12 @@ int main(void) {
         }
         for (int j = 0; j < 2000; j++) {
             ApolloSubscriptionRefreshDeliverFailedPage(@"erin", ^{
-                (void)ApolloSubscriptionRefreshDecideList(@"erin", seventyEight, @[]);
+                if (ApolloSubscriptionRefreshDecideList(@"erin", seventyEight, @[]) == ApolloSubscriptionListDecisionKeep) keptHere++;
             });
         }
         dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
-        Check(keptElsewhere == 0, @"an account with no failed page is never refused, from any thread");
+        Check(keptElsewhere == 0, @"the same account on other threads is never refused during this thread's failed deliveries");
+        Check(keptHere == 2000, @"every failed delivery refuses its own shorter list");
         Check(ApolloSubscriptionRefreshDecideList(@"erin", seventyEight, @[]) == ApolloSubscriptionListDecisionApply,
               @"every scope was removed");
 

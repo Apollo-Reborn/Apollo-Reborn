@@ -23,8 +23,10 @@
 // ApolloSubscriptionRefreshDeliverFailedPage, and the RDKUser
 // -setSubscribedSubreddits: hook asks ApolloSubscriptionRefreshDecideList. RedditKit's
 // listing block, the page walker and AccountManager's closure all run synchronously
-// from that completion, so the scope covers exactly the list the failed walk
-// produces, and never a later, unrelated one (an unsubscribe). The other two
+// from that completion, on the thread that delivers it, so the scope is that
+// thread's for exactly that long. It covers the list the failed walk produces and
+// never another write: not a later one (an unsubscribe right after), and not one
+// made on another thread while the delivery runs, even for the same account. The other two
 // subscription walks (the subreddit list's own and AccountManager's launch walk,
 // FUN_10063b94c and FUN_100839a70) already skip the store on an error; for them
 // the scope never sees a setter call.
@@ -50,13 +52,14 @@ typedef NS_ENUM(NSInteger, ApolloSubscriptionListDecision) {
 };
 
 // Runs `deliver` (the failed page's completion) with `username`'s subscription
-// refresh marked as failing. Usernames compare case-insensitively. An empty
-// username runs `deliver` unmarked. Safe to nest; the mark is removed even if
-// `deliver` throws.
+// refresh marked as failing on the calling thread only. Usernames compare
+// case-insensitively. An empty username runs `deliver` unmarked. Safe to nest;
+// the mark is removed even if `deliver` throws.
 void ApolloSubscriptionRefreshDeliverFailedPage(NSString *_Nullable username, void (NS_NOESCAPE ^deliver)(void));
 
 // What -[RDKUser setSubscribedSubreddits:] should do with `incoming` for the
-// account `username`, whose list is `current`. Thread-safe.
+// account `username`, whose list is `current`. Only a failed delivery running on
+// the calling thread counts. Safe from any thread.
 ApolloSubscriptionListDecision ApolloSubscriptionRefreshDecideList(NSString *_Nullable username,
                                                                    NSArray *_Nullable current,
                                                                    NSArray *_Nullable incoming);
