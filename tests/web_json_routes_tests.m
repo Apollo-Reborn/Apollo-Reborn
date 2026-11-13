@@ -30,14 +30,14 @@ static NSString *Names(NSArray<NSNumber *> *routes) {
 // /r/ios/zzsort or /api/zzfoo), which no built-in entry will ever match, with a
 // keyless-routes.json fixture where they need more than one route.
 static NSDictionary<NSString *, NSArray<NSNumber *> *> *BuiltInRoutes(void) {
-    NSArray *moreChildren = R3(ApolloWebJSONRouteOAuth, ApolloWebJSONRouteWwwDotJSON, ApolloWebJSONRouteOld);
+    NSArray *apiReads = R3(ApolloWebJSONRouteOAuth, ApolloWebJSONRouteWwwDotJSON, ApolloWebJSONRouteOld);
     NSArray *search = R2(ApolloWebJSONRouteOAuth, ApolloWebJSONRouteOld);
     NSArray *rAll = R3(ApolloWebJSONRouteOAuth, ApolloWebJSONRouteApi, ApolloWebJSONRouteOld);
     NSArray *hotNewRising = R2(ApolloWebJSONRouteOAuth, ApolloWebJSONRouteWww);
     return @{
-        @"GET /api/info": R2(ApolloWebJSONRouteWwwDotJSON, ApolloWebJSONRouteOld),
-        @"GET /api/morechildren": moreChildren,
-        @"POST /api/morechildren": moreChildren,
+        @"GET /api/info": apiReads,
+        @"GET /api/morechildren": apiReads,
+        @"POST /api/morechildren": apiReads,
         @"GET /search": search,
         @"GET /subreddits/search": search,
         @"GET /r/*/search": search,

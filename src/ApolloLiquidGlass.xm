@@ -2070,7 +2070,10 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
     // (don't recurse to the buttons inside, which sit a few points further in).
     // Otherwise recurse into containers (e.g. _UITAMICAdaptorView wrappers) and
     // treat controls / labels / image views / visual-effect bubbles as edges.
-    UIEdgeInsets chromeInsets = ApolloDeviceChromeInsetsForView(bar);
+    // The medium account sheet sits below Duo's rail, which it already clears
+    // from the bar's safe area; its layout margins can still include it.
+    UIEdgeInsets chromeInsets = ApolloIsAccountSheetContent(bar)
+        ? UIEdgeInsetsZero : ApolloDeviceChromeInsetsForView(bar);
     CGFloat leftLimit = CGRectGetMinX(bar.bounds) + chromeInsets.left;
     CGFloat rightLimit = CGRectGetMaxX(bar.bounds) - chromeInsets.right;
     // A pane's primary navigation bar can extend underneath UIKit's sidebar.

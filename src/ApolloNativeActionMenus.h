@@ -12,6 +12,17 @@ __BEGIN_DECLS
 // Media menus reuse its original action handlers rather than reconstructing
 // Apollo's saving/sharing pipeline. The controller owns the captured handlers.
 id _Nullable ApolloNativeActionMenuCaptureController(UIView *source, dispatch_block_t build);
+// The same for a ••• style sheet shown as a submenu: the sheet also claims the
+// menu context its tap armed (saved layout, moderator follow-up), which the
+// tap disarms before the captured menu is built.
+id _Nullable ApolloNativeActionMenuCaptureMenuController(UIView *source, dispatch_block_t build);
+// The same for a sheet Apollo opens a moment after `build` returns. `done`
+// runs on the main queue, once, with the sheet or nil.
+void ApolloNativeActionMenuCaptureLateMenuController(UIView *source, dispatch_block_t build,
+                                                     void (^done)(id _Nullable controller));
+// Open any ••• sheet `build` presents from `point` in `source`, for taps that
+// reach Apollo without a sender.
+void ApolloNativeActionMenuPresentFromPoint(UIView *source, CGPoint point, id owner, dispatch_block_t build);
 BOOL ApolloNativeActionMenuHasAction(id controller, uint16_t kind);
 void ApolloNativeActionMenuInvokeAction(id controller, uint16_t kind);
 UIMenu *_Nullable ApolloNativeActionMenuBuildCaptured(id controller);

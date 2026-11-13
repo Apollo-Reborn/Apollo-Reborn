@@ -13,6 +13,7 @@
 #import "ApolloAccountCredentials.h"
 #import "ApolloSubredditCustomIconCache.h"
 #import "ApolloClasses.h"
+#import "ApolloSpelling.h"
 
 // MARK: - Multireddit Rename & Descriptions
 //
@@ -897,7 +898,11 @@ static id ApolloMultiEditIssue858InjectedResponse(id responseObject, NSString *m
     NSString *description = [multireddit respondsToSelector:@selector(descriptionMarkdown)]
         ? ApolloMultiEditTrim([multireddit descriptionMarkdown]) : nil;
     if (description.length > 0) {
+        // The description is the multireddit owner's text. The label is Apollo's reused cell
+        // label, so the opt-out only covers this set.
+        ApolloSpellingSetExcluded(subtitleLabel, YES);
         subtitleLabel.text = description;
+        ApolloSpellingSetExcluded(subtitleLabel, NO);
     }
     return cell;
 }

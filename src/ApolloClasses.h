@@ -117,6 +117,8 @@ extern Class ApolloClassThinSeparatorCellNode;
 extern Class ApolloClassMessageInputBar;
 extern Class ApolloClassTranslatorViewController;
 extern Class ApolloClassUIBarBadgeView;
+// A navigation item's button on the iOS 26/27 bars, including the Duo's vertical rail.
+extern Class ApolloClassUIButtonBarButton;
 extern Class ApolloClassUIButtonLabel;
 extern Class ApolloClassUIContextMenuListView;
 extern Class ApolloClassUIContextMenuPlatformMetricsGlass;

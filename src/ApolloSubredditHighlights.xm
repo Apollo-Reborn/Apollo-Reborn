@@ -46,6 +46,7 @@
 #import "ApolloDuoRail.h"
 #import "ApolloDuoNavigationGestures.h"
 #import "ApolloHighlightsCarouselGesturePolicy.h"
+#import "ApolloSpelling.h"
 
 NSNotificationName const ApolloCommunityHighlightsDataReadyNotification =
     @"ApolloCommunityHighlightsDataReadyNotification";
@@ -1569,6 +1570,7 @@ static ApolloHLCardView *ApolloHLBuildCard(ApolloHLItem *item) {
 
     // Title — top-aligned, white over an image, label color on a plain card.
     UILabel *title = [[UILabel alloc] init];
+    ApolloSpellingSetExcluded(title, YES); // the post's title and flair keep the author's spelling
     title.numberOfLines = 4;
     title.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold];
     title.userInteractionEnabled = NO;
@@ -1599,6 +1601,7 @@ static ApolloHLCardView *ApolloHLBuildCard(ApolloHLItem *item) {
     NSString *flair = ApolloHLStripEmojiTokens(item.flairText);
     if (flair.length) {
         UILabel *metaLabel = [[UILabel alloc] init];
+        ApolloSpellingSetExcluded(metaLabel, YES);
         metaLabel.userInteractionEnabled = NO;
         NSMutableDictionary *mattrs = [@{
             NSFontAttributeName: [UIFont systemFontOfSize:11.5 weight:UIFontWeightSemibold],
@@ -1708,10 +1711,11 @@ static NSString *const kApolloHLDuoPaneBackName = @"ApolloReborn.Duo.PaneBack";
 
     // Apollo's Back pan also begins at the root page, and its Forward pan with
     // nothing to go forward to. Neither navigates, so keep the bounce there.
-    // On the Duo, Back belongs to the pane's own edge swipe and Apollo's Back
-    // pan always refuses (ApolloDuoSplitView's gestureRecognizerShouldBegin:).
+    // On the Duo, a pop onto a real page of the pane is Apollo's own Back, as
+    // on a regular iPhone; every other Back belongs to the pane's own edge
+    // drag (ApolloDuoPaneBackIsNative), and Apollo's Back pan refuses those.
     if (atStart) {
-        BOOL back = ApolloDuoHasBackSwipe(nav)
+        BOOL back = ApolloDuoHasBackSwipe(nav) && !ApolloDuoPaneBackIsNative(nav)
             ? [self ahlDuoBackSwipeTracksRightwardTouch]
             : nav.viewControllers.count > 1 && ApolloHLNavigationPanWouldBegin(nav, self.panGestureRecognizer, NO);
         if (back) {
@@ -1727,7 +1731,7 @@ static NSString *const kApolloHLDuoPaneBackName = @"ApolloReborn.Duo.PaneBack";
     return NO;
 }
 
-// The Duo's pane Back swipe only accepts a touch that lands in its narrow
+// The Duo's pane Back drag only accepts a touch that lands in its narrow
 // strip at the pane's left edge while it can navigate (or reveal the
 // subreddit drawer at the feed root); its shouldReceiveTouch: makes both
 // checks at touch-down. So it is tracking this touch exactly when it would

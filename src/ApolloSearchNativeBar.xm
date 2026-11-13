@@ -339,15 +339,28 @@ static UIScrollView *NSBTableForVC(UIViewController *vc) {
     return (UIScrollView *)tv;
 }
 
+// MARK: - Feed controller lookup
+
+// A screen being torn down can still sit in its views' responder chain while
+// Texture flushes a last batch update into its table. Forming a weak reference
+// to it then is fatal in the runtime, so such a screen is treated as gone.
+static BOOL NSBIsDeallocating(id object) {
+    return [object respondsToSelector:@selector(_isDeallocating)] &&
+           ((BOOL (*)(id, SEL))objc_msgSend)(object, @selector(_isDeallocating));
+}
+
 static UIViewController *NSBFeedVCForView(UIView *view) {
     UIResponder *r = view.nextResponder;
     int guard = 0;
     while (r && guard++ < 40) {
-        if ([r isKindOfClass:[UIViewController class]]) return (UIViewController *)r;
+        if ([r isKindOfClass:[UIViewController class]])
+            return NSBIsDeallocating(r) ? nil : (UIViewController *)r;
         r = r.nextResponder;
     }
     return nil;
 }
+
+// MARK: - End feed controller lookup
 
 // MARK: - Driving Apollo's pipeline
 
@@ -989,11 +1002,16 @@ NSArray<UIBarButtonItem *> *ApolloNativeFeedSearchDuoTrailingItems(UINavigationI
     // Apollo rebuilds its trailing actions when comments appear or their sort
     // changes. Keep the registered host control in that same update instead
     // of removing it and adding it back on the next layout pass.
-    NSMutableArray *result = [trailing mutableCopy];
+    NSMutableArray *result = [NSMutableArray array];
     for (UIBarButtonItem *candidate in items) {
         if (![candidate.accessibilityIdentifier isEqualToString:@"ApolloDuoFeedControl"])
             [result addObject:candidate];
     }
+    // rightBarButtonItems is trailing-first. Keep horizontal host controls at
+    // the other end, so their separate glass section cannot sit between the
+    // vertical page actions and UIKit's generated overflow section. UIKit
+    // still places Feed Layout in the top bar, but the rail now shares a pill.
+    [result addObjectsFromArray:trailing];
     return result;
 }
 
@@ -1003,20 +1021,16 @@ static void NSBUpdateDuoControls(UIViewController *vc) {
     if (@available(iOS 27.0, *)) {
         UINavigationItem *item = vc.navigationItem;
         NSArray *leading = objc_getAssociatedObject(vc, &kNSBDuoLeadingControlsKey) ?: @[];
-        BOOL hasSplitControl = NO;
-        for (UIBarButtonItem *control in leading) {
-            if ([control.identifier isEqualToString:@"ApolloReborn.duo-split"]) hasSplitControl = YES;
-        }
         NSMutableArray *left = [NSMutableArray array];
         NSMutableArray *right = [NSMutableArray array];
         NSMutableArray *returnItems = [NSMutableArray array];
         for (UIBarButtonItem *candidate in item.leftBarButtonItems) {
             if ([candidate.accessibilityIdentifier isEqualToString:@"ApolloDuoFeedControl"]) continue;
-            // In opened landscape, keep List and Split anchored at the edge
-            // when Return appears. Native Back stays ahead of those controls.
-            // The host's registered Split item also follows rotation, without
-            // imposing this order on ordinary phones or opened portrait.
-            if (hasSplitControl && [candidate.customView.accessibilityIdentifier isEqualToString:@"apollo.scrollReturn"])
+            // Keep the host's controls anchored at the edge when Return
+            // appears, in every pose. Native Back stays ahead of them. Putting
+            // Return first in portrait moved it to the edge whenever the
+            // drawer or a layout pass rebuilt these items.
+            if ([candidate.customView.accessibilityIdentifier isEqualToString:@"apollo.scrollReturn"])
                 [returnItems addObject:candidate];
             else
                 [left addObject:candidate];
@@ -1044,12 +1058,14 @@ static void NSBUpdateDuoControls(UIViewController *vc) {
 }
 
 void ApolloNativeFeedSearchSetDuoControls(UIViewController *vc, UIBarButtonItem *list,
-                                        UIBarButtonItem *split, UIBarButtonItem *layout) {
+                                        UIBarButtonItem *split, UIBarButtonItem *layout,
+                                        BOOL layoutLeading) {
     if (!vc) return;
     NSMutableArray *leading = [NSMutableArray array];
     if (list) [leading addObject:list];
+    if (layout && layoutLeading) [leading addObject:layout];
     if (split) [leading addObject:split];
-    NSArray *trailing = layout ? @[layout] : @[];
+    NSArray *trailing = layout && !layoutLeading ? @[layout] : @[];
     for (UIBarButtonItem *control in [leading arrayByAddingObjectsFromArray:trailing])
         control.accessibilityIdentifier = @"ApolloDuoFeedControl";
     objc_setAssociatedObject(vc, &kNSBDuoLeadingControlsKey, [leading copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -1618,8 +1634,10 @@ void ApolloNativeFeedSearchFinishColumnMove(UIViewController *vc) {
 // pulled it down by hand. The feed's own geometry setters DO run on those
 // paths, so ask from there as well, coalesced to one check per runloop turn.
 static void NSBScheduleRevealCheck(UIScrollView *table) {
+    // Off screen there is no bar to reveal: a closed thread's table can still
+    // receive Texture updates after its screen has gone.
+    if (!table.window) return;
     if (ApolloPaneUsesUnifiedChrome(table)) return;
-    if (!table) return;
     if (objc_getAssociatedObject(table, kNSBFeedTableKey) == nil) return;
     UIViewController *vc = NSBFeedVCForView(table);
     ApolloNativeSearchRestingState *state = NSBRestingStateForVC(vc);

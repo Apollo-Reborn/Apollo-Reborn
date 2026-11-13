@@ -7,6 +7,7 @@
 #import "ApolloAccountCredentials.h"
 #import "ApolloAppIcon.h"
 #import "ApolloCommon.h"
+#import "ApolloSpelling.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloUpdateManifest.h"
@@ -83,7 +84,8 @@ static UIStackView *ApolloSetupStack(NSArray<UIView *> *views, CGFloat spacing) 
 }
 
 static void ApolloSetupPaintText(NSString *text, CGRect rect, CGFloat size, UIFontWeight weight, UIColor *color) {
-    [text drawInRect:rect withAttributes:@{NSFontAttributeName:[UIFont systemFontOfSize:size weight:weight],
+    // Painted artwork bypasses the label hooks, so apply the spelling here.
+    [ApolloSpellingApply(text) drawInRect:rect withAttributes:@{NSFontAttributeName:[UIFont systemFontOfSize:size weight:weight],
         NSForegroundColorAttributeName:color}];
 }
 
@@ -220,7 +222,7 @@ static void ApolloSetupPaintSymbol(NSString *symbol, CGRect rect, UIColor *color
             ApolloSetupPaintSymbol(@"person.fill", CGRectMake(-69, 92, 9, 10), UIColor.whiteColor);
             x += 20;
         }
-        ApolloSetupPaintText(enhanced ? @"↗  A favourite trail" : @"example.com/trail", CGRectMake(x, 91, 143, 16), 9, UIFontWeightMedium, enhanced ? accent : muted);
+        ApolloSetupPaintText(enhanced ? @"↗  A favorite trail" : @"example.com/trail", CGRectMake(x, 91, 143, 16), 9, UIFontWeightMedium, enhanced ? accent : muted);
     } else {
         CGRect tabs = CGRectMake(-76, 90, 152, 26);
         [[(glass ? accent : muted) colorWithAlphaComponent:glass ? 0.12 : 0.07] setFill];
@@ -358,7 +360,7 @@ static void ApolloSetupPaintSymbol(NSString *symbol, CGRect rect, UIColor *color
         [scroll.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
     ]];
     NSArray *titles = @[@"Welcome to\nApollo Reborn", @"Choose your Apollo", @"Make it yours", @"You’re all set"];
-    NSArray *subtitles = @[@"A familiar favourite. A fresh start.\nLet’s make Apollo feel like you.",
+    NSArray *subtitles = @[@"A familiar favorite. A fresh start.\nLet’s make Apollo feel like you.",
         @"Start with the experience that feels right.\nEvery setting is yours to change later.",
         @"Classic charm or a little more glass.\nChoose the look you love.",
         @"Your choices are ready.\nThere’s always more to discover in Settings."];

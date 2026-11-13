@@ -197,9 +197,10 @@ extern "C" {
 // Opt-in top navigation bar movement, following the bottom tab bar's scroll
 // behavior while Hide Bars on Scroll is enabled. Default NO.
 extern BOOL sHideTopBarOnScroll;
-// Experimental Duo landscape feed layout: 0 = Original (default),
-// 2 = Focused feed; value 1 is retired. Read live by ApolloMediaHinge.
-extern NSInteger sDuoLandscapeFeedLayout;
+// Experimental opened-Duo feed layout, portrait and landscape:
+// 0 = Original (default), 2 = Focused feed; value 1 is retired.
+// Read live by ApolloMediaHinge.
+extern NSInteger sDuoUnfoldedFeedLayout;
 // Standard (default NO) or Liquid Glass for the open Duo subreddit panel.
 extern BOOL sDuoSubredditPanelGlassEnabled;
 // Modern sheet or Apollo's Classic popup for the subreddit quick-switcher.
@@ -725,6 +726,10 @@ extern BOOL sTagFilterSpoiler;
 // Lowercased subreddit name -> dictionary with optional keys:
 //   nsfw (NSNumber BOOL), spoiler (NSNumber BOOL), mode (NSString).
 extern NSDictionary<NSString *, NSDictionary *> *sTagFilterSubredditOverrides;
+
+// All+ r/all: NSFW posts blended into r/all (see ApolloAllPlusNSFW.xm / ApolloAllPlusMerge.m).
+extern BOOL sAllPlusNSFWEnabled;   // master toggle (default NO)
+extern double sAllPlusNSFWBoost;   // user boost added to candidate hot-rank ([0,2], default 0)
 
 // Post filters (Reborn) feature — see UserDefaultConstants.h.
 // Lowercased subreddit -> @{ @"keywords": NSArray<NSString*>, @"flairs": NSArray<NSString*> }.

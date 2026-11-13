@@ -127,7 +127,7 @@ static UIButton *ATBChipButton(NSString *title, UIColor *accent) {
     title.textColor = UIColor.labelColor;
 
     UILabel *desc = [UILabel new];
-    desc.text = @"Describe a vibe, colour palette, place, game, season, or style. Apollo will create a readable theme you can tweak.";
+    desc.text = @"Describe a vibe, color palette, place, game, season, or style. Apollo will create a readable theme you can tweak.";
     desc.font = [UIFont systemFontOfSize:15];
     desc.textColor = UIColor.secondaryLabelColor;
     desc.numberOfLines = 0;
@@ -182,7 +182,7 @@ static UIButton *ATBChipButton(NSString *title, UIColor *accent) {
     check.contentMode = UIViewContentModeScaleAspectFit;
     [check setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
     UILabel *guard = [UILabel new];
-    guard.text = @"Apollo asks the on-device model for your topic's three most iconic colours, then builds readable light and dark palettes from them on your device.";
+    guard.text = @"Apollo asks the on-device model for your topic's three most iconic colors, then builds readable light and dark palettes from them on your device.";
     guard.font = [UIFont systemFontOfSize:13];
     guard.textColor = UIColor.secondaryLabelColor;
     guard.numberOfLines = 0;
@@ -367,7 +367,7 @@ static UIButton *ATBChipButton(NSString *title, UIColor *accent) {
     // deterministically from the adjusted seeds.
     NSArray<NSString *> *chipTitles = @[@"More vivid", @"Softer palette", @"Warmer tones", @"Cooler tones"];
     NSArray<NSString *> *chipInstructions = @[
-        @"Make the accent and surface colours more vivid and saturated.",
+        @"Make the accent and surface colors more vivid and saturated.",
         @"Make the palette softer and more muted overall.",
         @"Shift the palette toward warmer tones.",
         @"Shift the palette toward cooler tones.",

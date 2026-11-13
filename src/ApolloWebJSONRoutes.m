@@ -199,21 +199,22 @@ BOOL ApolloWebJSONRequestIsSearchRead(NSString *method, NSString *path) {
 // controversial, and multireddits under /user/<name>/m/, still load on www.
 // oauth served them signed in to the cookie. www stays second, so the feed
 // loads again on its own if Reddit reopens www and closes oauth.
-// /api/morechildren went the same way on 2026-11-03: www-dotjson and old both
-// get the block page, oauth serves it, so oauth comes first.
+// /api/morechildren went the same way on 2026-11-03, and /api/info on
+// 2026-11-05: www-dotjson and old both get the block page, oauth serves them
+// signed in to the cookie, so oauth comes first. The other two stay after it
+// in case Reddit reopens them and closes oauth.
 static NSArray<NSDictionary *> *ApolloWebJSONRouteBuiltInTable(void) {
     static NSArray<NSDictionary *> *table;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        NSArray *fallbacks = @[ @(ApolloWebJSONRouteWwwDotJSON), @(ApolloWebJSONRouteOld) ];
-        NSArray *moreChildren = @[ @(ApolloWebJSONRouteOAuth), @(ApolloWebJSONRouteWwwDotJSON), @(ApolloWebJSONRouteOld) ];
+        NSArray *apiReads = @[ @(ApolloWebJSONRouteOAuth), @(ApolloWebJSONRouteWwwDotJSON), @(ApolloWebJSONRouteOld) ];
         NSArray *cookieOAuth = @[ @(ApolloWebJSONRouteOAuth), @(ApolloWebJSONRouteOld) ];
         NSArray *rAll = @[ @(ApolloWebJSONRouteOAuth), @(ApolloWebJSONRouteApi), @(ApolloWebJSONRouteOld) ];
         NSArray *hotNewRising = @[ @(ApolloWebJSONRouteOAuth), @(ApolloWebJSONRouteWww) ];
         NSMutableArray<NSDictionary *> *rows = [@[
-            ApolloWebJSONRouteMakeEntry(@"GET", @"/api/info", fallbacks, NO),
-            ApolloWebJSONRouteMakeEntry(@"GET", @"/api/morechildren", moreChildren, NO),
-            ApolloWebJSONRouteMakeEntry(@"POST", @"/api/morechildren", moreChildren, NO),
+            ApolloWebJSONRouteMakeEntry(@"GET", @"/api/info", apiReads, NO),
+            ApolloWebJSONRouteMakeEntry(@"GET", @"/api/morechildren", apiReads, NO),
+            ApolloWebJSONRouteMakeEntry(@"POST", @"/api/morechildren", apiReads, NO),
             ApolloWebJSONRouteMakeEntry(@"GET", @"/r/all", rAll, NO),
             ApolloWebJSONRouteMakeEntry(@"GET", @"/r/all/*", rAll, NO),
         ] mutableCopy];

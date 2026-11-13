@@ -224,10 +224,10 @@ static NSString *ATBNameFromPrompt(NSString *prompt) {
 
 static NSString *ATBVariantDescription(ApolloThemeAIIntensity intensity) {
     switch (intensity) {
-        case ApolloThemeAIIntensitySubtle:   return @"Tinted — a gentle wash of the theme's colours.";
-        case ApolloThemeAIIntensityBold:     return @"Immersive — surfaces soaked in the theme's colours.";
+        case ApolloThemeAIIntensitySubtle:   return @"Tinted — a gentle wash of the theme's colors.";
+        case ApolloThemeAIIntensityBold:     return @"Immersive — surfaces soaked in the theme's colors.";
         case ApolloThemeAIIntensityBalanced:
-        default:                             return @"Themed — confident colour that stays easy to read.";
+        default:                             return @"Themed — confident color that stays easy to read.";
     }
 }
 
@@ -293,7 +293,7 @@ static void ATBRequestSeedRGBs(NSString *modelPrompt,
             ATBRequestSeedRGBs(modelPrompt, 1, completion);
         } else {
             completion(nil, text ?: @"",
-                       ATBError(2, @"Couldn’t get usable colours for that prompt. Try rephrasing it."));
+                       ATBError(2, @"Couldn’t get usable colors for that prompt. Try rephrasing it."));
         }
     }];
 }

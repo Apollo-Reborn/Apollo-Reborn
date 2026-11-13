@@ -32,7 +32,7 @@
         NSArray *highlights = @[
             @[@"Original profiles and subreddit list", @"Simple links and comment media", @"Compatibility and media fixes"],
             @[@"Inline images and swipeable galleries", @"Link previews and expanded profiles", @"Video scrubber and hold for speed"],
-            @[@"Everything in Balanced", @"Avatars, colour flairs and subreddit headers", @"Floating post tabs and richer feed shortcuts"]
+            @[@"Everything in Balanced", @"Avatars, color flairs and subreddit headers", @"Floating post tabs and richer feed shortcuts"]
         ];
         for (NSUInteger index = 0; index < identifiers.count; index++) {
             BOOL enhanced = index != 0;

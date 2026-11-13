@@ -14,6 +14,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import "ApolloClasses.h"
+#import "ApolloSpelling.h"
 
 // Pages either side of the current one kept warm with their FULL-SIZE image.
 // Deliberately shallow — full-res warm-up is the expensive kind of prefetch on
@@ -893,6 +894,7 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
 
     // (material added above sits at index 0, behind these labels)
     self.titleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+    ApolloSpellingSetExcluded(self.titleLabel, YES); // the post title keeps the author's spelling
     self.titleLabel.textColor = UIColor.whiteColor;
     self.titleLabel.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightSemibold];
     self.titleLabel.numberOfLines = 2;

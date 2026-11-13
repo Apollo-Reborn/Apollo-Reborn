@@ -155,7 +155,7 @@ NSArray<NSDictionary<NSString *, NSString *> *> *ApolloTranslationLanguageOption
 
     ApolloSettingsRow *markerColor =
         [ApolloSettingsRow switchRowWithID:@"markerColor"
-                                     title:@"Match App Colour"
+                                     title:@"Match App Color"
                                       isOn:^BOOL { return sTranslationMarkerUseThemeColor && sEnableBulkTranslation; }
                                   onToggle:^(UISwitch *sender) { [weakSelf markerColorSwitchToggled:sender]; }];
     markerColor.enabled = ^BOOL { return sEnableBulkTranslation; };

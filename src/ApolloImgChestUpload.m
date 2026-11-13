@@ -576,7 +576,7 @@ static NSError *ApolloImgChestError(NSString *message) {
 
 static NSError *ApolloImgChestCancelledError(void) {
     return [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCancelled
-                           userInfo:@{NSLocalizedDescriptionKey: @"Image Chest upload cancelled"}];
+                           userInfo:@{NSLocalizedDescriptionKey: @"Image Chest upload canceled"}];
 }
 
 static NSString *ApolloImgChestSanitizedMultipartFilename(NSString *filename) {
