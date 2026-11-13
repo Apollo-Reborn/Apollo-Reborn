@@ -104,6 +104,5 @@ Host checks: `sh tests/run_duo_video_geometry_tests.sh`,
   then unfold without tapping. Confirm play, seek, mute and skip accept taps
   and that the slider/button artwork looks native. Repeat with chrome still
   visible at unfold.
-- Smart Rotation Lock's "Tap to Rotate" offer stays hidden only while a
-  horizontal (tabletop) fold is active. Flat, closed, and book postures keep
-  the native offer in both the video viewer and the gallery.
+- Smart Rotation Lock's "Tap to Rotate" offer is unchanged by this PR; the Duo
+  misfire is tracked separately.

@@ -1393,27 +1393,6 @@ static void DuoVideoAlphaOverride(UIView *view, CGFloat *alpha, BOOL *hidden) {
 }
 %end
 
-// Apollo's Smart Rotation Lock offers "Tap to Rotate Video" from CoreMotion.
-// A tabletop fold reads as a sideways device, so the offer misfires there.
-// Suppress it only while a horizontal division is active; leave Smart Rotation
-// Lock alone when the device is flat, closed, or in book posture.
-static BOOL DuoVideoTabletopActive(UIView *view) {
-    return view && !CGRectIsNull(ApolloDuoActiveHorizontalDivision(view));
-}
-%hook _TtC6Apollo22RotationOfferingButton
-- (void)setHidden:(BOOL)hidden {
-    %orig(DuoVideoTabletopActive((UIView *)self) ? YES : hidden);
-}
-- (void)setAlpha:(CGFloat)alpha {
-    %orig(DuoVideoTabletopActive((UIView *)self) ? 0 : alpha);
-}
-- (void)didMoveToWindow {
-    %orig;
-    UIView *view = (UIView *)self;
-    if (DuoVideoTabletopActive(view)) view.hidden = YES;
-}
-%end
-
 %ctor {
     if (!ApolloDeviceIsDuo()) return;
     %init;
