@@ -58,6 +58,13 @@ static inline bool ApolloDuoDragCommits(double distance, double travel, double v
     return travel > 0.0 && distance >= travel * 0.35;
 }
 
+// A tab bar swipe also completes past half the bar, which can be shorter than
+// the pane's travel (the Duo's side rail). `barLength` 0: a drag on the pane.
+static inline bool ApolloDuoBarDragCommits(double distance, double travel, double velocity, double barLength) {
+    if (ApolloDuoDragCommits(distance, travel, velocity)) return true;
+    return barLength > 0.0 && velocity > -300.0 && distance > 0.0 && distance >= barLength * 0.5;
+}
+
 // The tracked offset, held to [0, travel] so neither surface overshoots.
 static inline double ApolloDuoDragClamp(double offset, double travel) {
     if (offset < 0.0 || travel <= 0.0) return 0.0;

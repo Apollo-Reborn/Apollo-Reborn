@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import "ApolloDuoPaneDrag.h"
 
 @protocol UIGestureRecognizerDelegate <NSObject> @end
@@ -17,6 +18,8 @@ typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 @property(nonatomic, strong) NSObject *window;
 @property(nonatomic, strong) UILayoutGuide *safeAreaLayoutGuide;
 @property(nonatomic, strong) NSMutableArray *gestureRecognizers;
+@property(nonatomic, copy) NSArray<UIView *> *subviews;
+@property(nonatomic, getter=isHidden) BOOL hidden;
 - (void)addGestureRecognizer:(UIGestureRecognizer *)gesture;
 @end
 @interface UIEvent : NSObject @end
@@ -115,10 +118,14 @@ typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 @property(nonatomic) CGRect pane;
 @property(nonatomic) NSUInteger pops;
 @property(nonatomic) BOOL lastAnimated;
+@property(nonatomic) NSUInteger edgePans;
+@property(nonatomic) NSInteger lastEdgePanState;
 - (UIViewController *)topViewController;
 - (UIViewController *)popViewControllerAnimated:(BOOL)animated;
+- (void)screenEdgePanned:(UIGestureRecognizer *)pan;
 @end
 @implementation UINavigationController
+- (void)screenEdgePanned:(UIGestureRecognizer *)pan { self.edgePans++; self.lastEdgePanState = pan.state; }
 - (UIViewController *)topViewController { return self.viewControllers.lastObject; }
 - (UIViewController *)popViewControllerAnimated:(BOOL)animated {
     UIViewController *last = self.topViewController;
@@ -127,7 +134,7 @@ typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 }
 @end
 @interface TestDuoHost : NSObject
-@property(nonatomic) BOOL postsShowingDetail, listVisible;
+@property(nonatomic) BOOL postsShowingDetail, listVisible, listPinned;
 @end
 @implementation TestDuoHost @end
 @interface ApolloDuoSplitState : NSObject
@@ -259,15 +266,38 @@ static void ApolloDuoSplitEndThreadDrag(__unused UINavigationController *nav, BO
 }
 static BOOL ApolloDuoSplitBeginListDrag(__unused UINavigationController *nav) { listDragsBegun++; return YES; }
 static CGFloat ApolloDuoSplitListDragTravel(__unused UINavigationController *nav) { return 372; }
-static CGFloat ApolloDuoSplitListDragStart(__unused UINavigationController *nav) { return 0; }
+static CGFloat ApolloDuoSplitListDragStart(UINavigationController *nav) {
+    return nav.duoState.host.listVisible ? ApolloDuoSplitListDragTravel(nav) : 0;
+}
 static void ApolloDuoSplitMoveListDrag(__unused UINavigationController *nav, CGFloat shown) { listShown = shown; }
 static void ApolloDuoSplitEndListDrag(UINavigationController *nav, BOOL show, __unused CGFloat velocity) {
     listShownAtEnd = show;
     if (show) {
         nav.duoState.host.listVisible = YES;
         drawerReveals++;
+    } else {
+        nav.duoState.host.listVisible = NO;
     }
 }
+// Liquid Glass's visible bar inside the full-width tab bar (matched by name).
+@interface TestTabBarItemPlatterView : UIView @end
+@implementation TestTabBarItemPlatterView @end
+static BOOL forwardPageKept;
+static NSUInteger listCloseDragsBegun;
+static __weak UINavigationController *tabBarNativeNav;
+static __weak UIGestureRecognizer *tabBarNativePan;
+static BOOL ApolloDuoSplitHasForwardPage(__unused UINavigationController *nav) { return forwardPageKept; }
+static BOOL ApolloDuoSplitBeginListCloseDrag(UINavigationController *nav) {
+    if (!nav.duoState.host.listVisible) return NO;
+    listCloseDragsBegun++;
+    return YES;
+}
+static void ApolloDuoSplitSetTabBarNativePan(UINavigationController *nav, UIGestureRecognizer *pan) {
+    tabBarNativeNav = nav;
+    tabBarNativePan = pan;
+}
+// The ProMotion hold (ApolloFrameRate.m) has nothing to do on the host.
+static void ApolloFullFrameRateFollowGesture(__unused UIGestureRecognizer *gesture, __unused NSTimeInterval tail) {}
 #define ApolloLog(...) ((void)0)
 // INCLUDE_PRODUCTION_GESTURES
 // A forward drag `dx` to the left, then its release (velocity `vx`).
@@ -904,6 +934,95 @@ int main(void) {
                   @"remember: the thread and every page pushed over it, without the backstop");
             Check(ApolloDuoClosedThreadPages(@[backstop]).count == 0 && ApolloDuoClosedThreadPages(@[]).count == 0,
                   @"remember: nothing when only the backstop is left");
+        }
+        // Swipe Tab Bar to Navigate while the tab shows columns.
+        {
+            UINavigationController *outer = Navigation(), *tabFeed = Navigation(), *tabThread = Navigation();
+            tabFeed.viewControllers = @[[UIViewController new]];
+            tabThread.viewControllers = @[[UIViewController new], [UIViewController new]];
+            ApolloDuoSplitState *tabs = [ApolloDuoSplitState new];
+            tabs.split = [NSObject new]; tabs.host = [TestDuoHost new]; tabs.host.postsShowingDetail = YES;
+            tabs.feed = tabFeed; tabs.secondary = tabThread;
+            outer.duoState = tabs; tabFeed.duoState = tabs; tabThread.duoState = tabs;
+            // The side rail: the pan's view is Liquid Glass's item platter.
+            UIView *rail = [UIView new]; rail.bounds = CGRectMake(0, 0, 48, 256);
+            UIPanGestureRecognizer *barPan = [UIPanGestureRecognizer new]; barPan.view = rail;
+            Check(ApolloDuoTabBarSwipeLength(barPan) == 256, @"tab bar: the rail's length is its long side");
+            UIView *bottom = [UIView new]; bottom.bounds = CGRectMake(0, 0, 669, 83);
+            UIView *platter = [TestTabBarItemPlatterView new]; platter.bounds = CGRectMake(0, 0, 400, 62);
+            bottom.subviews = @[[UIView new], platter];
+            UIPanGestureRecognizer *bottomPan = [UIPanGestureRecognizer new]; bottomPan.view = bottom;
+            Check(ApolloDuoTabBarSwipeLength(bottomPan) == 400,
+                  @"tab bar: along the bottom, the visible platter's length, not the full-width bar's");
+            BOOL (^swipe)(CGFloat, CGFloat, BOOL) = ^BOOL(CGFloat dx, CGFloat vx, BOOL release) {
+                barPan.translation = CGPointMake(dx > 0 ? 6 : -6, 0); barPan.velocity = CGPointMake(dx > 0 ? 300 : -300, 0);
+                barPan.state = UIGestureRecognizerStateBegan;
+                BOOL owned = ApolloDuoTabBarSwipePanned(outer, barPan);
+                barPan.translation = CGPointMake(dx, 0); barPan.state = UIGestureRecognizerStateChanged;
+                ApolloDuoTabBarSwipePanned(outer, barPan);
+                if (!release) return owned;
+                barPan.velocity = CGPointMake(vx, 0); barPan.state = UIGestureRecognizerStateEnded;
+                ApolloDuoTabBarSwipePanned(outer, barPan);
+                barPan.state = UIGestureRecognizerStatePossible;
+                return owned;
+            };
+            duo = NO;
+            Check(!swipe(140, 0, YES), @"tab bar: a phone leaves the swipe to Apollo's handler");
+            duo = YES;
+            threadCanClose = YES; threadClosed = NO; threadDragsBegun = 0; threadOffset = -1;
+            Check(swipe(100, 0, NO) && threadDragsBegun == 1 && threadOffset == 100,
+                  @"tab bar: Back on an open thread drags it with the finger");
+            barPan.state = UIGestureRecognizerStateEnded; barPan.velocity = CGPointZero;
+            ApolloDuoTabBarSwipePanned(outer, barPan); barPan.state = UIGestureRecognizerStatePossible;
+            Check(!threadClosed, @"tab bar: released short of half the bar and of 35%, the thread springs back");
+            swipe(140, 0, YES);
+            Check(threadClosed, @"tab bar: past half the rail a held release closes the thread (short of 35% of its travel)");
+            threadClosed = NO;
+            Check(((ApolloDuoBackSwipe *)objc_getAssociatedObject(tabThread, &kApolloDuoBackSwipe)).barLength == 0,
+                  @"tab bar: the pane's own drag keeps the 35% rule once the bar lets go");
+            threadCanClose = NO;
+            tabThread.viewControllers = @[[UIViewController new], [UIViewController new], [UIViewController new]];
+            tabThread.edgePans = 0;
+            swipe(80, 0, NO);
+            Check(tabThread.edgePans == 2 && tabBarNativeNav == tabThread && tabBarNativePan == barPan,
+                  @"tab bar: a page pop goes to Apollo's interactive Back, marked as the tab bar's");
+            barPan.state = UIGestureRecognizerStateCancelled; ApolloDuoTabBarSwipePanned(outer, barPan);
+            barPan.state = UIGestureRecognizerStatePossible;
+            Check(tabThread.edgePans == 3 && tabThread.lastEdgePanState == UIGestureRecognizerStateCancelled
+                  && tabBarNativeNav == nil, @"tab bar: every state reaches Apollo's handler, and the mark clears at the end");
+            forwardPageKept = NO; tabThread.edgePans = 0;
+            Check(swipe(-140, 0, YES) && tabThread.edgePans == 0 && outer.edgePans == 0,
+                  @"tab bar: Forward with nothing ahead does nothing");
+            forwardPageKept = YES;
+            swipe(-140, -600, YES);
+            Check(tabThread.edgePans == 3, @"tab bar: Forward onto a page Apollo's Back left is Apollo's own interactive Forward");
+            forwardPageKept = NO;
+            tabThread.viewControllers = @[[UIViewController new]]; tabs.host.postsShowingDetail = NO;
+            closedThreadFeed = tabFeed; restoreFollows = YES; restoreDragsBegun = 0; restoreEnded = NO; restoreShown = -1;
+            swipe(-140, 0, YES);
+            Check(restoreDragsBegun == 1 && restoreShown == 140 && restoreEnded && restoreCommitted,
+                  @"tab bar: Forward restores the closed thread with the finger, past half the rail");
+            closedThreadFeed = nil;
+            tabFeed.viewControllers = @[[UIViewController new]]; listDragsBegun = 0; listShown = -1;
+            swipe(150, 0, YES);
+            Check(listDragsBegun == 1 && listShown == 150 && tabs.host.listVisible,
+                  @"tab bar: Back at the feed root opens the list with the finger");
+            listCloseDragsBegun = 0; listShown = -1;
+            swipe(-150, 0, YES);
+            Check(listCloseDragsBegun == 1 && !listShownAtEnd, @"tab bar: Forward closes the list with the finger");
+            tabs.host.listVisible = YES; tabs.host.listPinned = YES; listCloseDragsBegun = 0;
+            Check(swipe(-150, 0, YES) && listCloseDragsBegun == 0, @"tab bar: a pinned list stays; Forward does nothing");
+            tabs.host.listVisible = NO; tabs.host.listPinned = NO;
+            threadCanClose = YES; tabs.host.postsShowingDetail = YES;
+            tabThread.viewControllers = @[[UIViewController new], [UIViewController new]];
+            threadClosed = NO; barPan.enabled = YES;
+            swipe(300, 0, NO);
+            barPan.state = UIGestureRecognizerStateCancelled; ApolloDuoTabBarSwipePanned(outer, barPan);
+            barPan.state = UIGestureRecognizerStatePossible;
+            Check(!threadClosed, @"tab bar: a cancelled drag springs back however far it went");
+            threadCanClose = NO;
+            outer.duoState = nil;
+            Check(!swipe(140, 0, YES), @"tab bar: a tab without columns leaves the swipe to Apollo's handler");
         }
         printf("OK: %lu checks\n", (unsigned long)checks);
     }

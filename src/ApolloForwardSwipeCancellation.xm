@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
+#import "ApolloForwardSwipeCancellation.h"
 
 // Apollo's screenEdgePanned: calls its Swift push helper directly, bypassing
 // the ObjC pushViewController:animated: override. Capture the source at the
@@ -16,17 +17,22 @@
 static const void *kApolloForwardSwipeSourceKey = &kApolloForwardSwipeSourceKey;
 static ptrdiff_t sApolloForwardPushingOffset;
 static ptrdiff_t sApolloForwardPoppingOffset;
+static Class sApolloForwardNavigationClass;
+
+// Also used by the tab bar swipe, which skips screenEdgePanned:.
+void ApolloForwardSwipeNoteSource(UINavigationController *navigation) {
+    if (!sApolloForwardNavigationClass || ![navigation isKindOfClass:sApolloForwardNavigationClass]) return;
+    ApolloForwardSwipeSource *source = [ApolloForwardSwipeSource new];
+    source.controller = navigation.topViewController;
+    objc_setAssociatedObject(navigation, kApolloForwardSwipeSourceKey, source,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
 
 %group ApolloForwardSwipeCancellation
 %hook _TtC6Apollo26ApolloNavigationController
 
 - (void)screenEdgePanned:(UIPanGestureRecognizer *)gesture {
-    if (gesture.state == UIGestureRecognizerStateBegan) {
-        ApolloForwardSwipeSource *source = [ApolloForwardSwipeSource new];
-        source.controller = [(UINavigationController *)self topViewController];
-        objc_setAssociatedObject(self, kApolloForwardSwipeSourceKey, source,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
+    if (gesture.state == UIGestureRecognizerStateBegan) ApolloForwardSwipeNoteSource((UINavigationController *)self);
     %orig(gesture);
 }
 
@@ -64,6 +70,7 @@ static ptrdiff_t sApolloForwardPoppingOffset;
     sApolloForwardPushingOffset = ivar_getOffset(pushing);
     sApolloForwardPoppingOffset = ivar_getOffset(popping);
     if (sApolloForwardPushingOffset <= 0 || sApolloForwardPoppingOffset <= 0) return;
+    sApolloForwardNavigationClass = navigationClass;
     %init(ApolloForwardSwipeCancellation);
     ApolloLog(@"[ForwardSwipe] Cancellation hooks installed");
 }
