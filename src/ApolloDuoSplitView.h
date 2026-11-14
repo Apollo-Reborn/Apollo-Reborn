@@ -8,6 +8,11 @@ BOOL ApolloDuoSplitIsUnfoldedPortrait(void);
 /// The window size the Duo layout follows: while a field is edited, a
 /// height-only change keeps the size from before it.
 CGSize ApolloDuoLayoutSize(CGSize liveSize);
+/// Apollo shares the opened display with a window stacked above or below it
+/// (Picture in Picture or another app on top): full width, but under 600pt tall.
+BOOL ApolloDuoSplitIsShortPane(void);
+/// The Original/Focused feed layout applies: unfolded, or a short pane.
+BOOL ApolloDuoSplitShowsFeedLayout(void);
 CGFloat ApolloDuoSplitTransitionContentWidth(UIView *view, CGFloat trailingInset);
 UINavigationController *ApolloDuoSplitDetailNavigation(UINavigationController *navigation);
 /// The feed column's own stack while the tab shows columns, else nil.
