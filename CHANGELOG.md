@@ -36,13 +36,20 @@ All notable changes to this project will be documented in this file.
 
 - Load **hot**, **new** and **rising** feeds, **more replies** rows and subreddit icons again on **API-Key-Free** accounts after Reddit started blocking them in early November (#1657, #1666: @DeltAndy123)
   - Installs with Use Route Updates on already picked these up; this version builds them in
+- Reload a feed that failed because Reddit's rate limit was reached on **API-Key-Free** accounts once the limit resets, instead of leaving "Couldn't load posts" until you pull to refresh (#1670: @icpryde)
+  - The empty list says the posts will load when the limit resets, and the Inbox sends one fewer request at launch
+- Keep **API-Key-Free Mode** off after you turn it off, instead of it switching back on at the next launch; the account returns to its API key sign-in, or Apollo asks you to sign in again if that sign-in no longer works (#1627: @icpryde)
 - Load **more replies** rows and Inbox replies' parent comments again for **API keys** Reddit started refusing in late October (#1620: @icpryde)
 - Keep your **subscribed subreddits** in the subreddit list when Apollo's background refresh fails, often right after returning to the app, instead of showing only Home, Popular and All until you pull to refresh (#1674: @icpryde)
 - Fix a crash right after opening Apollo on iOS 27.2 with **Liquid Glass** when you switch away while the navigation buttons are still animating in, and a crash opening Settings → General on some iPhone Duo setups (#1630: @icpryde)
 - Fix Apollo **freezing** after closing a comment thread on Liquid Glass, most often in the unfolded iPhone Duo split view (#1515: @nnastasi)
 - Show **Reddit API Key Required** when you sign in with an API key before adding one, instead of opening Reddit's login page and failing after you log in; **Add API Key** opens Accounts & API Keys (#1597: @icpryde)
+- Post a **GIF from your camera roll** in a comment or reply as the animated GIF instead of a still of its first frame, whichever upload host you use (#1669: @icpryde)
+  - Subreddits that allow images but not GIFs in comments still get the still
+- Start a **YouTube** video in Apollo's player when iOS refuses to autoplay it, instead of the loading screen spinning forever (#1599: @icpryde)
 - Stop showing **"Translated from …"** under short comments, names and stretched words that Google only re-spells when it isn't sure of the language (#1675: @icpryde)
 - Open an **Inbox reply** or comment link without the Find in Comments bar flashing over the loading page, the comments jumping after they load, or an imgur image showing a link card first (#1602: @icpryde)
+- Reopen **Popular** or **All** at launch with Restore Reading Session on, instead of every tab you open snapping back to Posts for a few seconds and the feed never reopening (#1627: @icpryde)
 - Open **Community Highlights** cards again on Apollo 1.14 (iOS 14), along with sidebar and settings links, Search tab results and profile social links that did nothing when tapped since 4.0.0 (#1619: @icpryde)
 - Open the right action from a subreddit header's **Sidebar** and **Set User Flair** buttons after reordering or hiding items with **Customize Action Menus** (#1596: @IllIIllIllIllII)
 - Swipe up on the **Account Switcher**'s list to expand it to full screen and drag down at the top to shrink it, and reorder accounts without the sheet moving (#1645: @IllIIllIllIllII)
@@ -57,6 +64,8 @@ All notable changes to this project will be documented in this file.
   - Match the rows Apollo Reborn adds to Settings to the height of Apollo's own rows, and let you reorder Settings Shortcuts by dragging
   - Open the account switcher as the usual bottom sheet inside posts, with its buttons in your theme color instead of blue
   - Open the ••• on your own profile as Apollo's action sheet, and show the Return Button as a normal navigation-bar button in your theme color
+- Make **Swipe Tab Bar to Navigate** work on the iPhone Duo: swipe down the side rail to go Back and up to go Forward, or along the bottom bar in open portrait, with the page following your finger (#1702: @IllIIllIllIllII)
+  - On every iPhone, letting go of a Forward swipe early no longer clears your forward history
 - Keep the closed **iPhone Duo**'s side rail working when a Live Activity, Moderator or Translate leaves it short of room: More (•••) opens in one tap with Sort, its time ranges and Moderator tools inside, and the subreddit list keeps Edit and Add in the rail (#1473, #1688: @IllIIllIllIllII)
 - Center **subreddit headers** beside the side rail on the closed iPhone Duo, so the banner, icon and name aren't cut off by the Back button (#1655: @IllIIllIllIllII)
 - Fit the **update prompt** and **What's New** on the closed iPhone Duo, so the version line, Release Notes link and Download IPA aren't cut off and Continue is centered (#1598, #1600: @IllIIllIllIllII)
@@ -64,6 +73,7 @@ All notable changes to this project will be documented in this file.
 - Keep the **comment jump button** in place while swiping back from a thread on the iPhone Duo, instead of it jumping to the left edge as the swipe starts (#1699: @IllIIllIllIllII)
 - Show the color and icon behind a **swiped comment** in the unfolded iPhone Duo split, instead of an invisible swipe (#1634: @IllIIllIllIllII)
 - Keep scrolling responsive right after you fold or unfold the **iPhone Duo**, instead of the first scroll being ignored or put back (#1497: @nnastasi)
+- Keep the keyboard up when you tap a search field on the open **iPhone Duo** with another app's video pinned to the top of the screen, instead of it closing right away (#1705: @IllIIllIllIllII)
 - Stop a **forward swipe** on the open iPhone Duo reopening a page you had already left after picking a subreddit or opening a thread (#1489: @nnastasi)
 
 ## [v4.0.1] - 2026-10-30

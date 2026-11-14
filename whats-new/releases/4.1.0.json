@@ -9,6 +9,6 @@
     { "icon": "eye.slash.fill", "title": "Hidden & Deleted, Native", "subtitle": "Hidden and deleted posts and comments now use Apollo's own lists, layouts and menus." },
     { "icon": "rectangle.split.2x1", "title": "iPhone Duo, Smoother", "subtitle": "Swipes follow your finger, the split's divider drags, and Focused works in portrait." },
     { "icon": "textformat.abc", "title": "American or British Spelling", "subtitle": "Reborn's screens now default to American spelling, with a setting to switch the whole app to British." },
-    { "icon": "wrench.and.screwdriver.fill", "title": "Fixes Across the App", "subtitle": "API-Key-Free feeds and More Replies load again, subscriptions stay put, and crashes are fixed." }
+    { "icon": "wrench.and.screwdriver.fill", "title": "Fixes Across the App", "subtitle": "API-Key-Free feeds and More Replies load again, camera-roll GIFs post animated, and crashes are fixed." }
   ]
 }

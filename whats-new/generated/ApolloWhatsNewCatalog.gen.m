@@ -105,7 +105,7 @@ static const ApolloWhatsNewItemEntry kWhatsNewItems[] = {
     { "4.1.0", "eye.slash.fill", "Hidden & Deleted, Native", "Hidden and deleted posts and comments now use Apollo's own lists, layouts and menus." },
     { "4.1.0", "rectangle.split.2x1", "iPhone Duo, Smoother", "Swipes follow your finger, the split's divider drags, and Focused works in portrait." },
     { "4.1.0", "textformat.abc", "American or British Spelling", "Reborn's screens now default to American spelling, with a setting to switch the whole app to British." },
-    { "4.1.0", "wrench.and.screwdriver.fill", "Fixes Across the App", "API-Key-Free feeds and More Replies load again, subscriptions stay put, and crashes are fixed." },
+    { "4.1.0", "wrench.and.screwdriver.fill", "Fixes Across the App", "API-Key-Free feeds and More Replies load again, camera-roll GIFs post animated, and crashes are fixed." },
 };
 
 static NSString *S(const char *value) { return [NSString stringWithUTF8String:value]; }
