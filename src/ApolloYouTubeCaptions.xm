@@ -59,6 +59,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloYouTubePlayback.h"
 
 static NSString *const kApolloYouTubeCaptionsMessageName = @"apolloYouTubeCaptions";
 static NSString *const kApolloYouTubeCaptionsScriptMarker = @"__apolloYouTubeCaptionGuard";
@@ -239,12 +240,15 @@ static void ApolloYouTubeCaptionsInstall(WKWebViewConfiguration *configuration) 
 %hook WKWebView
 
 // YouTubeWebView's Swift initializer reaches WKWebView through super, so this
-// base implementation is the reliable entry point.
+// base implementation is the reliable entry point. It is the one hook for
+// Apollo's YouTube web view: the autoplay retry (ApolloYouTubePlayback.m)
+// installs from here too.
 - (id)initWithFrame:(CGRect)frame configuration:(WKWebViewConfiguration *)configuration {
     // Every WKWebView in the process comes through here; only Apollo's YouTube
     // player is ours to touch.
     if (!sApolloYouTubeWebViewClass || ![self isKindOfClass:sApolloYouTubeWebViewClass]) return %orig;
     ApolloYouTubeCaptionsInstall(configuration);
+    ApolloYouTubePlaybackInstall(configuration);
     return %orig;
 }
 
@@ -257,5 +261,5 @@ static void ApolloYouTubeCaptionsInstall(WKWebViewConfiguration *configuration) 
         return;
     }
     %init;
-    ApolloLog(@"[YouTubeCaptions] hook installed (YouTube captions follow Closed Captions + SDH and the player's Subtitles setting)");
+    ApolloLog(@"[YouTubeCaptions] hook installed (YouTube captions follow Closed Captions + SDH and the player's Subtitles setting; refused autoplay is retried)");
 }

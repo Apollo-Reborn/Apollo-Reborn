@@ -321,6 +321,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloVideoSwipeFix.xm \
     $(SRC_DIR)/ApolloVideoPlaybackSpeed.xm \
     $(SRC_DIR)/ApolloVideoHoldSpeed.xm \
+    $(SRC_DIR)/ApolloYouTubePlayback.m \
     $(SRC_DIR)/ApolloYouTubeCaptions.xm \
     $(SRC_DIR)/ApolloPictureInPicture.xm \
     $(SRC_DIR)/ApolloScrollToTop.xm \
