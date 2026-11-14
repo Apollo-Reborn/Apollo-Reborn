@@ -31,6 +31,8 @@ All notable changes to this project will be documented in this file.
   - It snaps near ⅓, 40%, 50% and 60%; double-tap the grip to return to 50/50
 - Use the **Focused feed** layout in open portrait on the iPhone Duo too, and switch layouts from feeds and threads opened in Inbox, Account and Search (#1682, #1652: @IllIIllIllIllII)
   - Tall images, galleries and videos now fill the Focused column instead of half its width
+- Add **tabletop video controls** on the half-folded iPhone Duo: a fullscreen video moves above the fold, with large rewind, play/pause and forward buttons, a timeline, mute, Playback Speed and AirPlay below it (#1591: @nunoo)
+  - It turns on by itself when you half-fold with a video open and goes back to the normal viewer when you unfold; on every device, Hold for Video Speed no longer fires when you press a video control
 
 ### Fixes
 
@@ -74,6 +76,7 @@ All notable changes to this project will be documented in this file.
 - Show the color and icon behind a **swiped comment** in the unfolded iPhone Duo split, instead of an invisible swipe (#1634: @IllIIllIllIllII)
 - Keep scrolling responsive right after you fold or unfold the **iPhone Duo**, instead of the first scroll being ignored or put back (#1497: @nnastasi)
 - Keep the keyboard up when you tap a search field on the open **iPhone Duo** with another app's video pinned to the top of the screen, instead of it closing right away (#1705: @IllIIllIllIllII)
+- Keep the iPhone Duo feed layout when **Picture in Picture** or another app sits on top of the open Duo: the Feed Layout button shows, media fits the shorter pane, posts are no longer cut off on the right, and Hide Tab Bar on Scroll works (#1693: @nunoo)
 - Stop a **forward swipe** on the open iPhone Duo reopening a page you had already left after picking a subreddit or opening a thread (#1489: @nnastasi)
 
 ## [v4.0.1] - 2026-10-30
