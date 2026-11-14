@@ -33,6 +33,7 @@
 
 @interface SettingsPortraitLockViewController : UIViewController
 @property (nonatomic, strong) UITableView *tableView;
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section;
 @end
 
 // When YES, the Settings VC didSelect hook will skip PR #294's "Buy Us a Coffee"
@@ -861,6 +862,26 @@ static void ApolloPresentFeatureRequestsChooser(UIViewController *aboutVC,
 %end
 %end
 
+// Apollo 1.15.11 builds both Section(header:footer:) explanations as strings
+// (native viewDidLoad at 0x100570888; simulator confirms titles and nil view).
+// Embedded Eureka's viewForFooterInSection at 0x1b5a0 dispatches footer.viewForSection;
+// its height helper at 0x1a9e8 prefers a supplied height / view.bounds.height
+// over the title. Opt ONLY these
+// matched Duo footers into UIKit's title-backed path, including automatic height,
+// rather than changing a title that a custom view can ignore or size too short.
+static NSString *ApolloPortraitLockFooterText(NSString *text, BOOL duo) {
+    if (!duo || ![text isKindOfClass:NSString.class]) return nil;
+    NSString *note = @"On iPhone Duo, this setting applies only to the cover display. Rotation offers are unavailable on the inner display.";
+    for (NSString *explanation in @[
+        @"Locks Apollo to portrait (vertical) orientation except for Media Viewer.",
+        @"If using the iOS Portrait Orientation Lock feature, Apollo will attempt to detect device rotations in Media Viewer and offer to let you rotate media."
+    ]) {
+        NSString *annotated = [explanation stringByAppendingFormat:@"\n\n%@", note];
+        if ([text isEqualToString:explanation] || [text isEqualToString:annotated]) return annotated;
+    }
+    return nil; // Unknown/localized sections fail soft; never guess section indices.
+}
+
 %hook SettingsPortraitLockViewController
 
 - (void)viewDidLoad {
@@ -876,6 +897,39 @@ static void ApolloPresentFeatureRequestsChooser(UIViewController *aboutVC,
         ApolloLog(@"[Settings] Portrait Lock using inset-grouped sections");
     }
     %orig;
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
+    NSString *original = %orig;
+    return ApolloPortraitLockFooterText(original, ApolloDeviceIsDuo()) ?: original;
+}
+
+- (UIView *)tableView:(UITableView *)tableView viewForFooterInSection:(NSInteger)section {
+    if (ApolloDeviceIsDuo() && ApolloPortraitLockFooterText(
+            [(SettingsPortraitLockViewController *)self tableView:tableView titleForFooterInSection:section], YES)) {
+        return nil; // UIKit renders the annotated title, not Eureka's custom footer.
+    }
+    return %orig;
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section {
+    if (ApolloDeviceIsDuo() && ApolloPortraitLockFooterText(
+            [(SettingsPortraitLockViewController *)self tableView:tableView titleForFooterInSection:section], YES)) {
+        return UITableViewAutomaticDimension; // Re-measure after fold/rotation and text-size changes.
+    }
+    return %orig;
+}
+
+- (void)tableView:(UITableView *)tableView willDisplayFooterView:(UIView *)view forSection:(NSInteger)section {
+    %orig; // Keep Apollo's native theme handling for UITableViewHeaderFooterView.
+    if (!ApolloDeviceIsDuo() || !ApolloPortraitLockFooterText(
+            [(SettingsPortraitLockViewController *)self tableView:tableView titleForFooterInSection:section], YES)) return;
+    if ([view isKindOfClass:UITableViewHeaderFooterView.class]) {
+        UILabel *label = ((UITableViewHeaderFooterView *)view).textLabel;
+        label.numberOfLines = 0;
+        label.lineBreakMode = NSLineBreakByWordWrapping;
+        label.adjustsFontForContentSizeCategory = YES;
+    }
 }
 
 %end
