@@ -28,6 +28,13 @@ void ApolloCommentLinkClearUpload(void);
 /// Keyboard-anchored toast confirming the plain-link upload ("Uploaded to
 /// <hostName> — ..."), shown once per compose session.
 void ApolloCommentLinkShowUploadedToast(NSString *hostName);
+/// The subreddit of the comment/reply composer an upload is coming from, or nil
+/// when the active composer isn't composing a comment (post composer, chat).
+NSString *ApolloActiveCommentComposerSubreddit(void);
+/// The comment/reply composer itself (same rule as above), or nil. Only used as
+/// an identity: camera-roll GIFs kept for an upload belong to the composer they
+/// were picked in (ApolloUploadOriginalGIF.m).
+id ApolloActiveCommentComposer(void);
 #ifdef __cplusplus
 }
 #endif
