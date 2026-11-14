@@ -1304,20 +1304,58 @@ BOOL ApolloDuoSplitIsResizing(void) {
     return sDuoSplitResizingTabs != nil;
 }
 
+// With a video pinned above Apollo on the open display, the keyboard grows
+// the window (669x565 to 669x763). Switching layouts then rebuilt the stacks
+// under the field and closed its keyboard, so while a field is edited a
+// height-only change keeps the earlier layout. A new width still applies.
+static BOOL sDuoSplitInputHold, sDuoSplitEditing, sDuoSplitKeyboardShown;
+static CGSize sDuoSplitInputHeldSize;
+static NSUInteger sDuoSplitInputReleaseGeneration;
+
+static CGSize ApolloDuoSplitLiveSize(UITabBarController *tabs) {
+    return tabs == sDuoSplitResizingTabs ? sDuoSplitTargetSize : tabs.view.bounds.size;
+}
+
+CGSize ApolloDuoLayoutSize(CGSize size) {
+    return sDuoSplitInputHold && fabs(size.width - sDuoSplitInputHeldSize.width) < 0.5 ? sDuoSplitInputHeldSize : size;
+}
+
+static CGSize ApolloDuoSplitLayoutSize(UITabBarController *tabs) {
+    return ApolloDuoLayoutSize(ApolloDuoSplitLiveSize(tabs));
+}
+
+static void ApolloDuoSplitHoldForInput(NSString *reason) {
+    UITabBarController *tabs = (id)ApolloMainTabBarController();
+    if (sDuoSplitInputHold || ![tabs isKindOfClass:UITabBarController.class] || !tabs.isViewLoaded) return;
+    sDuoSplitInputHold = YES;
+    sDuoSplitInputHeldSize = ApolloDuoSplitLiveSize(tabs);
+    ApolloLog(@"[DuoSplit] %@: holding the %.0fx%.0f layout", reason,
+              sDuoSplitInputHeldSize.width, sDuoSplitInputHeldSize.height);
+}
+
+static void ApolloDuoSplitReleaseInputHold(void) {
+    if (!sDuoSplitInputHold) return;
+    sDuoSplitInputHold = NO;
+    UITabBarController *tabs = (id)ApolloMainTabBarController();
+    CGSize size = [tabs isKindOfClass:UITabBarController.class] ? ApolloDuoSplitLiveSize(tabs) : CGSizeZero;
+    ApolloLog(@"[DuoSplit] input ended: layout follows %.0fx%.0f again", size.width, size.height);
+    ApolloDuoSplitScheduleUpdate();
+}
+
 BOOL ApolloDuoSplitIsUnfolded(void) {
     if (!ApolloDeviceIsDuo()) return NO;
     UITabBarController *tabs = (id)ApolloMainTabBarController();
     if (UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPhone
         || ![tabs isKindOfClass:UITabBarController.class] || !tabs.isViewLoaded) return NO;
     if (tabs != sDuoSplitKnownTabs && ApolloDuoCurrentMode() == ApolloDuoModePhone) return NO;
-    CGSize size = tabs == sDuoSplitResizingTabs ? sDuoSplitTargetSize : tabs.view.bounds.size;
+    CGSize size = ApolloDuoSplitLayoutSize(tabs);
     return MIN(size.width, size.height) >= 600.0;
 }
 
 BOOL ApolloDuoSplitIsUnfoldedPortrait(void) {
     if (!ApolloDuoSplitIsUnfolded()) return NO;
     UITabBarController *tabs = (id)ApolloMainTabBarController();
-    CGSize size = tabs == sDuoSplitResizingTabs ? sDuoSplitTargetSize : tabs.view.bounds.size;
+    CGSize size = ApolloDuoSplitLayoutSize(tabs);
     return size.height > size.width;
 }
 
@@ -1609,7 +1647,7 @@ BOOL ApolloDuoSplitShowSidebar(UINavigationController *nav) {
 // Never infer Duo merely from a landscape iPhone. Its native trailing tab bar
 // or established Duo mode must be present, and two useful columns must fit.
 static BOOL ApolloDuoSplitShouldOpen(UITabBarController *tabs) {
-    CGSize size = tabs == sDuoSplitResizingTabs ? sDuoSplitTargetSize : tabs.view.bounds.size;
+    CGSize size = ApolloDuoSplitLayoutSize(tabs);
     if (ApolloDuoRailHasVisibleSideBar() || ApolloDuoCurrentMode() == ApolloDuoModeOpen) {
         sDuoSplitKnownTabs = tabs;
     }
@@ -5565,6 +5603,11 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     sDuoSplitResizingTabs = self;
     sDuoSplitTargetSize = size;
     sDuoSplitSizeCoordinator = coordinator;
+    if (sDuoSplitInputHold && fabs(size.width - sDuoSplitInputHeldSize.width) >= 0.5) sDuoSplitInputHeldSize = size;
+    if (sDuoSplitInputHold && !CGSizeEqualToSize(size, sDuoSplitInputHeldSize)) {
+        ApolloLog(@"[DuoSplit] %.0fx%.0f while editing: keeping the %.0fx%.0f layout",
+                  size.width, size.height, sDuoSplitInputHeldSize.width, sDuoSplitInputHeldSize.height);
+    }
     ApolloLog(@"[DuoSplit] preparing all tabs for %.0fx%.0f", size.width, size.height);
     [UIView performWithoutAnimation:^{ ApolloDuoSplitUpdate(); }];
     %orig(size, coordinator);
@@ -5927,6 +5970,49 @@ static void ApolloDuoSlideFitDisplay(id builder) {
         object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {
             ApolloDuoRefreshLayoutControls();
         }];
+    // Editing, or a keyboard with a frame (web inputs post no editing
+    // notices), starts a hold; iOS sends a zero-height keyboard notice on
+    // return to the foreground, which holds nothing. The hold ends once
+    // editing has ended and the keyboard has hidden.
+    for (NSNotificationName name in @[UITextFieldTextDidBeginEditingNotification, UITextViewTextDidBeginEditingNotification]) {
+        [NSNotificationCenter.defaultCenter addObserverForName:name
+            object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
+                sDuoSplitEditing = YES;
+                ApolloDuoSplitHoldForInput(@"editing began");
+            }];
+    }
+    for (NSNotificationName name in @[UITextFieldTextDidEndEditingNotification, UITextViewTextDidEndEditingNotification]) {
+        [NSNotificationCenter.defaultCenter addObserverForName:name
+            object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
+                sDuoSplitEditing = NO;
+                if (!sDuoSplitKeyboardShown) {
+                    ApolloDuoSplitReleaseInputHold();
+                    return;
+                }
+                // The fallback covers a hide notice that never comes.
+                NSUInteger generation = ++sDuoSplitInputReleaseGeneration;
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    if (generation == sDuoSplitInputReleaseGeneration && !sDuoSplitEditing) ApolloDuoSplitReleaseInputHold();
+                });
+            }];
+    }
+    [NSNotificationCenter.defaultCenter addObserverForName:UIKeyboardWillShowNotification
+        object:nil queue:nil usingBlock:^(NSNotification *note) {
+            CGRect end = [note.userInfo[UIKeyboardFrameEndUserInfoKey] CGRectValue];
+            if (![note.userInfo[UIKeyboardIsLocalUserInfoKey] boolValue] || CGRectIsEmpty(end)) return;
+            sDuoSplitKeyboardShown = YES;
+            ApolloDuoSplitHoldForInput(@"keyboard showing");
+        }];
+    for (NSNotificationName name in @[UIKeyboardDidHideNotification, UIApplicationDidEnterBackgroundNotification]) {
+        [NSNotificationCenter.defaultCenter addObserverForName:name
+            object:nil queue:nil usingBlock:^(NSNotification *note) {
+                if ([note.name isEqualToString:UIKeyboardDidHideNotification]
+                    && ![note.userInfo[UIKeyboardIsLocalUserInfoKey] boolValue]) return;
+                sDuoSplitKeyboardShown = NO;
+                sDuoSplitInputReleaseGeneration++;
+                if (!sDuoSplitEditing) ApolloDuoSplitReleaseInputHold();
+            }];
+    }
     // A closed thread outlives only a short trip to the background.
     [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidEnterBackgroundNotification
         object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
