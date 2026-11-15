@@ -216,6 +216,16 @@ public func ApolloSwiftCopyOptionalStringArray(_ storage: UnsafeRawPointer?) -> 
     return Unmanaged.passRetained(value as NSArray).toOpaque()
 }
 
+// PostsViewController.randomSubredditName is a Swift String?. Swift decodes the
+// Optional (including its nil representation) so Objective-C never assumes the
+// layout. The caller consumes the retained NSString.
+@_cdecl("ApolloSwiftCopyOptionalString")
+public func ApolloSwiftCopyOptionalString(_ storage: UnsafeRawPointer?) -> UnsafeMutableRawPointer? {
+    guard let storage,
+          let value = storage.assumingMemoryBound(to: Optional<String>.self).pointee else { return nil }
+    return Unmanaged.passRetained(value as NSString).toOpaque()
+}
+
 // PostsViewController.links is a non-optional Array<RDKLink>. Arrays of class
 // references share Array<AnyObject>'s element representation; Swift handles its
 // native/bridged storage and empty-array sentinel. Reading .first is O(1) and

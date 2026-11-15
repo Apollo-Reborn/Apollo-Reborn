@@ -32,6 +32,7 @@
 #import "ApolloRedgifsMissingDuration.h"
 #import "ApolloRedgifsErrorCards.h"
 #import "Tweak.h"
+#import "ApolloRandomFeed.h"
 #import "settings/CustomAPIViewController.h"
 #import "settings/ApolloSetupAssistant.h"
 #import "settings/ApolloSetupPreset.h"
@@ -2737,6 +2738,32 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
                                     completionHandler, directData, directResponse, directError);
 }
 
+// Random / Random NSFW feeds draw from these lists. The roll itself (pull-to-
+// refresh arming, the request rewrite, the title guard) is in ApolloRandomFeed.xm.
+NSArray<NSString *> *ApolloRandomCachedSubreddits(ApolloRandomFeedKind kind) {
+    if (kind != ApolloRandomFeedKindSafe && kind != ApolloRandomFeedKindNSFW) return nil;
+    NSString *source = kind == ApolloRandomFeedKindNSFW ? sRandNsfwSubredditsSource : sRandomSubredditsSource;
+    // No source configured: this list is known to be empty, which still lets
+    // kind inference rule it out.
+    if (source.length == 0) return @[];
+    if (!subredditListCache) return nil;
+    ApolloSubredditSourceCacheEntry *entry = [subredditListCache objectForKey:source];
+    if (entry.subreddits.count == 0) {
+        NSString *absolute = [NSURL URLWithString:source].absoluteString;
+        if (absolute.length > 0 && ![absolute isEqualToString:source]) {
+            entry = [subredditListCache objectForKey:absolute];
+        }
+    }
+    if (entry.subreddits.count == 0) {
+        // The constructor normally prewarms this cache. If it did not finish
+        // (offline/slow network), the request goes out unchanged this time and
+        // the list is fetched for the next one.
+        ApolloRefreshSubredditListSourceAsync(source, NO, NSURLRequestUseProtocolCachePolicy, nil);
+        return nil;
+    }
+    return entry.subreddits;
+}
+
 %hook NSURLSession
 
 // Async image loaders (PINRemoteImage etc.) send no User-Agent on imgchest
@@ -2777,7 +2804,6 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
     }
 
     NSURL *url = [request URL];
-    NSURL *subredditListURL;
 
     // Reroute URL-shaped search queries to /api/info?url=<URL>. Reddit's /search.json
     // 302-redirects URL-shaped queries to /submit.json (and on to /login), producing
@@ -2811,54 +2837,29 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
         }
     }
 
-    // Determine whether request is for random subreddit
-    if ([url.host isEqualToString:@"oauth.reddit.com"] && [url.path hasPrefix:@"/r/random/"]) {
-        if (![sRandomSubredditsSource length]) {
-            return %orig;
-        }
-        subredditListURL = [NSURL URLWithString:sRandomSubredditsSource];
-    } else if ([url.host isEqualToString:@"oauth.reddit.com"] && [url.path hasPrefix:@"/r/randnsfw/"]) {
-        if (![sRandNsfwSubredditsSource length]) {
-            return %orig;
-        }
-        subredditListURL = [NSURL URLWithString:sRandNsfwSubredditsSource];
-    } else {
-        return %orig;
-    }
-
-    // Check cache
-    ApolloSubredditSourceCacheEntry *sourceEntry =
-        [subredditListCache objectForKey:subredditListURL.absoluteString];
-
-    if (sourceEntry.subreddits.count == 0) {
-        // The constructor normally prewarms this cache. If it did not finish
-        // (offline/slow network), preserve Apollo's native request for this tap
-        // and refresh asynchronously for the next one.
-        ApolloRefreshSubredditListSourceAsync(
-            subredditListURL.absoluteString,
-            NO,
-            NSURLRequestUseProtocolCachePolicy,
-            nil);
-        return %orig;
-    }
-
-    NSArray<NSString *> *subreddits = sourceEntry.subreddits;
-
-    // Pick a random subreddit, then modify the request URL to use that subreddit, simulating a 302 redirect in Reddit's original API behaviour
-    NSString *randomSubreddit = subreddits[arc4random_uniform((uint32_t)subreddits.count)];
-    NSString *urlString = [url absoluteString];
-    NSString *newUrlString = [urlString stringByReplacingOccurrencesOfString:@"/random/" withString:[NSString stringWithFormat:@"/%@/", randomSubreddit]];
-    newUrlString = [newUrlString stringByReplacingOccurrencesOfString:@"/randnsfw/" withString:[NSString stringWithFormat:@"/%@/", randomSubreddit]];
-
-    NSMutableURLRequest *modifiedRequest = [request mutableCopy];
-    [modifiedRequest setURL:[NSURL URLWithString:newUrlString]];
-    return %orig(modifiedRequest);
+    // Apollo's feed requests (AFNetworking) come through here: they may take
+    // the random feed's roll and sticky routes.
+    // Inside an ApolloRandomTweakFetchScope (including the completion-handler
+    // entry point below, should it reach this method) it treats the request
+    // as a tweak fetch.
+    NSURLRequest *rolled = ApolloRandomRequestByRolling(request, YES);
+    if (rolled) return %orig(rolled);
+    return %orig;
 }
 
 // Imgur Delete and album creation
 - (NSURLSessionDataTask*)dataTaskWithRequest:(NSURLRequest*)request completionHandler:(void (^)(NSData*, NSURLResponse*, NSError*))completionHandler {
+    // If this entry point reaches -dataTaskWithRequest: internally, the inner
+    // call must still treat the request as one of the tweak's own fetches.
+    ApolloRandomTweakFetchScope randomTweakFetchScope;
     ApolloRedditCaptureBearerTokenFromRequest(request, @"NSURLSession dataTaskWithRequest:completionHandler:");
     ApolloDeletedCommentsHandleRequestObservation(request, @"dataTaskWithRequest:completionHandler:");
+    // The tweak's own fetches use this entry point (ApolloSubredditInfoCache
+    // caches an about under the name it asked for), so only an explicit
+    // /r/random or /r/randnsfw is rewritten here. %orig keeps the request
+    // passed in, so a rewrite has to be handed across explicitly.
+    NSURLRequest *rolled = ApolloRandomRequestByRolling(request, NO);
+    if (rolled) return %orig(rolled, completionHandler);
 
     NSURLRequest *imgChestUARequest = ApolloImgChestRequestByAddingUserAgentIfNeeded(request);
     if (imgChestUARequest) return %orig(imgChestUARequest, completionHandler);

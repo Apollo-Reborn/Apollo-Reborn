@@ -101,6 +101,7 @@
 #import "ApolloAccountSubscriptions.h"
 #import "ApolloWebJSON.h"
 #import "ApolloClasses.h"
+#import "ApolloRandomFeed.h"
 
 static void ApolloDevvitHeightDidChangeForFullName(NSString *fullName);
 static void ApolloDevvitScheduleStaleSweep(void);
@@ -1003,6 +1004,9 @@ static void ApolloDevvitRunSubscriptionCheck(NSString *subreddit, NSString *key,
                                                      ? displayName : subreddit, YES);
         });
     };
+    // /r/<subreddit>/about through Apollo's RDKClient reaches Apollo's own
+    // NSURLSession entry point; keep a random feed's roll from redirecting it.
+    ApolloRandomTweakFetchScope randomTweakFetchScope;
     ((id (*)(id, SEL, id, id))objc_msgSend)(client, fetch, subreddit, [completion copy]);
 }
 

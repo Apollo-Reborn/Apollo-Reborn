@@ -78,6 +78,9 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloWhatsNewHalloween.m \
     $(WHATS_NEW_GEN_M) \
     $(SRC_DIR)/Tweak.xm \
+    $(SRC_DIR)/ApolloRandomSubreddit.m \
+    $(SRC_DIR)/ApolloRandomFeed.xm \
+    $(SRC_DIR)/ApolloSubredditName.m \
     $(SRC_DIR)/ApolloCommon.m \
     $(SRC_DIR)/ApolloLogRedaction.m \
     $(SRC_DIR)/ApolloSessionState.m \

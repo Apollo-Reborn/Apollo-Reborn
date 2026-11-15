@@ -15,6 +15,7 @@
 #import "ApolloSubredditHeaderPreview.h"
 #import "ApolloSubredditInfoCache.h"
 #import "ApolloSubredditLayout.h"
+#import "ApolloSubredditName.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloNativeActionMenus.h"
 #import "ApolloUserProfileCache.h"
@@ -325,7 +326,6 @@ static void ApolloSubredditApplyIconForHeader(ApolloSubredditHeaderView *header,
 static void ApolloSubredditDismissHeaderPickersForViewController(UIViewController *viewController);
 static void ApolloSubredditRefreshBannerForSubreddit(NSString *subredditName);
 static void ApolloSubredditRefreshIconForSubreddit(NSString *subredditName);
-static NSString *ApolloNormalizedSubredditName(NSString *subredditName);
 static BOOL ApolloSubredditNamesEqual(NSString *left, NSString *right);
 static void ApolloSubredditLayoutWrappedHeader(UIView *wrappedHeader,
                                                ApolloSubredditHeaderView *header,
@@ -1404,26 +1404,6 @@ static BOOL ApolloSubredditShouldSkipViewController(UIViewController *viewContro
         return YES;
     }
     return NO;
-}
-
-static NSString *ApolloNormalizedSubredditName(NSString *subredditName) {
-    if (![subredditName isKindOfClass:[NSString class]]) return nil;
-    NSString *clean = [subredditName stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if ([clean hasPrefix:@"/r/"] || [clean hasPrefix:@"/R/"]) clean = [clean substringFromIndex:3];
-    if ([clean hasPrefix:@"r/"] || [clean hasPrefix:@"R/"]) clean = [clean substringFromIndex:2];
-    if (clean.length == 0) return nil;
-    // Reject special feeds that aren't really single subreddits. "random"/"randnsfw"
-    // are the titles Apollo gives a random feed until its listing names the
-    // subreddit it landed on.
-    NSArray<NSString *> *blocked = @[@"home", @"popular", @"all", @"search", @"profile",
-                                     @"settings", @"inbox", @"friends", @"mod",
-                                     @"random", @"randnsfw"];
-    if ([blocked containsObject:clean.lowercaseString]) return nil;
-    // Must look like a subreddit slug: letters/digits/underscores.
-    NSCharacterSet *invalid = [[NSCharacterSet characterSetWithCharactersInString:
-                                @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"] invertedSet];
-    if ([clean rangeOfCharacterFromSet:invalid].location != NSNotFound) return nil;
-    return clean;
 }
 
 static BOOL ApolloSubredditNamesEqual(NSString *left, NSString *right) {

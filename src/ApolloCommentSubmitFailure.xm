@@ -41,6 +41,7 @@
 #import <objc/message.h>
 #import "ApolloCommon.h"
 #import "ApolloAccountCredentials.h"
+#import "ApolloRandomFeed.h"
 
 // RedditKit's RDKObjectCompletionBlock: the parsed RDKComment (or nil) and an error.
 typedef void (^ApolloCommentFailureSubmitCompletion)(id object, NSError *error);
@@ -210,6 +211,9 @@ static void ApolloCommentFailureGET(id client, NSString *path, NSDictionary *par
             completion(status, json);
         });
     };
+    // Paths include r/<subreddit>/about, which reaches Apollo's own
+    // NSURLSession entry point; keep a random feed's roll from redirecting it.
+    ApolloRandomTweakFetchScope randomTweakFetchScope;
     @try {
         ((id (*)(id, SEL, id, id, id))objc_msgSend)(client, selector, path, parameters, taskCompletion);
     } @catch (NSException *e) {
