@@ -2,6 +2,8 @@
 __BEGIN_DECLS
 void ApolloDuoSplitScheduleUpdate(void);
 BOOL ApolloDuoSplitIsResizing(void);
+/// A drag is moving the Posts columns; a cancelled one puts the old widths back.
+BOOL ApolloDuoSplitIsColumnDragging(void);
 BOOL ApolloDuoSplitIsUnfolded(void);
 BOOL ApolloDuoRequiresSubredditEnhancements(void);
 BOOL ApolloDuoSplitIsUnfoldedPortrait(void);
