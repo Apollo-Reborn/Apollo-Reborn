@@ -459,6 +459,8 @@ static id ApolloCommentsHeaderCellNodeForNode(id node);
 static void ApolloShowOriginalWithRetranslateAffordanceForCellNode(id cellNode, RDKComment *comment, id textNode);
 static BOOL ApolloAttributedStringEndsWithMarker(NSAttributedString *attr);
 static void ApolloApplyTranslationToTitleNode(id titleNode, id textNode, NSString *sourceText, NSString *translatedText);
+static NSAttributedString *ApolloInboxSwapForIncomingBodyText(id textNode, NSAttributedString *incoming);
+static void ApolloInboxMaybeTranslateCell(id cell);
 // Main-thread-only flag used to reuse the normal snapshot builder while
 // briefly presenting an identical body-only cover to precommit its layer.
 static BOOL sApolloPrimingVoteBodySnapshot = NO;
@@ -6743,8 +6745,15 @@ static BOOL ApolloShouldShowTranslationMarkerForSource(NSString *sourceText, NSS
 // range is tagged with ApolloTranslationMarkerAttributeName. Callers keep the
 // CLEAN translated text in the owned-node cache; only the DISPLAY string carries
 // the marker, so the containment-based body/translation comparisons still match.
+static NSAttributedString *ApolloAttributedStringByAppendingTranslationMarkerUngated(NSAttributedString *translatedAttr, NSString *sourceText);
 static NSAttributedString *ApolloAttributedStringByAppendingTranslationMarker(NSAttributedString *translatedAttr, NSString *sourceText) {
     if (!sShowTranslationDetails && !sTapToTranslate) return translatedAttr;
+    return ApolloAttributedStringByAppendingTranslationMarkerUngated(translatedAttr, sourceText);
+}
+
+// Same marker without the Details/Tap-mode gate. The inbox uses it in Manual
+// mode, where the marker is the only way back to the original after a tap.
+static NSAttributedString *ApolloAttributedStringByAppendingTranslationMarkerUngated(NSAttributedString *translatedAttr, NSString *sourceText) {
     if (![translatedAttr isKindOfClass:[NSAttributedString class]] || translatedAttr.length == 0) return translatedAttr;
     NSString *sourceCode = nil;
     if (!ApolloShouldShowTranslationMarkerForSource(sourceText, &sourceCode)) return translatedAttr;
@@ -6864,7 +6873,14 @@ static BOOL ApolloCommentCellNodeIsBackedByActiveCommentsTable(id commentCellNod
 // Compact "🌐 Show translation" affordance appended under the ORIGINAL text when
 // the user has pinned a comment back to its source language — the same line then
 // toggles the translation back on.
+static NSAttributedString *ApolloAttributedStringByAppendingAffordanceLabeled(NSAttributedString *originalAttr, NSString *affordanceLabel);
 static NSAttributedString *ApolloAttributedStringByAppendingRetranslateAffordance(NSAttributedString *originalAttr) {
+    // In tap-to-translate mode the affordance IS the primary control, so use the
+    // action verb the user asked for; in normal mode it's the revert affordance.
+    return ApolloAttributedStringByAppendingAffordanceLabeled(originalAttr, sTapToTranslate ? @"Translate" : @"Show translation");
+}
+
+static NSAttributedString *ApolloAttributedStringByAppendingAffordanceLabeled(NSAttributedString *originalAttr, NSString *affordanceLabel) {
     if (![originalAttr isKindOfClass:[NSAttributedString class]] || originalAttr.length == 0) return originalAttr;
     // Never stack a second affordance onto a string that already ends with one
     // (e.g. a saved "original" that was accidentally captured post-decoration).
@@ -6894,9 +6910,6 @@ static NSAttributedString *ApolloAttributedStringByAppendingRetranslateAffordanc
         [marker appendAttributedString:[NSAttributedString attributedStringWithAttachment:att]];
         [marker appendAttributedString:[[NSAttributedString alloc] initWithString:@" " attributes:@{NSFontAttributeName: markerFont}]];
     }
-    // In tap-to-translate mode the affordance IS the primary control, so use the
-    // action verb the user asked for; in normal mode it's the revert affordance.
-    NSString *affordanceLabel = sTapToTranslate ? @"Translate" : @"Show translation";
     [marker appendAttributedString:[[NSAttributedString alloc] initWithString:affordanceLabel
                                                                    attributes:@{NSFontAttributeName: markerFont,
                                                                                 NSForegroundColorAttributeName: tint}]];
@@ -9616,6 +9629,14 @@ static void ApolloTranslateFreshCommentCellNode(id cellNode, NSArray *capturedTe
 %hook ASTextNode
 
 - (void)setAttributedText:(NSAttributedString *)attributedText {
+    // Inbox rows: Apollo re-rendering a body we translated, in place
+    // (ApolloInboxSwapForIncomingBodyText). One global read when unused.
+    NSAttributedString *inboxSwap = ApolloInboxSwapForIncomingBodyText(self, attributedText);
+    if (inboxSwap) {
+        %orig(inboxSwap);
+        ApolloEnsureMarkerTappableOnNode(self);
+        return;
+    }
     // Load more: note the text nodes Apollo fills while it builds a row (see
     // ApolloTranslateFreshCommentCellNode). Thread-local; nil outside a wrapped node block.
     if (tApolloInsertCapturedTextNodes) [tApolloInsertCapturedTextNodes addObject:self];
@@ -9703,6 +9724,14 @@ static void ApolloTranslateFreshCommentCellNode(id cellNode, NSArray *capturedTe
 %hook ASTextNode2
 
 - (void)setAttributedText:(NSAttributedString *)attributedText {
+    // Inbox rows: Apollo re-rendering a body we translated, in place
+    // (ApolloInboxSwapForIncomingBodyText). One global read when unused.
+    NSAttributedString *inboxSwap = ApolloInboxSwapForIncomingBodyText(self, attributedText);
+    if (inboxSwap) {
+        %orig(inboxSwap);
+        ApolloEnsureMarkerTappableOnNode(self);
+        return;
+    }
     if (tApolloInsertCapturedTextNodes) [tApolloInsertCapturedTextNodes addObject:self];
     if (![objc_getAssociatedObject(self, kApolloTranslationOwnedTextNodeKey) boolValue]) {
         // Vote-flash preempt (mirror of ASTextNode hook above).
@@ -11658,6 +11687,359 @@ static NSArray<UIBarButtonItem *> *ApolloSearchItemsWithGlobe(UINavigationItem *
 %end
 %end
 
+#pragma mark - Inbox rows
+
+// Inbox rows (Apollo.InboxCellNode: comment and post replies, mentions,
+// private messages, chat mirrors) draw the item's text in `bodyTextNode`,
+// rendered from the RDKMessage's markdown `messageBody`. Comments translate on
+// their thread page, but the inbox list never did, so a foreign reply stayed in
+// its original language there.
+//
+// The inbox has no globe, so each row carries its own control, the same line
+// comment bodies use:
+//   - Automatic: the body swaps to the translation as the row loads, with
+//     "Translated from …" under it when Details is on. Tapping that line pins
+//     the row to its original, with "Show translation" under it.
+//   - Tap to Translate, and Manual (there's no globe to wait for here): the
+//     original stays, with "Translate" under it. Tapping swaps to the
+//     translation, whose "Translated from …" line taps back.
+// Per-row choices share the comment pin sets (keyed by fullName), so a reply
+// pinned to its original in the inbox stays that way in its thread.
+//
+// No ownership is taken (the ASTextNode vote-resilience swap is comment-only).
+// The node remembers the exact string we last wrote; any other text on it is
+// Apollo's own render (a rebuilt or reused row) and becomes the clean original.
+
+static const void *kApolloInboxOriginalBodyKey = &kApolloInboxOriginalBodyKey;         // bodyTextNode: clean original NSAttributedString
+static const void *kApolloInboxOriginalFullNameKey = &kApolloInboxOriginalFullNameKey; // bodyTextNode: fullName that original belongs to
+static const void *kApolloInboxLastDisplayKey = &kApolloInboxLastDisplayKey;           // bodyTextNode: string we last wrote
+static const void *kApolloInboxRequestKeyKey = &kApolloInboxRequestKeyKey;             // cell: cacheKey of the request it waits on
+static NSHashTable *sApolloInboxCells = nil;   // weak: rows we've looked at, re-rendered on settings changes
+
+static id ApolloInboxCellIvar(id cell, const char *name) {
+    if (!cell) return nil;
+    Class cls = objc_getClass("_TtC6Apollo13InboxCellNode");
+    if (!cls || ![cell isKindOfClass:cls]) return nil;
+    Ivar ivar = class_getInstanceVariable(cls, name);
+    return ivar ? object_getIvar(cell, ivar) : nil;
+}
+
+// The row's RDKMessage (nil for new-modmail rows, which use other ivars).
+static id ApolloInboxMessageForCell(id cell) {
+    id message = ApolloInboxCellIvar(cell, "message");
+    Class messageClass = objc_getClass("RDKMessage");
+    return (messageClass && [message isKindOfClass:messageClass]) ? message : nil;
+}
+
+static NSString *ApolloInboxStringProperty(id object, SEL sel) {
+    if (!object || ![object respondsToSelector:sel]) return nil;
+    NSString *value = nil;
+    @try { value = ((id (*)(id, SEL))objc_msgSend)(object, sel); } @catch (__unused NSException *e) { return nil; }
+    return [value isKindOfClass:[NSString class]] ? value : nil;
+}
+
+static NSAttributedString *ApolloInboxCurrentText(id textNode) {
+    if (!textNode) return nil;
+    NSAttributedString *current = nil;
+    @try { current = ((id (*)(id, SEL))objc_msgSend)(textNode, @selector(attributedText)); } @catch (__unused NSException *e) { return nil; }
+    return [current isKindOfClass:[NSAttributedString class]] ? current : nil;
+}
+
+// YES when the row should show its translation (given one that differs).
+static BOOL ApolloInboxWantsTranslated(NSString *fullName) {
+    BOOL automatic = sAutoTranslateOnAppear && !sTapToTranslate;
+    if (automatic) return !(fullName.length > 0 && [sUserPinnedOriginalFullNames containsObject:fullName]);
+    return fullName.length > 0 && ApolloTapModeIsTranslatedKey(fullName);
+}
+
+// What the row's body should show, built from Apollo's clean `original`.
+// `translated` is the provider's answer (nil while unknown); `offerTranslate`
+// says detection found a foreign language worth offering "Translate" for
+// without an answer; `forceOriginal` puts back Apollo's own text with no line
+// under it. Returns `original` itself when nothing is added.
+static NSAttributedString *ApolloInboxDisplayForOriginal(NSAttributedString *original, NSString *body, NSString *fullName,
+                                                         NSString *translated, BOOL offerTranslate, BOOL forceOriginal,
+                                                         BOOL *outShowsTranslation) {
+    if (outShowsTranslation) *outShowsTranslation = NO;
+    BOOL automatic = sAutoTranslateOnAppear && !sTapToTranslate;
+    NSString *cleanTranslation = translated.length > 0 ? ApolloStripInlineMediaTokens(translated) : nil;
+    BOOL hasTranslation = cleanTranslation.length > 0 && ApolloTranslatedTextDiffersFromSource(body, cleanTranslation);
+    // The provider's answer settles it: unchanged text gets no control (#1345).
+    // With no answer (the request failed), only the tap modes keep "Translate"
+    // up as an on-demand retry; Automatic leaves the original alone, as
+    // comments do, rather than offer a "Show translation" that has none.
+    BOOL offer = hasTranslation || (translated.length == 0 && offerTranslate && !automatic);
+
+    BOOL active = sEnableBulkTranslation && !forceOriginal;
+    if (active && hasTranslation && ApolloInboxWantsTranslated(fullName)) {
+        if (outShowsTranslation) *outShowsTranslation = YES;
+        NSAttributedString *translatedAttr = ApolloTranslatedMarkdownBodyAttributedString(original, cleanTranslation);
+        // Manual mode has no other way back, so its marker ignores Details.
+        return (automatic || sTapToTranslate)
+            ? ApolloAttributedStringByAppendingTranslationMarker(translatedAttr, body)
+            : ApolloAttributedStringByAppendingTranslationMarkerUngated(translatedAttr, body);
+    }
+    if (active && offer && fullName.length > 0) {
+        // Automatic shows the original only once the user pinned it, so its
+        // line brings the translation back; the other modes offer one.
+        return ApolloAttributedStringByAppendingAffordanceLabeled(original, automatic ? @"Show translation" : @"Translate");
+    }
+    return original;
+}
+
+// Records `original` as the body node's clean text for `fullName`.
+static void ApolloInboxSetOriginal(id textNode, NSAttributedString *original, NSString *fullName) {
+    objc_setAssociatedObject(textNode, kApolloInboxOriginalBodyKey, [original copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloInboxOriginalFullNameKey, fullName, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloInboxLastDisplayKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+}
+
+// Writes the row's body for its current state (see ApolloInboxDisplayForOriginal).
+static void ApolloInboxRenderCell(id cell, id message, NSString *translated, BOOL offerTranslate, BOOL forceOriginal) {
+    if (!cell || !message) return;
+    id textNode = ApolloInboxCellIvar(cell, "bodyTextNode");
+    NSAttributedString *current = ApolloInboxCurrentText(textNode);
+    if (!current || current.length == 0) return;
+
+    NSString *fullName = ApolloInboxStringProperty(message, @selector(fullName)) ?: @"";
+    NSString *body = ApolloInboxStringProperty(message, @selector(messageBody));
+    if (body.length == 0) return;
+
+    // Find the clean original. Text we didn't write is Apollo's render of this
+    // row, so it replaces whatever was saved (a recycled node may still hold
+    // another message's original).
+    NSString *lastDisplay = objc_getAssociatedObject(textNode, kApolloInboxLastDisplayKey);
+    NSAttributedString *original = objc_getAssociatedObject(textNode, kApolloInboxOriginalBodyKey);
+    NSString *originalFullName = objc_getAssociatedObject(textNode, kApolloInboxOriginalFullNameKey);
+    BOOL showingOurs = [lastDisplay isKindOfClass:[NSString class]] && [current.string isEqualToString:lastDisplay];
+    if (!showingOurs || ![originalFullName isEqualToString:fullName] || ![original isKindOfClass:[NSAttributedString class]]) {
+        if (ApolloAttributedStringEndsWithMarker(current)) return;   // decorated text we can't trace back; leave it
+        original = [current copy];
+        ApolloInboxSetOriginal(textNode, original, fullName);
+    }
+
+    BOOL showTranslation = NO;
+    NSAttributedString *display = ApolloInboxDisplayForOriginal(original, body, fullName, translated, offerTranslate,
+                                                                forceOriginal, &showTranslation);
+    if (![display isKindOfClass:[NSAttributedString class]] || display.length == 0) return;
+
+    // Set before the write: the setAttributedText: hook reads an incoming
+    // string equal to this as our own write and passes it through.
+    objc_setAssociatedObject(textNode, kApolloInboxLastDisplayKey, display.string, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    if ([current.string isEqualToString:display.string]) return;   // already showing it
+
+    @try { ((void (*)(id, SEL, id))objc_msgSend)(textNode, @selector(setAttributedText:), display); }
+    @catch (__unused NSException *e) { return; }
+    if (display != original) ApolloEnsureMarkerTappableOnNode(textNode);
+    ApolloLog(@"[Translation] Inbox %@ → %@", fullName.length > 0 ? fullName : @"(no name)",
+              showTranslation ? @"translated" : (display == original ? @"original" : @"original + control"));
+    // Re-measure the row through Texture's own path: the text node's
+    // setNeedsLayout reaches the cell, which re-measures against its last
+    // constrained size and, when its height changes, has the table relayout
+    // the row at the data controller's width (the rail column on the Duo
+    // cover, see ApolloDuoRailIsFeedContentController). The comment helper
+    // ApolloForceRelayoutForTextNodeAndOwner is not used: it clears the cell's
+    // calculated layout first, and on the Duo cover the row then measured at
+    // the full table width, leaving the cell 84pt too wide and its footer clipped.
+    if ([textNode respondsToSelector:@selector(setNeedsLayout)]) {
+        ((void (*)(id, SEL))objc_msgSend)(textNode, @selector(setNeedsLayout));
+    }
+    ApolloTranslationHealCellDisplaySync(cell);
+}
+
+// Apollo's row configure (an unexported Swift function of InboxCellNode,
+// FUN_10067b8d4 in Apollo 1.15.11) builds the row's text and colours from its
+// message. It runs when the cell is created and again IN PLACE on the same
+// cell (a read-state or appearance refresh, e.g. coming back from the thread),
+// writing Apollo's own render over our translation or its line, with no
+// display event afterwards to put it back. Called first in the ASTextNode /
+// ASTextNode2 setAttributedText: hooks: when the node is a body we've rendered
+// and the incoming text isn't our own write, take it as the new clean original
+// and return our display for it (cached answer only), so the swap lands in the
+// same write with no flash. With no cached answer the text passes through and
+// the row is redone on the next turn.
+static NSAttributedString *ApolloInboxSwapForIncomingBodyText(id textNode, NSAttributedString *incoming) {
+    if (!sApolloInboxCells || ![NSThread isMainThread]) return nil;   // inbox never translated: one global read
+    NSString *lastDisplay = objc_getAssociatedObject(textNode, kApolloInboxLastDisplayKey);
+    if (![lastDisplay isKindOfClass:[NSString class]]) return nil;   // not a body we've rendered
+    if (![incoming isKindOfClass:[NSAttributedString class]] || incoming.length == 0) return nil;
+    // Our own write (lastDisplay is set before it), or decorated text.
+    if ([incoming.string isEqualToString:lastDisplay] || ApolloAttributedStringEndsWithMarker(incoming)) return nil;
+
+    id cell = nil;
+    @try {
+        if ([textNode respondsToSelector:@selector(supernode)]) cell = ((id (*)(id, SEL))objc_msgSend)(textNode, @selector(supernode));
+    } @catch (__unused NSException *e) { return nil; }
+    if (!cell || ApolloInboxCellIvar(cell, "bodyTextNode") != textNode) return nil;
+    id message = ApolloInboxMessageForCell(cell);
+    NSString *fullName = ApolloInboxStringProperty(message, @selector(fullName)) ?: @"";
+    NSString *body = ApolloInboxStringProperty(message, @selector(messageBody));
+    if (body.length == 0) return nil;
+
+    ApolloInboxSetOriginal(textNode, incoming, fullName);
+    NSString *sourceText = [body stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSString *targetLanguage = ApolloResolvedTargetLanguageCode();
+    NSString *cached = targetLanguage.length > 0
+        ? ApolloRawTranslationCacheGet(ApolloTranslationCacheKey(sourceText, targetLanguage)) : nil;
+    NSAttributedString *display = cached.length > 0
+        ? ApolloInboxDisplayForOriginal(incoming, body, fullName, cached, NO, NO, NULL) : incoming;
+    if (display == incoming || display.length == 0) {
+        __weak id weakCell = cell;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            id strongCell = weakCell;
+            if (strongCell) ApolloInboxMaybeTranslateCell(strongCell);
+        });
+        return nil;
+    }
+    objc_setAssociatedObject(textNode, kApolloInboxLastDisplayKey, display.string, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    ApolloLog(@"[Translation] Inbox %@ rewritten by Apollo, translation kept", fullName);
+    return display;
+}
+
+// Main thread. Detects the row's language, asks the provider (cache first,
+// so a known answer applies synchronously) and renders the row from it.
+static void ApolloInboxMaybeTranslateCell(id cell) {
+    if (!cell || ![NSThread isMainThread]) return;
+    if (!sApolloInboxCells) sApolloInboxCells = [NSHashTable weakObjectsHashTable];
+    [sApolloInboxCells addObject:cell];
+
+    id message = ApolloInboxMessageForCell(cell);
+    if (!message) return;
+    if (!sEnableBulkTranslation) {
+        // Switched off: put back anything we changed (a no-op for untouched rows,
+        // since the original is only recorded once we've written).
+        if (objc_getAssociatedObject(ApolloInboxCellIvar(cell, "bodyTextNode"), kApolloInboxLastDisplayKey)) {
+            ApolloInboxRenderCell(cell, message, nil, NO, YES);
+        }
+        return;
+    }
+
+    NSString *sourceText = [ApolloInboxStringProperty(message, @selector(messageBody))
+                            stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (sourceText.length == 0 || ApolloTextContainsMarkdownCode(sourceText)) return;
+    NSString *targetLanguage = ApolloResolvedTargetLanguageCode();
+    if (targetLanguage.length == 0) return;
+
+    // Detect on link-stripped text so URLs don't pull the guess toward English.
+    NSString *detected = ApolloDetectDominantLanguage(ApolloProtectTranslationLinks(sourceText, NULL));
+    if ([detected isEqualToString:targetLanguage] || ApolloLanguageCodeIsInSkipList(detected)) return;
+
+    NSString *cacheKey = ApolloTranslationCacheKey(sourceText, targetLanguage);
+    BOOL offerTranslate = detected.length > 0 && !ApolloCachedTranslationLeavesTextUnchanged(cacheKey, sourceText);
+    objc_setAssociatedObject(cell, kApolloInboxRequestKeyKey, cacheKey, OBJC_ASSOCIATION_COPY_NONATOMIC);
+
+    __weak id weakCell = cell;
+    ApolloRequestTranslation(cacheKey, sourceText, targetLanguage, ^(NSString *translated, NSError *error) {
+        void (^apply)(void) = ^{
+            id strongCell = weakCell;
+            if (!strongCell) return;
+            // The row may have been reused for another message meanwhile.
+            if (![objc_getAssociatedObject(strongCell, kApolloInboxRequestKeyKey) isEqual:cacheKey]) return;
+            id strongMessage = ApolloInboxMessageForCell(strongCell);
+            if (!strongMessage) return;
+            if (![translated isKindOfClass:[NSString class]] || translated.length == 0) {
+                if (error && ![error.userInfo[kApolloTranslationCooldownReplayKey] boolValue]) {
+                    ApolloLogError(@"[Translation] Failed to translate inbox item: %@", error.localizedDescription ?: @"unknown error");
+                }
+                // Keep the "Translate" offer up: a tap retries on demand.
+                ApolloInboxRenderCell(strongCell, strongMessage, nil, offerTranslate, NO);
+                return;
+            }
+            ApolloInboxRenderCell(strongCell, strongMessage, translated, offerTranslate, NO);
+        };
+        if ([NSThread isMainThread]) apply(); else dispatch_async(dispatch_get_main_queue(), apply);
+    });
+}
+
+// Tap on the row's marker/affordance line: flip this row, then re-render.
+static void ApolloInboxToggleCell(id cell) {
+    id message = ApolloInboxMessageForCell(cell);
+    NSString *fullName = ApolloInboxStringProperty(message, @selector(fullName));
+    if (fullName.length == 0) return;
+    BOOL showingTranslation = ApolloInboxWantsTranslated(fullName);
+    if (sAutoTranslateOnAppear && !sTapToTranslate) {
+        if (!sUserPinnedOriginalFullNames) sUserPinnedOriginalFullNames = [NSMutableSet set];
+        if (showingTranslation) [sUserPinnedOriginalFullNames addObject:fullName];
+        else [sUserPinnedOriginalFullNames removeObject:fullName];
+    } else {
+        ApolloTapModeSetKeyTranslated(fullName, !showingTranslation);
+    }
+    ApolloLog(@"[Translation] Inbox %@ tapped → %@", fullName, showingTranslation ? @"original" : @"translation");
+    ApolloInboxMaybeTranslateCell(cell);
+}
+
+// Settings changed (mode, Details, target language, skip list, on/off):
+// re-derive every loaded row from the current flags.
+static void ApolloInboxRefreshAllCells(void) {
+    for (id cell in [sApolloInboxCells allObjects]) {
+        @try {
+            if ([cell respondsToSelector:@selector(isNodeLoaded)] &&
+                !((BOOL (*)(id, SEL))objc_msgSend)(cell, @selector(isNodeLoaded))) continue;
+            id message = ApolloInboxMessageForCell(cell);
+            id textNode = ApolloInboxCellIvar(cell, "bodyTextNode");
+            // Back to the original first, so a mode or language change starts clean.
+            if (message && objc_getAssociatedObject(textNode, kApolloInboxLastDisplayKey)) {
+                ApolloInboxRenderCell(cell, message, nil, NO, YES);
+            }
+            ApolloInboxMaybeTranslateCell(cell);
+        } @catch (__unused NSException *e) {}
+    }
+}
+
+%group ApolloTranslationInbox
+%hook _TtC6Apollo13InboxCellNode
+
+- (void)didEnterPreloadState {
+    %orig;
+    if (!sEnableBulkTranslation) return;
+    // Weak hop: rows are torn down during scroll/refresh before the queue drains.
+    __weak id weakSelf = (id)self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        id cell = weakSelf;
+        if (cell) ApolloInboxMaybeTranslateCell(cell);
+    });
+}
+
+- (void)didEnterDisplayState {
+    %orig;
+    if (!sEnableBulkTranslation && !sApolloInboxCells) return;
+    // Covers a row whose text Apollo re-rendered since it last loaded, and
+    // cached answers (applied synchronously from the cache).
+    __weak id weakSelf = (id)self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        id cell = weakSelf;
+        if (cell) ApolloInboxMaybeTranslateCell(cell);
+    });
+}
+
+- (BOOL)textNode:(id)textNode shouldHighlightLinkAttribute:(id)attribute value:(id)value atPoint:(CGPoint)point {
+    if ([attribute isKindOfClass:[NSString class]] &&
+        [(NSString *)attribute isEqualToString:ApolloTranslationMarkerLinkAttributeName]) {
+        return YES;
+    }
+    return %orig;
+}
+
+- (BOOL)textNode:(id)textNode shouldLongPressLinkAttribute:(id)attribute value:(id)value atPoint:(CGPoint)point {
+    if ([attribute isKindOfClass:[NSString class]] &&
+        [(NSString *)attribute isEqualToString:ApolloTranslationMarkerLinkAttributeName]) {
+        return NO;
+    }
+    return %orig;
+}
+
+- (void)textNode:(id)textNode tappedLinkAttribute:(id)attribute value:(id)value atPoint:(CGPoint)point textRange:(NSRange)textRange {
+    if ([attribute isKindOfClass:[NSString class]] &&
+        [(NSString *)attribute isEqualToString:ApolloTranslationMarkerLinkAttributeName]) {
+        ApolloInboxToggleCell((id)self);
+        return;
+    }
+    %orig;
+}
+
+%end
+%end
+
 // ============ TEMP DEBUG TRIGGERS (sim verification only — remove) ============
 #if APOLLO_SIM_BUILD
 static void ApolloDbgToggleTopMarker(CFNotificationCenterRef c, void *o, CFStringRef n, const void *obj, CFDictionaryRef u) {
@@ -12132,4 +12514,24 @@ static void ApolloGlobeCollectNavigationItems(UIView *view, NSMutableArray<UINav
 
     %init;
     %init(ApolloTranslationMarkerTap);
+    %init(ApolloTranslationInbox);
+
+    // Inbox rows re-derive from the current flags after any Translation setting
+    // changes (mode, Details, target language, provider, on/off, skip list).
+    // Coalesced: one settings tap can post several of these.
+    __block BOOL inboxRefreshPending = NO;
+    void (^scheduleInboxRefresh)(NSNotification *) = ^(NSNotification *note) {
+        if ([note.name isEqualToString:ApolloRichPreviewTranslationDidUpdateNotification] &&
+            ![note.userInfo[@"reason"] isEqual:@"settings-change"]) return;
+        if (inboxRefreshPending) return;
+        inboxRefreshPending = YES;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            inboxRefreshPending = NO;
+            ApolloInboxRefreshAllCells();
+        });
+    };
+    [[NSNotificationCenter defaultCenter] addObserverForName:ApolloRichPreviewTranslationDidUpdateNotification
+                                                      object:nil queue:[NSOperationQueue mainQueue] usingBlock:scheduleInboxRefresh];
+    [[NSNotificationCenter defaultCenter] addObserverForName:@"ApolloTranslationSkipLanguagesChanged"
+                                                      object:nil queue:[NSOperationQueue mainQueue] usingBlock:scheduleInboxRefresh];
 }

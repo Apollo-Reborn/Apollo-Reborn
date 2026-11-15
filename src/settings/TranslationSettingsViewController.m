@@ -286,7 +286,7 @@ NSArray<NSDictionary<NSString *, NSString *> *> *ApolloTranslationLanguageOption
     NSMutableArray<ApolloSettingsSection *> *sections = [NSMutableArray array];
     [sections addObject:
         [ApolloSettingsSection sectionWithTitle:@"General"
-                                         footer:@"Translates comments and post titles in place.\n\nAutomatic translates on open. Tap to Translate adds a per-item tap. Manual waits for the globe.\n\nDetails rows add \"Translated from …\" labels.\n\nGoogle is free but rate-limits heavy use. Apple is offline and unlimited (iOS 18+). Microsoft and LibreTranslate need their own keys, set up below."
+                                         footer:@"Translates comments, inbox items and post titles in place.\n\nAutomatic translates on open. Tap to Translate adds a per-item tap. Manual waits for the globe (in the inbox, a per-item tap).\n\nDetails rows add \"Translated from …\" labels.\n\nGoogle is free but rate-limits heavy use. Apple is offline and unlimited (iOS 18+). Microsoft and LibreTranslate need their own keys, set up below."
                                            rows:@[ enableBulk, translationMode, translateTitles, showDetails, titleDetails, markerColor, targetLanguage, provider ]]];
 
     // Apollo's own Translate button (the native action-sheet item on comment/post
