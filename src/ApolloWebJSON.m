@@ -229,6 +229,11 @@ static NSSet<NSString *> *ApolloWebJSONUserWheres(void) {
     return wheres;
 }
 
+// /r/<sub>/api/<name> flair-template lists (subreddit-scoped GETs).
+static NSDictionary<NSString *, NSNumber *> *ApolloWebJSONFlairListNames(void) {
+    return @{ @"link_flair": @YES, @"link_flair_v2": @YES, @"user_flair": @YES, @"user_flair_v2": @YES };
+}
+
 // Classify a GET path. Listing pages need a ".json" suffix appended; /api/*
 // endpoints serve JSON without one. Anything unrecognized returns Unsupported
 // so it stays on the oauth path rather than silently degrading.
@@ -273,7 +278,12 @@ static ApolloWebJSONPathKind ApolloWebJSONClassifyReadPath(NSString *path) {
         // 401→refresh→retry loop (~8 req/s, observed live hanging the Submit
         // drawer on /r/<sub>/api/link_flair). A definitive www response —
         // even a 404 — ends the cycle.
-        if ([what isEqualToString:@"api"]) return ApolloWebJSONPathAPI;
+        if ([what isEqualToString:@"api"]) {
+            // The flair-template lists 404 on www at their bare path but answer
+            // the cookie with a ".json" suffix, like a listing page.
+            if (seg.count == 4 && ApolloWebJSONFlairListNames()[seg[3]]) return ApolloWebJSONPathListing;
+            return ApolloWebJSONPathAPI;
+        }
         return ApolloWebJSONPathUnsupported;
     }
 
@@ -390,10 +400,11 @@ static NSData *ApolloWebJSONFormBodyAddingSubreddit(NSURLRequest *request, NSStr
 // the legacy /r/<sub>/about/moderators.json endpoint, whose response shape is
 // completely different (old-reddit {kind, data:{children:[...]}} vs the modern
 // {moderators:{<fullname>:{...}}, moderatorIds:[...], ...}) — see
-// ApolloWebJSONFixupModeratorsResponseObject for the translation back. It's
-// now the fallback: with a web bearer on hand the request goes to
-// oauth.reddit.com instead (ApolloWebJSONPathNeedsWebBearer), which keeps the
-// fields the mirror can't supply, notably invitePending.
+// ApolloWebJSONFixupModeratorsResponseObject for the translation back. The
+// moderator list always goes there: it used to go to oauth.reddit.com with a
+// web bearer when one was on hand (keeping fields the mirror can't supply,
+// notably invitePending), but oauth.reddit.com answers that bearer with its
+// HTML block page as of 2026-11-16, which left View Moderators empty.
 // Returns the subreddit name, or nil if `path` doesn't match.
 static NSString *ApolloWebJSONModeratorsPathSubreddit(NSString *path) {
     static NSRegularExpression *re;
@@ -415,7 +426,9 @@ static NSString *ApolloWebJSONModeratorsPathSubreddit(NSString *path) {
 //     www answers each with its 403 HTML page for ANY cookie request (#1292);
 //   • the user lists behind Approved Submitters, Ban Users, Mute Users and
 //     Moderators (/api/v1/<sub>/contributors, /banned, /muted, /moderators,
-//     /moderators_invited, including their single-user lookups) and declining
+//     /moderators_invited, including their single-user lookups; /moderators
+//     itself now always uses its cookie mirror, see
+//     ApolloWebJSONModeratorsPathSubreddit) and declining
 //     a mod invite (/api/v1/<sub>/decline_mod_invite); www answers these with
 //     a 403 JSON "Forbidden" / USER_REQUIRED;
 //   • banning and inviting a moderator (POST /r/<sub>/api/friend) and
@@ -454,7 +467,7 @@ BOOL ApolloWebJSONPathNeedsWebBearer(NSString *path) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         re = [NSRegularExpression regularExpressionWithPattern:
-              @"^/?(api/v1/(modactions/[^/?]+|[^/?]+/(removal_reasons(/[^/?]+)?|contributors|banned|muted|moderators|moderators_invited|decline_mod_invite))"
+              @"^/?(api/v1/(modactions/[^/?]+|[^/?]+/(removal_reasons(/[^/?]+)?|contributors|banned|muted|moderators_invited|decline_mod_invite))"
                "|r/[^/?]+/api/(friend|accept_moderator_invite))/?(\\?|$)"
                                                          options:NSRegularExpressionCaseInsensitive error:NULL];
     });
@@ -662,8 +675,8 @@ NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
     // 401) the request falls through to the handling below, as before. Reddit
     // refuses most of these there: the /api/ ones go to www with the cookie,
     // and the /r/<sub>/api/ writes stay on oauth with the placeholder bearer.
-    // /moderators keeps its legacy mirror and /moderators_invited its empty
-    // stub.
+    // /moderators_invited keeps its empty stub. (/moderators isn't one of
+    // these: it always goes to its legacy mirror below.)
     if (ApolloWebJSONPathNeedsWebBearer(path)) {
         NSString *webBearer = ApolloWebJSONReadyWebBearer(sessionUsername);
         NSURLRequest *oauthRequest = webBearer.length > 0
@@ -2080,6 +2093,8 @@ static BOOL ApolloWebJSONPathExpectsListingDictionary(NSString *path) {
     }
     if ([head isEqualToString:@"r"] && seg.count >= 3 &&
         ([seg[2] isEqualToString:@"comments"] || [seg[2] isEqualToString:@"duplicates"])) return NO;
+    // The flair-template lists (/r/<sub>/api/link_flair etc.) are arrays.
+    if ([head isEqualToString:@"r"] && seg.count >= 3 && [seg[2] isEqualToString:@"api"]) return NO;
     return YES;
 }
 
@@ -2211,15 +2226,14 @@ BOOL ApolloWebJSONShouldStubInvitedModerators(NSURLResponse *response) {
 }
 
 // GET /r/<sub>/api/link_flair(_v2) — the post composer's flair-template list —
-// rejects cookie auth: the www mirror 404s for it (verified live; old reddit
-// picks flair via a different POST flow the app can't use). The rewrite still
-// routes it to www so it draws a definitive 404 instead of the oauth
-// 401→refresh→retry loop (see the classifier note), and the serializer then
-// recovers the real list from oauth.reddit.com with a web-session bearer
-// (ApolloWebJSONRescueFlairList below), stubbing an empty list only
-// when no usable bearer exists — no flair choices, but the Submit drawer
-// still loads instead of hanging. user_flair(_v2) gets the same treatment
-// for symmetry. OAuth accounts untouched (session gate).
+// 404s on www at its bare path, but www answers the cookie at the ".json" path
+// (checked live 2026-11-16), so the classifier sends it there like a listing.
+// Should www still fail, the serializer tries oauth.reddit.com with a
+// web-session bearer (ApolloWebJSONRescueFlairList below; as of 2026-11-16
+// oauth answers that bearer with its HTML block page) and stubs an empty list
+// when that fails too — no flair choices, but the Submit drawer still loads
+// instead of hanging. user_flair(_v2) gets the same treatment. OAuth accounts
+// untouched (session gate).
 BOOL ApolloWebJSONShouldStubFlairList(NSURLResponse *response) {
     if (!ApolloWebJSONHasUsableSession()) return NO;
     if (![response isKindOfClass:[NSHTTPURLResponse class]]) return NO;
@@ -2229,7 +2243,7 @@ BOOL ApolloWebJSONShouldStubFlairList(NSURLResponse *response) {
     static NSRegularExpression *re;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        re = [NSRegularExpression regularExpressionWithPattern:@"^/r/[^/]+/api/(link_flair|user_flair)(_v2)?/?$"
+        re = [NSRegularExpression regularExpressionWithPattern:@"^/r/[^/]+/api/(link_flair|user_flair)(_v2)?(\\.json)?/?$"
                                                          options:0 error:NULL];
     });
     return [re firstMatchInString:path options:0 range:NSMakeRange(0, path.length)] != nil;
