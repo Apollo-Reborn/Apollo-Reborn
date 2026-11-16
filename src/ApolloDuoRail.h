@@ -29,6 +29,17 @@ CGRect ApolloDuoActiveVerticalDivision(UIView *view);
 /// Active tabletop division in this view's coordinates; CGRectNull when flat.
 CGRect ApolloDuoActiveHorizontalDivision(UIView *view);
 
+/// The vertical division in `view`'s coordinates, read from the app window
+/// while `view` is off screen (an unselected tab).
+CGRect ApolloDuoLayoutVerticalDivision(UIView *view);
+
+/// Posted (object: the window) when that window's division region changes.
+/// Fold-dependent layout listens for this instead of the hinge.
+FOUNDATION_EXTERN NSNotificationName const ApolloDuoFoldDidChangeNotification;
+
+/// Starts `window`'s fold tracker, once per window (no-op before iOS 27.1).
+void ApolloDuoTrackFold(UIWindow *window);
+
 /// Refresh the cached window mode without changing UIKit's tab bar.
 void ApolloDuoRailSync(void);
 

@@ -1281,7 +1281,6 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
 @implementation ApolloDuoSplitReference @end
 
 static char kDuoSplitState, kDuoSplitReference;
-static char kDuoSplitHingeInteraction, kDuoSplitHingeStatus;
 static BOOL sDuoSplitUpdateScheduled;
 static BOOL sDuoSplitUpdating;
 static NSHashTable<ApolloDuoSplitState *> *sDuoSplitDeferredPresentations;
@@ -1703,38 +1702,6 @@ static BOOL ApolloDuoSplitWantsHalfWidth(UITabBarController *tabs) {
     return !CGRectIsNull(ApolloDuoActiveVerticalDivision(tabs.view));
 }
 
-// The hinge interaction only prompts a re-check of that region. Resolve the
-// iOS 27.1 API dynamically so 26 SDK device builds and older iPhones work.
-
-static void ApolloDuoSplitObserveHinge(UITabBarController *tabs) {
-    if (objc_getAssociatedObject(tabs, &kDuoSplitHingeInteraction)) return;
-    if (@available(iOS 27.1, *)) {
-        Class cls = NSClassFromString(@"UIHingeInteraction");
-        if (!cls) return;
-        __weak UITabBarController *weakTabs = tabs;
-        void (^handler)(id, id) = ^(__unused id interaction, id update) {
-            UITabBarController *owner = weakTabs;
-            if (!owner) return;
-            id hinge = ((id (*)(id, SEL))objc_msgSend)(update, NSSelectorFromString(@"hinge"));
-            NSInteger status = hinge ? ((NSInteger (*)(id, SEL))objc_msgSend)(hinge, NSSelectorFromString(@"status")) : 0;
-            NSInteger previous = [objc_getAssociatedObject(owner, &kDuoSplitHingeStatus) integerValue];
-            if (previous == status) return;
-            objc_setAssociatedObject(owner, &kDuoSplitHingeStatus, @(status), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            ApolloLog(@"[DuoSplit] hinge status %ld -> %ld; re-checking the division region", (long)previous, (long)status);
-            // Defer containment work out of UIKit's interaction delivery. The
-            // normal update also prepares the tabs that are not selected.
-            ApolloDuoSplitScheduleUpdate();
-            // The division region may publish a beat after the hinge reading;
-            // check once more instead of depending on the hinge update rate.
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{ ApolloDuoSplitScheduleUpdate(); });
-        };
-        id<UIInteraction> interaction = ((id (*)(id, SEL, id))objc_msgSend)([cls alloc], NSSelectorFromString(@"initWithUpdateHandler:"), handler);
-        objc_setAssociatedObject(tabs, &kDuoSplitHingeInteraction, interaction, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [tabs.view addInteraction:interaction];
-    }
-}
-
 static void ApolloDuoSplitApplySidebarWidth(ApolloDuoSplitState *state, BOOL halfWidth) {
     UISplitViewController *split = state.split;
     if (!split) return;
@@ -1747,7 +1714,9 @@ static void ApolloDuoSplitApplySidebarWidth(ApolloDuoSplitState *state, BOOL hal
     // Keep UIKit's actual columns authoritative. The grip updates the requested
     // width; no snapshots, private recognizer changes, or navigation handoffs.
     CGFloat postsWidth = half;
-    if (postsLandscape && CGRectIsNull(ApolloDuoActiveVerticalDivision(state.host.view))) {
+    // Unselected tabs are laid out too; read the fold as they will show it.
+    CGRect fold = ApolloDuoLayoutVerticalDivision(state.host.view);
+    if (postsLandscape && CGRectIsNull(fold)) {
         double share = [NSUserDefaults.standardUserDefaults doubleForKey:UDKeyDuoDividerFeedShare];
         if (!(share > 0 && share < 1) || !isfinite(share)) share = 0.5;
         CGFloat inset = MAX(state.host.view.safeAreaInsets.right, state.secondary.view.safeAreaInsets.right);
@@ -1767,7 +1736,6 @@ static void ApolloDuoSplitApplySidebarWidth(ApolloDuoSplitState *state, BOOL hal
     if (postsLandscape && canvas.width > 0) fraction = postsWidth / canvas.width;
     if (halfWidth && !state.feed && canvas.width > 0.0) {
         // End the sidebar at the fold itself rather than an assumed midpoint.
-        CGRect fold = ApolloDuoActiveVerticalDivision(state.host.view);
         if (!CGRectIsNull(fold)) fraction = MIN(0.7, MAX(0.3, CGRectGetMinX(fold) / canvas.width));
     }
     if (split.preferredPrimaryColumnWidthFraction != fraction) split.preferredPrimaryColumnWidthFraction = fraction;
@@ -4634,7 +4602,8 @@ static void ApolloDuoSplitUpdate(void) {
     if (tabs != sDuoSplitKnownTabs && ApolloDuoCurrentMode() == ApolloDuoModePhone
         && !ApolloDuoRailHasVisibleSideBar()) return;
     sDuoSplitUpdating = YES;
-    ApolloDuoSplitObserveHinge(tabs);
+    // Its fold notifications re-run this update.
+    ApolloDuoTrackFold(tabs.view.window);
     BOOL open = ApolloDuoSplitShouldOpen(tabs);
     for (UIViewController *child in tabs.viewControllers) {
         if (![child isKindOfClass:UINavigationController.class]) continue;
@@ -6092,6 +6061,10 @@ static void ApolloDuoSlideFitDisplay(id builder) {
     [NSNotificationCenter.defaultCenter addObserverForName:@"ApolloDuoFeedLayoutDidChange"
         object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {
             ApolloDuoRefreshLayoutControls();
+        }];
+    [NSNotificationCenter.defaultCenter addObserverForName:ApolloDuoFoldDidChangeNotification
+        object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {
+            ApolloDuoSplitScheduleUpdate();
         }];
     // Editing, or a keyboard with a frame (web inputs post no editing
     // notices), starts a hold; iOS sends a zero-height keyboard notice on
