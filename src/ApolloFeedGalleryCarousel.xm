@@ -33,6 +33,9 @@
 
 struct ApolloFeedGallerySizeRange { CGSize min; CGSize max; };
 
+// Swift owns assignment and release of the native [Int: UIImage] dictionary.
+extern "C" void ApolloMediaAssignThumbnails(void *, const void *);
+
 @interface ASLayoutSpec : NSObject
 @end
 
@@ -154,6 +157,10 @@ static ApolloFeedGalleryOwnerBox *sApolloFeedGalleryOpeningCarousel;
 
 @interface ApolloFeedGalleryPendingSelection : NSObject
 @property (nonatomic) NSInteger index;
+// NO when the native sender already maps to `index` (pages 0-2).
+@property (nonatomic) BOOL seedsIndex;
+// Decoded carousel pages keyed by page, handed to the viewer as placeholders.
+@property (nonatomic, copy) NSDictionary<NSNumber *, UIImage *> *placeholders;
 @end
 @implementation ApolloFeedGalleryPendingSelection
 @end
@@ -719,28 +726,37 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
                                                     fromView:pageView];
     }
 
-    // Pages >= 3 have no matching native sender; seed the pager's index ivar
-    // via the viewDidLoad hook instead (guarded, see CanWriteOptionalIndexIvar).
-    if (!senderMapsNatively) {
-        ApolloFeedGalleryPendingSelection *selection = [[ApolloFeedGalleryPendingSelection alloc] init];
-        selection.index = index;
-        objc_setAssociatedObject(link, &kApolloFeedGalleryPendingViewerIndexKey,
-                                 selection, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        // The native route allocates and presents the pager synchronously, so
-        // viewDidLoad consumes this within the current turn; one hop later it
-        // can only be stale.
-        __weak RDKLink *weakLink = link;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            RDKLink *innerLink = weakLink;
-            if (innerLink && objc_getAssociatedObject(innerLink, &kApolloFeedGalleryPendingViewerIndexKey) == selection) {
-                objc_setAssociatedObject(innerLink, &kApolloFeedGalleryPendingViewerIndexKey, nil,
-                                         OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                ApolloLog(@"[FeedGallery] cleared stale native-viewer selection");
-            }
-        });
-    }
-    ApolloLog(@"[FeedGallery] opening native viewer requestedIndex=%ld nativeSender=%d",
-              (long)index, (int)senderMapsNatively);
+    // The native route keys its placeholder map by the sender's slot, so a
+    // page >= 3 (sent through thumbnailNode1) gets its image under key 0. The
+    // zoom animator reads thumbnails[selectedThumbnailIndex] (0x10020a27c),
+    // finds nothing and falls back to a fade while the page downloads.
+    // viewDidLoad replaces the map with the carousel's decoded pages under
+    // their own indices and seeds the index for pages >= 3 (see
+    // CanWriteOptionalIndexIvar).
+    NSMutableDictionary<NSNumber *, UIImage *> *placeholders = [NSMutableDictionary dictionary];
+    [self.imageViews enumerateObjectsUsingBlock:^(UIImageView *imageView, NSUInteger page, BOOL *stop) {
+        if (imageView.image) placeholders[@(page)] = imageView.image;
+    }];
+    ApolloFeedGalleryPendingSelection *selection = [[ApolloFeedGalleryPendingSelection alloc] init];
+    selection.index = index;
+    selection.seedsIndex = !senderMapsNatively;
+    selection.placeholders = placeholders;
+    objc_setAssociatedObject(link, &kApolloFeedGalleryPendingViewerIndexKey,
+                             selection, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // The native route allocates and presents the pager synchronously, so
+    // viewDidLoad consumes this within the current turn; one hop later it
+    // can only be stale.
+    __weak RDKLink *weakLink = link;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        RDKLink *innerLink = weakLink;
+        if (innerLink && objc_getAssociatedObject(innerLink, &kApolloFeedGalleryPendingViewerIndexKey) == selection) {
+            objc_setAssociatedObject(innerLink, &kApolloFeedGalleryPendingViewerIndexKey, nil,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            ApolloLog(@"[FeedGallery] cleared stale native-viewer selection");
+        }
+    });
+    ApolloLog(@"[FeedGallery] opening native viewer requestedIndex=%ld nativeSender=%d placeholders=%lu",
+              (long)index, (int)senderMapsNatively, (unsigned long)placeholders.count);
     // The native initializer may copy the post. Bind the return route to
     // the actual pager during synchronous presentation, not to link identity.
     ApolloFeedGalleryOwnerBox *previousOpening = sApolloFeedGalleryOpeningCarousel;
@@ -1184,15 +1200,35 @@ static void ApolloFeedGalleryRememberViewerPage(UIPageViewController *pager) {
     if ([selection isKindOfClass:[ApolloFeedGalleryPendingSelection class]]) {
         objc_setAssociatedObject(link, &kApolloFeedGalleryPendingViewerIndexKey, nil,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        Ivar selectedIvar = class_getInstanceVariable([self class], "selectedThumbnailIndex");
-        if (selectedIvar && ApolloFeedGalleryCanWriteOptionalIndexIvar([self class], selectedIvar)) {
-            uint8_t *slot = (uint8_t *)(__bridge void *)self + ivar_getOffset(selectedIvar);
-            *(NSInteger *)slot = MAX(0, selection.index);
-            slot[sizeof(NSInteger)] = 0; // Swift.Optional<Int>.some discriminator
-            ApolloLog(@"[FeedGallery] seeded native viewer requestedIndex=%ld",
+        Class pageClass = [self class];
+        Ivar selectedIvar = class_getInstanceVariable(pageClass, "selectedThumbnailIndex");
+        if (selection.seedsIndex) {
+            if (selectedIvar && ApolloFeedGalleryCanWriteOptionalIndexIvar(pageClass, selectedIvar)) {
+                uint8_t *slot = (uint8_t *)(__bridge void *)self + ivar_getOffset(selectedIvar);
+                *(NSInteger *)slot = MAX(0, selection.index);
+                slot[sizeof(NSInteger)] = 0; // Swift.Optional<Int>.some discriminator
+                ApolloLog(@"[FeedGallery] seeded native viewer requestedIndex=%ld",
+                          (long)selection.index);
+            } else {
+                ApolloLog(@"[FeedGallery] native viewer index layout unexpected; opening at native index");
+            }
+        }
+        // thumbnails is a single-pointer Swift [Int: UIImage] immediately
+        // before selectedThumbnailIndex; anything else keeps the native map.
+        // The opened page must be decoded: for pages 0-2 the native map may
+        // already hold Apollo's own thumbnail for it.
+        Ivar thumbnailsIvar = class_getInstanceVariable(pageClass, "thumbnails");
+        BOOL hasOpenedPage = selection.placeholders[@(selection.index)] != nil;
+        if (hasOpenedPage && thumbnailsIvar && selectedIvar &&
+            ivar_getOffset(selectedIvar) - ivar_getOffset(thumbnailsIvar) == (ptrdiff_t)sizeof(void *)) {
+            uint8_t *base = (uint8_t *)(__bridge void *)self;
+            ApolloMediaAssignThumbnails(base + ivar_getOffset(thumbnailsIvar),
+                                        (__bridge const void *)selection.placeholders);
+            ApolloLog(@"[FeedGallery] viewer placeholders pages=%@ requestedIndex=%ld",
+                      [selection.placeholders.allKeys sortedArrayUsingSelector:@selector(compare:)],
                       (long)selection.index);
         } else {
-            ApolloLog(@"[FeedGallery] native viewer index layout unexpected; opening at native index");
+            ApolloLog(@"[FeedGallery] keeping native placeholders (opened page decoded=%d)", (int)hasOpenedPage);
         }
     }
     %orig;
