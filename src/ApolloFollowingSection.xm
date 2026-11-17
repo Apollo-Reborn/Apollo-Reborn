@@ -58,6 +58,17 @@
 //    ApolloMultiredditExpansion.h for the reproduced invalid-row-count case.
 //    The favorite star's batch takes the same route when the table's cached
 //    counts are already stale before it starts (#1335).
+//    The animation keeps that deferral as the default: multiredditExpand-
+//    ButtonTapped: only lets the batch through (ApolloPerformMultireddit-
+//    ExpansionAnimated, row animation forced to Fade, chevron rotated to
+//    the observed row-count change) when the gate in
+//    ApolloMultiredditExpansion.h can prove the batch consistent — tapped
+//    model resolved by title AND subtitle via ApolloMultiredditEdit, its
+//    children accounting for every model sharing the title, snapshot fresh,
+//    Reduce Motion off, not editing, no expansion already in flight. Every
+//    other case takes the reload path above, unchanged. A UIKit row-count
+//    failure from a batch the gate could not see is caught in the handler
+//    and recovered by the scope's post-batch reload; see the handler.
 //
 // Everything else Apollo does to this table is reloadData (unsubscribe commits,
 // model refreshes), which is remap-safe: our mapping is invalidated in a
@@ -79,6 +90,7 @@
 // walk return nil and the feature quietly deactivates for that launch.
 
 #import <UIKit/UIKit.h>
+#import <math.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <dlfcn.h>
@@ -88,6 +100,7 @@
 #import "ApolloCommon.h"
 #import "ApolloClasses.h"
 #import "ApolloFollowingSection.h"
+#import "ApolloMultiredditEdit.h"
 #import "ApolloMultiredditExpansion.h"
 #import "ApolloState.h"
 #import "ApolloSwiftRuntime.h"
@@ -880,6 +893,35 @@ static UITableView *ApolloFollowingTableViewOf(UIViewController *listVC) {
     return [tableView isKindOfClass:[UITableView class]] ? tableView : nil;
 }
 
+// ---- Multireddit expansion animation helpers -------------------------------
+// The chevron is Apollo's accessory button on the RedditListTableViewCell
+// (ApolloSubredditIndexPolish.xm finds it via the `accessoryButton` ivar
+// and tells the star from the chevron by the action it sends). In the tap
+// handler the sender IS that button by construction, so no action check is
+// needed here; its imageView is the glyph, the button itself the fallback
+// when it has none. The row's title/subtitle come from the cell's Swift
+// stored labels (`redditTitleLabel` / `subtitleLabel`, the same ivars
+// ApolloMultiredditEdit.xm reads), which is what the expansion gate
+// resolves the tapped model from.
+static UITableViewCell *ApolloFollowingCellForView(UIView *view) {
+    while (view && ![view isKindOfClass:[UITableViewCell class]]) view = view.superview;
+    return (UITableViewCell *)view;
+}
+
+static NSString *ApolloFollowingCellLabelText(UITableViewCell *cell, const char *ivarName) {
+    if (!cell) return nil;
+    UILabel *label = (UILabel *)ApolloObjectIvar(cell, ivarName);
+    return [label isKindOfClass:[UILabel class]] ? label.text : nil;
+}
+
+static UIView *ApolloFollowingChevronViewForSender(id sender) {
+    if ([sender isKindOfClass:[UIButton class]]) {
+        UIImageView *imageView = ((UIButton *)sender).imageView;
+        if (imageView) return imageView;
+    }
+    return [sender isKindOfClass:[UIView class]] ? (UIView *)sender : nil;
+}
+
 // Canonical title of a native section (or the synthetic FOLLOWING marker).
 static NSString *ApolloFollowingCanonicalTitle(NSInteger nativeSection) {
     switch (nativeSection) {
@@ -1356,7 +1398,118 @@ NSIndexPath *ApolloFollowingVisibleIndexPathForNative(UITableView *tableView, NS
 
 - (void)multiredditExpandButtonTapped:(id)sender {
     UITableView *tableView = ApolloFollowingTableViewOf((UIViewController *)self);
-    ApolloFollowingMap *map = tableView ? ApolloFollowingActiveMapForTable(tableView) : nil;
+    if (!tableView) {
+        %orig;
+        return;
+    }
+    ApolloFollowingMap *map = ApolloFollowingActiveMapForTable(tableView);
+
+    // ---- Animated path, gated (see ApolloMultiredditExpansion.h) ----
+    // Every guard that fails means "take the reload path below", never
+    // "animate and hope": the batch is only let through when the tapped
+    // model is resolved, its children account for every model sharing its
+    // title, the snapshot is fresh, and nothing else is animating or
+    // editing this table. Rapid double-taps land here too: the second tap
+    // sees the animated scope (or the open point window) and reloads.
+    BOOL expansionBlocked = [(UIViewController *)self isEditing] || tableView.isEditing ||
+        objc_getAssociatedObject(tableView, &kApolloRemovalTransition) != nil ||
+        ApolloMultiredditExpansionIsAnimated(tableView) || sApolloFollowingWindowDepth > 0;
+    NSInteger visibleMultiredditSection = map
+        ? ApolloFollowingVisibleSectionForNative(map, kApolloNativeSectionMultireddit)
+        : kApolloNativeSectionMultireddit;
+    UITableViewCell *tappedCell = ApolloFollowingCellForView(
+        [sender isKindOfClass:[UIView class]] ? (UIView *)sender : nil);
+    NSString *tappedTitle = [ApolloFollowingCellLabelText(tappedCell, "redditTitleLabel")
+        stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSString *tappedSubtitle = ApolloFollowingCellLabelText(tappedCell, "subtitleLabel");
+    NSInteger totalChildrenForTitle = -1;
+    NSInteger tappedChildCount = tappedTitle.length > 0
+        ? ApolloMultiEditExpansionChildCounts(tappedTitle, tappedSubtitle, &totalChildrenForTitle)
+        : NSNotFound;
+    BOOL canAnimate = !expansionBlocked &&
+        visibleMultiredditSection != NSNotFound &&
+        visibleMultiredditSection >= 0 && visibleMultiredditSection < tableView.numberOfSections &&
+        ApolloMultiredditExpansionCanAnimate(tableView, tappedChildCount, totalChildrenForTitle,
+                                             UIAccessibilityIsReduceMotionEnabled());
+    if (canAnimate) {
+        NSInteger rowsBefore = [tableView numberOfRowsInSection:visibleMultiredditSection];
+        UIView *chevronView = ApolloFollowingChevronViewForSender(sender);
+        __weak UIView *weakChevronView = chevronView;
+        // Last-resort net for a duplicate the gate could not see (model
+        // lists not yet captured, subtitle replaced by a description):
+        // UIKit's row-count failure is the one exception a reload can
+        // recover from, because Apollo already mutated its expansion
+        // state before registering the batch. Anything else is a real
+        // bug and is rethrown. Whether a reload actually recovers a
+        // half-applied batch is UNVERIFIED on device — exercise it with
+        // a real duplicate-name case before trusting this net.
+        __block BOOL expansionBatchFailed = NO;
+        ApolloPerformMultiredditExpansionAnimated(tableView, ^{
+            if (!map) {
+                @try {
+                    %orig;
+                } @catch (NSException *exception) {
+                    if ([exception.name isEqualToString:NSInternalInconsistencyException]) {
+                        expansionBatchFailed = YES;
+                        ApolloLog(@"[FollowingSection] animated multireddit batch rejected by UIKit; "
+                                  @"presenting the final model with a reload (%@)", exception.reason);
+                    } else {
+                        @throw;
+                    }
+                }
+                return;
+            }
+            sApolloFollowingWindowDepth++;
+            sApolloFollowingWindowTable = tableView;
+            @try {
+                %orig;
+            } @catch (NSException *exception) {
+                if ([exception.name isEqualToString:NSInternalInconsistencyException]) {
+                    expansionBatchFailed = YES;
+                    ApolloLog(@"[FollowingSection] animated multireddit batch rejected by UIKit; "
+                              @"presenting the final model with a reload (%@)", exception.reason);
+                } else {
+                    @throw;
+                }
+            } @finally {
+                if (sApolloFollowingWindowDepth > 0) sApolloFollowingWindowDepth--;
+                if (sApolloFollowingWindowDepth == 0) {
+                    sApolloFollowingWindowTable = nil;
+                    sApolloFollowingWindowTappedName = nil;
+                    sApolloFollowingWindowFavorites = nil;
+                }
+            }
+        });
+        UIView *strongChevronView = weakChevronView;
+        if (expansionBatchFailed || !strongChevronView) {
+            // The animated scope already reloaded when the snapshot was
+            // stale, so the final model is on screen; leave the chevron
+            // to Apollo's reconfiguration and clear any rotation.
+            if (strongChevronView) strongChevronView.transform = CGAffineTransformIdentity;
+            return;
+        }
+        // Chevron direction comes from the OBSERVED row-count change, not
+        // from Apollo's expansion state (whose ivar is not read anywhere
+        // in this repo): more rows means the multireddit expanded. The
+        // 90-degree direction assumes a right-pointing collapsed chevron
+        // rotating down — UNVERIFIED, check on device.
+        NSInteger rowsAfter = [tableView numberOfRowsInSection:visibleMultiredditSection];
+        if (rowsAfter == rowsBefore) return;
+        BOOL expanded = rowsAfter > rowsBefore;
+        [UIView animateWithDuration:ApolloMultiredditExpansionAnimationDuration
+                              delay:0.0
+                            options:UIViewAnimationOptionCurveEaseInOut |
+                                    UIViewAnimationOptionBeginFromCurrentState |
+                                    UIViewAnimationOptionAllowUserInteraction
+                         animations:^{
+            strongChevronView.transform = expanded
+                ? CGAffineTransformMakeRotation((CGFloat)(M_PI / 2.0))
+                : CGAffineTransformIdentity;
+        } completion:nil];
+        return;
+    }
+
+    // ---- Reload path (unchanged) ----
     // Native expansion can change more rows than its animation describes.
     // This also applies to the normal layout, where no Following map exists.
     ApolloPerformMultiredditExpansion(tableView, ^{
@@ -1393,6 +1546,14 @@ NSIndexPath *ApolloFollowingVisibleIndexPathForNative(UITableView *tableView, NS
     // Defer additional reloads until the removal animation completes.
     if (objc_getAssociatedObject(self, &kApolloRemovalTransition)) {
         os_log_debug(ApolloFixLog(), "[ApolloFix] [ListEditing] deferring reload until removal animation completes");
+        return;
+    }
+    // Inside an animated multireddit expansion a reload would kill the
+    // batch's animation; defer it and let the animated scope reconcile
+    // once at the end instead. (The deferral check below deliberately does
+    // not fire for animated scopes, so this needs its own check.)
+    if (ApolloMultiredditExpansionIsAnimated((UITableView *)self)) {
+        ApolloMultiredditExpansionMarkNeedsReload((UITableView *)self);
         return;
     }
     if (ApolloDeferMultiredditTableUpdate((UITableView *)self)) return;
@@ -1513,6 +1674,11 @@ NSIndexPath *ApolloFollowingVisibleIndexPathForNative(UITableView *tableView, NS
         return;
     }
     if (ApolloDeferMultiredditTableUpdate((UITableView *)self)) return;
+    // Animated multireddit collapse forces Fade: whatever Apollo passed is
+    // replaced so the children fade out with the batch instead of sliding
+    // (or appearing with no animation) under the chevron rotation.
+    UITableViewRowAnimation effectiveAnimation = ApolloMultiredditExpansionIsAnimated((UITableView *)self)
+        ? UITableViewRowAnimationFade : animation;
     // No caller gate here (unlike the lookup hooks above): row mutations on
     // this table only ever ORIGINATE in Apollo's model-space code — UIKit
     // never self-registers them and the tweak's other modules only rewrite
@@ -1523,7 +1689,7 @@ NSIndexPath *ApolloFollowingVisibleIndexPathForNative(UITableView *tableView, NS
     BOOL windowActive = sApolloFollowingWindowDepth > 0 && (UITableView *)self == sApolloFollowingWindowTable;
     ApolloFollowingMap *map = ApolloFollowingPresentedMapForTable((UITableView *)self);
     if (!map) {
-        %orig;
+        %orig(indexPaths, effectiveAnimation);
         return;
     }
     NSMutableArray<NSIndexPath *> *translated = [NSMutableArray arrayWithCapacity:indexPaths.count];
@@ -1558,13 +1724,16 @@ NSIndexPath *ApolloFollowingVisibleIndexPathForNative(UITableView *tableView, NS
     // The model behind this delete may already be post-update — drop the
     // presented snapshot so endUpdates' count queries see the fresh state.
     ApolloFollowingInvalidateMap((UIViewController *)((UITableView *)self).dataSource);
-    %orig(translated, animation);
+    %orig(translated, effectiveAnimation);
 }
 
 - (void)insertRowsAtIndexPaths:(NSArray<NSIndexPath *> *)indexPaths withRowAnimation:(UITableViewRowAnimation)animation {
     if (ApolloDeferMultiredditTableUpdate((UITableView *)self)) return;
+    // Animated multireddit expansion forces Fade, as in deleteRows above.
+    UITableViewRowAnimation effectiveAnimation = ApolloMultiredditExpansionIsAnimated((UITableView *)self)
+        ? UITableViewRowAnimationFade : animation;
     if (!ApolloFollowingTableIsList((UITableView *)self)) {
-        %orig;
+        %orig(indexPaths, effectiveAnimation);
         return;
     }
     // Inserts speak the POST-update layout: rebuild from the current model
@@ -1574,7 +1743,7 @@ NSIndexPath *ApolloFollowingVisibleIndexPathForNative(UITableView *tableView, NS
     ApolloFollowingInvalidateMap((UIViewController *)((UITableView *)self).dataSource);
     ApolloFollowingMap *map = ApolloFollowingActiveMapForTable((UITableView *)self);
     if (!map) {
-        %orig;
+        %orig(indexPaths, effectiveAnimation);
         return;
     }
     NSMutableArray<NSIndexPath *> *translated = [NSMutableArray arrayWithCapacity:indexPaths.count];
@@ -1587,7 +1756,7 @@ NSIndexPath *ApolloFollowingVisibleIndexPathForNative(UITableView *tableView, NS
         }
         [translated addObject:visible ?: nativePath];
     }
-    %orig(translated, animation);
+    %orig(translated, effectiveAnimation);
 }
 
 - (void)reloadRowsAtIndexPaths:(NSArray<NSIndexPath *> *)indexPaths withRowAnimation:(UITableViewRowAnimation)animation {

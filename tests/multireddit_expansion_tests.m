@@ -5,6 +5,10 @@
 #define os_log_debug(...) do {} while (0)
 
 typedef NSInteger UITableViewRowAnimation;
+// UIKit values, needed by the production hooks (no UIKit here):
+// UITableViewRowAnimationFade = 0, UITableViewRowAnimationNone = 3.
+#define UITableViewRowAnimationFade 0
+#define UITableViewRowAnimationNone 3
 
 @interface NSIndexPath (TableCoordinates)
 @property (nonatomic, readonly) NSInteger row;
@@ -47,6 +51,8 @@ typedef NSInteger UITableViewRowAnimation;
 @property (nonatomic) NSUInteger deletes;
 @property (nonatomic) NSUInteger rowReloads;
 @property (nonatomic) NSUInteger reloads;
+@property (nonatomic) NSInteger lastInsertAnimation;
+@property (nonatomic) NSInteger lastDeleteAnimation;
 - (NSInteger)numberOfSections;
 - (NSInteger)numberOfRowsInSection:(NSInteger)section;
 - (void)reloadData;
@@ -113,12 +119,14 @@ typedef NSInteger UITableViewRowAnimation;
     self.pendingDelta = 0;
     if (completion) completion(YES);
 }
-- (void)insertRowsAtIndexPaths:(NSArray<NSIndexPath *> *)paths withRowAnimation:(__unused UITableViewRowAnimation)animation {
+- (void)insertRowsAtIndexPaths:(NSArray<NSIndexPath *> *)paths withRowAnimation:(UITableViewRowAnimation)animation {
     self.inserts++;
+    self.lastInsertAnimation = animation;
     self.pendingDelta += (NSInteger)paths.count;
 }
-- (void)deleteRowsAtIndexPaths:(NSArray<NSIndexPath *> *)paths withRowAnimation:(__unused UITableViewRowAnimation)animation {
+- (void)deleteRowsAtIndexPaths:(NSArray<NSIndexPath *> *)paths withRowAnimation:(UITableViewRowAnimation)animation {
     self.deletes++;
+    self.lastDeleteAnimation = animation;
     self.pendingDelta -= (NSInteger)paths.count;
 }
 - (void)reloadRowsAtIndexPaths:(__unused NSArray<NSIndexPath *> *)paths withRowAnimation:(__unused UITableViewRowAnimation)animation {
@@ -195,13 +203,18 @@ static void DrainMainQueue(void) {
 
 // Native Apollo's shared name key can expand both parents, while the tapped
 // model provides only its own two child paths to the table animation.
-static void NativeToggle(UITableView *table, NSInteger resultingRows,
-                         NSUInteger tappedChildren, BOOL expand) {
+static void NativeToggleWithAnimation(UITableView *table, NSInteger resultingRows,
+                                      NSUInteger tappedChildren, BOOL expand,
+                                      UITableViewRowAnimation animation) {
     [table beginUpdates];
     table.modelRows = resultingRows;
-    if (expand) [table insertRowsAtIndexPaths:ChildPaths(tappedChildren) withRowAnimation:0];
-    else [table deleteRowsAtIndexPaths:ChildPaths(tappedChildren) withRowAnimation:0];
+    if (expand) [table insertRowsAtIndexPaths:ChildPaths(tappedChildren) withRowAnimation:animation];
+    else [table deleteRowsAtIndexPaths:ChildPaths(tappedChildren) withRowAnimation:animation];
     [table endUpdates];
+}
+static void NativeToggle(UITableView *table, NSInteger resultingRows,
+                         NSUInteger tappedChildren, BOOL expand) {
+    NativeToggleWithAnimation(table, resultingRows, tappedChildren, expand, 0);
 }
 
 int main(void) {
@@ -232,6 +245,79 @@ int main(void) {
         Check(ordinary.presentedRows == 4 && ordinary.reloads == 1, @"ordinary multireddit expansion still works");
         ApolloPerformMultiredditExpansion(ordinary, ^{ originals++; });
         Check(originals == 2 && ordinary.reloads == 1, @"a no-op handler is preserved without an unnecessary reload");
+
+        // ---- Animated path (gated) ----
+        // Gate predicate: every input the tap handler derives from the
+        // tapped row and the table, checked in isolation.
+        UITableView *gateTable = Table(4);
+        Check(ApolloMultiredditExpansionCanAnimate(gateTable, 3, 3, NO), @"gate: ordinary expansion animates");
+        Check(!ApolloMultiredditExpansionCanAnimate(gateTable, 3, 5, NO), @"gate: duplicate-name total rejects animation");
+        Check(!ApolloMultiredditExpansionCanAnimate(gateTable, 3, 2, NO), @"gate: total smaller than tapped rejects animation");
+        Check(!ApolloMultiredditExpansionCanAnimate(gateTable, 0, 0, NO), @"gate: empty multireddit does not animate");
+        Check(!ApolloMultiredditExpansionCanAnimate(gateTable, 3, 3, YES), @"gate: Reduce Motion disables animation");
+        Check(!ApolloMultiredditExpansionCanAnimate(gateTable, 3, -1, NO), @"gate: unknown total rejects animation");
+        Check(!ApolloMultiredditExpansionCanAnimate(nil, 3, 3, NO), @"gate: missing table rejects animation");
+        gateTable.modelRows = 3; // model moved since the last reload
+        Check(!ApolloMultiredditExpansionCanAnimate(gateTable, 3, 3, NO), @"gate: stale snapshot rejects animation");
+
+        // Safe expansion and collapse: the batch reaches UIKit, no reload,
+        // and the hooks force Fade even when Apollo passed None (3).
+        UITableView *animated = Table(1);
+        NSUInteger animatedReloads = animated.reloads;
+        ApolloPerformMultiredditExpansionAnimated(animated, ^{
+            NativeToggleWithAnimation(animated, 4, 3, YES, UITableViewRowAnimationNone);
+        });
+        Check(animated.presentedRows == 4 && animated.reloads == animatedReloads,
+              @"animated expansion presents every child with no reload");
+        Check(animated.begins == 1 && animated.ends == 1 && animated.inserts == 1,
+              @"animated expansion batch reaches UIKit");
+        Check(animated.lastInsertAnimation == UITableViewRowAnimationFade,
+              @"animated expansion forces Fade on inserts");
+        ApolloPerformMultiredditExpansionAnimated(animated, ^{
+            NativeToggleWithAnimation(animated, 1, 3, NO, UITableViewRowAnimationNone);
+        });
+        Check(animated.presentedRows == 1 && animated.reloads == animatedReloads && animated.deletes == 1,
+              @"animated collapse presents with no reload");
+        Check(animated.lastDeleteAnimation == UITableViewRowAnimationFade,
+              @"animated collapse forces Fade on deletes");
+
+        // A reload inside an animated scope is deferred to one reconciling
+        // reload at the scope's end, and a batch that leaves the snapshot
+        // stale is reconciled the same way.
+        UITableView *animatedReload = Table(2);
+        NSUInteger animatedReloadsBefore = animatedReload.reloads;
+        ApolloPerformMultiredditExpansionAnimated(animatedReload, ^{ [animatedReload reloadData]; });
+        Check(animatedReload.reloads == animatedReloadsBefore + 1,
+              @"animated scope defers an inner reload to one reconciling reload");
+        UITableView *animatedStale = Table(2);
+        ApolloPerformMultiredditExpansionAnimated(animatedStale, ^{ animatedStale.modelRows = 5; });
+        Check(animatedStale.presentedRows == 5 && animatedStale.reloads == 1,
+              @"animated scope reloads when the post-batch snapshot is stale");
+
+        // The animated scope does not make an invalid batch valid: the
+        // duplicate-name batch still fails UIKit validation, the exception
+        // propagates, and the scope does not leak.
+        UITableView *animatedBroken = Table(2);
+        caught = NO;
+        @try { ApolloPerformMultiredditExpansionAnimated(animatedBroken, ^{ NativeToggle(animatedBroken, 7, 2, YES); }); }
+        @catch (NSException *exception) { caught = [exception.name isEqualToString:NSInternalInconsistencyException]; }
+        Check(caught, @"animated scope: duplicate-name batch still fails UIKit validation");
+        Check(!ApolloDeferMultiredditTableUpdate(animatedBroken) && !ApolloMultiredditExpansionIsAnimated(animatedBroken),
+              @"animated scope: throwing batch does not leak its scope");
+        [animatedBroken reloadData];
+        Check(animatedBroken.presentedRows == 7, @"table reloads normally after a failed animated batch");
+
+        // A deferral scope nested inside an animated one still defers, and
+        // the outer animated scope reconciles once at its boundary.
+        UITableView *animatedNested = Table(1);
+        NSUInteger animatedNestedBefore = animatedNested.reloads;
+        ApolloPerformMultiredditExpansionAnimated(animatedNested, ^{
+            ApolloPerformMultiredditExpansion(animatedNested, ^{ [animatedNested reloadData]; });
+            Check(animatedNested.reloads == animatedNestedBefore,
+                  @"nested deferral inside animated scope does not reload early");
+        });
+        Check(animatedNested.reloads == animatedNestedBefore + 1,
+              @"nested deferral inside animated scope reloads once at the outer boundary");
 
         // Cover each shipping hook independently, including a native reload
         // and a row refresh without a begin/end pair.
@@ -389,7 +475,7 @@ int main(void) {
         Check(scoped.batches == 0 && scoped.inserts == 0 && scoped.reloads == 1 && scoped.presentedRows == 4,
               @"inside an expansion scope a batch defers like the other table APIs");
         DrainMainQueue();
-        printf("PASS: %lu multireddit expansion checks (production scope and seven table hooks)\n", (unsigned long)checks);
+        printf("PASS: %lu multireddit expansion checks (production scope, animated path, and seven table hooks)\n", (unsigned long)checks);
     }
     return 0;
 }

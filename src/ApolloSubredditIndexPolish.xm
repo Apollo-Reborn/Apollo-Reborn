@@ -3573,6 +3573,18 @@ static void ApolloSubredditIndexRefreshHeadersForController(UIViewController *co
     // Restore only before Apollo's reuse/configuration pass. Replaying the old
     // snapshot afterwards can replace newly themed colors with those from the
     // other display/appearance. Forget it so the next row gets a fresh baseline.
+    // Also clear any chevron rotation the animated multireddit expansion
+    // applied to this cell's accessory button: a reused cell must start
+    // from identity, and Apollo (or the next expand tap) sets the state
+    // for the new row. Without this a collapsed row could inherit the
+    // previous row's 90-degree chevron.
+    if (ApolloClassRedditListTableViewCell &&
+        [(UITableViewCell *)self isMemberOfClass:ApolloClassRedditListTableViewCell]) {
+        UIControl *accessory = ApolloSubredditIndexRedditListAccessoryButton((UITableViewCell *)self);
+        UIView *chevronView = [accessory isKindOfClass:[UIButton class]]
+            ? ((UIButton *)accessory).imageView : nil;
+        if (chevronView) chevronView.transform = CGAffineTransformIdentity;
+    }
     ApolloSubredditIndexRestoreMetaFeedCell((UITableViewCell *)self);
     ApolloSubredditIndexRestoreCellSelectionChrome((UITableViewCell *)self);
     if (objc_getAssociatedObject(self, &kApolloSubredditCellNativeStateKey)) {

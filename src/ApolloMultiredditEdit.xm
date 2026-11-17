@@ -410,6 +410,33 @@ static RDKMultireddit *ApolloMultiEditResolveRowModel(NSString *title, NSString 
     return best;
 }
 
+// MARK: - Expansion gate (ApolloFollowingSection)
+//
+// The two numbers the animated-expansion gate needs for a rendered
+// MULTIREDDITS row, resolved the same way the edit flow resolves a row:
+// by title AND subtitle, never by title alone. Returns the tapped model's
+// member-subreddit count, or NSNotFound when the row cannot be pinned to
+// one model. *outTotalChildrenForTitle (when non-NULL) is the sum of the
+// member counts of every distinct-path model sharing the title, so the
+// caller can check that the tapped model's children account for the whole
+// model delta: for a unique title the two are equal, for a shared title
+// they differ unless the other models are empty. Unresolvable rows — no
+// captured lists yet, a description in place of the subreddit list, tied
+// subtitle overlap — return NSNotFound so the caller falls back to the
+// reload path instead of animating a batch it cannot prove consistent.
+NSInteger ApolloMultiEditExpansionChildCounts(NSString *title, NSString *subtitle, NSInteger *outTotalChildrenForTitle) {
+    NSArray<RDKMultireddit *> *matches = ApolloMultiEditFindAllByTitle(title);
+    NSInteger total = 0;
+    for (RDKMultireddit *candidate in matches) {
+        total += (NSInteger)ApolloMultiEditSubredditNames(candidate).count;
+    }
+    if (outTotalChildrenForTitle) *outTotalChildrenForTitle = total;
+    if (matches.count == 0) return NSNotFound;
+    RDKMultireddit *resolved = ApolloMultiEditResolveRowModel(title, subtitle);
+    if (!resolved) return NSNotFound;
+    return (NSInteger)ApolloMultiEditSubredditNames(resolved).count;
+}
+
 // MARK: - Capture Apollo's multireddit fetches
 
 typedef void (^ApolloMultiEditRawResponseCompletion)(NSHTTPURLResponse *response,
