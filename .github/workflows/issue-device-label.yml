@@ -1,0 +1,40 @@
+name: Bug report device label
+
+# Adds a `device: …` label (iPhone Duo, iPad, Mac or iPhone) to a bug report
+# from its Device field, so it's clear which simulator to reproduce it on.
+# Reads both the Bug Report form's `### Device` field and the Device row of a
+# report.apolloreborn.app report. Labels are only ever added, never removed,
+# and an edit only adds a device the edit newly names. The logic lives in
+# .github/scripts/issue-device-label.js; tests in
+# tests/issue_device_label_tests.js.
+#
+# Issue text is only ever handled as data inside github-script; nothing from
+# an issue is interpolated into a shell command.
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  contents: read   # sparse checkout of .github/scripts
+  issues: write    # add labels
+
+jobs:
+  label:
+    name: Label the device
+    # Cheap pre-filter (contains() ignores case); the script finds the field.
+    if: contains(github.event.issue.body, 'Device')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the label script
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Add device labels
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const label = require('./.github/scripts/issue-device-label.js');
+            await label.run({ github, context, core });
