@@ -79,12 +79,39 @@ static void ApolloMediaPrepareTransparentWrapper(UIViewController *viewer) {
     os_log_debug(ApolloFixLog(), "[ApolloFix] [MediaBackdrop] transparent media wrapper installed");
 }
 
+// Apollo turns the presenter snapshot behind the viewer +/-90 degrees whenever
+// the scene is landscape (containerViewDidLayoutSubviews, 0x1006f9b68), since
+// an iPhone feed is always portrait. The Duo's opened display lays the feed out
+// in landscape, so a dragged viewer showed it sideways. The live feed stays in
+// the window behind the viewer (shouldRemovePresentersView == NO), so hide the
+// snapshot there. It stays hidden after a fold, when it no longer matches.
+static void ApolloMediaHideDuoSnapshot(UIPresentationController *presentation) {
+    if (!ApolloDeviceIsDuo()) return;
+    UIView *snapshot = ApolloMediaPresentationView(presentation, "snapshotView");
+    UIWindow *window = presentation.containerView.window;
+    if (!snapshot || snapshot.hidden || !window) return;
+    CGSize screen = (window.windowScene.screen ?: window.screen).bounds.size;
+    if (MIN(screen.width, screen.height) < (CGFloat)ApolloDuoUnfoldedMinimumSide) return;
+    snapshot.hidden = YES;
+    ApolloLog(@"[MediaBackdrop] presenter snapshot hidden on the Duo's opened display");
+}
+
 %hook _TtC6Apollo33MediaViewerPresentationController
 
 - (void)presentationTransitionWillBegin {
     UIView *dim = ApolloMediaPresentationView(self, "dimmingView");
     dim.backgroundColor = UIColor.blackColor;
     %orig;
+}
+
+- (void)presentationTransitionDidEnd:(BOOL)completed {
+    %orig;
+    ApolloMediaHideDuoSnapshot((UIPresentationController *)self);
+}
+
+- (void)containerViewDidLayoutSubviews {
+    %orig;
+    ApolloMediaHideDuoSnapshot((UIPresentationController *)self);
 }
 
 - (void)dismissalTransitionWillBegin {
