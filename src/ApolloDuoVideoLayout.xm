@@ -263,7 +263,7 @@ static void DuoVideoPanelFrame(UIView *view, CGRect frame) {
 @property (nonatomic, strong) NSMutableArray<UIButton *> *extraButtons;
 @property (nonatomic, copy) NSArray<NSDictionary *> *extraItems;
 @property (nonatomic) BOOL extrasResolved;
-@property (nonatomic, strong) id<UIInteraction> hinge;
+@property (nonatomic) BOOL observingFold;
 @property (nonatomic, strong) UIVisualEffect *nativeEffect;
 @property (nonatomic, strong) ApolloDuoVideoPlateView *timelinePlate;
 @property (nonatomic, strong) ApolloDuoVideoGlassGroup *glassGroup;
@@ -560,24 +560,15 @@ static UIMenuElement *DuoVideoMenuElement(UIMenu *menu, NSString *key) {
         [owner update];
     });
 }
-- (void)observeHinge {
-    if (self.hinge) return;
-    if (@available(iOS 27.1, *)) {
-        // Cold setup, matching DuoSplit's dynamically resolved public API.
-        Class cls = objc_getClass("UIHingeInteraction");
-        if (!cls || ![cls instancesRespondToSelector:@selector(initWithUpdateHandler:)]) return;
-        __weak ApolloDuoVideoCoordinator *weakSelf = self;
-        id interaction = ((id (*)(id, SEL, id))objc_msgSend)([cls alloc], @selector(initWithUpdateHandler:),
-            ^(__unused id sender, __unused id update) {
-                [weakSelf schedule];
-                // UIKit can publish the reserved region just after the hinge.
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 350 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-                    [weakSelf schedule];
-                });
-            });
-        self.hinge = interaction;
-        [self.viewer.view addInteraction:interaction];
-    }
+- (void)observeFold {
+    ApolloDuoTrackFold(self.viewer.viewIfLoaded.window);
+    if (self.observingFold) return;
+    self.observingFold = YES;
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(foldChanged:)
+                                               name:ApolloDuoFoldDidChangeNotification object:nil];
+}
+- (void)foldChanged:(__unused NSNotification *)note {
+    [self schedule];
 }
 - (void)hookChromeControl:(UIControl *)control scrubber:(BOOL)scrubber {
     if (![control isKindOfClass:UIControl.class] || objc_getAssociatedObject(control, &kDuoVideoChromeHook)) return;
@@ -1036,7 +1027,7 @@ static UIMenuElement *DuoVideoMenuElement(UIMenu *menu, NSString *key) {
     if (self.applying) return;
     UIViewController *viewer = self.viewer;
     UIView *view = viewer.viewIfLoaded;
-    [self observeHinge];
+    [self observeFold];
     SMScrollView *scroll = (id)DuoVideoView(viewer, "scrollView");
     UIVisualEffectView *controls = (id)DuoVideoView(viewer, "videoControlsView");
     UIView *player = DuoVideoView(viewer, "playerLayerContainerView");
