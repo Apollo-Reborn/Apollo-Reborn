@@ -4234,7 +4234,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     sSubredditFeedIconStyle = [standardDefaults integerForKey:UDKeySubredditFeedIconStyle];
     sSubredditFeedLayout = [standardDefaults integerForKey:UDKeySubredditFeedLayout];
     if (sSubredditFeedIconStyle < ApolloSubredditFeedIconStyleClassic ||
-        sSubredditFeedIconStyle > ApolloSubredditFeedIconStyleSolidTile) {
+        sSubredditFeedIconStyle > ApolloSubredditFeedIconStyleMonochrome) {
         sSubredditFeedIconStyle = ApolloSubredditFeedIconStyleClassic;
         [standardDefaults setInteger:sSubredditFeedIconStyle forKey:UDKeySubredditFeedIconStyle];
     }

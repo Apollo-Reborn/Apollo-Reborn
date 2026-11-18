@@ -3351,6 +3351,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
         case ApolloSubredditFeedIconStyleTinted: return @"Tinted";
         case ApolloSubredditFeedIconStyleSoftTile: return @"Soft Tile";
         case ApolloSubredditFeedIconStyleSolidTile: return @"Solid Tile";
+        case ApolloSubredditFeedIconStyleMonochrome: return @"Monochrome";
         default: return @"Classic";
     }
 }
@@ -3366,7 +3367,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 
 - (void)setSubredditFeedIconStyle:(NSInteger)iconStyle {
     if (iconStyle < ApolloSubredditFeedIconStyleClassic ||
-        iconStyle > ApolloSubredditFeedIconStyleSolidTile) {
+        iconStyle > ApolloSubredditFeedIconStyleMonochrome) {
         iconStyle = ApolloSubredditFeedIconStyleClassic;
     }
     sSubredditFeedIconStyle = iconStyle;
@@ -3392,7 +3393,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 - (void)presentSubredditFeedIconStylePickerFromSourceView:(UIView *)sourceView {
     __weak typeof(self) weakSelf = self;
     ApolloSettingsPresentPicker(self, sourceView, @"Icon Style",
-                                @[@"Classic", @"Circle", @"Tinted", @"Soft Tile", @"Solid Tile"],
+                                @[@"Classic", @"Circle", @"Tinted", @"Soft Tile", @"Solid Tile", @"Monochrome"],
                                 sSubredditFeedIconStyle,
                                 ^(NSInteger pickedIndex) {
         [weakSelf setSubredditFeedIconStyle:pickedIndex];
