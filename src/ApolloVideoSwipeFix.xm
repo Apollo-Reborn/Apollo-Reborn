@@ -441,8 +441,9 @@ static void HeaderRetakeHandBack(UIViewController *screen, NSString *reason) {
 
 // Called from the Posts feed's viewWillAppear: right after Apollo's reclaim
 // (%orig). On the Duo the feed appears whenever it changes columns, including
-// while a thread stays open beside it, and the reclaim takes the thread
-// header's video into the feed row. The thread is
+// while a thread stays open beside it (a Back drag lays the feed out full
+// width before the thread closes, and a cancelled one puts it back), and the
+// reclaim takes the thread header's video into the feed row. The thread is
 // still the one showing it, so the header takes it back at once; when the
 // thread does close, its header hands it back to the row (viewDidDisappear:).
 static void HeaderRetakeKeepThreadBesideFeed(UIViewController *feedPage) {

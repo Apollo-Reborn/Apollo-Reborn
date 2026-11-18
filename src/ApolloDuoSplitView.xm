@@ -1229,6 +1229,10 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
 // The thread the last close took from beside the feed, which a forward swipe
 // brings back (ApolloDuoSplitRestoreClosedThread) until something forgets it.
 @property(nonatomic, strong) ApolloDuoPostsClosedThread *closedThread;
+// A Back drag is closing the thread: the columns are laid out without it, but
+// its pages stay on the stack and its view stays in the window behind the feed
+// until the drag commits, so a cancelled drag never takes the thread away.
+@property(nonatomic) BOOL threadParked;
 @property(nonatomic) BOOL navigationBarWasHidden;
 @property(nonatomic) BOOL needsDefault;
 // When the folded Posts tab last showed its bare subreddit list (0 otherwise).
@@ -2069,7 +2073,7 @@ static void ApolloDuoPostsSyncColumnsWithAnimation(ApolloDuoSplitState *state, B
         state.changing = NO;
     }
     [state.host.viewIfLoaded setNeedsLayout];
-    BOOL detail = state.secondary.viewControllers.count > 1;
+    BOOL detail = state.secondary.viewControllers.count > 1 && !state.threadParked;
     BOOL paired = detail && ApolloDuoPostsUsesSplit(state);
     UISplitViewController *split = state.split;
     // A hidden primary can lose its parent while UIKit still retains it as
@@ -3166,9 +3170,11 @@ static void ApolloDuoPostsApplyDetailStack(ApolloDuoSplitState *state, NSArray<U
                                            ApolloDuoFeedAnchor *feedAnchor) {
     UIView *surface = state.host.view;
     [UIView performWithoutAnimation:^{
-        state.changing = YES;
-        [state.secondary setViewControllers:stack animated:NO];
-        state.changing = NO;
+        if (![state.secondary.viewControllers isEqualToArray:stack]) {
+            state.changing = YES;
+            [state.secondary setViewControllers:stack animated:NO];
+            state.changing = NO;
+        }
         if (closedPages) ApolloDuoPostsRememberClosedThread(state, closedPages, closedPane);
         ApolloDuoPostsSyncColumns(state);
         [surface layoutIfNeeded];
@@ -3350,8 +3356,69 @@ static void ApolloDuoColumnScrubApply(ApolloDuoColumnScrub *scrub) {
     [CATransaction commit];
 }
 
-// The thread open beside the Posts feed `feedPage` (its top page); nil
-// without one.
+// A Back drag lays the columns out without the thread, but leaving its pages
+// on the stack and its view in the window: the view moves behind the columns
+// (within the same window, so no page disappears), where the feed covers it
+// and the thread's picture slides out above. Popping the thread at the start
+// would end its Find in Comments bar and shift its comments, which a
+// cancelled drag couldn't undo. The feed's appear still takes the header's
+// shared video into its row; ApolloVideoSwipeFix.xm moves it straight back.
+static void ApolloDuoParkThread(ApolloDuoSplitState *state, ApolloDuoFeedAnchor *anchor) {
+    UINavigationController *thread = state.secondary;
+    // Inside the split's own view: UIKit then still sees the split as the
+    // thread's container when a cancel puts it back in its column.
+    UIView *parking = state.split.viewIfLoaded;
+    UIView *view = thread.viewIfLoaded;
+    CGRect frame = view && parking ? [parking convertRect:view.bounds fromView:view] : CGRectNull;
+    state.threadParked = YES;
+    if (view && parking) {
+        [parking insertSubview:view atIndex:0];
+        view.frame = frame;
+        view.userInteractionEnabled = NO;
+    }
+    ApolloDuoPostsApplyDetailStack(state, thread.viewControllers, nil, CGRectNull, anchor);
+    // The split's column change mustn't have taken the view out of the window.
+    if (view && parking && view.superview != parking) {
+        ApolloLog(@"[DuoDrag] the column change moved the parked thread to %@ (window=%d)",
+                  view.superview.class, view.window != nil);
+        [parking insertSubview:view atIndex:0];
+        view.frame = frame;
+    }
+    ApolloLog(@"[DuoDrag] parked the thread (%lu page(s)) behind the feed",
+              (unsigned long)MAX((NSInteger)thread.viewControllers.count - 1, 0));
+}
+
+// The drag ends. Cancelled, the parked thread goes back into its column as it
+// was. Committed, its pages close now and are kept for a forward swipe.
+static void ApolloDuoUnparkThread(ApolloDuoSplitState *state, BOOL close, NSArray<UIViewController *> *pages,
+                                  CGRect pane) {
+    if (!state.threadParked) return;
+    UINavigationController *thread = state.secondary;
+    UIView *view = thread.viewIfLoaded;
+    UIViewController *backstop = thread.viewControllers.firstObject;
+    BOOL laidOut = state.split && state.feed && backstop;
+    ApolloDuoFeedAnchor *anchor = laidOut ? ApolloDuoCaptureFeedAnchor(
+        ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded)) : nil;
+    state.threadParked = NO;
+    view.userInteractionEnabled = YES;
+    if (!close && laidOut) {
+        ApolloDuoPostsApplyDetailStack(state, thread.viewControllers, nil, CGRectNull, anchor);
+        ApolloLog(@"[DuoDrag] put the parked thread back in its column (window=%d)", view.window != nil);
+        return;
+    }
+    // Pop while the view is still in the window, so the pages see a real pop.
+    if (backstop && thread.viewControllers.count > 1) {
+        state.changing = YES;
+        [thread setViewControllers:@[backstop] animated:NO];
+        state.changing = NO;
+    }
+    if (view && !thread.parentViewController) [view removeFromSuperview];
+    if (laidOut) ApolloDuoPostsApplyDetailStack(state, @[backstop], pages, pane, anchor);
+    ApolloLog(@"[DuoDrag] closed the parked thread (%lu page(s))", (unsigned long)pages.count);
+}
+
+// The thread open beside the Posts feed `feedPage` (its top page), parked
+// behind the feed by a Back drag included; nil without one.
 UIViewController *ApolloDuoSplitThreadBesideFeed(UIViewController *feedPage) {
     UINavigationController *nav = feedPage.navigationController;
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
@@ -3384,17 +3451,16 @@ static void ApolloDuoColumnScrubComplete(ApolloDuoColumnScrub *scrub) {
     scrub.link = nil;
     ApolloDuoSplitState *state = scrub.state;
     BOOL completed = scrub.target > 0.5;
-    if (!completed && state.split && state.feed && state.host == host) {
+    BOOL laidOut = state.split && state.feed && state.host == host;
+    if (!scrub.opening) {
+        // A split that went away mid-drag closes the thread, as the drag began to.
+        ApolloDuoUnparkThread(state, completed || !laidOut, scrub.pages, scrub.pane);
+    } else if (!completed && laidOut) {
         UIViewController *backstop = state.secondary.viewControllers.firstObject;
         ApolloDuoFeedAnchor *anchor = ApolloDuoCaptureFeedAnchor(
             ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded));
-        if (backstop && scrub.opening) {
-            // Closed again, and still there for the next forward drag.
-            ApolloDuoPostsApplyDetailStack(state, @[backstop], scrub.pages, scrub.pane, anchor);
-        } else if (backstop) {
-            ApolloDuoPostsForgetClosedThread(state, @"the Back drag put it back");
-            ApolloDuoPostsApplyDetailStack(state, [@[backstop] arrayByAddingObjectsFromArray:scrub.pages], nil, CGRectNull, anchor);
-        }
+        // Closed again, and still there for the next forward drag.
+        if (backstop) ApolloDuoPostsApplyDetailStack(state, @[backstop], scrub.pages, scrub.pane, anchor);
     }
     UIView *feedView = scrub.feedView;
     ApolloDuoEndTextCrossfade(scrub.textFades, !completed);
@@ -3451,13 +3517,11 @@ static ApolloDuoColumnScrub *ApolloDuoColumnScrubBegin(ApolloDuoSplitState *stat
     [surface layoutIfNeeded];
     CGRect pane = CGRectNull;
     UIView *thread = nil;
-    NSArray<UIViewController *> *closedPages = nil;
     if (!opening) {
         pane = ApolloDuoPostsDetailPane(state);
         thread = ApolloDuoPostsPanePicture(state, pane);
         if (!thread) return nil;
-        closedPages = ApolloDuoClosedThreadPages(state.secondary.viewControllers);
-        pages = closedPages;
+        pages = ApolloDuoClosedThreadPages(state.secondary.viewControllers);
     } else {
         ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventThreadOpened, 0.0);
     }
@@ -3471,12 +3535,16 @@ static ApolloDuoColumnScrub *ApolloDuoColumnScrubBegin(ApolloDuoSplitState *stat
     NSMapTable<CALayer *, id> *text = ApolloDuoCaptureTextDrawings(@[feedView]);
     ApolloDuoFeedAnchor *anchor = ApolloDuoCaptureFeedAnchor(
         ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded));
-    NSArray<UIViewController *> *stack = [@[backstop] arrayByAddingObjectsFromArray:opening ? pages : @[]];
-    ApolloDuoPostsApplyDetailStack(state, stack, closedPages, pane, anchor);
-    if (opening) pane = ApolloDuoPostsDetailPane(state);
+    if (opening) {
+        ApolloDuoPostsApplyDetailStack(state, [@[backstop] arrayByAddingObjectsFromArray:pages], nil, CGRectNull, anchor);
+        pane = ApolloDuoPostsDetailPane(state);
+    } else {
+        ApolloDuoParkThread(state, anchor);
+    }
     CGFloat travel = CGRectIsNull(pane) ? 0 : CGRectGetMaxX(surface.bounds) - CGRectGetMinX(pane);
     if (travel < 1) {
         // Nothing to slide across; the columns stay as the drag left them.
+        if (!opening) ApolloDuoUnparkThread(state, YES, pages, pane);
         ApolloDuoSplitScheduleUpdate();
         return nil;
     }
