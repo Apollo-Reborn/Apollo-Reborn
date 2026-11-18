@@ -3350,6 +3350,29 @@ static void ApolloDuoColumnScrubApply(ApolloDuoColumnScrub *scrub) {
     [CATransaction commit];
 }
 
+// The thread open beside the Posts feed `feedPage` (its top page); nil
+// without one.
+UIViewController *ApolloDuoSplitThreadBesideFeed(UIViewController *feedPage) {
+    UINavigationController *nav = feedPage.navigationController;
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    if (!state.split || nav != state.feed || state.secondary.viewControllers.count < 2) return nil;
+    return state.secondary.topViewController;
+}
+
+// Whether `page`, open in the Posts thread pane, sits beside the feed column
+// that shows `layer`.
+BOOL ApolloDuoSplitThreadBesideFeedLayer(UIViewController *page, CALayer *layer) {
+    UINavigationController *nav = page.navigationController;
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    if (!state.split || !state.feed || nav != state.secondary || nav.viewControllers.count < 2
+        || ![nav.viewControllers containsObject:page]) return NO;
+    CALayer *feedLayer = state.feed.viewIfLoaded.layer;
+    for (CALayer *ancestor = layer.superlayer; ancestor && feedLayer; ancestor = ancestor.superlayer) {
+        if (ancestor == feedLayer) return YES;
+    }
+    return NO;
+}
+
 // Ends the scrub at its target. Back at the start, the columns are put back
 // while the feed shows its starting geometry, so nothing on screen moves.
 static void ApolloDuoColumnScrubComplete(ApolloDuoColumnScrub *scrub) {
