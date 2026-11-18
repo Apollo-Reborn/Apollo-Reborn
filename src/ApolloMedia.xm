@@ -5,8 +5,13 @@
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <dlfcn.h>
+#import <mach-o/dyld.h>
+#import <pthread.h>
+#import <stdatomic.h>
 
 #import "ApolloCommon.h"
+#import "ApolloDuoCompatibility.h"
 #import "ApolloGiphyClient.h"
 #import "ApolloInlineImageMetadata.h"
 #import "ApolloMediaAutoplay.h"
@@ -18,6 +23,7 @@
 #import "ApolloMarkdownToolbarGif.h"
 #import "Tweak.h"
 #import "ApolloClasses.h"
+#import "ApolloDuoRail.h"
 
 // FFmpegKit's static libs are device-arm64 only, so simulator/dev builds
 // (APOLLO_SIM_BUILD, see Makefile + scripts/run-in-sim.sh) compile without it.
@@ -173,6 +179,127 @@ static void ApolloMediaPrepareTransparentWrapper(UIViewController *viewer) {
     dim.alpha = MIN(dim.alpha, alpha);
 }
 
+%end
+
+// MARK: - Viewer fit
+//
+// Fullscreen media fills the screen height, and the open zoom lands on that
+// same rect (Apollo 1.15.11):
+//   * SMScrollView::_setMinimumZoomScaleToFit (0x100042e08) fits inside its
+//     bounds minus safeAreaInsets, so tall media stopped short of the Dynamic
+//     Island and home indicator (and a vertical video 17pt short on an opened
+//     Duo).
+//   * MediaViewerAnimationController (0x10020898c) sizes the landing rect from
+//     the presenting view's safeAreaInsets (top unless exactly 20, plus
+//     bottom). When those differ from the viewer's (116pt vs 34pt on an opened
+//     Duo), the zoom lands on one rect and the media jumps to another.
+// The viewer drops its vertical insets, and Apollo's animator reads zero
+// vertical insets from the presenter while it sets up. Chrome (Close, page
+// count, the post row) still lays out in the safe area, over the media.
+
+@interface SMScrollView : UIScrollView
+@end
+
+@interface UILayoutContainerView : UIView
+@end
+
+// The presenter while Apollo's animator sets up a presentation (main thread);
+// NULL otherwise.
+static _Atomic(const void *) sApolloMediaFitPresenterView;
+static NSUInteger sApolloMediaFitPresenterReads;
+// Apollo's own image. Only its reads are rewritten, so UIKit layout of the
+// presenter never sees zero insets.
+static const void *sApolloMediaFitApolloImage;
+// The root view of navigation and tab bar controllers, which present every
+// viewer. Nil (native landing rect) if UIKit drops the class.
+static Class sApolloMediaFitPresenterClass;
+static BOOL sApolloMediaFitIsDuo;
+
+static char kApolloMediaFitViewerScrollKey;
+
+// A zoom view's owner is fixed once it is in a window, so the answer is cached
+// from then on.
+static BOOL ApolloMediaFitIsViewerScroll(UIScrollView *scroll) {
+    Class viewerClass = ApolloClassMediaViewerController;
+    if (!viewerClass) return NO;
+    NSNumber *cached = objc_getAssociatedObject(scroll, &kApolloMediaFitViewerScrollKey);
+    if (cached) return cached.boolValue;
+    BOOL viewer = [(id)scroll.delegate isKindOfClass:viewerClass];
+    for (UIResponder *next = scroll.nextResponder; !viewer && next; next = next.nextResponder) {
+        viewer = [next isKindOfClass:viewerClass];
+    }
+    if (scroll.window) {
+        objc_setAssociatedObject(scroll, &kApolloMediaFitViewerScrollKey, @(viewer), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return viewer;
+}
+
+%hook SMScrollView
+- (UIEdgeInsets)safeAreaInsets {
+    UIEdgeInsets insets = %orig;
+    if (!ApolloMediaFitIsViewerScroll((UIScrollView *)self)) return insets;
+    insets.top = 0.0;
+    insets.bottom = 0.0;
+    // On an opened Duo the viewer also inherits the tab rail's trailing
+    // inset, which would shrink even a square image by 84pt.
+    if (sApolloMediaFitIsDuo && ApolloDuoCurrentMode() != ApolloDuoModePhone) {
+        insets.left = 0.0;
+        insets.right = 0.0;
+    }
+    return insets;
+}
+%end
+
+%group ApolloMediaFitPresenterHooks
+%hook UILayoutContainerView
+- (UIEdgeInsets)safeAreaInsets {
+    // One relaxed load outside a media presentation.
+    const void *presenter = atomic_load_explicit(&sApolloMediaFitPresenterView, memory_order_relaxed);
+    if (__builtin_expect(presenter == NULL, 1)) return %orig;
+    UIEdgeInsets insets = %orig;
+    if ((__bridge const void *)self != presenter || !pthread_main_np()) return insets;
+    Dl_info info;
+    if (!dladdr(__builtin_return_address(0), &info) || info.dli_fbase != sApolloMediaFitApolloImage) return insets;
+    insets.top = 0.0;
+    insets.bottom = 0.0;
+    sApolloMediaFitPresenterReads++;
+    return insets;
+}
+%end
+%end
+
+%hook _TtC6Apollo30MediaViewerAnimationController
+- (void)animateTransition:(id<UIViewControllerContextTransitioning>)context {
+    // Presentation only: dismissal reads no safe-area insets.
+    UIViewController *to = [context viewControllerForKey:UITransitionContextToViewControllerKey];
+    Class pageClass = ApolloClassMediaPageViewController;
+    UIView *presenter = nil;
+    if (pageClass && [to isKindOfClass:pageClass] && pthread_main_np() && sApolloMediaFitApolloImage) {
+        presenter = [context viewControllerForKey:UITransitionContextFromViewControllerKey].viewIfLoaded;
+    }
+    if (!presenter || atomic_load_explicit(&sApolloMediaFitPresenterView, memory_order_relaxed)) {
+        %orig;
+        return;
+    }
+    if (!sApolloMediaFitPresenterClass || ![presenter isKindOfClass:sApolloMediaFitPresenterClass]) {
+        ApolloLog(@"[MediaViewerFit] presentation from %@ is not a layout container view; native landing rect",
+                  NSStringFromClass(presenter.class));
+        %orig;
+        return;
+    }
+    sApolloMediaFitPresenterReads = 0;
+    atomic_store_explicit(&sApolloMediaFitPresenterView, (__bridge const void *)presenter, memory_order_relaxed);
+    @try {
+        %orig;
+    } @finally {
+        atomic_store_explicit(&sApolloMediaFitPresenterView, NULL, memory_order_relaxed);
+    }
+    // Zero is expected for a fade (no zoom image). For a zoom it means Apollo
+    // no longer reads the presenter's insets here, and the landing rect is
+    // native.
+    ApolloLog(@"[MediaViewerFit] presentation from %@ rewrote %lu presenter inset reads",
+              NSStringFromClass(presenter.class), (unsigned long)sApolloMediaFitPresenterReads);
+}
 %end
 
 // #1346: when a swipe between pages of the fullscreen viewer settles,
@@ -1275,4 +1402,22 @@ static void ApolloHideUploadLabel(id titleNode) {
         %init(ApolloPostTitleUploadLabelHooks);
         ApolloLog(@"[PostTitleUploadLabel] Reddit upload label hook installed");
     }
+
+    sApolloMediaFitIsDuo = ApolloDeviceIsDuo();
+    const char *imageName = ApolloClassMediaPageViewController
+        ? class_getImageName(ApolloClassMediaPageViewController) : NULL;
+    for (uint32_t i = 0; imageName && i < _dyld_image_count(); i++) {
+        const char *name = _dyld_get_image_name(i);
+        if (name && strcmp(name, imageName) == 0) {
+            sApolloMediaFitApolloImage = _dyld_get_image_header(i);
+            break;
+        }
+    }
+    sApolloMediaFitPresenterClass = objc_getClass("UILayoutContainerView");
+    if (sApolloMediaFitPresenterClass) {
+        %init(ApolloMediaFitPresenterHooks);
+    }
+    ApolloLog(@"[MediaViewerFit] hooks installed duo=%d nativeImage=%d presenterHook=%d",
+              (int)sApolloMediaFitIsDuo, (int)(sApolloMediaFitApolloImage != NULL),
+              (int)(sApolloMediaFitPresenterClass != Nil));
 }
