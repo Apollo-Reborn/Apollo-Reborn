@@ -3155,6 +3155,16 @@ static void ApolloDuoRestoreFeedAnchor(UITableView *table, ApolloDuoFeedAnchor *
     [table setContentOffset:CGPointMake(table.contentOffset.x, offset) animated:NO];
 }
 
+// UIKit applies a non-animated setViewControllers: on the navigation view's next
+// layout. Closing the thread takes its pane off screen first (the column hides,
+// or a parked thread leaves the window), so the closed pages would never get
+// viewWillDisappear:/viewDidDisappear:, and a forward swipe would bring the
+// thread back with its Find bar collapsed. Run it now, while it is on screen.
+static void ApolloDuoRunNavigationChangeNow(UINavigationController *nav) {
+    UIView *view = nav.viewIfLoaded;
+    if (view.window) [view layoutIfNeeded];
+}
+
 // The thread pane at `pane` (surface coordinates), without overlays.
 static UIView *ApolloDuoPostsPanePicture(ApolloDuoSplitState *state, CGRect pane) {
     UIView *detail = state.secondary.viewIfLoaded;
@@ -3173,6 +3183,7 @@ static void ApolloDuoPostsApplyDetailStack(ApolloDuoSplitState *state, NSArray<U
         if (![state.secondary.viewControllers isEqualToArray:stack]) {
             state.changing = YES;
             [state.secondary setViewControllers:stack animated:NO];
+            ApolloDuoRunNavigationChangeNow(state.secondary);
             state.changing = NO;
         }
         if (closedPages) ApolloDuoPostsRememberClosedThread(state, closedPages, closedPane);
@@ -3407,14 +3418,10 @@ static void ApolloDuoUnparkThread(ApolloDuoSplitState *state, BOOL close, NSArra
         return;
     }
     // Pop while the view is still in the window, so the pages see a real pop.
-    // UIKit applies a non-animated change on the view's next layout, by which
-    // time it has left the window, so lay it out now; otherwise the pages never
-    // get viewWillDisappear:/viewDidDisappear:, and a forward swipe brings the
-    // thread back with its Find in Comments bar collapsed.
     if (backstop && thread.viewControllers.count > 1) {
         state.changing = YES;
         [thread setViewControllers:@[backstop] animated:NO];
-        if (view.window) [view layoutIfNeeded];
+        ApolloDuoRunNavigationChangeNow(thread);
         state.changing = NO;
     }
     if (view && !thread.parentViewController) [view removeFromSuperview];
