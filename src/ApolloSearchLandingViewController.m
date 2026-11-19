@@ -4,7 +4,6 @@
 #import "ApolloDuoRail.h"
 #import "ApolloSearchLandingPreferences.h"
 #import "ApolloState.h"
-#import <objc/message.h>
 #include <math.h>
 
 @interface ApolloSearchLandingRow : UIControl
@@ -230,6 +229,7 @@
 @property(nonatomic) BOOL configuredColumns;
 @property(nonatomic) BOOL usesTwoColumns;
 @property(nonatomic) BOOL columnUpdatePending;
+@property(nonatomic) BOOL animatesFoldChange;
 - (void)scheduleColumnArrangement;
 - (NSArray<NSString *> *)visibleSectionOrder;
 - (void)arrangeSections:(NSArray<NSString *> *)order inTwoColumns:(BOOL)twoColumns;
@@ -309,20 +309,8 @@
     [self arrangeSections:[self visibleSectionOrder] inTwoColumns:NO];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(searchSettingsChanged:)
         name:ApolloSearchLandingSettingsDidChangeNotification object:nil];
-    if (@available(iOS 27.1, *)) {
-        Class interactionClass = NSClassFromString(@"UIHingeInteraction");
-        if (interactionClass) {
-            __weak ApolloSearchLandingViewController *weakSelf = self;
-            void (^handler)(id, id) = ^(__unused id interaction, __unused id update) {
-                // Read reserved geometry after UIKit delivers the pose update;
-                // hinge angle itself never drives column widths.
-                [weakSelf scheduleColumnArrangement];
-            };
-            id<UIInteraction> interaction = ((id (*)(id, SEL, id))objc_msgSend)([interactionClass alloc],
-                NSSelectorFromString(@"initWithUpdateHandler:"), handler);
-            [self.view addInteraction:interaction];
-        }
-    }
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(foldChanged:)
+        name:ApolloDuoFoldDidChangeNotification object:nil];
 }
 
 - (void)updateTrending:(NSArray<NSString *> *)trending recent:(NSArray<NSString *> *)recent randomNSFW:(BOOL)show {
@@ -452,7 +440,7 @@
     CGFloat margin = twoColumns ? 24 : 20;
     CGFloat widthDifference = 0;
     CGFloat gutter = 20;
-    CGRect fold = twoColumns ? ApolloDuoActiveVerticalDivision(self.view) : CGRectNull;
+    CGRect fold = twoColumns ? ApolloDuoLayoutVerticalDivision(self.view) : CGRectNull;
     if (!CGRectIsNull(fold)) {
         CGFloat center = CGRectGetMidX(fold);
         CGFloat foldGutter = MAX(gutter, CGRectGetWidth(fold));
@@ -481,13 +469,32 @@
         self.columns.alignment = twoColumns ? UIStackViewAlignmentTop : UIStackViewAlignmentFill;
         self.equalColumnWidths.constant = widthDifference;
         self.equalColumnWidths.active = twoColumns;
-    } else if (fabs(self.equalColumnWidths.constant - widthDifference) > 0.5) {
-        self.equalColumnWidths.constant = widthDifference;
     }
-    if (fabs(self.columns.spacing - gutter) > 0.5) self.columns.spacing = gutter;
+    // Animate fold changes, as the split does.
+    BOOL animate = self.animatesFoldChange && !arrangementChanged && self.view.window;
+    self.animatesFoldChange = NO;
+    BOOL moved = NO;
+    if (!arrangementChanged && fabs(self.equalColumnWidths.constant - widthDifference) > 0.5) {
+        self.equalColumnWidths.constant = widthDifference;
+        moved = YES;
+    }
+    if (fabs(self.columns.spacing - gutter) > 0.5) {
+        self.columns.spacing = gutter;
+        moved = YES;
+    }
     if (self.contentLeading.constant != margin) self.contentLeading.constant = margin;
     if (self.contentTrailing.constant != -margin) self.contentTrailing.constant = -margin;
     if (self.contentWidth.constant != -2 * margin) self.contentWidth.constant = -2 * margin;
+    if (animate && moved) {
+        [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionAllowUserInteraction
+                         animations:^{ [self.view layoutIfNeeded]; } completion:nil];
+    }
+}
+
+- (void)foldChanged:(__unused NSNotification *)note {
+    // Also while on another tab, so returning here shows the new layout.
+    self.animatesFoldChange = YES;
+    [self scheduleColumnArrangement];
 }
 
 - (void)scheduleColumnArrangement {
@@ -505,6 +512,11 @@
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     [self scheduleColumnArrangement];
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    ApolloDuoTrackFold(self.view.window);
 }
 
 - (void)viewWillAppear:(BOOL)animated {
