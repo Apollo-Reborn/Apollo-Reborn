@@ -3407,9 +3407,14 @@ static void ApolloDuoUnparkThread(ApolloDuoSplitState *state, BOOL close, NSArra
         return;
     }
     // Pop while the view is still in the window, so the pages see a real pop.
+    // UIKit applies a non-animated change on the view's next layout, by which
+    // time it has left the window, so lay it out now; otherwise the pages never
+    // get viewWillDisappear:/viewDidDisappear:, and a forward swipe brings the
+    // thread back with its Find in Comments bar collapsed.
     if (backstop && thread.viewControllers.count > 1) {
         state.changing = YES;
         [thread setViewControllers:@[backstop] animated:NO];
+        if (view.window) [view layoutIfNeeded];
         state.changing = NO;
     }
     if (view && !thread.parentViewController) [view removeFromSuperview];
