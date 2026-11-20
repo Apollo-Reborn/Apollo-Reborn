@@ -3198,6 +3198,21 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                                       perAccountFavorites, sortFavoritesAlphabetically, confirmFavoriteToggle ]];
 }
 
+- (ApolloSettingsSection *)buildSubredditFeedsSection {
+    ApolloSettingsRow *showHiddenPosts =
+        [ApolloSettingsRow switchRowWithID:@"sub.showHiddenPosts"
+                                     title:@"Show Hidden Posts"
+                                      isOn:^BOOL { return sShowHiddenPostsInSubreddits; }
+                                  onToggle:^(UISwitch *sender) {
+                                      sShowHiddenPostsInSubreddits = sender.isOn;
+                                      [[NSUserDefaults standardUserDefaults] setBool:sender.isOn
+                                                                              forKey:UDKeyShowHiddenPostsInSubreddits];
+                                  }];
+    return [ApolloSettingsSection sectionWithTitle:@"Subreddit Feeds"
+                                            footer:@"Posts you hid show up again in subreddit feeds. Home, Popular, All and multireddits still hide them. Reddit's \"hide posts I voted on\" options don't apply in these feeds either. Pull to refresh an open feed."
+                                              rows:@[ showHiddenPosts ]];
+}
+
 - (ApolloSettingsSection *)buildSubredditsLayoutSection {
     __weak typeof(self) weakSelf = self;
 
@@ -5669,6 +5684,7 @@ static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
 }
 - (NSArray<ApolloSettingsSection *> *)buildForm {
     return [@[ [self buildSubredditsMainSection],
+               [self buildSubredditFeedsSection],
                [self buildSubredditsLayoutSection] ]
         arrayByAddingObjectsFromArray:[self buildSubredditsSearchSections]];
 }

@@ -101,6 +101,9 @@ static NSString *const UDKeySortFavoritesAlphabetically = @"SortFavoritesAlphabe
 // Ask before adding or removing a favorite via the Subreddits-list star.
 // Opt-in; default OFF. See ApolloFavoriteConfirm.xm.
 static NSString *const UDKeyConfirmFavoriteToggle = @"ConfirmFavoriteToggle";
+// Keep hidden posts in single-subreddit feeds (adds show=all to their
+// listings). Default OFF. See ApolloShowHiddenPostsHooks.xm.
+static NSString *const UDKeyShowHiddenPostsInSubreddits = @"ShowHiddenPostsInSubreddits";
 // Per-account sorting preferences, keyed by the per-account favorites identity
 // (u:name / anonymous). Missing entries default OFF; shared preference is above.
 static NSString *const UDKeyFavoriteSortingByAccount = @"FavoriteSortingByAccount";
