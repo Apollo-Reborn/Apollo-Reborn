@@ -176,16 +176,14 @@ static BOOL ApolloActionsIsAutoModClose(UIBarButtonItem *item) {
 }
 
 static BOOL ApolloActionsUsesPlainSubmitStyle(UIBarButtonItem *item) {
-    NSString *targetClass = NSStringFromClass([item.target class]);
-    return (item.action == @selector(submitBarButtonTapped:) &&
-            [targetClass isEqualToString:@"Apollo.ComposeViewController"]) ||
-           (item.action == @selector(updateBarButtonItemTappedWithSender:) &&
-            [targetClass isEqualToString:@"Apollo.FlairSelectorViewController"]);
+    return item.action == @selector(updateBarButtonItemTappedWithSender:) &&
+        [NSStringFromClass([item.target class]) isEqualToString:@"Apollo.FlairSelectorViewController"];
 }
 
 // The post composer's storyboard Post item (style Done), the Poll tab's
-// replacement for it (ApolloPollCompose.xm), and the Done checkmark that
-// replaces Post in its body editors (ApolloPhotoPostComposerScrollFix.xm).
+// replacement for it (ApolloPollCompose.xm), the Done checkmark that
+// replaces Post in its body editors (ApolloPhotoPostComposerScrollFix.xm),
+// and the comment/message composer's Post.
 static BOOL ApolloActionsUsesAccentSubmitStyle(UIBarButtonItem *item) {
     NSString *targetClass = NSStringFromClass([item.target class]);
     SEL action = item.action;
@@ -193,7 +191,8 @@ static BOOL ApolloActionsUsesAccentSubmitStyle(UIBarButtonItem *item) {
         return action == @selector(postButtonTapped:);
     }
     if ([targetClass isEqualToString:@"Apollo.ComposeViewController"]) {
-        return action == @selector(apollo_mediaBodyDoneButtonTapped:) ||
+        return action == @selector(submitBarButtonTapped:) ||
+            action == @selector(apollo_mediaBodyDoneButtonTapped:) ||
             action == @selector(apollo_textBodyDoneButtonTapped:);
     }
     return action == @selector(postTapped) &&
@@ -1728,6 +1727,12 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
                 NSStringFromSelector(item.action));
         }
         objc_setAssociatedObject(item, &kActionsAccentSubmitKey, @(accentSubmit), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        // The comment composer's Post arrives plain; fill it like the others.
+        if (@available(iOS 26.0, *)) {
+            if (accentSubmit && IsLiquidGlass() && item.style != UIBarButtonItemStyleProminent) {
+                item.style = UIBarButtonItemStyleProminent;
+            }
+        }
         ApolloActionsPinChrome(item);
         UIImage *image = ApolloActionsTemplateImage(item.image);
         if (ApolloActionsHasTrailingTabRail() && ApolloActionsModeratorItem(item)
