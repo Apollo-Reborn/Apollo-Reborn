@@ -286,6 +286,9 @@ static void ApolloDuoSetThreadDragOffset(UIView *view, CGFloat offset) {
 // Unfolded from the folded subreddit list: the drawer stays open over an empty
 // feed until the reader picks a subreddit or feed.
 @property(nonatomic) BOOL listPinned;
+// How far down the list was read when the drawer last closed, from the top of
+// its visible area; nil until it first closes.
+@property(nonatomic, strong) NSNumber *listScrollTop;
 @property(nonatomic, strong) UIStackView *pinnedPrompt;
 @property(nonatomic) BOOL postsShowingDetail;
 @property(nonatomic) BOOL postsSplitEnabled;
@@ -759,6 +762,7 @@ static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
     [self.view layoutIfNeeded];
     CGFloat start = [self listOffset];
     BOOL reveal = visible && !self.listVisible;
+    if (!visible && self.listVisible) [self saveListScrollTop];
     self.listDragging = NO;
     self.listVisible = visible;
     [self.view setNeedsLayout];
@@ -784,14 +788,27 @@ static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
     // table background, before exposing the drawer.
     [self.subredditList.view layoutIfNeeded];
     UITableView *table = ApolloDuoSplitFindTable(self.subredditList.view);
-    // Reset before the first reveal frame, after the drawer's safe-area
-    // layout, so reopening always starts with the feed shortcuts. A pinned
-    // drawer continues the folded list, so it keeps that scroll position.
-    if (!self.listPinned)
-        [table setContentOffset:CGPointMake(-table.adjustedContentInset.left,
-                                           -table.adjustedContentInset.top) animated:NO];
+    // Reopen where the list was left, as Back to the list does on an iPhone,
+    // set before the first reveal frame and after the drawer's safe-area
+    // layout. Until the drawer first closes, that's where the folded list was.
+    CGFloat minimum = -table.adjustedContentInset.top;
+    CGFloat top = self.listScrollTop ? self.listScrollTop.doubleValue : table.contentOffset.y - minimum;
+    CGFloat maximum = MAX(minimum, table.contentSize.height - table.bounds.size.height
+                          + table.adjustedContentInset.bottom);
+    CGFloat y = MIN(maximum, MAX(minimum, minimum + top));
+    if (table && fabs(y - table.contentOffset.y) >= 0.5)
+        [table setContentOffset:CGPointMake(table.contentOffset.x, y) animated:NO];
     [table layoutIfNeeded];
     [self updateListAppearance];
+}
+// Measured from the top of the visible area, so a bar or safe-area change
+// while the drawer is hidden (a rotation) doesn't shift it.
+- (void)saveListScrollTop {
+    UITableView *table = ApolloDuoSplitFindTable(self.subredditList.viewIfLoaded);
+    if (!table) return;
+    // Stop a fling, or it carries on out of sight past the saved spot.
+    if (table.decelerating) [table setContentOffset:table.contentOffset animated:NO];
+    self.listScrollTop = @(table.contentOffset.y + table.adjustedContentInset.top);
 }
 // How far the drawer travels between hidden and shown: its width plus the
 // 12pt gap. Before its first layout, the width viewDidLayoutSubviews will give.
