@@ -2466,12 +2466,32 @@ static NSURL *ApolloWriteTrendingPlist(NSDictionary *table) {
 // fails immediately with "Unable to retrieve receipt information..." before it
 // even attempts SKReceiptRefreshRequest. Returning a path to a real (dummy) file
 // satisfies the file-exists check and lets Apollo proceed to backend registration.
+// NSTemporaryDirectory() can be nil (#1755), and this runs at launch, so fall
+// back to a tweak-owned Caches folder, then to Apollo's own receipt URL.
 - (NSURL *)appStoreReceiptURL {
     static NSString *dummyPath;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        dummyPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"apollo_dummy_receipt"];
+        NSString *directory = NSTemporaryDirectory();
+        if (directory.length == 0) {
+            NSString *caches = [NSSearchPathForDirectoriesInDomains(
+                NSCachesDirectory, NSUserDomainMask, YES) firstObject];
+            if (caches.length > 0) {
+                directory = [caches stringByAppendingPathComponent:@"ApolloReborn"];
+                [[NSFileManager defaultManager] createDirectoryAtPath:directory
+                                          withIntermediateDirectories:YES
+                                                           attributes:nil
+                                                                error:NULL];
+            }
+        }
+        if (directory.length > 0) {
+            dummyPath = [directory stringByAppendingPathComponent:@"apollo_dummy_receipt"];
+        }
     });
+    if (dummyPath.length == 0) {
+        os_log_error(ApolloFixLog(), "[ApolloFix] [StoreKit] No temporary or Caches directory; not spoofing appStoreReceiptURL");
+        return %orig;
+    }
     if (![[NSFileManager defaultManager] fileExistsAtPath:dummyPath]) {
         // Minimal ASN.1 SEQUENCE shell — non-empty so basic format checks pass
         uint8_t bytes[] = {0x30, 0x01, 0x00};
