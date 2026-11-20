@@ -355,6 +355,14 @@ int main(void) {
             CHECK(ApolloUploadOriginalGIFDataForBody(jA) == nil, @"no composer: upload is the still");
         }
 
+        // 11. No temporary directory (#1755): no folder instead of an exception.
+        {
+            CHECK(ApolloOriginalGIFRootDirectoryForTemporaryPath(nil) == nil, @"nil tmp: no folder, no throw");
+            CHECK(ApolloOriginalGIFRootDirectoryForTemporaryPath(@"") == nil, @"empty tmp: no folder, no throw");
+            NSURL *root = ApolloOriginalGIFRootDirectoryForTemporaryPath(@"/private/var/tmp");
+            CHECK([root.path isEqualToString:@"/private/var/tmp/ApolloReborn-OriginalGIFs"], @"tmp: folder under it (%@)", root.path);
+        }
+
         ResetStore();
         [[NSFileManager defaultManager] removeItemAtURL:sWorkDirectory error:nil];
         [[NSFileManager defaultManager] removeItemAtURL:ApolloOriginalGIFDirectory() error:nil];

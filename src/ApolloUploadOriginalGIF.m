@@ -64,12 +64,22 @@ static NSData *ApolloOriginalGIFDigest(NSData *data) {
     return [NSData dataWithBytes:digest length:sizeof(digest)];
 }
 
+// nil when there is no temporary directory to use. NSTemporaryDirectory() can
+// return nil (#1755: an iOS 14.1 rootful jailbreak install aborted on every launch
+// because +[NSURL fileURLWithPath:isDirectory:] throws on a nil path, and this ran
+// from the tweak's %ctor). Every caller treats nil as "keep Apollo's still".
+static NSURL *ApolloOriginalGIFRootDirectoryForTemporaryPath(NSString *temporaryPath) {
+    if (temporaryPath.length == 0) return nil;
+    return [NSURL fileURLWithPath:[temporaryPath stringByAppendingPathComponent:@"ApolloReborn-OriginalGIFs"] isDirectory:YES];
+}
+
 static NSURL *ApolloOriginalGIFRootDirectory(void) {
-    return [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:@"ApolloReborn-OriginalGIFs"] isDirectory:YES];
+    return ApolloOriginalGIFRootDirectoryForTemporaryPath(NSTemporaryDirectory());
 }
 
 // This launch's copies live in their own folder, so clearing earlier launches'
-// folders at startup can't race a GIF picked right after launch.
+// folders at startup can't race a GIF picked right after launch. nil (for the
+// whole launch) when there is no temporary directory.
 static NSURL *ApolloOriginalGIFDirectory(void) {
     static NSURL *directory;
     static dispatch_once_t onceToken;
@@ -130,6 +140,8 @@ static void ApolloOriginalGIFRemember(NSData *jpegData, NSURL *gifURL, size_t fr
         [gifURL getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
         if (size.unsignedLongLongValue == 0 || size.unsignedLongLongValue > kApolloOriginalGIFMaxBytes) {
             ApolloLog(@"[OriginalGIF] GIF is %@ bytes (limit %llu); uploading Apollo's still instead", size ?: @"?", kApolloOriginalGIFMaxBytes);
+        } else if (!ApolloOriginalGIFDirectory()) {
+            ApolloLog(@"[OriginalGIF] No temporary directory; uploading Apollo's still");
         } else {
             NSURL *directory = ApolloOriginalGIFDirectory();
             [[NSFileManager defaultManager] createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:nil];
@@ -254,7 +266,7 @@ void ApolloUploadOriginalGIFReleaseFile(NSURL *gifFile) {
     if (!gifFile.isFileURL) return;
     NSString *folder = ApolloOriginalGIFDirectory().URLByStandardizingPath.path;
     NSString *parent = gifFile.URLByStandardizingPath.URLByDeletingLastPathComponent.path;
-    if (![parent isEqualToString:folder]) return;   // never delete anything the store didn't create
+    if (folder.length == 0 || ![parent isEqualToString:folder]) return;   // never delete anything the store didn't create
     [[NSFileManager defaultManager] removeItemAtURL:gifFile error:nil];
 }
 
@@ -317,11 +329,17 @@ static bool hooked_CGImageDestinationFinalize(CGImageDestinationRef destination)
 
 void ApolloUploadOriginalGIFInstallRebindings(const struct mach_header *header, intptr_t slide) {
     if (!header) return;
+    // Without a temporary directory there's nowhere to keep a GIF, so leave
+    // Apollo's ImageIO calls alone: its still uploads as it always has (#1755).
+    if (!ApolloOriginalGIFDirectory()) {
+        ApolloLog(@"[OriginalGIF] No temporary directory; camera-roll GIF uploads inactive (Apollo's still is uploaded)");
+        return;
+    }
     // Copies left in tmp by earlier launches can't match anything now.
     NSString *currentFolder = ApolloOriginalGIFDirectory().lastPathComponent;
+    NSURL *root = ApolloOriginalGIFDirectory().URLByDeletingLastPathComponent;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         NSFileManager *fileManager = [NSFileManager defaultManager];
-        NSURL *root = ApolloOriginalGIFRootDirectory();
         for (NSURL *folder in [fileManager contentsOfDirectoryAtURL:root includingPropertiesForKeys:nil options:0 error:nil]) {
             if (![folder.lastPathComponent isEqualToString:currentFolder]) [fileManager removeItemAtURL:folder error:nil];
         }
