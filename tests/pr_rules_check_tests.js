@@ -42,8 +42,18 @@ const DEVICE_TABLE = [
     '| iPhone Duo | iPhone Duo | 27.1 | Simulator | Fixed, closed and open |',
 ].join('\n');
 
+// The template's checklist with every box ticked except "Needs a device
+// tester", which is only for authors who couldn't try the change.
+const TEMPLATE_CHECKLIST = TEMPLATE.split('## Checklist')[1]
+    .split('\n').filter((line) => /^- \[ \]/.test(line)).join('\n');
+const CHECKLIST = TEMPLATE_CHECKLIST.replace(/^- \[ \](?! Needs a device tester)/gm, '- [x]');
+const withBox = (checklist, wording, ticked) => checklist.split('\n')
+    .map((line) => (line.includes(wording) ? line.replace(/^- \[[ x]\]/, ticked ? '- [x]' : '- [ ]') : line)).join('\n');
+const DEVICE_TESTER_CHECKLIST = ['reproduced the bug', 'I ran this change', 'a person tried it']
+    .reduce((list, wording) => withBox(list, wording, false), withBox(CHECKLIST, 'Needs a device tester', true));
+
 // A filled-in description, built from the parts so each test can swap one.
-const typeBoxes = (ticked) => ['Bug fix', 'Feature (agreed on its issue)', 'Refactor (no change in behavior)']
+const typeBoxes = (ticked) => ['Bug fix', 'Feature', 'Refactor (no change in behavior)']
     .map((name) => `- [${ticked.some((t) => name.startsWith(t)) ? 'x' : ' '}] ${name}`).join('\n');
 
 function prBody(parts = {}) {
@@ -56,7 +66,7 @@ function prBody(parts = {}) {
         after: SCREENSHOT,
         unchanged: '',
         tested: DEVICE_TABLE,
-        checklist: Array.from({ length: check.CHECKLIST_ITEMS }, (_, i) => `- [x] item ${i + 1}`).join('\n'),
+        checklist: CHECKLIST,
         ...parts,
     };
     return [
@@ -92,7 +102,7 @@ async function detectionTests() {
         const [head, checklist] = TEMPLATE.split('## Checklist');
         let filled = head
             .replace(`- [ ] ${type}`, `- [x] ${type}`)
-            .replace('Closes #', 'Closes #1530')
+            .replace('\nCloses #\n', '\nCloses #1530\n')
             .replace(/(## What this changes\n\n<!--[^\n]*-->\n)/, '$1\nThe player was released offscreen, so GIFs stayed grey.\n')
             .replace('| Older or smaller iPhone | | | | |', '| Older or smaller iPhone | iPhone SE (3rd gen) | 17.5 | Simulator | Fixed |')
             .replace('| Newer or larger iPhone | | | | |', '| Newer or larger iPhone | iPhone 16 Pro Max | 26.0.1 | Real device | Fixed |')
@@ -102,7 +112,7 @@ async function detectionTests() {
         if (before) filled = filled.replace(/(## Before\n\n<!--[^\n]*-->\n)/, `$1\n${VIDEO}\n`);
         if (after) filled = filled.replace(/(## After\n\n<!--[^\n]*-->\n)/, `$1\n${SCREENSHOT}\n`);
         if (unchanged) filled = filled.replace(/(## How I checked nothing changed\n\n<!--[^\n]*-->\n)/, '$1\nDiffed the feed and comments request logs before and after; identical.\n');
-        return `${filled}## Checklist${checklist.replace(/- \[ \]/g, '- [x]')}`;
+        return `${filled}## Checklist${checklist.replace(/- \[ \](?! Needs a device tester)/g, '- [x]')}`;
     }
 
     await test('the real template filled in as a bug fix passes (template and check agree)', () => {
@@ -122,8 +132,9 @@ async function detectionTests() {
         requireEqual(problems(fillTemplate({ type: 'Bug fix', ipad })), [], 'problems');
     });
 
-    await test('the real template has as many checklist boxes as the check expects', () => {
-        requireEqual((TEMPLATE.split('## Checklist')[1].match(/^- \[ \]/gm) || []).length, check.CHECKLIST_ITEMS, 'boxes');
+    await test('the real template has a device tester box, unticked', () => {
+        requireThat(/^- \[ \] Needs a device tester/m.test(TEMPLATE), 'box');
+        requireThat(!check.needsDeviceTest(TEMPLATE), 'not asked for');
     });
 
     await test('an empty description names the missing sections and the issue', () => {
@@ -179,10 +190,55 @@ async function detectionTests() {
         ['Fixed Apollo-Reborn/Apollo-Reborn#1500', true],
         ['Closes https://github.com/Apollo-Reborn/Apollo-Reborn/issues/1500', true],
         ['Closes #', false],
-        ['#1500 (no closing keyword)', false],
+        ['#1500 (no closing keyword)', true],
+        ['Related to #101, #102. See also #201.', true],
+        ['https://github.com/Apollo-Reborn/Apollo-Reborn/issues/1500', true],
+        ['someone/else#1500', false],
+        ['no number at all', false],
         ['Closes https://github.com/someone/else/issues/1', false],
         ['<!-- Closes #1500 -->', false],
     ];
+    await test('feature: a request board link counts as its issue', () => {
+        const type = typeBoxes(['Feature']);
+        requireEqual(problems(prBody({ type, issue: 'Request: https://request.apolloreborn.app/posts/149/add-a-slideshow' })), [], 'problems');
+        requireThat(failed(prBody({ type, issue: 'https://request.apolloreborn.app/' })).includes('Issue'), 'board home page is not a request');
+        requireThat(problems(prBody({ type, issue: '' }))[0].includes('feature request'), 'feature wording');
+    });
+
+    await test('refactor: no issue is needed, but What this changes has to say why', () => {
+        const type = typeBoxes(['Refactor']);
+        const base = { type, issue: 'Closes #', steps: '', before: '', after: '', unchanged: 'Diffed the feed and comments request logs before and after; identical.' };
+        requireEqual(problems(prBody(base)), [], 'no issue passes');
+        const line = problems(prBody({ ...base, summary: 'cleanup' }))[0];
+        requireThat(line && line.startsWith('**What this changes:**') && line.includes('worth doing'), `refactor wording: ${line}`);
+    });
+
+    await test('no type ticked: the issue is still asked for', () => {
+        requireThat(failed(prBody({ type: typeBoxes([]), issue: '', before: '', steps: '' })).includes('Issue'), 'asks for it');
+    });
+
+    await test('a bare #N only counts under Issue, not elsewhere in the description', () => {
+        const body = prBody({ issue: 'none yet', summary: 'See also #201: the player was released while offscreen, so GIFs stayed grey.' });
+        requireThat(failed(body).includes('Issue'), 'a mention in What this changes does not count');
+        requireEqual(failed(prBody({ issue: 'none yet', summary: 'Closes #1530. The player was released offscreen, so GIFs stayed grey.' })), [], 'a closing keyword anywhere still counts');
+    });
+
+    await test('issue refs: closing keywords anywhere plus any reference under Issue', () => {
+        const body = prBody({ issue: 'Related to #101 and Apollo-Reborn/Apollo-Reborn#102, see https://github.com/Apollo-Reborn/Apollo-Reborn/pull/201', summary: 'Fixes #1530 in the feed, so GIFs no longer stay grey after scrolling back.' });
+        requireEqual(check.issueRefsIn(body, OWNER, REPO).sort((a, b) => a - b), [101, 102, 201, 1530], 'refs');
+    });
+
+    await test('issue refs that are all pull requests fail, naming them', () => {
+        const body = prBody({ issue: 'See also #201' });
+        const line = check.problemsIn(body, OWNER, REPO, new Set()).find((l) => l.startsWith('**Issue:**'));
+        requireThat(line && line.includes("#201 isn't an issue"), `got ${line}`);
+        requireEqual(check.problemsIn(prBody({ issue: 'See also #201. Related to #101.' }), OWNER, REPO, new Set([101])), [], 'one real issue is enough');
+    });
+
+    await test('bug fix: a request board link is not enough', () => {
+        requireThat(failed(prBody({ issue: 'https://request.apolloreborn.app/posts/149' })).includes('Issue'), 'fails');
+    });
+
     for (const [issue, ok] of ISSUE_CASES) {
         await test(`issue link: ${issue}`, () => {
             requireEqual(failed(prBody({ issue })).includes('Issue'), !ok, 'Issue failed');
@@ -271,14 +327,52 @@ async function detectionTests() {
         requireThat(failed(prBody({ tested })).includes('Tested on'), 'fails');
     });
 
-    await test('checklist: one unticked box fails, with the count', () => {
-        const checklist = prBody().split('## Checklist\n\n')[1].replace('- [x] item 3', '- [ ] item 3');
+    await test('checklist: an unticked box is named, with the device tester hint', () => {
+        const checklist = withBox(CHECKLIST, 'a person tried it', false);
         const line = problems(prBody({ checklist })).find((l) => l.startsWith('**Checklist:**'));
-        requireThat(line && line.includes(`(${check.CHECKLIST_ITEMS - 1} of ${check.CHECKLIST_ITEMS} ticked)`), `got ${line}`);
+        requireThat(line && line.includes('"a person tried it"') && !line.includes('"both builds"'), `got ${line}`);
+        requireThat(line.includes('Needs a device tester'), 'hints at the device tester box');
+    });
+
+    await test('checklist: an unticked build box gets no device tester hint', () => {
+        const line = problems(prBody({ checklist: withBox(CHECKLIST, 'make package', false) })).find((l) => l.startsWith('**Checklist:**'));
+        requireThat(line && line.includes('"`make package` passes"') && !line.includes('device tester'), `got ${line}`);
     });
 
     await test('checklist: deleting boxes fails', () => {
-        requireThat(failed(prBody({ checklist: '- [x] item 1\n- [X] item 2' })).includes('Checklist'), 'fails');
+        requireThat(failed(prBody({ checklist: CHECKLIST.split('\n').slice(0, 2).join('\n') })).includes('Checklist'), 'fails');
+    });
+
+    await test('checklist: reordered boxes still pass', () => {
+        requireEqual(problems(prBody({ checklist: CHECKLIST.split('\n').reverse().join('\n') })), [], 'problems');
+    });
+
+    await test('checklist: the reproduced box is only needed for a bug fix', () => {
+        const checklist = withBox(CHECKLIST, 'reproduced the bug', false);
+        requireThat(failed(prBody({ checklist })).includes('Checklist'), 'bug fix needs it');
+        requireEqual(problems(prBody({ checklist, type: typeBoxes(['Feature']), before: '' })), [], 'feature does not');
+    });
+
+    await test('device tester: waives the reproduced / ran it / person boxes and takes N/A media', () => {
+        const body = prBody({
+            checklist: DEVICE_TESTER_CHECKLIST,
+            before: 'N/A: only happens on a device I do not have',
+            after: 'N/A: same, and the simulator cannot reproduce it',
+        });
+        requireEqual(problems(body), [], 'problems');
+        requireThat(check.needsDeviceTest(body), 'asks for a tester');
+    });
+
+    await test('device tester: N/A media without the box fails, and a bare N/A fails either way', () => {
+        requireEqual(failed(prBody({ before: 'N/A: only happens on a device I do not have' })), ['Before'], 'without the box');
+        const lines = problems(prBody({ checklist: DEVICE_TESTER_CHECKLIST, before: 'N/A' }));
+        requireThat(lines.length === 1 && lines[0].startsWith('**Before:**') && lines[0].includes('N/A: <why'), `got ${lines}`);
+    });
+
+    await test('device tester: the build and read-every-line boxes are still needed', () => {
+        const checklist = withBox(DEVICE_TESTER_CHECKLIST, 'make package', false);
+        const line = problems(prBody({ checklist })).find((l) => l.startsWith('**Checklist:**'));
+        requireThat(line && line.includes('make package') && !line.includes('a person tried it'), `got ${line}`);
     });
 
     await test('steps: an untouched "1. 2. 3." fails', () => {
@@ -322,6 +416,9 @@ function harness({
     draft = false,
     merged = false,
     files = ['src/ApolloMedia.xm'],
+    openPRs = [], // the author's other open PRs, by number
+    prNumbers = [], // numbers that are pull requests rather than issues
+    missingNumbers = [], // numbers that don't exist
     events = [],
     comments = [],
     repoHasLabel = true,
@@ -338,9 +435,11 @@ function harness({
             labels: labels.map((name) => ({ name })),
         },
         repoLabels: repoHasLabel ? [check.LABEL] : [],
+        files,
         comments: comments.map((c, i) => ({ id: 900 + i, ...c })),
         events: events.map((e) => ({ ...e })),
         nextCommentId: 1000,
+        lookups: [], // issue numbers looked up (reads, so not in calls)
     };
     const calls = [];
     const issues = {
@@ -365,6 +464,11 @@ function harness({
             if (store.pr.labels.length === before) throw httpError(404);
             return { data: store.pr.labels };
         },
+        async get({ issue_number: n }) {
+            store.lookups.push(n);
+            if (missingNumbers.includes(n)) throw httpError(404);
+            return { data: prNumbers.includes(n) ? { number: n, pull_request: {} } : { number: n } };
+        },
         async listComments() { return { data: store.comments.map((c) => ({ ...c })) }; },
         async listEvents() { return { data: store.events.map((e) => ({ ...e })) }; },
         async createComment({ body: commentBody }) {
@@ -380,7 +484,15 @@ function harness({
     };
     const pulls = {
         async get() { return { data: JSON.parse(JSON.stringify(store.pr)) }; },
-        async listFiles() { return { data: files.map((filename) => ({ filename })) }; },
+        async listFiles() {
+            return { data: store.files.map((file) => (typeof file === 'string' ? { filename: file, additions: 10, deletions: 2 } : file)) };
+        },
+        async list() {
+            const others = openPRs.map((n) => ({ number: n, user: { login: author } }));
+            const someoneElse = [{ number: 1, user: { login: 'someone' } }];
+            const self = store.pr.state === 'open' ? [{ number: store.pr.number, user: { login: author } }] : [];
+            return { data: [...someoneElse, ...others, ...self] };
+        },
         async update({ state: newState }) {
             calls.push(['update', newState]);
             store.pr.state = newState;
@@ -431,6 +543,32 @@ async function flowTests() {
         requireThat(comment.includes('CONTRIBUTING.md#pull-request-rules'), 'comment links the rules');
     });
 
+    await test('an Issue section pointing only at a PR closes the PR, naming it', async () => {
+        const h = harness({ body: prBody({ issue: 'See also #201' }), prNumbers: [201] });
+        await h.fire('opened');
+        requireEqual(h.store.pr.state, 'closed', 'closed');
+        requireEqual(h.store.lookups, [201], 'looked it up');
+        requireThat(h.store.comments[0].body.includes("#201 isn't an issue"), 'names it');
+    });
+
+    await test('"Related to" an issue passes when it is an issue', async () => {
+        const h = harness({ body: prBody({ issue: 'Related to #101, #102. See also #201.' }), prNumbers: [201] });
+        await h.fire('opened');
+        requireEqual(h.calls, [], 'calls');
+    });
+
+    await test('a number that does not exist does not count', async () => {
+        const h = harness({ body: prBody({ issue: 'Related to #99999' }), missingNumbers: [99999] });
+        await h.fire('opened');
+        requireEqual(h.store.pr.state, 'closed', 'closed');
+    });
+
+    await test('drafts are not looked up', async () => {
+        const h = harness({ body: prBody({ issue: 'Related to #101' }), draft: true });
+        await h.fire('opened');
+        requireEqual(h.store.lookups, [], 'no lookups');
+    });
+
     await test('a complete outside PR is left alone', async () => {
         const h = harness({});
         await h.fire('opened');
@@ -470,6 +608,146 @@ async function flowTests() {
         const h = harness({ body: '', author: 'dependabot[bot]', userType: 'Bot' });
         await h.fire('opened');
         requireEqual(h.calls, [], 'calls');
+    });
+
+    const big = [{ filename: 'src/ApolloExample.xm', additions: 600, deletions: 0 }];
+    const labelsOf = (h) => h.store.pr.labels.map((l) => l.name);
+    const sizeComment = (h) => h.store.comments.find((c) => c.body.startsWith(check.SIZE_MARKER));
+
+    await test('a change over the size limit stays open, labelled needs-size-ok, with its own comment', async () => {
+        const files = [{ filename: 'src/ApolloExample.xm', additions: 700, deletions: 20 }, { filename: 'tests/example_tests.m', additions: 900, deletions: 0 }];
+        const h = harness({ files, repoHasLabel: false });
+        await h.fire('opened');
+        requireEqual(h.store.pr.state, 'open', 'stays open');
+        requireEqual(labelsOf(h), [check.NEEDS_SIZE_LABEL], 'labels');
+        requireThat(h.calls.some((c) => c[0] === 'createLabel' && c[1] === check.SIZE_LABEL), 'creates large-change-ok for maintainers');
+        const comment = sizeComment(h);
+        requireThat(comment && comment.body.includes('720 lines') && comment.body.includes('stays open'), `counts only non-test lines: ${comment && comment.body}`);
+        requireEqual(h.store.comments.length, 1, 'only the size comment');
+    });
+
+    await test('a maintainer adding large-change-ok takes needs-size-ok off and says so', async () => {
+        const h = harness({ files: big });
+        await h.fire('opened');
+        h.store.pr.labels.push({ name: check.SIZE_LABEL });
+        await h.fire('labeled', 'maintainer', check.SIZE_LABEL);
+        requireEqual(labelsOf(h), [check.SIZE_LABEL], 'labels');
+        requireThat(sizeComment(h).body.includes('agreed'), 'comment updated');
+        requireEqual(h.store.comments.length, 1, 'updated in place');
+    });
+
+    await test('a draft over the size limit is labelled too', async () => {
+        const h = harness({ files: big, draft: true, body: '' });
+        await h.fire('opened');
+        requireEqual(h.store.pr.state, 'open', 'open');
+        requireEqual(labelsOf(h), [check.NEEDS_SIZE_LABEL], 'labels');
+    });
+
+    await test('a push that takes a PR past the size limit labels it and never closes it', async () => {
+        for (const draft of [false, true]) {
+            const h = harness({ files: big, draft });
+            await h.fire('synchronize');
+            requireEqual(h.store.pr.state, 'open', `open (draft: ${draft})`);
+            requireEqual(labelsOf(h), [check.NEEDS_SIZE_LABEL], `labels (draft: ${draft})`);
+            requireThat(!h.calls.some((c) => c[0] === 'update'), 'never closed');
+        }
+    });
+
+    await test('a push back under the limit takes the label off', async () => {
+        const h = harness({ files: big });
+        await h.fire('synchronize');
+        h.store.files = [{ filename: 'src/ApolloExample.xm', additions: 300, deletions: 0 }];
+        await h.fire('synchronize');
+        requireEqual(labelsOf(h), [], 'labels');
+        requireThat(sizeComment(h).body.includes('300 lines'), 'comment updated');
+    });
+
+    await test('a second push over the limit does not comment again', async () => {
+        const h = harness({ files: big });
+        await h.fire('synchronize');
+        const calls = h.calls.length;
+        await h.fire('synchronize');
+        requireEqual(h.calls.length, calls, 'no new calls');
+    });
+
+    await test('a push under the limit, or with large-change-ok, or to an incomplete PR does nothing', async () => {
+        for (const options of [{}, { files: big, labels: [check.SIZE_LABEL] }, { body: missingBody }]) {
+            const h = harness(options);
+            await h.fire('synchronize');
+            requireEqual(h.calls, [], `calls for ${JSON.stringify(Object.keys(options))}`);
+        }
+    });
+
+    await test('a big PR missing paperwork is closed for the paperwork, and size stays a separate label', async () => {
+        const h = harness({ files: big, body: missingBody });
+        await h.fire('opened');
+        requireEqual(h.store.pr.state, 'closed', 'closed');
+        requireEqual(labelsOf(h).sort(), [check.LABEL, check.NEEDS_SIZE_LABEL].sort(), 'labels');
+        const rules = h.store.comments.find((c) => c.body.startsWith(check.MARKER));
+        requireThat(rules && !rules.body.includes('lines outside'), 'the rules comment does not mention size');
+    });
+
+    await test('a push to a PR a maintainer reopened while flagged does not close it again', async () => {
+        const h = harness({ files: big, labels: [check.LABEL], comments: [flaggedComment(`${check.MARKER}\nold`)] });
+        await h.fire('synchronize');
+        requireEqual(h.store.pr.state, 'open', 'state');
+        requireThat(!h.calls.some((call) => call[0] === 'update'), 'never closed');
+    });
+
+    await test('verification-not-needed also takes needs-size-ok off', async () => {
+        const h = harness({ files: big, labels: [check.NEEDS_SIZE_LABEL, check.SKIP_LABEL] });
+        await h.fire('labeled', 'maintainer', check.SKIP_LABEL);
+        requireEqual(labelsOf(h), [check.SKIP_LABEL], 'labels');
+    });
+
+    await test('lines in tests/ and docs do not count toward the size limit', async () => {
+        const files = [{ filename: 'src/A.xm', additions: 400, deletions: 0 }, { filename: 'tests/a.m', additions: 2000, deletions: 0 }, { filename: 'docs/a.md', additions: 900, deletions: 0 }];
+        const h = harness({ files });
+        await h.fire('opened');
+        requireEqual(h.calls, [], 'calls');
+    });
+
+    await test(`a ${check.MAX_OPEN_PRS + 1}th open PR from one author is closed, even as a draft`, async () => {
+        const h = harness({ draft: true, body: '', openPRs: [1601, 1602, 1603] });
+        await h.fire('opened');
+        requireEqual(h.store.pr.state, 'closed', 'closed');
+        const comment = h.store.comments[0].body;
+        requireThat(comment.includes('**Open PRs:**') && comment.includes('#1601, #1602 and #1603'), `got ${comment}`);
+        requireThat(!comment.includes('**Issue:**'), 'a draft is not checked for the rest');
+        requireThat(comment.includes('make any edit to this PR'), 'says an edit reopens it');
+    });
+
+    await test(`up to ${check.MAX_OPEN_PRS} open PRs is fine, and other authors' PRs do not count`, async () => {
+        const h = harness({ openPRs: [1601, 1602] });
+        await h.fire('opened');
+        requireEqual(h.calls, [], 'calls');
+    });
+
+    await test('a PR closed for the open PR limit reopens on an edit once another one closes', async () => {
+        const h = harness({ openPRs: [1601, 1602, 1603] });
+        await h.fire('opened');
+        requireEqual(h.store.pr.state, 'closed', 'closed');
+        const h2 = harness({ labels: [check.LABEL], state: 'closed', events: closedByCheck, openPRs: [1601, 1602], comments: h.store.comments });
+        await h2.fire('edited');
+        requireEqual(h2.store.pr.state, 'open', 'reopened');
+    });
+
+    await test('asking for a device tester passes, labels the PR and says so', async () => {
+        const body = prBody({ checklist: DEVICE_TESTER_CHECKLIST, before: 'N/A: only happens on a device I do not have', after: 'N/A: no device to record this on' });
+        const h = harness({ body });
+        await h.fire('opened');
+        requireEqual(h.store.pr.state, 'open', 'open');
+        requireThat(h.store.pr.labels.some((l) => l.name === check.DEVICE_TEST_LABEL), 'labelled');
+        requireThat(h.store.comments[0].body.includes(check.DEVICE_TEST_LABEL), 'comment');
+    });
+
+    await test('filling in a closed PR with a device tester request reopens it with the label', async () => {
+        const body = prBody({ checklist: DEVICE_TESTER_CHECKLIST, before: 'N/A: only happens on a device I do not have', after: 'N/A: no device to record this on' });
+        const h = harness({ body, labels: [check.LABEL], state: 'closed', events: closedByCheck, comments: [flaggedComment(`${check.MARKER}\nold`)] });
+        await h.fire('edited');
+        requireEqual(h.store.pr.state, 'open', 'open');
+        requireEqual(h.store.pr.labels.map((l) => l.name), [check.DEVICE_TEST_LABEL], 'labels');
+        requireThat(h.store.comments[0].body.includes('open again') && h.store.comments[0].body.includes(check.DEVICE_TEST_LABEL), 'comment');
     });
 
     await test('drafts are skipped until marked ready, then checked', async () => {
