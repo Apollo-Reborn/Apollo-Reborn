@@ -2852,6 +2852,20 @@ static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewControlle
     }
 
     NSString *subredditName = ApolloSubredditNameFromViewController(viewController);
+    // A Random feed retitles itself "Random" (0x1005c373c) when each load or
+    // pull to refresh starts, and names the new community once it lands
+    // (ApolloListEmptyState names a failed pick). Keep the header across that
+    // gap: tearing it down and rebuilding it under a table at rest left the
+    // navigation bar's search field collapsed and out of reach.
+    // Standard build only: on Liquid Glass the kept header sends the end of a
+    // refresh through ApolloSubredditSettleBlockedTableToTop, which settles above
+    // the search field (it collapses, and the feed can land in the posts).
+    uint8_t postsTag = 0;
+    if (subredditName.length == 0 && !IsLiquidGlass() && wrappedHeader && tableView.tableHeaderView == wrappedHeader &&
+        ApolloSubredditPostsTypeTag(viewController, &postsTag) && postsTag == kApolloPostsTypeRandom) {
+        ApolloLog(@"[SubredditHeaders] random feed between communities; keeping r/%@'s header", header.subredditName);
+        return;
+    }
     if (subredditName.length == 0) {
         UIColor *restoredPageColor = ApolloSubredditRemoveAmbient(viewController, tableView);
         ApolloSubredditRestoreSearchBar(viewController);
