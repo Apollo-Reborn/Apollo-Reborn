@@ -3076,6 +3076,18 @@ static void ApolloSubredditIndexScheduleGeometryRefresh(UITableView *tableView, 
     %orig(correctedIndexPaths, animation);
 }
 
+// Apollo darkens its section index while a row is swiped and puts a 20% dark
+// background back 0.6s after the swipe ends. The overlay replaces that index,
+// so keep it clear (ApolloSubredditIndexHideNativeIndex), or it shows as a
+// dark strip down the list until the next layout.
+- (void)setSectionIndexBackgroundColor:(UIColor *)color {
+    if (color && ApolloSubredditEnhancementsEnabled()
+        && [objc_getAssociatedObject(self, &kApolloSubredditIndexTableKey) boolValue]) {
+        color = UIColor.clearColor;
+    }
+    %orig(color);
+}
+
 %end
 
 // --- Hide Feed Descriptions ------------------------------------------------

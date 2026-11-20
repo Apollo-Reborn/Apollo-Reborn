@@ -53,6 +53,16 @@ public func ApolloSwiftAssignOptionalString(
     storage.assumingMemoryBound(to: Optional<String>.self).pointee = value
 }
 
+// A non-optional Swift String stored property (e.g. JumpBar.dropDownTitle).
+@_cdecl("ApolloSwiftAssignString")
+public func ApolloSwiftAssignString(
+    _ storage: UnsafeMutableRawPointer?,
+    _ utf8Value: UnsafePointer<CChar>?
+) {
+    guard let storage, let utf8Value else { return }
+    storage.assumingMemoryBound(to: String.self).pointee = String(cString: utf8Value)
+}
+
 @_cdecl("ApolloSwiftAssignOptionalStringArray")
 public func ApolloSwiftAssignOptionalStringArray(
     _ storage: UnsafeMutableRawPointer?,

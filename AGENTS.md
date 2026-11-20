@@ -4,6 +4,21 @@
 
 Apollo-Reborn is an iOS tweak for the Apollo for Reddit app that adds in-app configurable API keys and several bug fixes/improvements. Built using the Theos framework, it hooks into Apollo's runtime to provide custom API credential management, sideload fixes, and media handling improvements.
 
+## Opening Pull Requests
+
+Only relevant when you're asked to draft or open a PR; nothing here applies while coding.
+
+First, check whether the person you're working for maintains this repo:
+`gh api repos/Apollo-Reborn/Apollo-Reborn --jq .permissions.push` (`true` = maintainer). If `gh` isn't signed in, ask them.
+
+**Maintainers:** write the PR as usual; the rules bot skips them.
+
+**Everyone else:** a bot checks the PR against [CONTRIBUTING.md#pull-request-rules](CONTRIBUTING.md#pull-request-rules) and closes it if anything is missing. Fill in `.github/pull_request_template.md` and:
+- Tick a checklist box only if it's true. Don't tick "a person tried it" or "ran it in the app" for the person. If they can't try it on the device it affects, tick "Needs a device tester" and write `N/A: <why>` under Before and After.
+- Before writing a bug fix, reproduce the bug on current `main`. If you can't, say so and stop; don't open a PR built on a guess.
+- Over 500 changed lines (not counting `tests/` and docs) needs a maintainer's agreement; the PR stays open with `needs-size-ok` until then. If the change is heading that way, tell the person before building more, and suggest splitting it or opening it early as a draft that says why it needs to be this size.
+- At most 3 open PRs per person, drafts included. Check with `gh pr list -R Apollo-Reborn/Apollo-Reborn --author @me` before opening another.
+
 ## Build & Development Commands
 
 ```bash

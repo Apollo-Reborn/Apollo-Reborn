@@ -2737,6 +2737,35 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
                                     completionHandler, directData, directResponse, directError);
 }
 
+// Random / Random NSFW picks. Reddit no longer serves /r/random or /r/randnsfw,
+// so these feeds draw from the configured list instead. A feed's first pages
+// pick in ApolloListEmptyState, which knows the feed and leaves out the
+// community it shows (each feed separately, so two Random feeds open at once
+// don't steer each other). The -dataTaskWithRequest: hook below covers any
+// other /r/random request with a plain pick.
+//
+// Returns nil when no list is configured for the feed or it isn't loaded yet
+// (then a background refresh starts and the request goes out unchanged). A list
+// holding only `excluded` still returns it. Any thread.
+NSString *ApolloRandomPickExcluding(BOOL nsfw, NSString *excluded) {
+    NSString *source = nsfw ? sRandNsfwSubredditsSource : sRandomSubredditsSource;
+    if (source.length == 0) return nil;
+    NSString *key = [NSURL URLWithString:source].absoluteString ?: source;
+    NSArray<NSString *> *subreddits = [subredditListCache objectForKey:key].subreddits;
+    if (subreddits.count == 0) {
+        // The constructor normally prewarms this cache. If it did not finish
+        // (offline/slow network), refresh it for the next request.
+        ApolloRefreshSubredditListSourceAsync(key, NO, NSURLRequestUseProtocolCachePolicy, nil);
+        return nil;
+    }
+    NSMutableArray<NSString *> *pool = [NSMutableArray arrayWithCapacity:subreddits.count];
+    for (NSString *name in subreddits) {
+        if (excluded.length == 0 || [name caseInsensitiveCompare:excluded] != NSOrderedSame) [pool addObject:name];
+    }
+    if (pool.count == 0) [pool addObjectsFromArray:subreddits];
+    return pool[arc4random_uniform((uint32_t)pool.count)];
+}
+
 %hook NSURLSession
 
 // Async image loaders (PINRemoteImage etc.) send no User-Agent on imgchest
@@ -2777,7 +2806,6 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
     }
 
     NSURL *url = [request URL];
-    NSURL *subredditListURL;
 
     // Reroute URL-shaped search queries to /api/info?url=<URL>. Reddit's /search.json
     // 302-redirects URL-shaped queries to /submit.json (and on to /login), producing
@@ -2811,41 +2839,17 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
         }
     }
 
-    // Determine whether request is for random subreddit
-    if ([url.host isEqualToString:@"oauth.reddit.com"] && [url.path hasPrefix:@"/r/random/"]) {
-        if (![sRandomSubredditsSource length]) {
-            return %orig;
-        }
-        subredditListURL = [NSURL URLWithString:sRandomSubredditsSource];
-    } else if ([url.host isEqualToString:@"oauth.reddit.com"] && [url.path hasPrefix:@"/r/randnsfw/"]) {
-        if (![sRandNsfwSubredditsSource length]) {
-            return %orig;
-        }
-        subredditListURL = [NSURL URLWithString:sRandNsfwSubredditsSource];
-    } else {
-        return %orig;
-    }
-
-    // Check cache
-    ApolloSubredditSourceCacheEntry *sourceEntry =
-        [subredditListCache objectForKey:subredditListURL.absoluteString];
-
-    if (sourceEntry.subreddits.count == 0) {
-        // The constructor normally prewarms this cache. If it did not finish
-        // (offline/slow network), preserve Apollo's native request for this tap
-        // and refresh asynchronously for the next one.
-        ApolloRefreshSubredditListSourceAsync(
-            subredditListURL.absoluteString,
-            NO,
-            NSURLRequestUseProtocolCachePolicy,
-            nil);
-        return %orig;
-    }
-
-    NSArray<NSString *> *subreddits = sourceEntry.subreddits;
+    // A /r/random or /r/randnsfw request that ApolloListEmptyState didn't
+    // already point at a community (it rewrites a Random feed's first pages).
+    BOOL reddit = [url.host isEqualToString:@"oauth.reddit.com"];
+    BOOL isRandom = reddit && [url.path hasPrefix:@"/r/random/"];
+    BOOL nsfw = reddit && [url.path hasPrefix:@"/r/randnsfw/"];
+    if (!isRandom && !nsfw) return %orig;
 
     // Pick a random subreddit, then modify the request URL to use that subreddit, simulating a 302 redirect in Reddit's original API behaviour
-    NSString *randomSubreddit = subreddits[arc4random_uniform((uint32_t)subreddits.count)];
+    NSString *randomSubreddit = ApolloRandomPickExcluding(nsfw, nil);
+    if (!randomSubreddit) return %orig;
+    ApolloLog(@"[Random] %@ -> r/%@ (request rewrite)", url.path, randomSubreddit);
     NSString *urlString = [url absoluteString];
     NSString *newUrlString = [urlString stringByReplacingOccurrencesOfString:@"/random/" withString:[NSString stringWithFormat:@"/%@/", randomSubreddit]];
     newUrlString = [newUrlString stringByReplacingOccurrencesOfString:@"/randnsfw/" withString:[NSString stringWithFormat:@"/%@/", randomSubreddit]];
@@ -4234,7 +4238,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     sSubredditFeedIconStyle = [standardDefaults integerForKey:UDKeySubredditFeedIconStyle];
     sSubredditFeedLayout = [standardDefaults integerForKey:UDKeySubredditFeedLayout];
     if (sSubredditFeedIconStyle < ApolloSubredditFeedIconStyleClassic ||
-        sSubredditFeedIconStyle > ApolloSubredditFeedIconStyleSolidTile) {
+        sSubredditFeedIconStyle > ApolloSubredditFeedIconStyleMonochrome) {
         sSubredditFeedIconStyle = ApolloSubredditFeedIconStyleClassic;
         [standardDefaults setInteger:sSubredditFeedIconStyle forKey:UDKeySubredditFeedIconStyle];
     }

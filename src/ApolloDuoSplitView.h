@@ -2,6 +2,13 @@
 __BEGIN_DECLS
 void ApolloDuoSplitScheduleUpdate(void);
 BOOL ApolloDuoSplitIsResizing(void);
+/// A drag is moving the Posts columns; a cancelled one puts the old widths back.
+BOOL ApolloDuoSplitIsColumnDragging(void);
+/// The thread open beside the Posts feed page `feedPage` (its top page; one a
+/// Back drag holds behind the feed counts), or nil.
+UIViewController *ApolloDuoSplitThreadBesideFeed(UIViewController *feedPage);
+/// `page`, open in the Posts thread pane, sits beside the feed column showing `layer`.
+BOOL ApolloDuoSplitThreadBesideFeedLayer(UIViewController *page, CALayer *layer);
 BOOL ApolloDuoSplitIsUnfolded(void);
 BOOL ApolloDuoRequiresSubredditEnhancements(void);
 BOOL ApolloDuoSplitIsUnfoldedPortrait(void);

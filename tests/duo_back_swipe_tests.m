@@ -21,6 +21,8 @@ typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 @property(nonatomic, copy) NSArray<UIView *> *subviews;
 @property(nonatomic, getter=isHidden) BOOL hidden;
 - (void)addGestureRecognizer:(UIGestureRecognizer *)gesture;
+- (void)removeGestureRecognizer:(UIGestureRecognizer *)gesture;
+- (BOOL)isDescendantOfView:(UIView *)view;
 @end
 @interface UIEvent : NSObject @end
 @implementation UIEvent @end
@@ -48,6 +50,14 @@ typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 - (void)addGestureRecognizer:(UIGestureRecognizer *)gesture {
     if (!self.gestureRecognizers) self.gestureRecognizers = [NSMutableArray array];
     [self.gestureRecognizers addObject:gesture]; gesture.view = self;
+}
+- (void)removeGestureRecognizer:(UIGestureRecognizer *)gesture {
+    [self.gestureRecognizers removeObject:gesture];
+    if (gesture.view == self) gesture.view = nil;
+}
+- (BOOL)isDescendantOfView:(UIView *)view {
+    for (UIView *ancestor = self; ancestor; ancestor = ancestor.superview) if (ancestor == view) return YES;
+    return NO;
 }
 @end
 @interface UIPanGestureRecognizer : UIGestureRecognizer
@@ -382,10 +392,26 @@ int main(void) {
         Check(ApolloDuoHasBackSwipe(nav) && nav.view.gestureRecognizers.count == 3, @"recognizer installation is idempotent (back swipe + forward swipe + highlight guard)");
         ApolloDuoBackSwipe *owner = objc_getAssociatedObject(nav, &kApolloDuoBackSwipe);
         Check(owner.pan.maximumNumberOfTouches == 1, @"Back follows one finger");
-        UITouch *touch = [UITouch new]; touch.point = CGPointMake(5, 300);
+        UITouch *touch = [UITouch new]; touch.point = CGPointMake(5, 300); touch.view = nav.view;
         Check([owner gestureRecognizer:owner.pan shouldReceiveTouch:touch], @"real delegate accepts the content-edge touch");
         touch.point = CGPointMake(200, 300);
         Check(![owner gestureRecognizer:owner.pan shouldReceiveTouch:touch], @"real delegate rejects interior touches");
+        // Hosted on the split's view, they still take only the pane's touches.
+        UIView *splitView = [UIView new]; nav.view.superview = splitView;
+        ApolloDuoAttachPaneGestures(nav, splitView);
+        Check(owner.pan.view == splitView && owner.forwardSwipe.view == splitView && owner.highlightGuard.view == splitView
+              && splitView.gestureRecognizers.count == 3 && nav.view.gestureRecognizers.count == 0,
+              @"a split hosts the pane's three recognizers on its own view");
+        touch.point = CGPointMake(5, 300);
+        Check([owner gestureRecognizer:owner.pan shouldReceiveTouch:touch], @"hosted: a touch in the pane still goes Back");
+        UIView *otherPane = [UIView new]; otherPane.superview = splitView; touch.view = otherPane;
+        Check(![owner gestureRecognizer:owner.pan shouldReceiveTouch:touch]
+              && ![owner gestureRecognizer:owner.highlightGuard shouldReceiveTouch:touch],
+              @"hosted: a touch outside the pane's view is never taken");
+        ApolloDuoAttachPaneGestures(nav, nil);
+        Check(owner.pan.view == nav.view && nav.view.gestureRecognizers.count == 3 && splitView.gestureRecognizers.count == 0,
+              @"the recognizers return to the pane's view when the split lets go");
+        nav.view.superview = nil; touch.view = nav.view;
         UIScrollView *scroll = [UIScrollView new]; scroll.panGestureRecognizer = [UIPanGestureRecognizer new];
         scroll.panGestureRecognizer.view = scroll;
         UIPanGestureRecognizer *row = [UIPanGestureRecognizer new];
@@ -403,7 +429,7 @@ int main(void) {
         Check(guard && [nav.view.gestureRecognizers containsObject:guard] && guard.maximumNumberOfTouches == 1
               && guard.cancelsTouchesInView, @"highlight guard is installed once, one finger, cancelling the row's touch");
         Check(guard.delaysTouchesBegan, @"highlight guard withholds the row's touch-down while undecided");
-        UITouch *down = [UITouch new]; down.point = CGPointMake(5, 300);
+        UITouch *down = [UITouch new]; down.point = CGPointMake(5, 300); down.view = nav.view;
         NSSet *downs = [NSSet setWithObject:down];
         [guard touchesBegan:downs withEvent:[UIEvent new]];
         Check(guard.state == UIGestureRecognizerStatePossible, @"highlight guard starts undecided");
@@ -788,7 +814,7 @@ int main(void) {
             Check([fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:inner]
                   && [fwdOwner gestureRecognizer:fwdOwner.highlightGuard shouldReceiveTouch:inner],
                   @"forward: with Disable Right Swipes on, it starts anywhere in the feed");
-            UIScrollView *carousel = [UIScrollView new]; carousel.scrollEnabled = YES;
+            UIScrollView *carousel = [UIScrollView new]; carousel.scrollEnabled = YES; carousel.superview = fwdFeed.view;
             carousel.bounds = CGRectMake(0, 0, 400, 100); carousel.contentSize = CGSizeMake(1200, 100);
             carousel.contentOffset = CGPointMake(300, 0); inner.view = carousel;
             Check(![fwdOwner gestureRecognizer:fwdOwner.forwardSwipe shouldReceiveTouch:inner],
@@ -945,7 +971,7 @@ int main(void) {
             tabs.feed = tabFeed; tabs.secondary = tabThread;
             outer.duoState = tabs; tabFeed.duoState = tabs; tabThread.duoState = tabs;
             // The side rail: the pan's view is Liquid Glass's item platter.
-            UIView *rail = [UIView new]; rail.bounds = CGRectMake(0, 0, 48, 256);
+            UIView *rail = [UIView new]; rail.bounds = CGRectMake(0, 0, 48, 256); rail.window = [NSObject new];
             UIPanGestureRecognizer *barPan = [UIPanGestureRecognizer new]; barPan.view = rail;
             Check(ApolloDuoTabBarSwipeLength(barPan) == 256, @"tab bar: the rail's length is its long side");
             UIView *bottom = [UIView new]; bottom.bounds = CGRectMake(0, 0, 669, 83);

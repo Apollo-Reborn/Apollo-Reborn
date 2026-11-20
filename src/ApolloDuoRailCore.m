@@ -534,7 +534,8 @@ static void ApolloDuoRailApplyAccent(UITabBarController *tabs) {
 static CGRect ApolloDuoActiveDivision(UIView *view, BOOL horizontal) {
     // Resolve the public iOS 27.1 API dynamically for the device build's iOS 26 SDK.
     if (@available(iOS 27.1, *)) {
-        UIWindow *window = view.window;
+        // A window's own `window` is nil.
+        UIWindow *window = [view isKindOfClass:UIWindow.class] ? (UIWindow *)view : view.window;
         Class kindClass = ApolloClassUIViewReservedRegionKind;
         SEL query = @selector(reservedRegionsOfKind:);
         if (!window || !kindClass || ![window respondsToSelector:query]
@@ -564,6 +565,91 @@ CGRect ApolloDuoActiveVerticalDivision(UIView *view) {
 
 CGRect ApolloDuoActiveHorizontalDivision(UIView *view) {
     return ApolloDuoActiveDivision(view, YES);
+}
+
+CGRect ApolloDuoLayoutVerticalDivision(UIView *view) {
+    if (!view || view.window) return ApolloDuoActiveVerticalDivision(view);
+    UIWindow *window = ((UIViewController *)ApolloMainTabBarController()).viewIfLoaded.window;
+    CGRect fold = window ? ApolloDuoActiveVerticalDivision(window) : CGRectNull;
+    if (CGRectIsNull(fold)) return fold;
+    // In `view`'s coordinates, with its detached tab filling the window.
+    UIView *root = view;
+    while (root.superview) root = root.superview;
+    return [view convertRect:fold fromView:root];
+}
+
+NSNotificationName const ApolloDuoFoldDidChangeNotification = @"ApolloDuoFoldDidChange";
+
+// UIKit sends no event when the division region changes, and it can publish
+// ~1.5s after the hinge. One tracker per window re-reads it after each hinge
+// update and posts when it changes.
+static const CFTimeInterval kApolloDuoFoldWatchSeconds = 4.0;
+static const int64_t kApolloDuoFoldWatchInterval = 150 * NSEC_PER_MSEC;
+static char kApolloDuoFoldTrackerKey;
+
+@interface ApolloDuoFoldTracker : NSObject
+@property(nonatomic, weak) UIWindow *window;
+@property(nonatomic, strong) id<UIInteraction> hinge;
+@property(nonatomic, copy) NSString *region;
+@property(nonatomic) NSInteger status;
+@property(nonatomic) CFTimeInterval watchUntil;
+@property(nonatomic) BOOL watching;
+@end
+
+@implementation ApolloDuoFoldTracker
+- (void)check {
+    UIWindow *window = self.window;
+    if (!window) return;
+    NSString *region = [NSString stringWithFormat:@"%@ %@", NSStringFromCGRect(ApolloDuoActiveVerticalDivision(window)),
+                        NSStringFromCGRect(ApolloDuoActiveHorizontalDivision(window))];
+    if ([region isEqualToString:self.region]) return;
+    self.region = region;
+    ApolloLog(@"[DuoFold] division region %@", region);
+    [NSNotificationCenter.defaultCenter postNotificationName:ApolloDuoFoldDidChangeNotification object:window];
+}
+- (void)tick {
+    __weak ApolloDuoFoldTracker *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, kApolloDuoFoldWatchInterval), dispatch_get_main_queue(), ^{
+        ApolloDuoFoldTracker *tracker = weakSelf;
+        if (!tracker) return;
+        [tracker check];
+        if (CACurrentMediaTime() < tracker.watchUntil) [tracker tick];
+        else tracker.watching = NO;
+    });
+}
+- (void)hingeUpdated:(id)update {
+    id hinge = ((id (*)(id, SEL))objc_msgSend)(update, @selector(hinge));
+    NSInteger status = hinge ? ((NSInteger (*)(id, SEL))objc_msgSend)(hinge, @selector(status)) : 0;
+    if (status != self.status) {
+        ApolloLog(@"[DuoFold] hinge status %ld -> %ld", (long)self.status, (long)status);
+        self.status = status;
+    }
+    [self check];
+    // Each update extends one running watch.
+    self.watchUntil = CACurrentMediaTime() + kApolloDuoFoldWatchSeconds;
+    if (!self.watching) {
+        self.watching = YES;
+        [self tick];
+    }
+}
+@end
+
+void ApolloDuoTrackFold(UIWindow *window) {
+    if (!window || !ApolloDeviceIsDuo() || objc_getAssociatedObject(window, &kApolloDuoFoldTrackerKey)) return;
+    if (@available(iOS 27.1, *)) {
+        // Resolved dynamically for the device build's iOS 26 SDK.
+        Class cls = objc_getClass("UIHingeInteraction");
+        if (!cls || ![cls instancesRespondToSelector:@selector(initWithUpdateHandler:)]) return;
+        ApolloDuoFoldTracker *tracker = [ApolloDuoFoldTracker new];
+        tracker.window = window;
+        __weak ApolloDuoFoldTracker *weakTracker = tracker;
+        tracker.hinge = ((id (*)(id, SEL, id))objc_msgSend)([cls alloc], @selector(initWithUpdateHandler:),
+            ^(__unused id interaction, id update) { [weakTracker hingeUpdated:update]; });
+        objc_setAssociatedObject(window, &kApolloDuoFoldTrackerKey, tracker, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        // On the window, so a full-screen viewer doesn't cut off its updates.
+        [window addInteraction:tracker.hinge];
+        ApolloLog(@"[DuoFold] tracking the fold on %@", NSStringFromClass(window.class));
+    }
 }
 
 void ApolloDuoRailSync(void) {

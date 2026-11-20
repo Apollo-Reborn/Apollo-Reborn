@@ -119,14 +119,17 @@ void ApolloTopBarApplyNativeScrollPolicy(UIViewController *controller,
 
     // Public iOS 27 API, resolved dynamically because device builds use the
     // pinned iOS 26 SDK. UIBarMinimizationBehavior: Automatic=0, Never=1,
-    // OnScrollDown=2. UINavigationItem copies the configuration on assignment.
-    static SEL getConfiguration, setConfiguration, getBehavior, setBehavior;
+    // OnScrollDown=2. UIBarMinimizationSafeAreaAdjustment: Automatic=0,
+    // Enabled=1, Disabled=2. UINavigationItem copies the configuration on assignment.
+    static SEL getConfiguration, setConfiguration, getBehavior, setBehavior, getSafeArea, setSafeArea;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         getConfiguration = NSSelectorFromString(@"navigationBarMinimization");
         setConfiguration = NSSelectorFromString(@"setNavigationBarMinimization:");
         getBehavior = NSSelectorFromString(@"minimizationBehavior");
         setBehavior = NSSelectorFromString(@"setMinimizationBehavior:");
+        getSafeArea = NSSelectorFromString(@"safeAreaAdjustment");
+        setSafeArea = NSSelectorFromString(@"setSafeAreaAdjustment:");
     });
     UINavigationItem *item = controller.navigationItem;
     if (![item respondsToSelector:getConfiguration] || ![item respondsToSelector:setConfiguration]) return;
@@ -147,10 +150,17 @@ void ApolloTopBarApplyNativeScrollPolicy(UIViewController *controller,
     BOOL topJump = navigation.topViewController == controller &&
         [objc_getAssociatedObject(navigation, &kApolloTopBarScrollToTopActiveKey) boolValue];
     NSInteger behavior = sHideTopBarOnScroll && !editing && !topJump ? 2 : 1;
+    // A minimized header that shrinks the safe area moves every row by its
+    // height when UIKit expands it again on its own: after a cancelled Back
+    // swipe, or when the split puts a thread back after a cancelled column
+    // drag. UIKit can't keep or restore the minimized state, so the safe area
+    // stays put and the header minimizes over the content instead.
+    BOOL setsSafeArea = [configuration respondsToSelector:getSafeArea] && [configuration respondsToSelector:setSafeArea];
     // This can also run after navigation layout. Reading the current public
     // configuration makes repeats idempotent without allocating or writing
     // UIKit state as the user scrolls. Bottom-bar progress never calls here.
-    if (((NSInteger (*)(id, SEL))objc_msgSend)(configuration, getBehavior) == behavior) return;
+    if (((NSInteger (*)(id, SEL))objc_msgSend)(configuration, getBehavior) == behavior &&
+        (!setsSafeArea || ((NSInteger (*)(id, SEL))objc_msgSend)(configuration, getSafeArea) == 2)) return;
     if (!state) {
         state = [ApolloTopBarNativePolicy new];
         state.originalConfiguration = [configuration copy];
@@ -159,13 +169,14 @@ void ApolloTopBarApplyNativeScrollPolicy(UIViewController *controller,
     }
     id updated = [configuration copy];
     ((void (*)(id, SEL, NSInteger))objc_msgSend)(updated, setBehavior, behavior);
+    if (setsSafeArea) ((void (*)(id, SEL, NSInteger))objc_msgSend)(updated, setSafeArea, 2);
     ((void (*)(id, SEL, id))objc_msgSend)(item, setConfiguration, updated);
     state.appliedConfiguration = [((id (*)(id, SEL))objc_msgSend)(item, getConfiguration) copy];
-    // Keep safe-area/restoration policy and hidesSearchBarWhenScrolling as
-    // configured by UIKit and the search owner. Search-palette collapse is
-    // distinct from minimizing the navigation title and controls.
-    ApolloLog(@"[AutoHideTopBar] Duo native behavior=%ld editing=%d topJump=%d controller=%@",
-        (long)behavior, editing, topJump, NSStringFromClass(controller.class));
+    // Keep the restoration policy and hidesSearchBarWhenScrolling as configured
+    // by UIKit and the search owner. Search-palette collapse is distinct from
+    // minimizing the navigation title and controls.
+    ApolloLog(@"[AutoHideTopBar] Duo native behavior=%ld safeAreaFixed=%d editing=%d topJump=%d controller=%@",
+        (long)behavior, setsSafeArea, editing, topJump, NSStringFromClass(controller.class));
 }
 
 static void ApolloTopBarRestoreHeaderPart(ApolloTopBarHeaderPart *part) {

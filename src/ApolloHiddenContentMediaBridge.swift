@@ -13,3 +13,16 @@ public func assignThumbnail(_ ptr: UnsafeMutableRawPointer, _ index: Int, _ obje
     thumbnails[index] = image
     ptr.assumingMemoryBound(to: [Int: UIImage].self).pointee = thumbnails
 }
+
+// Replace the dictionary with page -> placeholder entries ([NSNumber: UIImage]).
+// Entries of any other type are skipped.
+@_cdecl("ApolloMediaAssignThumbnails")
+public func assignThumbnails(_ ptr: UnsafeMutableRawPointer, _ object: UnsafeRawPointer) {
+    let map = Unmanaged<NSDictionary>.fromOpaque(object).takeUnretainedValue()
+    var thumbnails = [Int: UIImage]()
+    for (key, value) in map {
+        guard let index = (key as? NSNumber)?.intValue, let image = value as? UIImage else { continue }
+        thumbnails[index] = image
+    }
+    ptr.assumingMemoryBound(to: [Int: UIImage].self).pointee = thumbnails
+}

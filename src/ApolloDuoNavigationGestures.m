@@ -263,8 +263,16 @@ static BOOL ApolloDuoIsScrollPan(UIGestureRecognizer *gesture) {
 static NSHashTable<ApolloDuoBackSwipe *> *sDuoPaneDrags;
 
 @implementation ApolloDuoBackSwipe
+- (void)dealloc {
+    // Hosted on a split's view, they would outlive their navigation.
+    [_pan.view removeGestureRecognizer:_pan];
+    [_forwardSwipe.view removeGestureRecognizer:_forwardSwipe];
+    [_highlightGuard.view removeGestureRecognizer:_highlightGuard];
+}
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldReceiveTouch:(UITouch *)touch {
     UINavigationController *navigation = self.navigation;
+    // On a split's view, take only the pane's own touches.
+    if (!navigation.isViewLoaded || ![touch.view isDescendantOfView:navigation.view]) return NO;
     CGPoint point = [touch locationInView:navigation.view];
     if (gesture != self.pan && gesture != self.forwardSwipe && gesture != self.highlightGuard) return NO;
     BOOL back = gesture != self.forwardSwipe && ApolloDuoBackSwipeAcceptsPoint(navigation, point)
@@ -330,7 +338,8 @@ static NSHashTable<ApolloDuoBackSwipe *> *sDuoPaneDrags;
             [self moveForward:navigation shown:shown];
             break;
         case UIGestureRecognizerStateChanged:
-            if (ApolloDuoSplitIsResizing() || !navigation.viewIfLoaded.window) {
+            // The pan's own view: a column drag takes the pane out of the window.
+            if (ApolloDuoSplitIsResizing() || !pan.view.window) {
                 [self cancelRecognizer:pan];
                 break;
             }
@@ -386,7 +395,7 @@ static NSHashTable<ApolloDuoBackSwipe *> *sDuoPaneDrags;
             [self track:navigation dx:dx];
             break;
         case UIGestureRecognizerStateChanged:
-            if (ApolloDuoSplitIsResizing() || !navigation.viewIfLoaded.window) {
+            if (ApolloDuoSplitIsResizing() || !pan.view.window) {
                 [self cancelRecognizer:pan];
                 break;
             }
@@ -474,6 +483,22 @@ static NSHashTable<ApolloDuoBackSwipe *> *sDuoPaneDrags;
 static char kApolloDuoBackSwipe;
 BOOL ApolloDuoHasBackSwipe(UINavigationController *navigation) {
     return objc_getAssociatedObject(navigation, &kApolloDuoBackSwipe) != nil;
+}
+
+void ApolloDuoAttachPaneGestures(UINavigationController *navigation, UIView *host) {
+    ApolloDuoBackSwipe *owner = navigation ? objc_getAssociatedObject(navigation, &kApolloDuoBackSwipe) : nil;
+    UIView *target = host ?: navigation.viewIfLoaded;
+    if (!owner || !target) return;
+    for (UIGestureRecognizer *recognizer in @[owner.pan, owner.forwardSwipe, owner.highlightGuard]) {
+        if (recognizer.view == target) continue;
+        UIGestureRecognizerState state = recognizer.state;
+        if (state == UIGestureRecognizerStateBegan || state == UIGestureRecognizerStateChanged) {
+            recognizer.enabled = NO;
+            recognizer.enabled = YES;
+        }
+        [recognizer.view removeGestureRecognizer:recognizer];
+        [target addGestureRecognizer:recognizer];
+    }
 }
 
 static void ApolloDuoCancelTabBarSwipe(void);
