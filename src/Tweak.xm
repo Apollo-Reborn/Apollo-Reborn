@@ -7,6 +7,7 @@
 #import <Security/Security.h>
 #import <StoreKit/StoreKit.h>
 #import <AuthenticationServices/AuthenticationServices.h>
+#import <SafariServices/SafariServices.h>
 
 #import "fishhook.h"
 #import "ApolloCommon.h"
@@ -2057,12 +2058,53 @@ void ApolloPrepareRandomNSFWSubredditSource(
 static const char kARScheme     = '\0';
 static const char kARAuthURL    = '\0';
 static const char kARCompletion = '\0';
+// On an SFSafariViewController Apollo built for its sign-in fallback: the
+// authorize URL it was given (see the SFSafariViewController hook below).
+static const char kARSafariFallbackURL = '\0';
+
+// The session behind the last Reddit sign-in our WKWebView sheet showed.
+// AccountManager keeps it in `authenticationSession` until the next sign-in
+// replaces it, so this stays set for as long as Apollo's Safari fallback can
+// still follow that sign-in.
+static __weak ASWebAuthenticationSession *sLastRedditWebAuthSession = nil;
 
 // Apollo's own presentationContextProvider is set before start is called and
 // returns the correct window.
 static UIWindow *ApolloWebAuthPresentationWindow(ASWebAuthenticationSession *session) {
     UIWindow *window = [[session presentationContextProvider] presentationAnchorForWebAuthenticationSession:session];
     return window ?: (ApolloKeyWindow() ?: ApolloAllWindows().firstObject);
+}
+
+// The redirect URI the WKWebView sheet intercepts. Prefer the full redirect_uri
+// from the auth URL (set by our RDKOAuthCredential hook) so the sheet matches
+// the *entire* callback URL (scheme, host and path) rather than just the
+// scheme. This is required for http/https redirect URIs (Reddit "Web app" API
+// clients), where every Reddit page navigation shares the same scheme and
+// scheme-only matching would fire on the wrong navigation. Falls back to
+// callbackURLScheme (as a bare "scheme://") if redirect_uri is missing.
+static NSString *ApolloWebAuthInterceptRedirectURI(NSURL *authURL, NSString *callbackScheme) {
+    NSString *redirectURI = callbackScheme.length ? [callbackScheme stringByAppendingString:@"://"] : nil;
+    for (NSURLQueryItem *item in [NSURLComponents componentsWithURL:authURL resolvingAgainstBaseURL:NO].queryItems) {
+        if ([item.name isEqualToString:@"redirect_uri"]) {
+            if (item.value.length) redirectURI = item.value;
+            break;
+        }
+    }
+    return redirectURI;
+}
+
+// Shows the WKWebView sign-in sheet over whatever `presenter` is showing.
+static void ApolloPresentWebAuthSheet(UIViewController *presenter, NSURL *authURL, NSString *redirectURI,
+                                      void (^completion)(NSURL *, NSError *)) {
+    ApolloLog(@"[WebAuth] using WKWebView, intercepting redirectURI=%@", redirectURI);
+    ApolloWebAuthViewController *authVC = [[ApolloWebAuthViewController alloc]
+        initWithURL:authURL redirectURI:redirectURI completionHandler:completion];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:authVC];
+    nav.modalPresentationStyle = UIModalPresentationFormSheet;
+
+    UIViewController *top = presenter;
+    while (top.presentedViewController) top = top.presentedViewController;
+    [top presentViewController:nav animated:YES completion:nil];
 }
 
 // Every interactive Reddit sign-in (the signed-out splash, Add Account, Setup)
@@ -2169,38 +2211,92 @@ static void ApolloExplainMissingRedditAPIKey(UIWindow *window) {
         return %orig;
     }
 
-    // Prefer the full redirect_uri from the auth URL (set by our RDKOAuthCredential
-    // hook) so we can match the *entire* callback URL — scheme, host, and path —
-    // rather than just the scheme. This is required for http/https redirect URIs
-    // (Reddit "Web app" API clients), where every Reddit page navigation shares the
-    // same scheme and scheme-only matching would fire on the wrong navigation.
-    // Falls back to callbackURLScheme (as a bare "scheme://") if redirect_uri is
-    // missing from the auth URL for some reason.
-    NSString *interceptRedirectURI = callbackScheme.length ? [callbackScheme stringByAppendingString:@"://"] : nil;
-    for (NSURLQueryItem *item in [NSURLComponents componentsWithURL:authURL resolvingAgainstBaseURL:NO].queryItems) {
-        if ([item.name isEqualToString:@"redirect_uri"]) {
-            if (item.value.length) interceptRedirectURI = item.value;
-            break;
-        }
-    }
-
-    ApolloLog(@"[WebAuth] using WKWebView, intercepting redirectURI=%@", interceptRedirectURI);
+    // Remembered so Apollo's Safari fallback for this sign-in can be shown in
+    // the sheet again (see the SFSafariViewController hook below).
+    if (ApolloIsRedditAuthorizeURL(authURL)) sLastRedditWebAuthSession = self;
 
     // start is already on the main queue.
     UIWindow *window = ApolloWebAuthPresentationWindow(self);
-
     ApolloLog(@"[WebAuth] presenting from window=%@", window);
-
-    ApolloWebAuthViewController *authVC = [[ApolloWebAuthViewController alloc]
-        initWithURL:authURL redirectURI:interceptRedirectURI completionHandler:completion];
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:authVC];
-    nav.modalPresentationStyle = UIModalPresentationFormSheet;
-
-    UIViewController *top = window.rootViewController;
-    while (top.presentedViewController) top = top.presentedViewController;
-    [top presentViewController:nav animated:YES completion:nil];
-
+    ApolloPresentWebAuthSheet(window.rootViewController,
+                              authURL,
+                              ApolloWebAuthInterceptRedirectURI(authURL, callbackScheme),
+                              completion);
     return YES;
+}
+
+%end
+
+// Apollo's sign-in has a fallback that opens the same authorize URL in an
+// SFSafariViewController (built at 0x10082fdec, presented from
+// AccountManager's `trigger`). Apollo takes it in two cases: the sign-in
+// session finishes with any error other than ASWebAuthenticationSession's
+// canceledLogin (the completion handler at 0x10082f4d8), or the person cancels
+// and picks "Issue Signing In" in the "Why did you cancel?" sheet. That page can
+// only finish when iOS opens the redirect URI in Apollo, which needs its scheme
+// in CFBundleURLTypes. With an unregistered scheme Safari says the address is
+// invalid, another app that registers it gets the code, and an http/https
+// redirect just loads that website, so the sign-in can't complete.
+//
+// SFSafariViewController loads pages in another process, so its navigations
+// can't be intercepted the way the WKWebView sheet's are. Instead, the
+// fallback's Safari page is tagged when Apollo builds it and swapped for the
+// sheet when Apollo presents it. The sheet reports back through the completion
+// the sign-in session was created with, so a callback URL lands where Apollo's
+// own Safari flow would send it (0x10082f4d8 with a URL and no error → the
+// completeAuthenticationProcessWithURL step at 0x1008304f4). Apollo's other
+// SFSafariViewControllers never carry the tag: they don't open Reddit's
+// authorize page, and without the custom sign-in Apollo's fallback is left
+// alone (its scheme then has to be registered, so it works).
+%hook SFSafariViewController
+
+- (instancetype)initWithURL:(NSURL *)URL configuration:(SFSafariViewControllerConfiguration *)configuration {
+    id result = %orig;
+    if (!result || !ApolloIsRedditAuthorizeURL(URL)) return result;
+    if (![[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseCustomOAuthSignIn]) return result;
+
+    ASWebAuthenticationSession *session = sLastRedditWebAuthSession;
+    if (!session || !objc_getAssociatedObject(session, &kARCompletion)) {
+        ApolloLog(@"[WebAuth] Apollo built its Safari sign-in page with no sign-in session to report to; leaving it");
+        return result;
+    }
+    // Apollo asks RDK for this URL again rather than reusing the session's, so
+    // keep this one: it carries whatever state RDK now expects back.
+    objc_setAssociatedObject(result, &kARSafariFallbackURL, URL, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloLog(@"[WebAuth] Apollo built its Safari sign-in fallback; will show it in the sign-in sheet instead");
+    return result;
+}
+
+%end
+
+%hook UIViewController
+
+- (void)presentViewController:(UIViewController *)viewControllerToPresent
+                     animated:(BOOL)animated
+                   completion:(void (^)(void))completion {
+    NSURL *fallbackURL = [viewControllerToPresent isKindOfClass:[SFSafariViewController class]]
+        ? objc_getAssociatedObject(viewControllerToPresent, &kARSafariFallbackURL) : nil;
+    if (!fallbackURL) {
+        %orig;
+        return;
+    }
+
+    // Read again at presentation: a new sign-in in between replaces the session.
+    ASWebAuthenticationSession *session = sLastRedditWebAuthSession;
+    void (^authCompletion)(NSURL *, NSError *) = session ? objc_getAssociatedObject(session, &kARCompletion) : nil;
+    if (!authCompletion) {
+        ApolloLog(@"[WebAuth] Sign-in session went away before Apollo showed its Safari page; showing that page");
+        %orig;
+        return;
+    }
+
+    ApolloLog(@"[WebAuth] Showing Apollo's Safari sign-in fallback in the sign-in sheet");
+    ApolloPresentWebAuthSheet((UIViewController *)self,
+                              fallbackURL,
+                              ApolloWebAuthInterceptRedirectURI(fallbackURL, objc_getAssociatedObject(session, &kARScheme)),
+                              authCompletion);
+    // Standing in for the presentation (Apollo passes nil here).
+    if (completion) completion();
 }
 
 %end
