@@ -521,6 +521,18 @@ static void ApolloListNameFailedRandomPick(UIViewController *controller, NSStrin
 // (which ApolloSubredditHeaders reads) and the JumpBar's.
 static void ApolloListTitleFailedRandomPick(UIViewController *controller, NSString *pick) {
     controller.navigationItem.title = pick;
+    // The success path then runs 0x1005988e0, which for a Random feed sets
+    // searchBarPlaceholder to "Search r/<randomSubredditName>" and puts it on
+    // searchTextField as an attributed placeholder (0x1002bd100).
+    NSString *placeholder = [@"Search r/" stringByAppendingString:pick];
+    ptrdiff_t placeholderOffset = controller ? ApolloIvarOffset(object_getClass(controller), "searchBarPlaceholder") : -1;
+    if (placeholderOffset >= 0) ApolloSwiftAssignString((uint8_t *)(__bridge void *)controller + placeholderOffset, placeholder.UTF8String);
+    UITextField *searchField = controller ? ApolloObjectIvar(controller, "searchTextField") : nil;
+    NSAttributedString *oldPlaceholder = [searchField isKindOfClass:UITextField.class] ? searchField.attributedPlaceholder : nil;
+    if (oldPlaceholder.length > 0) {
+        searchField.attributedPlaceholder = [[NSAttributedString alloc] initWithString:placeholder
+            attributes:[oldPlaceholder attributesAtIndex:0 effectiveRange:NULL]];
+    }
     UIView *jumpBar = controller ? ApolloObjectIvar(controller, "jumpBar") : nil;
     if (!ApolloClassJumpBar || ![jumpBar isKindOfClass:ApolloClassJumpBar]) {
         ApolloLog(@"[Random] no JumpBar on the random feed; title keeps the old name");
