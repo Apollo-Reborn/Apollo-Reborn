@@ -64,19 +64,57 @@ static NSData *ApolloOriginalGIFDigest(NSData *data) {
     return [NSData dataWithBytes:digest length:sizeof(digest)];
 }
 
-static NSURL *ApolloOriginalGIFRootDirectory(void) {
-    return [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:@"ApolloReborn-OriginalGIFs"] isDirectory:YES];
+// NSTemporaryDirectory() isn't guaranteed: it came back nil during the %ctor on
+// a jailbroken iOS 14.1 phone, and -fileURLWithPath: throws on nil, so every
+// launch crashed (#1755). Both roots are nil-safe; Caches is the fallback.
+static NSURL *ApolloOriginalGIFTemporaryRoot(void) {
+    NSString *temporary = NSTemporaryDirectory();
+    if (temporary.length == 0) return nil;
+    return [NSURL fileURLWithPath:[temporary stringByAppendingPathComponent:@"ApolloReborn-OriginalGIFs"] isDirectory:YES];
+}
+
+static NSURL *ApolloOriginalGIFCachesRoot(void) {
+    NSString *caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
+    if (caches.length == 0) return nil;
+    return [NSURL fileURLWithPath:[caches stringByAppendingPathComponent:@"ApolloReborn/OriginalGIFs"] isDirectory:YES];
 }
 
 // This launch's copies live in their own folder, so clearing earlier launches'
-// folders at startup can't race a GIF picked right after launch.
+// folders at startup can't race a GIF picked right after launch. nil when
+// there's nowhere to keep them: every upload is then Apollo's still.
 static NSURL *ApolloOriginalGIFDirectory(void) {
     static NSURL *directory;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        directory = [ApolloOriginalGIFRootDirectory() URLByAppendingPathComponent:NSUUID.UUID.UUIDString isDirectory:YES];
+        NSURL *root = ApolloOriginalGIFTemporaryRoot();
+        if (!root) {
+            root = ApolloOriginalGIFCachesRoot();
+            if (root) {
+                ApolloLog(@"[OriginalGIF] No temporary folder; keeping picked GIFs in Caches this launch");
+            } else {
+                ApolloLog(@"[OriginalGIF] No temporary or Caches folder; camera-roll GIFs upload as Apollo's still this launch");
+            }
+        }
+        directory = [root URLByAppendingPathComponent:NSUUID.UUID.UUIDString isDirectory:YES];
     });
     return directory;
+}
+
+// Copies left by earlier launches can't match anything now. Both roots are
+// swept, so a launch that fell back to Caches doesn't leave copies there.
+static void ApolloOriginalGIFRemoveEarlierLaunches(void) {
+    NSMutableArray<NSURL *> *roots = [NSMutableArray arrayWithCapacity:2];
+    NSURL *temporaryRoot = ApolloOriginalGIFTemporaryRoot();
+    NSURL *cachesRoot = ApolloOriginalGIFCachesRoot();
+    if (temporaryRoot) [roots addObject:temporaryRoot];
+    if (cachesRoot) [roots addObject:cachesRoot];
+    NSString *currentFolder = ApolloOriginalGIFDirectory().lastPathComponent;
+    NSFileManager *fileManager = [NSFileManager defaultManager];
+    for (NSURL *root in roots) {
+        for (NSURL *folder in [fileManager contentsOfDirectoryAtURL:root includingPropertiesForKeys:nil options:0 error:nil]) {
+            if (![folder.lastPathComponent isEqualToString:currentFolder]) [fileManager removeItemAtURL:folder error:nil];
+        }
+    }
 }
 
 // Caller holds the entries lock. Drops entries that expired, whose composer is
@@ -128,10 +166,12 @@ static void ApolloOriginalGIFRemember(NSData *jpegData, NSURL *gifURL, size_t fr
     NSNumber *size = nil;
     if (gifURL) {
         [gifURL getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
+        NSURL *directory = ApolloOriginalGIFDirectory();
         if (size.unsignedLongLongValue == 0 || size.unsignedLongLongValue > kApolloOriginalGIFMaxBytes) {
             ApolloLog(@"[OriginalGIF] GIF is %@ bytes (limit %llu); uploading Apollo's still instead", size ?: @"?", kApolloOriginalGIFMaxBytes);
+        } else if (!directory) {
+            ApolloLog(@"[OriginalGIF] Nowhere to keep the picked GIF; uploading Apollo's still");
         } else {
-            NSURL *directory = ApolloOriginalGIFDirectory();
             [[NSFileManager defaultManager] createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:nil];
             copyURL = [directory URLByAppendingPathComponent:[NSUUID.UUID.UUIDString stringByAppendingPathExtension:@"gif"]];
             NSError *copyError = nil;
@@ -254,7 +294,7 @@ void ApolloUploadOriginalGIFReleaseFile(NSURL *gifFile) {
     if (!gifFile.isFileURL) return;
     NSString *folder = ApolloOriginalGIFDirectory().URLByStandardizingPath.path;
     NSString *parent = gifFile.URLByStandardizingPath.URLByDeletingLastPathComponent.path;
-    if (![parent isEqualToString:folder]) return;   // never delete anything the store didn't create
+    if (!folder || ![parent isEqualToString:folder]) return;   // never delete anything the store didn't create
     [[NSFileManager defaultManager] removeItemAtURL:gifFile error:nil];
 }
 
@@ -317,14 +357,10 @@ static bool hooked_CGImageDestinationFinalize(CGImageDestinationRef destination)
 
 void ApolloUploadOriginalGIFInstallRebindings(const struct mach_header *header, intptr_t slide) {
     if (!header) return;
-    // Copies left in tmp by earlier launches can't match anything now.
-    NSString *currentFolder = ApolloOriginalGIFDirectory().lastPathComponent;
+    // This runs in the %ctor, where a throw kills the launch, so the folder is
+    // first resolved off it, on the cleanup queue.
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        NSFileManager *fileManager = [NSFileManager defaultManager];
-        NSURL *root = ApolloOriginalGIFRootDirectory();
-        for (NSURL *folder in [fileManager contentsOfDirectoryAtURL:root includingPropertiesForKeys:nil options:0 error:nil]) {
-            if (![folder.lastPathComponent isEqualToString:currentFolder]) [fileManager removeItemAtURL:folder error:nil];
-        }
+        ApolloOriginalGIFRemoveEarlierLaunches();
     });
     rebind_symbols_image((void *)header, slide, (struct rebinding[3]){
         {"CGImageSourceCreateWithURL", (void *)hooked_CGImageSourceCreateWithURL, (void **)&orig_CGImageSourceCreateWithURL},

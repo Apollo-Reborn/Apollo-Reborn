@@ -2470,8 +2470,16 @@ static NSURL *ApolloWriteTrendingPlist(NSDictionary *table) {
     static NSString *dummyPath;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        dummyPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"apollo_dummy_receipt"];
+        // NSTemporaryDirectory() can be nil at launch (#1755), and
+        // -fileURLWithPath: below throws on nil. Caches is the fallback.
+        NSString *folder = NSTemporaryDirectory();
+        if (folder.length == 0) {
+            folder = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
+            ApolloLog(@"[StoreKit] No temporary folder; dummy receipt goes in %@", folder.length > 0 ? @"Caches" : @"nowhere (not spoofing)");
+        }
+        if (folder.length > 0) dummyPath = [folder stringByAppendingPathComponent:@"apollo_dummy_receipt"];
     });
+    if (!dummyPath) return %orig;
     if (![[NSFileManager defaultManager] fileExistsAtPath:dummyPath]) {
         // Minimal ASN.1 SEQUENCE shell — non-empty so basic format checks pass
         uint8_t bytes[] = {0x30, 0x01, 0x00};

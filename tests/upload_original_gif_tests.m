@@ -16,7 +16,29 @@ static NSMutableArray<NSString *> *sLogLines;
 static id sTestComposer = nil;
 static id ApolloActiveCommentComposer(void) { return sTestComposer; }
 
+// The store's folder lookups, steered per run (the runner script runs this binary
+// once per mode): "nil-tmp" makes NSTemporaryDirectory() nil, as it was in the
+// %ctor on #1755's iOS 14.1 phone; "nil-all" takes Caches away too. Both are
+// folders under this run's work directory, so the launch sweep can't touch the
+// Mac's own tmp or Caches, or another run's folders.
+typedef NS_ENUM(int, TestFolderMode) { TestFolderModeNormal, TestFolderModeNilTemporary, TestFolderModeNilAll };
+static TestFolderMode sFolderMode = TestFolderModeNormal;
+static NSString *sTestTemporaryPath;
+static NSString *sTestCachesPath;
+static NSString *TestTemporaryDirectory(void) {
+    return sFolderMode == TestFolderModeNormal ? sTestTemporaryPath : nil;
+}
+static NSArray<NSString *> *TestSearchPathForDirectoriesInDomains(NSSearchPathDirectory directory, NSSearchPathDomainMask mask, BOOL expand) {
+    if (directory != NSCachesDirectory || sFolderMode == TestFolderModeNilAll || !sTestCachesPath) return @[];
+    return @[sTestCachesPath];
+}
+#define NSTemporaryDirectory() TestTemporaryDirectory()
+#define NSSearchPathForDirectoriesInDomains(d, m, e) TestSearchPathForDirectoriesInDomains(d, m, e)
+
 // INSERT_PRODUCTION_STORE
+
+#undef NSTemporaryDirectory
+#undef NSSearchPathForDirectoriesInDomains
 
 static int sFailures = 0;
 static int sChecks = 0;
@@ -117,14 +139,83 @@ static BOOL LogContains(NSString *needle) {
     return NO;
 }
 
-int main(void) {
+static void CreateFolder(NSURL *url) {
+    [[NSFileManager defaultManager] createDirectoryAtURL:url withIntermediateDirectories:YES attributes:nil error:nil];
+}
+
+static BOOL FolderExists(NSURL *url) {
+    BOOL isDirectory = NO;
+    return [[NSFileManager defaultManager] fileExistsAtPath:url.path isDirectory:&isDirectory] && isDirectory;
+}
+
+// #1755: no temporary folder (and, in nil-all, no Caches either). Nothing may
+// throw; with Caches the store works as usual from there, without it every
+// upload is Apollo's still and nothing is written anywhere.
+static void RunMissingFolderChecks(NSData *gifA, NSData *gifC) {
+    NSString *mode = sFolderMode == TestFolderModeNilAll ? @"nil-all" : @"nil-tmp";
+    NSURL *cachesRoot = [NSURL fileURLWithPath:[sTestCachesPath stringByAppendingPathComponent:@"ApolloReborn/OriginalGIFs"] isDirectory:YES];
+    NSURL *tmpRoot = [NSURL fileURLWithPath:[sTestTemporaryPath stringByAppendingPathComponent:@"ApolloReborn-OriginalGIFs"] isDirectory:YES];
+    NSURL *staleCaches = [cachesRoot URLByAppendingPathComponent:@"earlier-launch" isDirectory:YES];
+    NSURL *staleTmp = [tmpRoot URLByAppendingPathComponent:@"earlier-launch" isDirectory:YES];
+    CreateFolder(staleCaches);
+    CreateFolder(staleTmp);
+
+    // The launch sweep is the first thing to resolve the folder, as in the app.
+    ApolloOriginalGIFRemoveEarlierLaunches();
+    NSURL *directory = ApolloOriginalGIFDirectory();
+    CHECK(FolderExists(staleTmp), @"%@: the sweep can't see tmp, so it leaves tmp alone", mode);
+
+    if (sFolderMode == TestFolderModeNilTemporary) {
+        CHECK(directory != nil, @"nil-tmp: falls back to a folder");
+        CHECK([directory.URLByDeletingLastPathComponent.path isEqualToString:cachesRoot.path], @"nil-tmp: folder is under Caches/ApolloReborn/OriginalGIFs, got %@", directory.path);
+        CHECK(!FolderExists(staleCaches), @"nil-tmp: the sweep clears an earlier launch's Caches folder");
+        CHECK(LogContains(@"keeping picked GIFs in Caches"), @"nil-tmp: logs the fallback");
+
+        NSData *jA = ApolloPrep(PickedFile(gifA, @"gif"));
+        CHECK(KeptFileCount() == 1, @"nil-tmp: the pick is kept in Caches, got %lu files", (unsigned long)KeptFileCount());
+        CHECK([ApolloUploadOriginalGIFDataForBody(jA) isEqualToData:gifA], @"nil-tmp: upload is the GIF");
+        CHECK(KeptFileCount() == 0 && EntryCount() == 0, @"nil-tmp: nothing left after the upload");
+
+        NSData *jC = ApolloPrep(PickedFile(gifC, @"gif"));
+        NSURL *file = ApolloUploadOriginalGIFFileForBodyFile(PickedFile(jC, @"jpg"));
+        CHECK([[NSData dataWithContentsOfURL:file] isEqualToData:gifC], @"nil-tmp: fromFile upload gets the GIF file");
+        ApolloUploadOriginalGIFReleaseFile(file);
+        CHECK(KeptFileCount() == 0, @"nil-tmp: releasing deletes the Caches copy");
+
+        ApolloOriginalGIFRemoveEarlierLaunches();
+        CHECK(FolderExists(directory), @"nil-tmp: this launch's folder survives its own sweep");
+    } else {
+        CHECK(directory == nil, @"nil-all: no folder");
+        CHECK(FolderExists(staleCaches), @"nil-all: the sweep can't see Caches either");
+        CHECK(LogContains(@"No temporary or Caches folder"), @"nil-all: logs that GIFs stay stills");
+
+        NSData *jA = ApolloPrep(PickedFile(gifA, @"gif"));
+        CHECK(EntryCount() == 1, @"nil-all: the pick is still filed (as a still), got %lu", (unsigned long)EntryCount());
+        CHECK(LogContains(@"Nowhere to keep the picked GIF"), @"nil-all: logs why the GIF wasn't kept");
+        CHECK(ApolloUploadOriginalGIFDataForBody(jA) == nil, @"nil-all: upload is Apollo's still");
+        CHECK(ApolloUploadOriginalGIFFileForBodyFile(PickedFile(ApolloPrep(PickedFile(gifC, @"gif")), @"jpg")) == nil, @"nil-all: fromFile upload is Apollo's still");
+        NSURL *outside = PickedFile(gifA, @"gif");
+        ApolloUploadOriginalGIFReleaseFile(outside);
+        CHECK([[NSFileManager defaultManager] fileExistsAtPath:outside.path], @"nil-all: release never deletes a file the store didn't create");
+        NSArray *cachesContents = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:cachesRoot.path error:nil];
+        CHECK([cachesContents isEqualToArray:@[@"earlier-launch"]], @"nil-all: nothing written to Caches, got %@", cachesContents);
+    }
+}
+
+int main(int argc, char **argv) {
     @autoreleasepool {
         sLogLines = [NSMutableArray array];
         orig_CGImageSourceCreateWithURL = CGImageSourceCreateWithURL;
         orig_CGImageDestinationCreateWithData = CGImageDestinationCreateWithData;
         orig_CGImageDestinationFinalize = CGImageDestinationFinalize;
+        NSString *modeName = argc > 1 ? @(argv[1]) : @"normal";
+        if ([modeName isEqualToString:@"nil-tmp"]) sFolderMode = TestFolderModeNilTemporary;
+        else if ([modeName isEqualToString:@"nil-all"]) sFolderMode = TestFolderModeNilAll;
+        else if (![modeName isEqualToString:@"normal"]) { fprintf(stderr, "unknown mode %s\n", argv[1]); return 2; }
         sWorkDirectory = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString] isDirectory:YES];
         [[NSFileManager defaultManager] createDirectoryAtURL:sWorkDirectory withIntermediateDirectories:YES attributes:nil error:nil];
+        sTestTemporaryPath = [sWorkDirectory URLByAppendingPathComponent:@"tmp"].path;
+        sTestCachesPath = [sWorkDirectory URLByAppendingPathComponent:@"Caches"].path;
 
         const uint32_t red = 0xd02020, green = 0x20b040, blue = 0x2040d0, yellow = 0xe0c020;
         // A and B: different animations with the same first frame.
@@ -134,6 +225,14 @@ int main(void) {
         CHECK(![gifA isEqualToData:gifB], @"fixture: A and B must differ");
 
         sTestComposer = [NSObject new];
+
+        if (sFolderMode != TestFolderModeNormal) {
+            RunMissingFolderChecks(gifA, gifC);
+            ResetStore();
+            [[NSFileManager defaultManager] removeItemAtURL:sWorkDirectory error:nil];
+            printf("%s: %d checks, %d failures\n", modeName.UTF8String, sChecks, sFailures);
+            return sFailures == 0 ? 0 : 1;
+        }
 
         // Precondition for the rest: A's and B's JPEGs are byte-identical, so the
         // JPEG alone can't say which pick an upload is.
@@ -355,10 +454,27 @@ int main(void) {
             CHECK(ApolloUploadOriginalGIFDataForBody(jA) == nil, @"no composer: upload is the still");
         }
 
+        // 11. The launch sweep clears earlier launches' folders in tmp AND Caches
+        //     (a launch that fell back to Caches leaves its folder there) and keeps
+        //     this launch's.
+        {
+            ResetStore();
+            NSURL *current = ApolloOriginalGIFDirectory();
+            CreateFolder(current);
+            NSURL *staleTmp = [ApolloOriginalGIFTemporaryRoot() URLByAppendingPathComponent:@"earlier-launch" isDirectory:YES];
+            NSURL *staleCaches = [ApolloOriginalGIFCachesRoot() URLByAppendingPathComponent:@"earlier-launch" isDirectory:YES];
+            CreateFolder(staleTmp);
+            CreateFolder(staleCaches);
+            CHECK([current.URLByDeletingLastPathComponent.path isEqualToString:ApolloOriginalGIFTemporaryRoot().path], @"sweep: with tmp, the folder is in tmp");
+            ApolloOriginalGIFRemoveEarlierLaunches();
+            CHECK(!FolderExists(staleTmp), @"sweep: earlier launch's tmp folder removed");
+            CHECK(!FolderExists(staleCaches), @"sweep: earlier launch's Caches folder removed");
+            CHECK(FolderExists(current), @"sweep: this launch's folder kept");
+        }
+
         ResetStore();
         [[NSFileManager defaultManager] removeItemAtURL:sWorkDirectory error:nil];
-        [[NSFileManager defaultManager] removeItemAtURL:ApolloOriginalGIFDirectory() error:nil];
-        printf("%d checks, %d failures\n", sChecks, sFailures);
+        printf("normal: %d checks, %d failures\n", sChecks, sFailures);
         return sFailures == 0 ? 0 : 1;
     }
 }
