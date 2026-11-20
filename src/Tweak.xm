@@ -4733,6 +4733,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     sSortFavoritesAlphabetically = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySortFavoritesAlphabetically];
     sConfirmFavoriteToggle = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyConfirmFavoriteToggle];
     sShowHiddenPostsInSubreddits = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowHiddenPostsInSubreddits];
+    sShowHiddenPostsRememberPerSubreddit = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowHiddenPostsRememberPerSubreddit];
     sHideSubredditListDescriptions = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyHideSubredditListDescriptions];
     sHideMultiredditDescriptions = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyHideMultiredditDescriptions];
     sEnableFlairColors = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableFlairColors];

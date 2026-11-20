@@ -203,6 +203,7 @@ static ApolloActionMenuItem *ApolloAMItemMuteNotifs(void)  { return ApolloAMNati
 static ApolloActionMenuItem *ApolloAMItemFloatingTabs(void)    { return ApolloAMTweak(@"FloatingTabs", @"Keep in Floating Tab", @"pin.circle"); }
 static ApolloActionMenuItem *ApolloAMItemDeletedComments(void) { return ApolloAMTweak(@"DeletedComments", @"Show Deleted Comments", @"eye"); }
 static ApolloActionMenuItem *ApolloAMItemGalleryView(void)     { return ApolloAMTweak(@"GalleryView", @"Gallery View", @"square.grid.2x2"); }
+static ApolloActionMenuItem *ApolloAMItemShowHiddenPosts(void) { return ApolloAMTweak(@"ShowHiddenPosts", @"Show Hidden Posts", @"eye"); }
 static ApolloActionMenuItem *ApolloAMItemCommentNavigator(void) { return ApolloAMTweak(@"CommentNavigator", @"Jump Button Navigation", @"arrow.down.to.line"); }
 
 // Moderator menus (kinds captured from the live sheets, signed in as a
@@ -260,7 +261,8 @@ static NSArray<ApolloActionMenuItem *> *ApolloAMCatalogWithUsual(NSArray<ApolloA
 static NSArray<ApolloActionMenuItem *> *ApolloActionMenuBuildCatalog(ApolloActionMenuContext context) {
     if ([context isEqualToString:ApolloActionMenuContextFeed]) {
         // Subreddit: 51,39,41,243,36,48,227,55,235,46,37,15,106 (+ Gallery
-        // View after Submit Post). Home/Popular/All show the subset 243,235,15.
+        // View after Submit Post, Show Hidden Posts appended on single
+        // subreddits). Home/Popular/All show the subset 243,235,15.
         // Submit Post is locked: Apollo keeps it at the head of the sheet (on
         // Liquid Glass with Polls on it is the four new-post buttons), so it
         // is neither movable nor hideable — everything after it is.
@@ -268,7 +270,7 @@ static NSArray<ApolloActionMenuItem *> *ApolloActionMenuBuildCatalog(ApolloActio
             @[ ApolloAMLocked(ApolloAMItemSubmit()), ApolloAMItemGalleryView(), ApolloAMItemSubscribe(), ApolloAMItemFavorite(),
                ApolloAMItemHideRead(), ApolloAMItemSidebar(), ApolloAMItemRules(), ApolloAMItemFilterSub(),
                ApolloAMItemMultireddit(), ApolloAMItemPostSize(), ApolloAMItemUserFlair(), ApolloAMItemModerators(),
-               ApolloAMItemShare(), ApolloAMItemNotifications() ],
+               ApolloAMItemShare(), ApolloAMItemNotifications(), ApolloAMItemShowHiddenPosts() ],
             @[ ApolloAMItemExcludeSubscriptions() ]);
     }
     if ([context isEqualToString:ApolloActionMenuContextPost]) {
