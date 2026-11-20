@@ -1201,6 +1201,12 @@ NSIndexPath *ApolloFollowingVisibleIndexPathForNative(UITableView *tableView, NS
 }
 
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(NSInteger)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath {
+    // A row's swipe action commits while UIKit still holds the swiped row, and
+    // Apollo answers with reloadData. Reloading under the swipe leaves its
+    // offset and delete animation on whichever rows reuse those cells (gaps,
+    // missing rows, a row pushed sideways). Remove the row as Edit mode does.
+    if (editingStyle == UITableViewCellEditingStyleDelete && ApolloSubredditListIsSwipeEditing(tableView))
+        ApolloFollowingAnimateNextRemoval(tableView, indexPath);
     ApolloFollowingMap *map = ApolloFollowingMapFor((UIViewController *)self);
     if (!map.active) {
         %orig;
