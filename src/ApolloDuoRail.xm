@@ -671,6 +671,62 @@ static void ApolloDuoAdjustFloatingActionButton(UIView *button) {
 
 %end
 
+// Holla banners ("Saved!") ignore the side safe area, so closed they run under
+// the rail. Clamp the wrapper to the safe area and the banner to its wrapper.
+static CGRect ApolloDuoHollaWrapperFrame(UIView *wrapper, CGRect frame) {
+    // The wrapper sits in the window or in the navigation controller's view.
+    UIView *container = wrapper.superview;
+    UIWindow *window = [container isKindOfClass:UIWindow.class] ? (UIWindow *)container : container.window;
+    UIEdgeInsets safe = window.safeAreaInsets;
+    if (!window || (safe.left <= 0 && safe.right <= 0)) return frame;
+    CGRect safeBand = [container convertRect:CGRectMake(safe.left, 0,
+        CGRectGetWidth(window.bounds) - safe.left - safe.right, 1) fromView:window];
+    CGFloat minX = CGRectGetMinX(safeBand);
+    CGFloat maxX = CGRectGetMaxX(safeBand);
+    if (maxX <= minX || (CGRectGetMinX(frame) >= minX && CGRectGetMaxX(frame) <= maxX)) return frame;
+    frame.origin.x = MAX(CGRectGetMinX(frame), minX);
+    frame.size.width = MIN(CGRectGetMaxX(frame), maxX) - frame.origin.x;
+    return frame;
+}
+
+static CGRect ApolloDuoHollaBannerFrame(UIView *banner, CGRect frame) {
+    if (![banner.superview isKindOfClass:ApolloClassHollaStatusWrapperView]) return frame;
+    CGFloat fit = CGRectGetWidth(banner.superview.bounds) - 2 * MAX(CGRectGetMinX(frame), 0);
+    if (fit > 0 && CGRectGetWidth(frame) > fit) frame.size.width = fit;
+    return frame;
+}
+
+@interface ApolloDuoHollaWrapper : UIView
+@end
+@interface ApolloDuoHollaBanner : UIView
+@end
+
+%group ApolloDuoHollaHooks
+%hook ApolloDuoHollaWrapper
+- (void)setFrame:(CGRect)frame {
+    UIView *wrapper = (UIView *)self;
+    CGRect inset = ApolloDuoHollaWrapperFrame(wrapper, frame);
+    %orig(inset);
+    if (CGRectEqualToRect(inset, frame)) return;
+    ApolloLog(@"[DuoRail] kept a Holla banner clear of the rail: %@ -> %@",
+              NSStringFromCGRect(frame), NSStringFromCGRect(inset));
+    for (UIView *banner in wrapper.subviews) {
+        if ([banner isKindOfClass:ApolloClassHollaView]) banner.frame = banner.frame;
+    }
+}
+- (void)didMoveToSuperview {
+    %orig;
+    UIView *wrapper = (UIView *)self;
+    wrapper.frame = wrapper.frame;
+}
+%end
+%hook ApolloDuoHollaBanner
+- (void)setFrame:(CGRect)frame {
+    %orig(ApolloDuoHollaBannerFrame((UIView *)self, frame));
+}
+%end
+%end
+
 %hook UINavigationController
 
 - (void)pushViewController:(UIViewController *)controller animated:(BOOL)animated {
@@ -699,6 +755,10 @@ static void ApolloDuoAdjustFloatingActionButton(UIView *button) {
     if (fullThread) %init(ApolloDuoFullThreadHooks, ApolloDuoFullThreadNode = fullThread);
     Class composeText = objc_getClass("_TtC6Apollo17PasteableTextView");
     if (composeText) %init(ApolloDuoComposeHooks, ApolloDuoComposeTextView = composeText);
+    if (ApolloClassHollaStatusWrapperView && ApolloClassHollaView) {
+        %init(ApolloDuoHollaHooks, ApolloDuoHollaWrapper = ApolloClassHollaStatusWrapperView,
+              ApolloDuoHollaBanner = ApolloClassHollaView);
+    }
     Class tabs = objc_getClass("_TtC6Apollo22ApolloTabBarController");
     if (!tabs) {
         ApolloLog(@"[DuoRail] ApolloTabBarController missing; rail inactive");

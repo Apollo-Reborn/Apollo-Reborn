@@ -117,6 +117,8 @@ extern Class ApolloClassShareAsImageViewController;
 extern Class ApolloClassSubItemTableViewCell;
 extern Class ApolloClassThickSeparatorCellNode;
 extern Class ApolloClassThinSeparatorCellNode;
+extern Class ApolloClassHollaStatusWrapperView;
+extern Class ApolloClassHollaView;
 extern Class ApolloClassMessageInputBar;
 extern Class ApolloClassTranslatorViewController;
 extern Class ApolloClassUIBarBadgeView;
