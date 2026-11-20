@@ -387,6 +387,8 @@ typedef NS_ENUM(NSInteger, ApolloSubredditFeedIconStyle) {
     ApolloSubredditFeedIconStyleTinted = 2,
     ApolloSubredditFeedIconStyleSoftTile = 3,
     ApolloSubredditFeedIconStyleSolidTile = 4,
+    // Tinted's glyphs in the system text color: white in Dark Mode, black in Light.
+    ApolloSubredditFeedIconStyleMonochrome = 5,
 };
 typedef NS_ENUM(NSInteger, ApolloSubredditFeedLayout) {
     ApolloSubredditFeedLayoutRows = 0,
