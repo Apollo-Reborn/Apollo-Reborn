@@ -9,6 +9,9 @@ BOOL ApolloSubredditListIsEditing(UINavigationController *controller);
 // controller; nil uses its current navigation controller. Safe to reapply.
 void ApolloTopBarApplyNativeScrollPolicy(UIViewController *controller,
     UINavigationController *navigationController);
+// YES when Hide Header on Scroll has minimized this Duo header and point (bar
+// coordinates) lies between the window's top edge and the bar's bottom edge.
+BOOL ApolloTopBarMinimizedHeaderContainsPoint(UINavigationBar *bar, CGPoint point);
 
 // Presentation-only companion to the bottom bar's existing scroll policy.
 // The caller supplies bottom-bar state; Duo ignores it in favor of its native

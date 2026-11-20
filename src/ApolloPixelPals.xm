@@ -994,6 +994,23 @@ static BOOL ApolloPixelPalsBlockedByModal(UIWindow *window) {
 
 %end
 
+#pragma mark - Status bar taps on Duo
+
+// Apollo swaps handleTapAction: with notify_dogBark: after this hook is in
+// place, so this runs for handleTapAction:. Apollo's version keeps taps near
+// the center for Pixel Pals, which is hidden on Duo, so there the tap goes
+// straight to UIKit's handler, now under notify_dogBark:.
+%hook UIStatusBarManager
+- (void)notify_dogBark:(id)action {
+    if (_cmd == @selector(handleTapAction:) && ApolloDuoDeviceDetected()) {
+        ApolloLog(@"[PixelPals] Duo status bar tap passed to UIKit");
+        ((void (*)(id, SEL, id))objc_msgSend)(self, @selector(notify_dogBark:), action);
+        return;
+    }
+    %orig;
+}
+%end
+
 #pragma mark - Carrot Weather pal
 
 // Unlock "Artificial Superintelligence" Pixel Pal (normally requires Carrot Weather app installed)
@@ -1005,3 +1022,10 @@ static BOOL ApolloPixelPalsBlockedByModal(UIWindow *window) {
     return %orig;
 }
 %end
+
+%ctor {
+    if (!class_getInstanceMethod(UIStatusBarManager.class, @selector(notify_dogBark:))) {
+        ApolloLog(@"[PixelPals] notify_dogBark: not found; Duo status bar taps keep Apollo's Pixel Pals check");
+    }
+    %init;
+}
