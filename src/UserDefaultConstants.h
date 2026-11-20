@@ -105,6 +105,12 @@ static NSString *const UDKeyConfirmFavoriteToggle = @"ConfirmFavoriteToggle";
 // Keep hidden posts in single-subreddit feeds (adds show=all to their
 // listings). Default OFF. See ApolloShowHiddenPostsHooks.xm.
 static NSString *const UDKeyShowHiddenPostsInSubreddits = @"ShowHiddenPostsInSubreddits";
+// Keep a subreddit's ••• Show/Hide Hidden Posts choice after the app quits.
+// Default OFF: a choice lasts until the app quits.
+static NSString *const UDKeyShowHiddenPostsRememberPerSubreddit = @"ShowHiddenPostsRememberPerSubreddit";
+// Saved ••• choices: lowercased subreddit name -> @YES/@NO. A choice equal to
+// UDKeyShowHiddenPostsInSubreddits when it's made removes the entry.
+static NSString *const UDKeyShowHiddenPostsSubredditChoices = @"ShowHiddenPostsSubredditChoices";
 // Per-account sorting preferences, keyed by the per-account favorites identity
 // (u:name / anonymous). Missing entries default OFF; shared preference is above.
 static NSString *const UDKeyFavoriteSortingByAccount = @"FavoriteSortingByAccount";

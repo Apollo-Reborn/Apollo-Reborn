@@ -56,11 +56,59 @@ static void TestParameters(void) {
     CHECK([ApolloShowHiddenListingParameters((NSDictionary *)@"bad") isEqualToDictionary:@{ @"show": @"all" }], @"non-dictionary parameters");
 }
 
+static void TestChoices(void) {
+    NSString *suite = @"apollo.show-hidden-posts-tests";
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:suite];
+    [defaults removePersistentDomainForName:suite];
+    ApolloShowHiddenClearChoices(defaults);
+
+    NSString *key = @"ShowHiddenPostsSubredditChoices";
+    CHECK(ApolloShowHiddenChoiceForSubreddit(@"apple", YES, defaults) == nil, @"no choice at first");
+
+    // Not remembered: this launch only, nothing saved.
+    ApolloShowHiddenSetChoiceForSubreddit(@"Apple", YES, NO, NO, defaults);
+    CHECK([ApolloShowHiddenChoiceForSubreddit(@"apple", NO, defaults) isEqual:@YES], @"session choice, any case");
+    CHECK([defaults dictionaryForKey:key] == nil, @"session choice is not saved");
+
+    // Remembered: saved; a choice equal to the setting removes the saved one.
+    ApolloShowHiddenSetChoiceForSubreddit(@"swift", YES, NO, YES, defaults);
+    CHECK([[defaults dictionaryForKey:key][@"swift"] isEqual:@YES], @"remembered choice is saved");
+    ApolloShowHiddenSetChoiceForSubreddit(@"swift", NO, NO, YES, defaults);
+    CHECK([defaults dictionaryForKey:key][@"swift"] == nil, @"choice equal to the setting removes the saved one");
+
+    // After a restart (no session choices), a saved choice applies only while remembering is on.
+    ApolloShowHiddenClearChoices(defaults);
+    [defaults setObject:@{ @"swift": @YES } forKey:key];
+    CHECK([ApolloShowHiddenChoiceForSubreddit(@"swift", YES, defaults) isEqual:@YES], @"saved choice applies after a restart");
+    CHECK(ApolloShowHiddenChoiceForSubreddit(@"swift", NO, defaults) == nil, @"saved choice ignored while remembering is off");
+
+    // Show, then hide again while not remembering: the last choice wins over the
+    // older saved one even after remembering is turned on, and is then saved.
+    ApolloShowHiddenSetChoiceForSubreddit(@"apple", YES, NO, NO, defaults);
+    ApolloShowHiddenSetChoiceForSubreddit(@"swift", YES, NO, NO, defaults);
+    ApolloShowHiddenSetChoiceForSubreddit(@"swift", NO, NO, NO, defaults);
+    CHECK([[defaults dictionaryForKey:key][@"swift"] isEqual:@YES], @"saved choice untouched while not remembering");
+    CHECK([ApolloShowHiddenChoiceForSubreddit(@"swift", YES, defaults) isEqual:@NO], @"last choice wins over the saved one");
+    ApolloShowHiddenSaveSessionChoices(NO, defaults);
+    CHECK([defaults dictionaryForKey:key][@"swift"] == nil, @"turning remember on saves the last choice");
+    CHECK([[defaults dictionaryForKey:key][@"apple"] isEqual:@YES], @"turning remember on saves earlier choices");
+
+    // The count only includes saved choices that differ from the current setting.
+    CHECK(ApolloShowHiddenSavedChoiceCount(NO, defaults) == 1, @"one saved choice differs from OFF");
+    CHECK(ApolloShowHiddenSavedChoiceCount(YES, defaults) == 0, @"none differs from ON");
+
+    ApolloShowHiddenClearChoices(defaults);
+    CHECK(ApolloShowHiddenSavedChoiceCount(NO, defaults) == 0, @"reset clears saved choices");
+    CHECK(ApolloShowHiddenChoiceForSubreddit(@"apple", YES, defaults) == nil, @"reset clears every choice");
+    [defaults removePersistentDomainForName:suite];
+}
+
 int main(void) {
     @autoreleasepool {
         TestSubredditListings();
         TestOtherFeeds();
         TestParameters();
+        TestChoices();
     }
     if (sFailures > 0) {
         fprintf(stderr, "%d failure(s)\n", sFailures);

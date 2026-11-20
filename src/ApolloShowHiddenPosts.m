@@ -1,4 +1,5 @@
 #import "ApolloShowHiddenPosts.h"
+#import "UserDefaultConstants.h"
 
 NSString *ApolloShowHiddenSubredditForListingPath(NSString *path) {
     NSString *trimmed = [path stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"/"]];
@@ -36,4 +37,77 @@ NSDictionary *ApolloShowHiddenListingParameters(NSDictionary *parameters) {
     NSMutableDictionary *result = [parameters isKindOfClass:[NSDictionary class]] ? [parameters mutableCopy] : [NSMutableDictionary dictionary];
     result[@"show"] = @"all";
     return result;
+}
+
+// This launch's choices. Listings start on background queues, so every access
+// to it, and every read-modify-write of the saved choices, holds the lock.
+static NSMutableDictionary<NSString *, NSNumber *> *ApolloShowHiddenSessionChoices(void) {
+    static NSMutableDictionary *choices;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ choices = [NSMutableDictionary dictionary]; });
+    return choices;
+}
+
+static NSDictionary<NSString *, NSNumber *> *ApolloShowHiddenSavedChoices(NSUserDefaults *defaults) {
+    NSDictionary *saved = [defaults dictionaryForKey:UDKeyShowHiddenPostsSubredditChoices];
+    return [saved isKindOfClass:[NSDictionary class]] ? saved : @{};
+}
+
+NSNumber *ApolloShowHiddenChoiceForSubreddit(NSString *subreddit, BOOL useSaved, NSUserDefaults *defaults) {
+    if (subreddit.length == 0) return nil;
+    NSString *key = subreddit.lowercaseString;
+    NSMutableDictionary *session = ApolloShowHiddenSessionChoices();
+    @synchronized (session) {
+        NSNumber *choice = session[key];
+        if (choice) return choice;
+    }
+    if (!useSaved) return nil;
+    id saved = ApolloShowHiddenSavedChoices(defaults)[key];
+    return [saved isKindOfClass:[NSNumber class]] ? saved : nil;
+}
+
+// Caller holds the session lock. Saved entries equal to `setting` are removed.
+static void ApolloShowHiddenSaveChoices(NSDictionary<NSString *, NSNumber *> *choices, BOOL setting, NSUserDefaults *defaults) {
+    NSMutableDictionary *saved = [ApolloShowHiddenSavedChoices(defaults) mutableCopy];
+    [choices enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSNumber *show, __unused BOOL *stop) {
+        saved[key] = show.boolValue == setting ? nil : show;
+    }];
+    [defaults setObject:saved forKey:UDKeyShowHiddenPostsSubredditChoices];
+}
+
+void ApolloShowHiddenSetChoiceForSubreddit(NSString *subreddit, BOOL show, BOOL setting, BOOL remember, NSUserDefaults *defaults) {
+    if (subreddit.length == 0) return;
+    NSString *key = subreddit.lowercaseString;
+    NSMutableDictionary *session = ApolloShowHiddenSessionChoices();
+    @synchronized (session) {
+        // Kept even when it equals the setting, so it still wins over an older
+        // saved choice if remembering is turned on later in this launch.
+        session[key] = @(show);
+        // Without remember, a saved choice is left as it is: it doesn't apply
+        // while remembering is off, and comes back if it's turned on again.
+        if (remember) ApolloShowHiddenSaveChoices(@{ key: @(show) }, setting, defaults);
+    }
+}
+
+void ApolloShowHiddenSaveSessionChoices(BOOL setting, NSUserDefaults *defaults) {
+    NSMutableDictionary *session = ApolloShowHiddenSessionChoices();
+    @synchronized (session) {
+        if (session.count > 0) ApolloShowHiddenSaveChoices(session, setting, defaults);
+    }
+}
+
+NSUInteger ApolloShowHiddenSavedChoiceCount(BOOL setting, NSUserDefaults *defaults) {
+    __block NSUInteger count = 0;
+    [ApolloShowHiddenSavedChoices(defaults) enumerateKeysAndObjectsUsingBlock:^(__unused id key, id show, __unused BOOL *stop) {
+        if ([show isKindOfClass:[NSNumber class]] && [show boolValue] != setting) count++;
+    }];
+    return count;
+}
+
+void ApolloShowHiddenClearChoices(NSUserDefaults *defaults) {
+    NSMutableDictionary *session = ApolloShowHiddenSessionChoices();
+    @synchronized (session) {
+        [session removeAllObjects];
+        [defaults removeObjectForKey:UDKeyShowHiddenPostsSubredditChoices];
+    }
 }
