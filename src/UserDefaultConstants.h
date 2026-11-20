@@ -706,6 +706,33 @@ static NSString *const UDKeyPollsEnabled = @"PollsEnabled";
 // Horizontal alignment of poll option text (ApolloPollOptionAlignment).
 // Default Center (0).
 static NSString *const UDKeyPollOptionAlignment = @"PollOptionAlignment";
+// Offline Mode (ApolloOfflineMode.xm, settings/ApolloOfflineModeSettingsViewController).
+// When the saved batch answers requests: ApolloOfflineUseMode, default
+// Automatic (0) = only while the device has no connection.
+static NSString *const UDKeyOfflineUseMode = @"OfflineUseMode";
+// What the next download fetches. Home defaults on, Popular off; extra
+// subreddits are an array of names without "r/".
+static NSString *const UDKeyOfflineIncludeHome = @"OfflineIncludeHome";
+static NSString *const UDKeyOfflineIncludePopular = @"OfflineIncludePopular";
+static NSString *const UDKeyOfflineSubreddits = @"OfflineSubreddits";
+static NSString *const UDKeyOfflineIncludeComments = @"OfflineIncludeComments";
+static NSString *const UDKeyOfflineIncludeImages = @"OfflineIncludeImages";
+// Reddit-hosted videos, saved as one mp4 with sound at up to 720p (default on).
+static NSString *const UDKeyOfflineIncludeVideos = @"OfflineIncludeVideos";
+// The web page behind each link post, kept as a web archive (default on).
+static NSString *const UDKeyOfflineIncludePages = @"OfflineIncludePages";
+// The account's Saved posts as an offline archive (default on): save a post in
+// Apollo and the next download keeps it, read or not; unsave to drop it.
+static NSString *const UDKeyOfflineIncludeSaved = @"OfflineIncludeSaved";
+// Data limit for one download, in megabytes (default 100).
+static NSString *const UDKeyOfflineBudgetMB = @"OfflineBudgetMB";
+// Keep Fresh: re-download the batch on its own while Apollo is open on Wi-Fi,
+// hourly or once half of it is read (default on; only after a first download).
+static NSString *const UDKeyOfflineAutoRefresh = @"OfflineAutoRefresh";
+// Let Keep Fresh run on cellular too, not just Wi-Fi (default off).
+static NSString *const UDKeyOfflineAutoRefreshCellular = @"OfflineAutoRefreshCellular";
+// Leave posts the user has already read out of downloads (default on).
+static NSString *const UDKeyOfflineSkipRead = @"OfflineSkipRead";
 // Legacy NSUserDefaults location of the harvested "name=value; ..." Cookie
 // header. The cookie is now stored in the keychain (ApolloWebJSON.m); this key
 // is retained only so ApolloWebJSONLoadPersistedCredentials can migrate an older
