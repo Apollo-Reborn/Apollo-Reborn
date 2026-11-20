@@ -2094,11 +2094,14 @@ static NSString *ApolloWebAuthInterceptRedirectURI(NSURL *authURL, NSString *cal
 }
 
 // Shows the WKWebView sign-in sheet over whatever `presenter` is showing.
+// `offerAlternatives`: the sheet stands in for Apollo's "Issue Signing In"
+// Safari page, so it opens by offering its other sign-in routes.
 static void ApolloPresentWebAuthSheet(UIViewController *presenter, NSURL *authURL, NSString *redirectURI,
-                                      void (^completion)(NSURL *, NSError *)) {
+                                      BOOL offerAlternatives, void (^completion)(NSURL *, NSError *)) {
     ApolloLog(@"[WebAuth] using WKWebView, intercepting redirectURI=%@", redirectURI);
     ApolloWebAuthViewController *authVC = [[ApolloWebAuthViewController alloc]
         initWithURL:authURL redirectURI:redirectURI completionHandler:completion];
+    authVC.offersSignInAlternatives = offerAlternatives;
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:authVC];
     nav.modalPresentationStyle = UIModalPresentationFormSheet;
 
@@ -2221,6 +2224,7 @@ static void ApolloExplainMissingRedditAPIKey(UIWindow *window) {
     ApolloPresentWebAuthSheet(window.rootViewController,
                               authURL,
                               ApolloWebAuthInterceptRedirectURI(authURL, callbackScheme),
+                              NO,
                               completion);
     return YES;
 }
@@ -2244,7 +2248,9 @@ static void ApolloExplainMissingRedditAPIKey(UIWindow *window) {
 // sheet when Apollo presents it. The sheet reports back through the completion
 // the sign-in session was created with, so a callback URL lands where Apollo's
 // own Safari flow would send it (0x10082f4d8 with a URL and no error → the
-// completeAuthenticationProcessWithURL step at 0x1008304f4). Apollo's other
+// completeAuthenticationProcessWithURL step at 0x1008304f4). Since the person
+// just cancelled the same sheet, it opens by offering Manual Sign-In next to
+// a retry (offersSignInAlternatives). Apollo's other
 // SFSafariViewControllers never carry the tag: they don't open Reddit's
 // authorize page, and without the custom sign-in Apollo's fallback is left
 // alone (its scheme then has to be registered, so it works).
@@ -2290,10 +2296,15 @@ static void ApolloExplainMissingRedditAPIKey(UIWindow *window) {
         return;
     }
 
+    // With the custom sign-in on, the sheet only hands Apollo a cancel (load
+    // errors stay in it), so in practice this is the "Issue Signing In"
+    // button: the person just closed this same sheet, so it opens by offering
+    // Manual Sign-In next to a retry.
     ApolloLog(@"[WebAuth] Showing Apollo's Safari sign-in fallback in the sign-in sheet");
     ApolloPresentWebAuthSheet((UIViewController *)self,
                               fallbackURL,
                               ApolloWebAuthInterceptRedirectURI(fallbackURL, objc_getAssociatedObject(session, &kARScheme)),
+                              YES,
                               authCompletion);
     // Standing in for the presentation (Apollo passes nil here).
     if (completion) completion();

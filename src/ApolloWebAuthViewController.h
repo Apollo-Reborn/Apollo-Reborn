@@ -21,4 +21,10 @@
                 redirectURI:(NSString *)redirectURI
           completionHandler:(ASWebAuthenticationSessionCompletionHandler)completion;
 
+// Set before presenting when the person has already had trouble with this
+// sheet (it stands in for Apollo's "Issue Signing In" Safari page): once it
+// appears, the sheet offers Manual Sign-In alongside a plain retry instead
+// of reopening the same page silently.
+@property (nonatomic) BOOL offersSignInAlternatives;
+
 @end
