@@ -14,8 +14,9 @@
 // pane goes to Apollo's own interactive Back, which follows the finger as on
 // a regular iPhone; at the feed root the subreddit drawer follows the finger;
 // a thread above the Posts backstop slides out with the finger and closes its
-// column; any other Back runs the split's own animated pop. Keep row swipe
-// actions elsewhere, and honor Apollo's navigation-gesture opt-out.
+// column, as does a Back at the feed's root beside it in landscape; any other
+// Back runs the split's own animated pop. Keep row swipe actions elsewhere,
+// and honor Apollo's navigation-gesture opt-out.
 static BOOL ApolloDuoNavigationEnvironmentAllows(UINavigationController *navigation) {
     BOOL eligible = ApolloDeviceIsDuo() && navigation.viewIfLoaded.window
         && !ApolloDuoSplitIsResizing() && !navigation.transitionCoordinator

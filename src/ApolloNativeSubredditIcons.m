@@ -30,6 +30,15 @@ NSArray<NSString *> *ApolloNativeSubredditIconNames(NSData *blob) {
     return names;
 }
 
+NSDictionary<NSString *, NSURL *> *ApolloNativeSubredditIconURLs(NSData *blob) {
+    NSMutableDictionary<NSString *, NSURL *> *urls = [NSMutableDictionary dictionary];
+    for (id entry in ApolloNativeSubredditIconEntries(blob)) {
+        NSString *name = ApolloNativeSubredditIconEntryName(entry);
+        if (name) urls[name.lowercaseString] = entry[1];
+    }
+    return urls;
+}
+
 static NSString *ApolloNativeSubredditIconURLString(id value) {
     if (![value isKindOfClass:NSString.class]) return nil;
     NSString *string = [value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
