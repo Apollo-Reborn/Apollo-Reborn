@@ -101,6 +101,7 @@
 #import "ApolloAccountSubscriptions.h"
 #import "ApolloWebJSON.h"
 #import "ApolloClasses.h"
+#import "ApolloDuoSplitView.h"
 
 static void ApolloDevvitHeightDidChangeForFullName(NSString *fullName);
 static void ApolloDevvitScheduleStaleSweep(void);
@@ -1440,14 +1441,22 @@ static const NSUInteger kApolloDevvitMaxLiveWidgets = 4;
     if (width <= 0.0 || !self.webView) return;
     if (self.loadedWidth <= 0.0 || !self.revealed) { self.loadedWidth = width; return; }
     if (fabs(width - self.loadedWidth) < 60.0) return;
-    NSInteger gen = ++self.widthReloadGeneration;
-    __weak typeof(self) weakSelf = self;
     // Debounced past the rotation animation's intermediate frames; only reads
     // happen synchronously here (no layout-driving writes from layoutSubviews).
+    [self checkWidthReload:++self.widthReloadGeneration];
+}
+
+- (void)checkWidthReload:(NSInteger)gen {
+    __weak typeof(self) weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         typeof(self) s = weakSelf;
         if (!s || s.widthReloadGeneration != gen || !s.webView || !s.revealed) return;
+        // A Duo column drag can still put the old width back; wait for it to end.
+        if (ApolloDuoSplitIsColumnDragging()) {
+            [s checkWidthReload:gen];
+            return;
+        }
         CGFloat settled = s.bounds.size.width;
         if (settled <= 0.0 || fabs(settled - s.loadedWidth) < 60.0) return;
         ApolloLog(@"[Devvit] %@ width %.0f -> %.0f — reloading widget for the new layout",

@@ -31,6 +31,7 @@
 #import <UIKit/UIKit.h>
 
 #import "ApolloCommon.h"
+#import "ApolloComposerGlassToolbar.h"
 #import "ApolloThemeRuntime.h"
 
 // The icon buttons are the only UIButtons in the bar that render a UIImageView:
@@ -53,6 +54,8 @@ static void ApolloComposerToolbarCollectIconButtons(UIView *view,
     // The autocomplete strip (subreddit/user suggestions) is a UICollectionView
     // whose cells Apollo styles on its own; never reach inside it.
     if ([view isKindOfClass:[UICollectionView class]]) return;
+    // The Liquid Glass strip tints its own buttons.
+    if ([view.accessibilityIdentifier isEqualToString:ApolloComposerGlassToolbarIdentifier]) return;
     (*budget)--;
     if ([view isKindOfClass:[UIButton class]] &&
         ApolloComposerToolbarIconImageView((UIButton *)view) != nil) {

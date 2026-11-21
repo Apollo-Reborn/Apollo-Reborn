@@ -165,6 +165,13 @@ static void ApolloSafariShieldScheduleRamp(UIViewController *controller, NSTimeI
 
 static void ApolloSafariShieldInstall(UIViewController *controller) {
     if (ApolloSafariShieldFor(controller)) return;
+    // Not on the system sign-in sheet (ASWebAuthenticationSession's
+    // SFAuthenticationViewController, an SFSafariViewController subclass). On
+    // iPad its view fills the window while the sheet itself is a card the view
+    // service draws inside it, so the shield blacked out the whole screen. The
+    // in-app WKWebView sign-in sheet has no shield either, so the two match.
+    Class authSheetClass = objc_getClass("SFAuthenticationViewController");
+    if (authSheetClass && [controller isKindOfClass:authSheetClass]) return;
     // One shield per browser: a re-appearance (after a full-screen modal on
     // top of it) has the page painted already, so there is nothing to cover.
     if ([objc_getAssociatedObject(controller, &kApolloSafariShieldSpentKey) boolValue]) return;

@@ -266,6 +266,13 @@ UIImage *ApolloFeedShortcutIconImage(NSInteger index,
     if (style == ApolloSubredditFeedIconStyleClassic) {
         return [ApolloSubredditClassicMetaFeedIcon(index) imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
     }
+    if (style == ApolloSubredditFeedIconStyleMonochrome) {
+        // Tinted's glyph, in the system text color, which follows Light and
+        // Dark Mode wherever the image is shown.
+        UIImage *shape = ApolloFeedShortcutIconImage(index, ApolloSubredditFeedIconStyleTinted, layout, itemCount);
+        return [[shape imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate]
+            imageWithTintColor:UIColor.labelColor renderingMode:UIImageRenderingModeAlwaysOriginal];
+    }
 
     BOOL tinted = style == ApolloSubredditFeedIconStyleTinted;
     CGFloat canvasSize = tinted
@@ -375,14 +382,16 @@ CGFloat ApolloFeedShortcutPreviewRowItemHeight(UITraitCollection *traitCollectio
 CGFloat ApolloFeedShortcutDisplayIconSize(ApolloSubredditFeedIconStyle style,
                                           ApolloSubredditFeedLayout layout,
                                           NSUInteger itemCount) {
+    // Bare glyphs (Tinted, Monochrome) sit a little smaller than tiles and circles.
+    BOOL bare = style == ApolloSubredditFeedIconStyleTinted || style == ApolloSubredditFeedIconStyleMonochrome;
     if (layout == ApolloSubredditFeedLayoutRows) {
-        return style == ApolloSubredditFeedIconStyleTinted ? 30.0 : 34.0;
+        return bare ? 30.0 : 34.0;
     }
     if (layout == ApolloSubredditFeedLayoutGrid) {
-        return style == ApolloSubredditFeedIconStyleTinted ? 40.0 : 46.0;
+        return bare ? 40.0 : 46.0;
     }
     if (layout == ApolloSubredditFeedLayoutIconDock) return 34.0;
-    if (style == ApolloSubredditFeedIconStyleTinted) return itemCount == 4 ? 28.0 : 30.0;
+    if (bare) return itemCount == 4 ? 28.0 : 30.0;
     return itemCount == 4 ? 30.0 : 32.0;
 }
 

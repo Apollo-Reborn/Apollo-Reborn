@@ -25,6 +25,7 @@
 #import "ApolloDuoUIKitCompatibility.h"
 #import "ApolloSearchNativeBar.h"
 #import "ApolloNavigationActions.h"
+#import "ApolloNavigationTitlePresentation.h"
 #import "ApolloFeedShortcutsAppearance.h"
 #import "ApolloFollowingSection.h"
 #import "ApolloGalleryViewController.h"
@@ -253,15 +254,10 @@ static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat
     [view.layer addAnimation:slide forKey:@"ApolloDuoSlide"];
 }
 
-// A thread drag moves the pane's contents through its layer's
+// A drag moves the thread pane's contents through its layer's
 // sublayerTransform. The split column re-sets the navigation view's frame on
 // every layout (a playing video lays out each frame), which would cancel a
 // plain transform; layout never touches sublayerTransform.
-static CGFloat ApolloDuoThreadDragOffset(UIView *view) {
-    CALayer *layer = view.layer.presentationLayer ?: view.layer;
-    return layer.sublayerTransform.m41;
-}
-
 static void ApolloDuoSetThreadDragOffset(UIView *view, CGFloat offset) {
     if (!view) return;
     [view.layer removeAnimationForKey:@"ApolloDuoThreadDrag"];
@@ -271,35 +267,7 @@ static void ApolloDuoSetThreadDragOffset(UIView *view, CGFloat offset) {
     [CATransaction commit];
 }
 
-// Springs the pane back to its place on the drawer's spring.
-static void ApolloDuoSettleThreadDrag(UIView *view, CGFloat from, CGFloat velocity, BOOL animated) {
-    ApolloDuoSetThreadDragOffset(view, 0);
-    if (!animated || UIAccessibilityIsReduceMotionEnabled() || fabs(from) < 0.5) return;
-    double omega = ApolloDuoDrawerSpringOmega();
-    CASpringAnimation *spring = [CASpringAnimation animationWithKeyPath:@"sublayerTransform"];
-    spring.fromValue = [NSValue valueWithCATransform3D:CATransform3DMakeTranslation(from, 0, 0)];
-    spring.toValue = [NSValue valueWithCATransform3D:CATransform3DIdentity];
-    spring.mass = 1;
-    spring.stiffness = omega * omega;
-    spring.damping = 2 * omega;
-    spring.initialVelocity = ApolloDuoDrawerSpringInitialVelocity(from, 0, velocity);
-    spring.duration = spring.settlingDuration;
-    ApolloAnimationUsesFullFrameRate(spring);
-    [view.layer addAnimation:spring forKey:@"ApolloDuoThreadDrag"];
-}
-
-// Removes a thread drag's feed filler, fading it over `duration`.
-static void ApolloDuoRemoveThreadDragFiller(UIView *filler, NSTimeInterval duration) {
-    if (!filler) return;
-    if (duration <= 0 || UIAccessibilityIsReduceMotionEnabled()) {
-        [filler removeFromSuperview];
-        return;
-    }
-    [UIView animateWithDuration:duration delay:0 options:UIViewAnimationOptionCurveEaseOut
-                     animations:^{ filler.alpha = 0; } completion:^(__unused BOOL finished) {
-        [filler removeFromSuperview];
-    }];
-}
+@class ApolloDuoColumnScrub;
 
 @interface ApolloDuoSplitHost : UIViewController <UISplitViewControllerDelegate, ApolloDuoLayoutControl>
 @property(nonatomic, strong) UISplitViewController *split;
@@ -318,6 +286,9 @@ static void ApolloDuoRemoveThreadDragFiller(UIView *filler, NSTimeInterval durat
 // Unfolded from the folded subreddit list: the drawer stays open over an empty
 // feed until the reader picks a subreddit or feed.
 @property(nonatomic) BOOL listPinned;
+// How far down the list was read when the drawer last closed, from the top of
+// its visible area; nil until it first closes.
+@property(nonatomic, strong) NSNumber *listScrollTop;
 @property(nonatomic, strong) UIStackView *pinnedPrompt;
 @property(nonatomic) BOOL postsShowingDetail;
 @property(nonatomic) BOOL postsSplitEnabled;
@@ -328,12 +299,11 @@ static void ApolloDuoRemoveThreadDragFiller(UIView *filler, NSTimeInterval durat
 @property(nonatomic, strong) NSHashTable *dividerHeldText;
 @property(nonatomic) NSUInteger dividerHeldTextGeneration;
 @property(nonatomic, strong) UIView *postsTransitionSnapshot;
-// The feed's trailing edge, stretched across the gap a thread drag opens.
-@property(nonatomic, strong) UIView *threadDragFiller;
-// The thread pane as a Back drag found it, kept for a later forward drag.
-@property(nonatomic, strong) UIView *threadDragPicture;
-// A forward drag's picture of the closed thread, sliding in.
-@property(nonatomic, strong) UIView *restoreDragPicture;
+// A drag moving both columns with the finger.
+@property(nonatomic, strong) ApolloDuoColumnScrub *columnScrub;
+// The Back button's or an opened post's column slide is running.
+@property(nonatomic) BOOL columnsSliding;
+@property(nonatomic) NSUInteger columnSlideGeneration;
 @property(nonatomic, weak) UINavigationController *searchNavigation;
 @property(nonatomic) NSUInteger listAnimationGeneration;
 @property(nonatomic, strong) UIButton *splitButton;
@@ -382,6 +352,8 @@ static void ApolloDuoRemoveThreadDragFiller(UIView *filler, NSTimeInterval durat
 @property(nonatomic, strong) UINavigationBar *sidebarNavigationBar;
 @property(nonatomic, strong) UIButton *profileBackButton;
 @end
+static void ApolloDuoColumnScrubFinishNow(ApolloDuoSplitHost *host);
+
 @implementation ApolloDuoSplitHost
 - (void)viewDidLoad {
     [super viewDidLoad];
@@ -602,14 +574,14 @@ static void ApolloDuoRemoveThreadDragFiller(UIView *filler, NSTimeInterval durat
         }
     }
     if (self.subredditList) [self setListVisible:NO animated:NO];
+    ApolloDuoColumnScrubFinishNow(self);
     [self.postsTransitionSnapshot removeFromSuperview];
     self.postsTransitionSnapshot = nil;
-    [self.threadDragFiller removeFromSuperview];
-    self.threadDragFiller = nil;
     ApolloDuoPostsStopGeometry(self.searchNavigation.viewIfLoaded);
 }
 - (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
     [self.dividerGrip cancel];
+    ApolloDuoColumnScrubFinishNow(self);
     ApolloDuoPostsStopGeometry(self.searchNavigation.viewIfLoaded);
     [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
 }
@@ -790,6 +762,7 @@ static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
     [self.view layoutIfNeeded];
     CGFloat start = [self listOffset];
     BOOL reveal = visible && !self.listVisible;
+    if (!visible && self.listVisible) [self saveListScrollTop];
     self.listDragging = NO;
     self.listVisible = visible;
     [self.view setNeedsLayout];
@@ -815,14 +788,27 @@ static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
     // table background, before exposing the drawer.
     [self.subredditList.view layoutIfNeeded];
     UITableView *table = ApolloDuoSplitFindTable(self.subredditList.view);
-    // Reset before the first reveal frame, after the drawer's safe-area
-    // layout, so reopening always starts with the feed shortcuts. A pinned
-    // drawer continues the folded list, so it keeps that scroll position.
-    if (!self.listPinned)
-        [table setContentOffset:CGPointMake(-table.adjustedContentInset.left,
-                                           -table.adjustedContentInset.top) animated:NO];
+    // Reopen where the list was left, as Back to the list does on an iPhone,
+    // set before the first reveal frame and after the drawer's safe-area
+    // layout. Until the drawer first closes, that's where the folded list was.
+    CGFloat minimum = -table.adjustedContentInset.top;
+    CGFloat top = self.listScrollTop ? self.listScrollTop.doubleValue : table.contentOffset.y - minimum;
+    CGFloat maximum = MAX(minimum, table.contentSize.height - table.bounds.size.height
+                          + table.adjustedContentInset.bottom);
+    CGFloat y = MIN(maximum, MAX(minimum, minimum + top));
+    if (table && fabs(y - table.contentOffset.y) >= 0.5)
+        [table setContentOffset:CGPointMake(table.contentOffset.x, y) animated:NO];
     [table layoutIfNeeded];
     [self updateListAppearance];
+}
+// Measured from the top of the visible area, so a bar or safe-area change
+// while the drawer is hidden (a rotation) doesn't shift it.
+- (void)saveListScrollTop {
+    UITableView *table = ApolloDuoSplitFindTable(self.subredditList.viewIfLoaded);
+    if (!table) return;
+    // Stop a fling, or it carries on out of sight past the saved spot.
+    if (table.decelerating) [table setContentOffset:table.contentOffset animated:NO];
+    self.listScrollTop = @(table.contentOffset.y + table.adjustedContentInset.top);
 }
 // How far the drawer travels between hidden and shown: its width plus the
 // 12pt gap. Before its first layout, the width viewDidLayoutSubviews will give.
@@ -1260,6 +1246,10 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
 // The thread the last close took from beside the feed, which a forward swipe
 // brings back (ApolloDuoSplitRestoreClosedThread) until something forgets it.
 @property(nonatomic, strong) ApolloDuoPostsClosedThread *closedThread;
+// A Back drag is closing the thread: the columns are laid out without it, but
+// its pages stay on the stack and its view stays in the window behind the feed
+// until the drag commits, so a cancelled drag never takes the thread away.
+@property(nonatomic) BOOL threadParked;
 @property(nonatomic) BOOL navigationBarWasHidden;
 @property(nonatomic) BOOL needsDefault;
 // When the folded Posts tab last showed its bare subreddit list (0 otherwise).
@@ -1506,6 +1496,11 @@ CGRect ApolloDuoSplitContentFrame(UIViewController *controller, UIView *coordina
     insets.right = 0.0;
     CGRect content = UIEdgeInsetsInsetRect(view.bounds, insets);
     CGRect column = [coordinateView convertRect:content fromView:view];
+    // A drag shifts the pane's contents by its sublayerTransform; measure at rest,
+    // or a title laid out mid-drag keeps the offset.
+    CATransform3D drag = view.layer.sublayerTransform;
+    if (coordinateView != view && CATransform3DIsAffine(drag) && [coordinateView isDescendantOfView:view])
+        column = CGRectOffset(column, drag.m41, drag.m42);
     // A page rests at its navigation view's origin, but a push parks the
     // outgoing page at its parallax offset as soon as an interactive peek
     // begins. Map views inside the page through the page at rest, so what
@@ -1755,6 +1750,7 @@ static void ApolloDuoSplitApplySidebarWidth(ApolloDuoSplitState *state, BOOL hal
 // natural division and never overwrites the saved flat-display preference.
 static BOOL ApolloDuoDividerVisible(ApolloDuoSplitHost *host) {
     return host.postsColumnsPaired && host.viewIfLoaded.window && !host.listVisible
+        && !host.columnScrub && !host.columnsSliding
         && host.view.bounds.size.width > host.view.bounds.size.height
         && CGRectIsNull(ApolloDuoActiveVerticalDivision(host.view));
 }
@@ -1935,10 +1931,8 @@ static NSArray *ApolloDuoClosedThreadPages(NSArray *paneStack) {
 // pages strongly (no stack holds them any more) and its feed page weakly.
 @interface ApolloDuoPostsClosedThread : NSObject
 @property(nonatomic, copy) NSArray<UIViewController *> *pages;
-// The thread pane as it looked when it closed, and where, so a forward drag
-// can slide it back in under the finger before the real pages return.
-@property(nonatomic, strong) UIView *picture;
-@property(nonatomic) CGRect pictureFrame;
+// Where the thread pane was when it closed: how far a forward drag brings it.
+@property(nonatomic) CGRect paneFrame;
 @property(nonatomic) CGSize surfaceSize;
 @property(nonatomic, weak) UIViewController *feedPage;
 @property(nonatomic, copy) NSString *feedIdentity;
@@ -2000,7 +1994,7 @@ static void ApolloDuoPostsReviewClosedThread(ApolloDuoSplitState *state, ApolloD
 }
 
 static void ApolloDuoPostsRememberClosedThread(ApolloDuoSplitState *state, NSArray<UIViewController *> *pages,
-                                               UIView *picture, CGRect pictureFrame) {
+                                               CGRect paneFrame) {
     UIViewController *feedPage = state.feed.topViewController;
     if (!pages.count || !feedPage) return;
     ApolloDuoSplitState *previous = sDuoPostsClosedThreadState;
@@ -2010,8 +2004,7 @@ static void ApolloDuoPostsRememberClosedThread(ApolloDuoSplitState *state, NSArr
     closed.feedPage = feedPage;
     closed.feedIdentity = ApolloDuoPostsFeedIdentity(feedPage);
     closed.account = ApolloDuoPostsAccountIdentity();
-    closed.picture = picture;
-    closed.pictureFrame = pictureFrame;
+    closed.paneFrame = paneFrame;
     closed.surfaceSize = state.host.view.bounds.size;
     state.closedThread = closed;
     sDuoPostsClosedThreadState = state;
@@ -2021,6 +2014,9 @@ static void ApolloDuoPostsRememberClosedThread(ApolloDuoSplitState *state, NSArr
 static void ApolloDuoPostsSyncColumnsWithAnimation(ApolloDuoSplitState *state, BOOL animateDisplayMode) {
     if (!state.split || !state.feed) ApolloDuoPostsForgetClosedThread(state, @"the split ended");
     if (!state.feed || !state.split || state.changing) return;
+    // A pane drag outlives its pane leaving the window mid-drag (ApolloDuoColumnScrub).
+    ApolloDuoAttachPaneGestures(state.feed, state.host.view);
+    ApolloDuoAttachPaneGestures(state.secondary, state.host.view);
     // A rotation to portrait, the split turned off or a thread put beside the
     // feed by any path ends what a forward swipe could bring back.
     ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventCheck, 0.0);
@@ -2062,7 +2058,7 @@ static void ApolloDuoPostsSyncColumnsWithAnimation(ApolloDuoSplitState *state, B
         state.changing = NO;
     }
     [state.host.viewIfLoaded setNeedsLayout];
-    BOOL detail = state.secondary.viewControllers.count > 1;
+    BOOL detail = state.secondary.viewControllers.count > 1 && !state.threadParked;
     BOOL paired = detail && ApolloDuoPostsUsesSplit(state);
     UISplitViewController *split = state.split;
     // A hidden primary can lose its parent while UIKit still retains it as
@@ -2212,19 +2208,70 @@ static void ApolloDuoHoldTextLayout(NSArray<UIView *> *roots) {
 @interface ApolloDuoPostsGeometry : NSObject
 @property(nonatomic, weak) UIView *view;
 @property(nonatomic, weak) UIView *parent;
+// A bare layer (no view), or the mask of `maskOwner`.
+@property(nonatomic, weak) CALayer *layer;
+@property(nonatomic, weak) CALayer *superlayer;
+@property(nonatomic, weak) CALayer *maskOwner;
 @property(nonatomic) CGRect bounds;
 @property(nonatomic) CGPoint position;
+// The part of its image a layer shows (a banner cropped to its width).
+@property(nonatomic) CGRect contentsRect;
 @property(nonatomic) CGRect surfaceFrame;
 @end
 @implementation ApolloDuoPostsGeometry @end
 
-static void ApolloDuoPostsStopGeometry(UIView *feed) {
-    if (!feed) return;
-    [feed.layer removeAnimationForKey:@"ApolloDuoPostsGeometry"];
-    for (UIView *child in feed.subviews) ApolloDuoPostsStopGeometry(child);
+static void ApolloDuoPostsStopGeometryLayer(CALayer *layer) {
+    [layer removeAnimationForKey:@"ApolloDuoPostsGeometry"];
+    // Masks aren't sublayers, and a drag's held animation would keep their width.
+    if (layer.mask) ApolloDuoPostsStopGeometryLayer(layer.mask);
+    for (CALayer *sublayer in layer.sublayers) ApolloDuoPostsStopGeometryLayer(sublayer);
 }
 
-static NSArray<ApolloDuoPostsGeometry *> *ApolloDuoPostsCaptureGeometry(UIView *feed, UIView *surface) {
+static void ApolloDuoPostsStopGeometry(UIView *feed) {
+    if (feed) ApolloDuoPostsStopGeometryLayer(feed.layer);
+}
+
+// Texture rows are mostly layer-backed nodes, and some chrome is a bare
+// sublayer (a header's fade). Without this they jump to the new layout.
+static BOOL ApolloDuoGeometryTracksBareLayer(CALayer *layer) {
+    if (layer.hidden || layer.opacity < 0.01f || [layer.delegate isKindOfClass:UIView.class]) return NO;
+    Class cls = layer.class;
+    if (cls == CALayer.class || cls == CAGradientLayer.class || cls == CAShapeLayer.class) return YES;
+    return strncmp(class_getName(cls), "_AS", 3) == 0;
+}
+
+// A mask (a banner's fade) isn't a sublayer; left alone it jumps to its new size.
+static void ApolloDuoCaptureMask(CALayer *owner, NSMutableArray<ApolloDuoPostsGeometry *> *geometry) {
+    CALayer *mask = owner.mask;
+    if (!mask) return;
+    CALayer *shown = mask.presentationLayer ?: mask;
+    ApolloDuoPostsGeometry *item = [ApolloDuoPostsGeometry new];
+    item.layer = mask;
+    item.maskOwner = owner;
+    item.bounds = shown.bounds;
+    item.position = shown.position;
+    item.contentsRect = shown.contentsRect;
+    [geometry addObject:item];
+}
+
+static void ApolloDuoCaptureBareLayers(CALayer *parent, NSMutableArray<ApolloDuoPostsGeometry *> *geometry) {
+    for (CALayer *layer in parent.sublayers) {
+        if (!ApolloDuoGeometryTracksBareLayer(layer)) continue;
+        CALayer *shown = layer.presentationLayer ?: layer;
+        ApolloDuoPostsGeometry *item = [ApolloDuoPostsGeometry new];
+        item.layer = layer;
+        item.superlayer = parent;
+        item.bounds = shown.bounds;
+        item.position = shown.position;
+        item.contentsRect = shown.contentsRect;
+        [geometry addObject:item];
+        ApolloDuoCaptureMask(layer, geometry);
+        ApolloDuoCaptureBareLayers(layer, geometry);
+    }
+}
+
+static NSArray<ApolloDuoPostsGeometry *> *ApolloDuoPostsCaptureGeometryWithLayers(UIView *feed, UIView *surface,
+                                                                                  BOOL bareLayers) {
     NSMutableArray *geometry = [NSMutableArray array];
     NSMutableArray<UIView *> *views = [NSMutableArray arrayWithObject:feed];
     for (NSUInteger i = 0; i < views.count; i++) {
@@ -2236,13 +2283,23 @@ static NSArray<ApolloDuoPostsGeometry *> *ApolloDuoPostsCaptureGeometry(UIView *
         item.parent = view.superview;
         item.bounds = layer.bounds;
         item.position = layer.position;
+        item.contentsRect = layer.contentsRect;
         item.surfaceFrame = [view.superview.layer convertRect:layer.frame toLayer:surface.layer];
         [geometry addObject:item];
         // The effect's compositor owns its internal backdrop geometry. Move
         // its public surface, just as UIKit does during a window resize.
-        if (![view isKindOfClass:UIVisualEffectView.class]) [views addObjectsFromArray:view.subviews];
+        if ([view isKindOfClass:UIVisualEffectView.class]) continue;
+        [views addObjectsFromArray:view.subviews];
+        if (bareLayers) {
+            ApolloDuoCaptureMask(view.layer, geometry);
+            ApolloDuoCaptureBareLayers(view.layer, geometry);
+        }
     }
     return geometry;
+}
+
+static NSArray<ApolloDuoPostsGeometry *> *ApolloDuoPostsCaptureGeometry(UIView *feed, UIView *surface) {
+    return ApolloDuoPostsCaptureGeometryWithLayers(feed, surface, NO);
 }
 
 // A centered bar title (and trailing items) would travel half the screen as
@@ -2258,14 +2315,143 @@ static BOOL ApolloDuoGeometryRecentersBarItem(ApolloDuoPostsGeometry *item, UIVi
         && fabs(CGRectGetWidth(now) - CGRectGetWidth(item.surfaceFrame)) < 8.0;
 }
 
-static void ApolloDuoAnimateRetainedGeometry(NSArray<ApolloDuoPostsGeometry *> *geometry,
-                                             UIView *feed, UIView *surface, NSTimeInterval duration,
-                                             BOOL convertReparentedDescendants, BOOL fadeRecenteredBarItems) {
-    NSUInteger count = 0;
+// A column move's animations run on their own clock (Back button, opened post)
+// or, `scrubbed`, wait from `begin` in paused time for a finger to drive them.
+typedef struct {
+    NSTimeInterval duration;
+    BOOL scrubbed;
+    CFTimeInterval begin;
+} ApolloDuoGeometryTiming;
+
+static void ApolloDuoGeometryTime(CAAnimation *animation, ApolloDuoGeometryTiming timing) {
+    animation.duration = timing.duration;
+    if (!timing.scrubbed) return;
+    animation.beginTime = timing.begin;
+    animation.fillMode = kCAFillModeBoth;
+    animation.removedOnCompletion = NO;
+}
+
+static BOOL ApolloDuoLayerIsInside(CALayer *layer, CALayer *ancestor) {
+    NSUInteger depth = 0;
+    for (CALayer *parent = layer; parent && depth < 128; parent = parent.superlayer, depth++)
+        if (parent == ancestor) return YES;
+    return NO;
+}
+
+// Resized text draws at its new width at once, so it would rewrap as a move
+// starts. Its old drawing stays on top in a copy of the moving box and crossfades
+// into the new one; neither stretches, each held at the text's aligned edge.
+@interface ApolloDuoTextFade : NSObject
+@property(nonatomic, strong) CALayer *text;
+@property(nonatomic, weak) id node;
+@property(nonatomic, strong) CALayer *clip;
+@property(nonatomic, strong) CALayer *mask;
+@end
+@implementation ApolloDuoTextFade @end
+
+// 0 for leading text, 0.5 centered, 1 trailing.
+static CGFloat ApolloDuoTextNodeEdge(id node) {
+    if (![node respondsToSelector:@selector(attributedText)]) return 0;
+    NSAttributedString *text = ((id (*)(id, SEL))objc_msgSend)(node, @selector(attributedText));
+    if (![text isKindOfClass:NSAttributedString.class] || !text.length) return 0;
+    NSParagraphStyle *style = [text attribute:NSParagraphStyleAttributeName atIndex:0 effectiveRange:NULL];
+    return style.alignment == NSTextAlignmentCenter ? 0.5 : style.alignment == NSTextAlignmentRight ? 1 : 0;
+}
+
+static void ApolloDuoGeometryCurve(CAAnimation *animation, ApolloDuoGeometryTiming timing) {
+    ApolloDuoGeometryTime(animation, timing);
+    if (!timing.scrubbed) animation.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+}
+
+// Keeps a text layer at its new size while its box moves: its aligned edge
+// (`edge`) and top follow the box, and a mask clips it. Returns the mask.
+static CALayer *ApolloDuoPinText(CALayer *layer, CGRect fromBounds, CGPoint fromPosition, CGFloat edge,
+                                 ApolloDuoGeometryTiming timing) {
+    if (layer.mask) return nil;
+    CGRect toBounds = layer.bounds;
+    CGPoint toPosition = layer.position;
+    CGPoint anchor = layer.anchorPoint;
+    CGFloat fromMinX = fromPosition.x - CGRectGetWidth(fromBounds) * anchor.x;
+    CGFloat fromMinY = fromPosition.y - CGRectGetHeight(fromBounds) * anchor.y;
+    CABasicAnimation *move = [CABasicAnimation animationWithKeyPath:@"position"];
+    move.fromValue = [NSValue valueWithCGPoint:CGPointMake(
+        fromMinX + edge * (CGRectGetWidth(fromBounds) - CGRectGetWidth(toBounds)) + CGRectGetWidth(toBounds) * anchor.x,
+        fromMinY + CGRectGetHeight(toBounds) * anchor.y)];
+    move.toValue = [NSValue valueWithCGPoint:toPosition];
+    ApolloDuoGeometryCurve(move, timing);
+    [layer addAnimation:move forKey:@"ApolloDuoPostsGeometry"];
+    CALayer *mask = [CALayer layer];
+    mask.backgroundColor = UIColor.blackColor.CGColor;
+    mask.anchorPoint = CGPointMake(edge, 0);
+    mask.bounds = CGRectMake(0, 0, CGRectGetWidth(toBounds), CGRectGetHeight(toBounds));
+    mask.position = CGPointMake(CGRectGetMinX(toBounds) + edge * CGRectGetWidth(toBounds), CGRectGetMinY(toBounds));
+    CABasicAnimation *reveal = [CABasicAnimation animationWithKeyPath:@"bounds"];
+    reveal.fromValue = [NSValue valueWithCGRect:CGRectMake(0, 0, CGRectGetWidth(fromBounds), CGRectGetHeight(fromBounds))];
+    reveal.toValue = [NSValue valueWithCGRect:mask.bounds];
+    ApolloDuoGeometryCurve(reveal, timing);
+    [mask addAnimation:reveal forKey:@"ApolloDuoPostsGeometry"];
+    layer.mask = mask;
+    return mask;
+}
+
+static CGFloat ApolloDuoLabelEdge(UILabel *label) {
+    return label.textAlignment == NSTextAlignmentCenter ? 0.5 : label.textAlignment == NSTextAlignmentRight ? 1 : 0;
+}
+
+static BOOL ApolloDuoAddGeometryResize(CALayer *layer, CGRect bounds, CGPoint position, CGRect contentsRect,
+                                       ApolloDuoGeometryTiming timing) {
+    NSMutableArray<CAAnimation *> *animations = [NSMutableArray array];
+    // A width-derived crop would otherwise jump while the box moves.
+    if (!CGRectIsEmpty(contentsRect) && !CGRectEqualToRect(contentsRect, layer.contentsRect)) {
+        CABasicAnimation *crop = [CABasicAnimation animationWithKeyPath:@"contentsRect"];
+        crop.fromValue = [NSValue valueWithCGRect:contentsRect];
+        crop.toValue = [NSValue valueWithCGRect:layer.contentsRect];
+        crop.duration = timing.duration;
+        [animations addObject:crop];
+    }
+    if (!CGRectEqualToRect(bounds, layer.bounds)) {
+        CABasicAnimation *resize = [CABasicAnimation animationWithKeyPath:@"bounds"];
+        resize.fromValue = [NSValue valueWithCGRect:bounds];
+        resize.toValue = [NSValue valueWithCGRect:layer.bounds];
+        resize.duration = timing.duration;
+        [animations addObject:resize];
+    }
+    if (!CGPointEqualToPoint(position, layer.position)) {
+        CABasicAnimation *move = [CABasicAnimation animationWithKeyPath:@"position"];
+        move.fromValue = [NSValue valueWithCGPoint:position];
+        move.toValue = [NSValue valueWithCGPoint:layer.position];
+        move.duration = timing.duration;
+        [animations addObject:move];
+    }
+    if (!animations.count) return NO;
+    CAAnimationGroup *group = [CAAnimationGroup animation];
+    group.animations = animations;
+    // A scrub stays linear, so the feed's edge stays on the thread's.
+    if (!timing.scrubbed) group.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+    ApolloDuoGeometryTime(group, timing);
+    [layer addAnimation:group forKey:@"ApolloDuoPostsGeometry"];
+    return YES;
+}
+
+// `pins`: resized labels keep their new size (ApolloDuoPinText) and are collected.
+static void ApolloDuoAnimateGeometry(NSArray<ApolloDuoPostsGeometry *> *geometry, UIView *feed, UIView *surface,
+                                     ApolloDuoGeometryTiming timing, BOOL convertReparentedDescendants,
+                                     BOOL fadeRecenteredBarItems, UIView *fadeHost, NSMutableArray<ApolloDuoTextFade *> *pins) {
+    NSUInteger count = 0, layers = 0;
     NSMutableArray<UIView *> *faded = [NSMutableArray array];
     for (ApolloDuoPostsGeometry *item in geometry) {
+        CALayer *bare = item.layer;
+        if (bare || !item.view) {
+            CALayer *owner = item.maskOwner;
+            if (!bare || (owner ? owner.mask != bare : bare.superlayer != item.superlayer)
+                || !ApolloDuoLayerIsInside(owner ?: bare, feed.layer)) continue;
+            BOOL insideFaded = NO;
+            for (UIView *ancestor in faded) if (ApolloDuoLayerIsInside(owner ?: bare, ancestor.layer)) insideFaded = YES;
+            if (!insideFaded && ApolloDuoAddGeometryResize(bare, item.bounds, item.position, item.contentsRect, timing)) layers++;
+            continue;
+        }
         UIView *view = item.view;
-        if (!view || (view != feed && ![view isDescendantOfView:feed])) continue;
+        if (view != feed && ![view isDescendantOfView:feed]) continue;
         CALayer *layer = view.layer;
         BOOL insideFaded = NO;
         for (UIView *ancestor in faded) if ([view isDescendantOfView:ancestor]) insideFaded = YES;
@@ -2275,23 +2461,34 @@ static void ApolloDuoAnimateRetainedGeometry(NSArray<ApolloDuoPostsGeometry *> *
             // item fades in at its destination, so the bar is never empty.
             UIView *old = [view snapshotViewAfterScreenUpdates:NO];
             if (old) {
-                old.frame = item.surfaceFrame;
+                old.frame = [fadeHost convertRect:item.surfaceFrame fromView:surface];
                 old.userInteractionEnabled = NO;
-                [surface addSubview:old];
-                [UIView animateWithDuration:duration * 0.6 delay:0 options:UIViewAnimationOptionCurveEaseOut
-                                 animations:^{ old.alpha = 0; }
-                                 completion:^(__unused BOOL finished) { [old removeFromSuperview]; }];
+                [fadeHost addSubview:old];
+                if (timing.scrubbed) {
+                    CABasicAnimation *leave = [CABasicAnimation animationWithKeyPath:@"opacity"];
+                    leave.fromValue = @1;
+                    leave.toValue = @0;
+                    ApolloDuoGeometryTime(leave, timing);
+                    leave.duration = timing.duration * 0.6;
+                    leave.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
+                    [old.layer addAnimation:leave forKey:@"ApolloDuoPostsGeometry"];
+                } else {
+                    [UIView animateWithDuration:timing.duration * 0.6 delay:0 options:UIViewAnimationOptionCurveEaseOut
+                                     animations:^{ old.alpha = 0; }
+                                     completion:^(__unused BOOL finished) { [old removeFromSuperview]; }];
+                }
             }
             CAKeyframeAnimation *fade = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
             fade.values = @[@0, @0, @(layer.opacity)];
             fade.keyTimes = @[@0, @0.2, @1];
-            fade.duration = duration;
+            ApolloDuoGeometryTime(fade, timing);
             [layer addAnimation:fade forKey:@"ApolloDuoPostsGeometry"];
             [faded addObject:view];
             count++;
             continue;
         }
         CGPoint position = item.position;
+        CGRect fromBounds = item.bounds;
         if (view == feed || item.parent != view.superview) {
             // A container can keep its direct wrapper while its ancestors
             // move between column coordinate spaces, so convert the root
@@ -2302,30 +2499,244 @@ static void ApolloDuoAnimateRetainedGeometry(NSArray<ApolloDuoPostsGeometry *> *
             position = CGPointMake(CGRectGetMinX(frame) + CGRectGetWidth(frame) * layer.anchorPoint.x,
                                    CGRectGetMinY(frame) + CGRectGetHeight(frame) * layer.anchorPoint.y);
         }
-        NSMutableArray<CAAnimation *> *animations = [NSMutableArray array];
-        if (!CGRectEqualToRect(item.bounds, layer.bounds)) {
-            CABasicAnimation *bounds = [CABasicAnimation animationWithKeyPath:@"bounds"];
-            bounds.fromValue = [NSValue valueWithCGRect:item.bounds];
-            bounds.toValue = [NSValue valueWithCGRect:layer.bounds];
-            bounds.duration = duration;
-            [animations addObject:bounds];
+        // A column width never changes the bar's height: keep bar items (even the
+        // re-hosted title, whose new slot sits differently) at their height.
+        BOOL inBar = NO;
+        for (UIView *ancestor = view.superview; ancestor && ancestor != feed; ancestor = ancestor.superview) {
+            if ([ancestor isKindOfClass:UINavigationBar.class]) { inBar = YES; break; }
         }
-        if (!CGPointEqualToPoint(position, layer.position)) {
-            CABasicAnimation *move = [CABasicAnimation animationWithKeyPath:@"position"];
-            move.fromValue = [NSValue valueWithCGPoint:position];
-            move.toValue = [NSValue valueWithCGPoint:layer.position];
-            move.duration = duration;
-            [animations addObject:move];
+        if (inBar) {
+            position.y = layer.position.y;
+            fromBounds.size.height = layer.bounds.size.height;
+            fromBounds.origin.y = layer.bounds.origin.y;
         }
-        if (!animations.count) continue;
-        CAAnimationGroup *resize = [CAAnimationGroup animation];
-        resize.animations = animations;
-        resize.duration = duration;
-        resize.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-        [layer addAnimation:resize forKey:@"ApolloDuoPostsGeometry"];
-        count++;
+        if (pins && view != feed && [view isKindOfClass:UILabel.class]
+            && !CGSizeEqualToSize(fromBounds.size, layer.bounds.size)) {
+            CALayer *mask = ApolloDuoPinText(layer, fromBounds, position, ApolloDuoLabelEdge((UILabel *)view), timing);
+            if (mask) {
+                ApolloDuoTextFade *pin = [ApolloDuoTextFade new];
+                pin.text = layer;
+                pin.mask = mask;
+                [pins addObject:pin];
+                count++;
+                continue;
+            }
+        }
+        if (ApolloDuoAddGeometryResize(layer, fromBounds, position, item.contentsRect, timing)) count++;
     }
-    ApolloLog(@"[DuoSplit] animating %lu retained surfaces", (unsigned long)count);
+    ApolloLog(@"[DuoSplit] animating %lu retained surfaces and %lu layers%@", (unsigned long)count,
+              (unsigned long)layers, timing.scrubbed ? @" under the finger" : @"");
+}
+
+static void ApolloDuoAnimateRetainedGeometry(NSArray<ApolloDuoPostsGeometry *> *geometry,
+                                             UIView *feed, UIView *surface, NSTimeInterval duration,
+                                             BOOL convertReparentedDescendants, BOOL fadeRecenteredBarItems) {
+    ApolloDuoGeometryTiming timing = {duration, NO, 0};
+    ApolloDuoAnimateGeometry(geometry, feed, surface, timing, convertReparentedDescendants, fadeRecenteredBarItems, surface, nil);
+}
+
+static void ApolloDuoAddTextFade(CALayer *layer, NSArray<NSNumber *> *values, NSArray<NSNumber *> *times,
+                                 NSString *key, ApolloDuoGeometryTiming timing) {
+    CAKeyframeAnimation *fade = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
+    fade.values = values;
+    fade.keyTimes = times;
+    ApolloDuoGeometryTime(fade, timing);
+    [layer addAnimation:fade forKey:key];
+}
+
+// Texture can consider a drawing current after its bounds changed back.
+static void ApolloDuoRedrawTextNode(id node) {
+    SEL drawNow = @selector(recursivelyEnsureDisplaySynchronously:);
+    if (![node respondsToSelector:drawNow]) return;
+    if ([node respondsToSelector:@selector(setNeedsDisplay)]) ((void (*)(id, SEL))objc_msgSend)(node, @selector(setNeedsDisplay));
+    ((void (*)(id, SEL, BOOL))objc_msgSend)(node, drawNow, YES);
+}
+
+static BOOL ApolloDuoIsImage(id contents) {
+    return contents && CFGetTypeID((__bridge CFTypeRef)contents) == CGImageGetTypeID();
+}
+
+// Text drawings from before a column change (Texture may redraw during it).
+static NSMapTable<CALayer *, id> *ApolloDuoCaptureTextDrawings(NSArray<UIView *> *roots) {
+    NSMutableArray<CALayer *> *text = [NSMutableArray array];
+    for (UIView *root in roots) ApolloDuoCollectTextLayers(root.layer, text);
+    NSMapTable<CALayer *, id> *drawings = [NSMapTable weakToStrongObjectsMapTable];
+    for (CALayer *layer in text) if (ApolloDuoIsImage(layer.contents)) [drawings setObject:layer.contents forKey:layer];
+    return drawings;
+}
+
+static NSArray<ApolloDuoTextFade *> *ApolloDuoCrossfadeTextLayout(NSArray<UIView *> *roots, NSMapTable<CALayer *, id> *drawings,
+                                                                  ApolloDuoGeometryTiming timing) {
+    NSMutableArray<CALayer *> *text = [NSMutableArray array];
+    for (UIView *root in roots) ApolloDuoCollectTextLayers(root.layer, text);
+    NSMutableArray<ApolloDuoTextFade *> *fades = [NSMutableArray array];
+    NSUInteger drawn = 0;
+    // Texture leaves its layers' contentsScale at 1 and draws at the screen's.
+    CGFloat scale = MAX((CGFloat)1, roots.firstObject.traitCollection.displayScale);
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    for (CALayer *layer in text) {
+        CGFloat width = CGRectGetWidth(layer.bounds) * scale;
+        id old = [drawings objectForKey:layer];
+        id node = ((id (*)(id, SEL))objc_msgSend)(layer, @selector(asyncdisplaykit_node));
+        // Draw now: Texture's background redraw would show the old one stretched.
+        id current = layer.contents;
+        if (ApolloDuoIsImage(current) && fabs((CGFloat)CGImageGetWidth((__bridge CGImageRef)current) - width) >= 2) {
+            ApolloDuoRedrawTextNode(node);
+            drawn++;
+        }
+        if (!ApolloDuoIsImage(old) || fabs((CGFloat)CGImageGetWidth((__bridge CGImageRef)old) - width) < 2) continue;
+        CAAnimationGroup *geometry = (id)[layer animationForKey:@"ApolloDuoPostsGeometry"];
+        if (![geometry isKindOfClass:CAAnimationGroup.class] || !layer.superlayer || layer.mask) continue;
+        CGRect fromBounds = layer.bounds;
+        CGPoint fromPosition = layer.position;
+        for (CAAnimation *part in geometry.animations) {
+            if (![part isKindOfClass:CABasicAnimation.class]) continue;
+            CABasicAnimation *basic = (CABasicAnimation *)part;
+            if ([basic.keyPath isEqualToString:@"bounds"]) fromBounds = [basic.fromValue CGRectValue];
+            else if ([basic.keyPath isEqualToString:@"position"]) fromPosition = [basic.fromValue CGPointValue];
+        }
+        CGRect toBounds = layer.bounds;
+        CGPoint toPosition = layer.position;
+        CGPoint anchor = layer.anchorPoint;
+        CGFloat edge = ApolloDuoTextNodeEdge(node);
+        CALayer *mask = ApolloDuoPinText(layer, fromBounds, fromPosition, edge, timing);
+        if (!mask) continue;
+        // The old drawing, in a copy of the moving box.
+        CALayer *clip = [CALayer layer];
+        clip.masksToBounds = YES;
+        clip.anchorPoint = anchor;
+        clip.bounds = toBounds;
+        clip.position = toPosition;
+        clip.zPosition = layer.zPosition;
+        [clip addAnimation:geometry forKey:@"ApolloDuoPostsGeometry"];
+        CALayer *ghost = [CALayer layer];
+        ghost.contents = old;
+        ghost.contentsScale = scale;
+        ghost.anchorPoint = CGPointMake(edge, 0);
+        ghost.bounds = CGRectMake(0, 0, CGRectGetWidth(fromBounds), CGRectGetHeight(fromBounds));
+        ghost.position = CGPointMake(CGRectGetMinX(toBounds) + edge * CGRectGetWidth(toBounds), CGRectGetMinY(toBounds));
+        if (edge > 0) {
+            CABasicAnimation *follow = [CABasicAnimation animationWithKeyPath:@"position"];
+            follow.fromValue = [NSValue valueWithCGPoint:CGPointMake(CGRectGetMinX(fromBounds) + edge * CGRectGetWidth(fromBounds),
+                                                                    CGRectGetMinY(fromBounds))];
+            follow.toValue = [NSValue valueWithCGPoint:ghost.position];
+            ApolloDuoGeometryCurve(follow, timing);
+            [ghost addAnimation:follow forKey:@"ApolloDuoPostsGeometry"];
+        }
+        [clip addSublayer:ghost];
+        [layer.superlayer insertSublayer:clip above:layer];
+        // Match the text's opacity (a read post's dimming).
+        ghost.opacity = layer.opacity;
+        ApolloDuoAddTextFade(ghost, @[@(layer.opacity), @(layer.opacity), @0, @0], @[@0, @0.2, @0.6, @1],
+                             @"ApolloDuoPostsTextFade", timing);
+        ApolloDuoAddTextFade(layer, @[@0, @0, @(layer.opacity), @(layer.opacity)], @[@0, @0.4, @0.8, @1],
+                             @"ApolloDuoPostsTextFade", timing);
+        ApolloDuoTextFade *fade = [ApolloDuoTextFade new];
+        fade.text = layer;
+        fade.node = node;
+        fade.clip = clip;
+        fade.mask = mask;
+        [fades addObject:fade];
+    }
+    [CATransaction commit];
+    if (drawn) ApolloLog(@"[DuoSplit] redrew %lu of %lu text layers, crossfading %lu",
+                         (unsigned long)drawn, (unsigned long)text.count, (unsigned long)fades.count);
+    return fades;
+}
+
+// `redraw`: the text is back at its old width (a cancelled drag).
+static void ApolloDuoEndTextCrossfade(NSArray<ApolloDuoTextFade *> *fades, BOOL redraw) {
+    if (!fades.count) return;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    for (ApolloDuoTextFade *fade in fades) {
+        if (redraw) ApolloDuoRedrawTextNode(fade.node);
+        [fade.clip removeFromSuperlayer];
+        [fade.text removeAnimationForKey:@"ApolloDuoPostsTextFade"];
+        if (fade.text.mask == fade.mask) fade.text.mask = nil;
+    }
+    [CATransaction commit];
+}
+
+// UIKit settles some of the bar (its scroll edge) a pass after the move is set
+// up. Re-aim moving layers whose geometry changed since, keeping start and timing.
+static void ApolloDuoRetargetGeometry(UIView *feed) {
+    if (!feed) return;
+    NSMutableArray<CALayer *> *layers = [NSMutableArray arrayWithObject:feed.layer];
+    NSUInteger retargeted = 0;
+    for (NSUInteger i = 0; i < layers.count; i++) {
+        CALayer *layer = layers[i];
+        if (layer.sublayers) [layers addObjectsFromArray:layer.sublayers];
+        CAAnimationGroup *group = (CAAnimationGroup *)[layer animationForKey:@"ApolloDuoPostsGeometry"];
+        if (![group isKindOfClass:CAAnimationGroup.class]) continue;
+        BOOL changed = NO;
+        NSMutableArray<CAAnimation *> *parts = [NSMutableArray array];
+        for (CAAnimation *part in group.animations) {
+            CABasicAnimation *basic = [part isKindOfClass:CABasicAnimation.class] ? [(CABasicAnimation *)part copy] : nil;
+            if ([basic.keyPath isEqualToString:@"bounds"] && !CGRectEqualToRect([basic.toValue CGRectValue], layer.bounds)) {
+                basic.toValue = [NSValue valueWithCGRect:layer.bounds];
+                changed = YES;
+            } else if ([basic.keyPath isEqualToString:@"position"] && !CGPointEqualToPoint([basic.toValue CGPointValue], layer.position)) {
+                basic.toValue = [NSValue valueWithCGPoint:layer.position];
+                changed = YES;
+            } else if ([basic.keyPath isEqualToString:@"contentsRect"]
+                       && !CGRectEqualToRect([basic.toValue CGRectValue], layer.contentsRect)) {
+                basic.toValue = [NSValue valueWithCGRect:layer.contentsRect];
+                changed = YES;
+            }
+            [parts addObject:basic ?: part];
+        }
+        if (!changed) continue;
+        CAAnimationGroup *aimed = [group copy];
+        aimed.animations = parts;
+        [layer addAnimation:aimed forKey:@"ApolloDuoPostsGeometry"];
+        retargeted++;
+    }
+    if (retargeted) ApolloLog(@"[DuoSplit] re-aimed %lu moving layers at geometry settled after the move began", (unsigned long)retargeted);
+}
+
+static void ApolloDuoScheduleRetarget(UIView *feed, BOOL (^stillMoving)(void)) {
+    __weak UIView *weakFeed = feed;
+    for (NSNumber *delay in @[@0.02, @0.08, @0.2]) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (stillMoving()) ApolloDuoRetargetGeometry(weakFeed);
+        });
+    }
+}
+
+// Fades in bar items only the new layout has (the feed's actions beside a
+// thread). A container that took over a moving item (the re-hosted title) stays.
+static void ApolloDuoFadeInNewBarItems(UINavigationBar *bar, NSArray<ApolloDuoPostsGeometry *> *geometry,
+                                       ApolloDuoGeometryTiming timing) {
+    if (!bar) return;
+    NSHashTable<UIView *> *captured = [NSHashTable weakObjectsHashTable];
+    for (ApolloDuoPostsGeometry *item in geometry) if (item.view) [captured addObject:item.view];
+    NSMutableArray<UIView *> *views = [bar.subviews mutableCopy];
+    NSUInteger faded = 0;
+    for (NSUInteger i = 0; i < views.count && i < 600; i++) {
+        UIView *view = views[i];
+        if (view.hidden || view.alpha < 0.01) continue;
+        if ([captured containsObject:view]) {
+            [views addObjectsFromArray:view.subviews];
+            continue;
+        }
+        BOOL hostsMovingItem = NO;
+        for (UIView *moving in captured) {
+            if ([moving isDescendantOfView:view]) { hostsMovingItem = YES; break; }
+        }
+        if (hostsMovingItem) {
+            [views addObjectsFromArray:view.subviews];
+            continue;
+        }
+        CAKeyframeAnimation *fade = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
+        fade.values = @[@0, @0, @(view.layer.opacity)];
+        fade.keyTimes = @[@0, @0.3, @1];
+        ApolloDuoGeometryTime(fade, timing);
+        [view.layer addAnimation:fade forKey:@"ApolloDuoPostsGeometry"];
+        faded++;
+    }
+    if (faded) ApolloLog(@"[DuoSplit] fading in %lu new bar item(s)", (unsigned long)faded);
 }
 
 static void ApolloDuoPostsAnimateGeometry(NSArray<ApolloDuoPostsGeometry *> *geometry,
@@ -2582,6 +2993,7 @@ static void ApolloDuoCoverBarHandoff(ApolloDuoSplitState *state, NSTimeInterval 
 static void ApolloDuoPostsToggleSplit(ApolloDuoSplitState *state) {
     if (!state.feed || state.changing || state.postsTogglingSplit
         || state.feed.transitionCoordinator || state.secondary.transitionCoordinator) return;
+    ApolloDuoColumnScrubFinishNow(state.host);
     UIView *surface = state.host.view;
     [surface layoutIfNeeded];
     BOOL hasComments = state.secondary.viewControllers.count > 1 || state.feed.viewControllers.count > 1;
@@ -2728,11 +3140,64 @@ static void ApolloDuoRestoreFeedAnchor(UITableView *table, ApolloDuoFeedAnchor *
     [table setContentOffset:CGPointMake(table.contentOffset.x, offset) animated:NO];
 }
 
-// `dragOffset` > 0: a Back drag has the thread pane that far right of its
-// place (ApolloDuoSplitDragThread). The close then picks up from the screen
-// as the finger left it, carrying `dragVelocity` into its spring.
-static void ApolloDuoPostsSetDetailPagesFromDrag(ApolloDuoSplitState *state, NSArray<UIViewController *> *pages,
-                                                 BOOL animated, CGFloat dragOffset, CGFloat dragVelocity) {
+// UIKit applies a non-animated setViewControllers: on the navigation view's next
+// layout. Closing the thread takes its pane off screen first (the column hides,
+// or a parked thread leaves the window), so the closed pages would never get
+// viewWillDisappear:/viewDidDisappear:, and a forward swipe would bring the
+// thread back with its Find bar collapsed. Run it now, while it is on screen.
+static void ApolloDuoRunNavigationChangeNow(UINavigationController *nav) {
+    UIView *view = nav.viewIfLoaded;
+    if (view.window) [view layoutIfNeeded];
+}
+
+// The thread pane at `pane` (surface coordinates), without overlays.
+static UIView *ApolloDuoPostsPanePicture(ApolloDuoSplitState *state, CGRect pane) {
+    UIView *detail = state.secondary.viewIfLoaded;
+    if (!detail.window || CGRectIsNull(pane) || CGRectIsEmpty(pane)) return nil;
+    CGRect rect = [detail convertRect:pane fromView:state.host.view];
+    return [detail resizableSnapshotViewFromRect:rect afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero];
+}
+
+// Puts `stack` in the thread pane and lays out both columns without animation;
+// callers animate from geometry captured before. Remembers `closedPages`.
+static void ApolloDuoPostsApplyDetailStack(ApolloDuoSplitState *state, NSArray<UIViewController *> *stack,
+                                           NSArray<UIViewController *> *closedPages, CGRect closedPane,
+                                           ApolloDuoFeedAnchor *feedAnchor) {
+    UIView *surface = state.host.view;
+    [UIView performWithoutAnimation:^{
+        if (![state.secondary.viewControllers isEqualToArray:stack]) {
+            state.changing = YES;
+            [state.secondary setViewControllers:stack animated:NO];
+            ApolloDuoRunNavigationChangeNow(state.secondary);
+            state.changing = NO;
+        }
+        if (closedPages) ApolloDuoPostsRememberClosedThread(state, closedPages, closedPane);
+        ApolloDuoPostsSyncColumns(state);
+        [surface layoutIfNeeded];
+        ApolloNativeFeedSearchFinishColumnMove(state.feed.topViewController);
+        // Commit Texture's row measurement so rows resize with the columns.
+        UITableView *table = ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded);
+        ApolloDuoMediaPrepareTableForTransition(table);
+        SEL commit = NSSelectorFromString(@"waitUntilAllUpdatesAreCommitted");
+        if ([table respondsToSelector:commit]) ((void (*)(id, SEL))objc_msgSend)(table, commit);
+        [table layoutIfNeeded];
+        // Anchor before endpoints are read, so the reader's place stays put.
+        if (feedAnchor) {
+            ApolloDuoRestoreFeedAnchor(table, feedAnchor);
+            [table layoutIfNeeded];
+        }
+        // Settle the title presentation's pending re-host now, or the title jumps
+        // after the animation is set up. Later bar changes are re-aimed instead.
+        UINavigationBar *bar = state.feed.navigationBar;
+        [bar layoutIfNeeded];
+        ApolloNavigationTitlePresentationSettle(bar);
+        [bar layoutIfNeeded];
+        [surface layoutIfNeeded];
+    }];
+}
+
+static void ApolloDuoPostsSetDetailPages(ApolloDuoSplitState *state, NSArray<UIViewController *> *pages, BOOL animated) {
+    ApolloDuoColumnScrubFinishNow(state.host);
     if (pages.count) ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventThreadOpened, 0.0);
     UIView *surface = state.host.view;
     BOOL entering = pages.count > 0;
@@ -2742,31 +3207,11 @@ static void ApolloDuoPostsSetDetailPagesFromDrag(ApolloDuoSplitState *state, NSA
         ApolloDuoPostsStopGeometry(state.secondary.viewIfLoaded);
     }
     UIViewController *backstop = state.secondary.viewControllers.firstObject;
-    NSArray<UIViewController *> *closedPages = ApolloDuoClosedThreadPages(state.secondary.viewControllers);
-    // The pane's picture for a later forward drag: from the start of a Back
-    // drag (the pane is shifted by now), else taken here before it closes.
-    UIView *closedPicture = nil;
-    CGRect closedPictureFrame = CGRectNull;
-    if (!pages.count && surface.window) {
-        [surface layoutIfNeeded];
-        closedPictureFrame = ApolloDuoPostsDetailPane(state);
-        closedPicture = dragOffset > 0 ? state.host.threadDragPicture
-            : (!CGRectIsNull(closedPictureFrame) && !CGRectIsEmpty(closedPictureFrame)
-               ? [surface resizableSnapshotViewFromRect:closedPictureFrame afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero] : nil);
-    }
-    state.host.threadDragPicture = nil;
+    NSArray<UIViewController *> *closedPages = entering ? nil : ApolloDuoClosedThreadPages(state.secondary.viewControllers);
     NSArray<UIViewController *> *stack = [@[backstop] arrayByAddingObjectsFromArray:pages];
     [state.host.postsTransitionSnapshot removeFromSuperview];
     state.host.postsTransitionSnapshot = nil;
     [state.secondary.view.layer removeAnimationForKey:@"ApolloDuoSlide"];
-    // The snapshot below is taken from the last rendered frame, so it already
-    // shows the dragged pane; the live pane goes back to its place under it.
-    dragOffset = animate ? MAX(0, dragOffset) : 0;
-    if (!dragOffset) {
-        ApolloDuoSetThreadDragOffset(state.secondary.viewIfLoaded, 0);
-        ApolloDuoRemoveThreadDragFiller(state.host.threadDragFiller, 0);
-        state.host.threadDragFiller = nil;
-    }
     if (entering && state.host.postsShowingDetail) {
         [surface layoutIfNeeded];
         [state.secondary setViewControllers:stack animated:animate];
@@ -2775,76 +3220,59 @@ static void ApolloDuoPostsSetDetailPagesFromDrag(ApolloDuoSplitState *state, NSA
 
     [surface layoutIfNeeded];
     NSArray<ApolloDuoPostsGeometry *> *feedGeometry = animate
-        ? ApolloDuoPostsCaptureGeometry(state.feed.view, surface) : nil;
+        ? ApolloDuoPostsCaptureGeometryWithLayers(state.feed.view, surface, YES) : nil;
+    NSMapTable<CALayer *, id> *feedText = animate ? ApolloDuoCaptureTextDrawings(@[state.feed.view]) : nil;
     CGRect pane = !entering ? ApolloDuoPostsDetailPane(state) : CGRectNull;
-    // A dragged thread sits dragOffset right of the pane, the feed's stretched
-    // edge filling the gap; take the thread alone, so the filler can fade
-    // over the feed as it widens beneath.
-    CGRect shot = dragOffset > 0 && !CGRectIsNull(pane)
-        ? CGRectMake(CGRectGetMinX(pane) + dragOffset, CGRectGetMinY(pane),
-                     MAX(0, CGRectGetWidth(pane) - dragOffset), CGRectGetHeight(pane)) : pane;
-    UIView *snapshot = !entering && animate && !CGRectIsNull(shot) && !CGRectIsEmpty(shot)
-        ? [surface resizableSnapshotViewFromRect:shot afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero] : nil;
+    UIView *snapshot = !entering && animate ? ApolloDuoPostsPanePicture(state, pane) : nil;
     if (snapshot) {
-        snapshot.frame = shot;
+        snapshot.frame = pane;
         snapshot.userInteractionEnabled = NO;
         [surface insertSubview:snapshot belowSubview:state.host.listDismiss];
         state.host.postsTransitionSnapshot = snapshot;
     }
-    ApolloDuoSetThreadDragOffset(state.secondary.view, 0);
+    ApolloDuoSetThreadDragOffset(state.secondary.viewIfLoaded, 0);
     ApolloDuoPostsStopGeometry(state.feed.viewIfLoaded);
     ApolloDuoPostsStopGeometry(state.secondary.viewIfLoaded);
     ApolloDuoFeedAnchor *feedAnchor = ApolloDuoCaptureFeedAnchor(
         ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded));
-    void (^updateColumns)(void) = ^{
-        state.changing = YES;
-        [state.secondary setViewControllers:stack animated:NO];
-        state.changing = NO;
-        // Off the pane now: what a forward swipe brings back.
-        if (!entering) ApolloDuoPostsRememberClosedThread(state, closedPages, closedPicture, closedPictureFrame);
-        ApolloDuoPostsSyncColumns(state);
-        [surface layoutIfNeeded];
-        ApolloNativeFeedSearchFinishColumnMove(state.feed.topViewController);
-        // Texture schedules its row geometry separately from UIKit's column
-        // layout. Commit the existing measurement before taking endpoints so
-        // cell/media widths participate in the same resize as their live nav.
-        UITableView *table = ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded);
-        ApolloDuoMediaPrepareTableForTransition(table);
-        SEL commit = NSSelectorFromString(@"waitUntilAllUpdatesAreCommitted");
-        if ([table respondsToSelector:commit]) ((void (*)(id, SEL))objc_msgSend)(table, commit);
-        [table layoutIfNeeded];
-        // Anchor before the geometry replay reads its endpoints, so rows
-        // glide to where the reader's place stays put instead of jumping.
-        if (feedAnchor) {
-            ApolloDuoRestoreFeedAnchor(table, feedAnchor);
-            [table layoutIfNeeded];
-        }
-    };
     if (!animate) {
-        [UIView performWithoutAnimation:updateColumns];
+        ApolloDuoPostsApplyDetailStack(state, stack, closedPages, pane, feedAnchor);
         return;
     }
-    // Finish containment with UIKit animation disabled. Running this inside
-    // a UIView animation also animates UIKit's column wrappers, which moves
-    // the whole feed a second time on top of its explicit geometry replay.
-    // Model geometry remains UIKit-owned; only presentation endpoints below
-    // animate from the captured full-width/half-width live view hierarchy.
-    [UIView performWithoutAnimation:updateColumns];
+    // The divider stays hidden until the columns arrive.
     __weak ApolloDuoSplitHost *weakHost = state.host;
+    NSUInteger slide = ++state.host.columnSlideGeneration;
+    state.host.columnsSliding = YES;
+    // Containment runs with UIKit animation off, or UIKit's column wrappers move
+    // the feed a second time; only the captured geometry animates.
+    ApolloDuoPostsApplyDetailStack(state, stack, closedPages, pane, feedAnchor);
+    __block NSArray<ApolloDuoTextFade *> *textFades = nil;
     [CATransaction begin];
-    [CATransaction setCompletionBlock:^{ ApolloDuoSplitScheduleUpdate(); }];
-    ApolloDuoPostsAnimateGeometry(feedGeometry, state.feed.view, surface, 0.32);
-    ApolloDuoHoldTextLayout(@[state.feed.view]);
+    [CATransaction setCompletionBlock:^{
+        ApolloDuoEndTextCrossfade(textFades, NO);
+        ApolloDuoSplitHost *strongHost = weakHost;
+        if (strongHost && strongHost.columnSlideGeneration == slide) {
+            strongHost.columnsSliding = NO;
+            ApolloDuoUpdateDivider(strongHost);
+        }
+        ApolloDuoSplitScheduleUpdate();
+    }];
+    ApolloDuoGeometryTiming slideTiming = {0.32, NO, 0};
+    NSMutableArray<ApolloDuoTextFade *> *pins = [NSMutableArray array];
+    // Bar items slide with their column, as under the finger.
+    ApolloDuoAnimateGeometry(feedGeometry, state.feed.view, surface, slideTiming, YES, NO, surface, pins);
+    ApolloDuoFadeInNewBarItems(state.feed.navigationBar, feedGeometry, slideTiming);
+    [pins addObjectsFromArray:ApolloDuoCrossfadeTextLayout(@[state.feed.view], feedText, slideTiming)];
+    textFades = pins;
+    ApolloDuoScheduleRetarget(state.feed.view, ^BOOL {
+        return weakHost.columnsSliding && weakHost.columnSlideGeneration == slide;
+    });
     if (entering) {
         // Use the live navigation surface so async comment/media updates
         // remain visible throughout the first push.
         CGRect incomingPane = ApolloDuoPostsDetailPane(state);
         CGFloat travel = CGRectGetMaxX(surface.bounds) - CGRectGetMinX(incomingPane);
-        // A forward drag already brought the thread dragOffset short of its
-        // place; finish on the drawer's spring from the finger's speed.
-        if (!CGRectIsNull(incomingPane) && travel > 0 && dragOffset > 0)
-            ApolloDuoSlideDrawer(state.secondary.view, MIN(dragOffset, travel), 0, dragVelocity, YES, nil);
-        else if (!CGRectIsNull(incomingPane) && travel > 0)
+        if (!CGRectIsNull(incomingPane) && travel > 0)
             ApolloDuoSlideView(state.secondary.view, travel, 0, 0.32, nil);
     } else if (snapshot) {
         CGFloat travel = CGRectGetMaxX(surface.bounds) - CGRectGetMinX(pane);
@@ -2853,28 +3281,341 @@ static void ApolloDuoPostsSetDetailPagesFromDrag(ApolloDuoSplitState *state, NSA
             if (weakHost.postsTransitionSnapshot == snapshot) weakHost.postsTransitionSnapshot = nil;
             ApolloDuoSplitScheduleUpdate();
         };
-        // A dragged thread is already dragOffset along; the rest of the way
-        // rides the drawer's spring from the finger's speed. Clean up from a
-        // transaction completion, which also runs when a fold or the app
-        // leaving removes the slide early; the slide's own completion runs
-        // only for a finished one and would leave the snapshot over the feed.
+        // A transaction completion also runs when a fold or backgrounding cuts the
+        // slide short, so the snapshot never stays over the feed.
         [CATransaction begin];
         [CATransaction setCompletionBlock:finished];
-        if (dragOffset > 0) ApolloDuoSlideDrawer(snapshot, 0, MAX(0, travel - dragOffset), dragVelocity, YES, nil);
-        else ApolloDuoSlideView(snapshot, 0, travel, 0.32, nil);
+        ApolloDuoSlideView(snapshot, 0, travel, 0.32, nil);
         [CATransaction commit];
-        ApolloDuoRemoveThreadDragFiller(state.host.threadDragFiller, 0.32);
-        state.host.threadDragFiller = nil;
     }
     [CATransaction commit];
 }
 
-static void ApolloDuoPostsSetDetailPages(ApolloDuoSplitState *state, NSArray<UIViewController *> *pages, BOOL animated) {
-    ApolloDuoPostsSetDetailPagesFromDrag(state, pages, animated, 0, 0);
-}
-
 static void ApolloDuoPostsSetDetail(ApolloDuoSplitState *state, UIViewController *page, BOOL animated) {
     ApolloDuoPostsSetDetailPages(state, page ? @[page] : @[], animated);
+}
+
+#pragma mark - Column drags
+
+// Back and forward drags move both columns with the finger. The columns change
+// as the drag begins and the feed's geometry animations wait in paused time for
+// the finger to scrub. The thread rides along (its picture when closing, the
+// live pane when opening), and a release springs to either end. The drags live
+// on the split's view, so a pane leaving the window doesn't cancel them.
+static const CFTimeInterval kApolloDuoScrubBegin = 1.0;
+static const CFTimeInterval kApolloDuoScrubLength = 1.0;
+
+@interface ApolloDuoColumnScrub : NSObject
+@property(nonatomic, weak) ApolloDuoSplitState *state;
+@property(nonatomic, weak) ApolloDuoSplitHost *host;
+@property(nonatomic, weak) UIView *feedView;
+@property(nonatomic) BOOL opening;
+@property(nonatomic) CGFloat travel;
+@property(nonatomic) CGFloat progress;
+@property(nonatomic) CGSize surfaceSize;
+// The thread's pages and the pane they show in.
+@property(nonatomic, copy) NSArray<UIViewController *> *pages;
+@property(nonatomic) CGRect pane;
+// Closing: the pane's picture, sliding out.
+@property(nonatomic, strong) UIView *thread;
+// Paused with the feed: the bar items' old renderings fading out.
+@property(nonatomic, strong) UIView *fadeHost;
+@property(nonatomic, copy) NSArray<ApolloDuoTextFade *> *textFades;
+// After release, a critically damped spring to `target` (0 or 1).
+@property(nonatomic, strong) CADisplayLink *link;
+@property(nonatomic) CGFloat target;
+@property(nonatomic) CGFloat settleFrom;
+@property(nonatomic) CGFloat settleVelocity;
+@property(nonatomic) CFTimeInterval settleStart;
+@end
+
+static void ApolloDuoColumnScrubTick(ApolloDuoColumnScrub *scrub);
+
+static NSHashTable<ApolloDuoColumnScrub *> *sDuoColumnScrubs;
+BOOL ApolloDuoSplitIsColumnDragging(void) {
+    return sDuoColumnScrubs.anyObject != nil;
+}
+
+@implementation ApolloDuoColumnScrub
+- (void)tick:(__unused CADisplayLink *)link { ApolloDuoColumnScrubTick(self); }
+@end
+
+static void ApolloDuoColumnScrubApply(ApolloDuoColumnScrub *scrub) {
+    CGFloat progress = MIN(1, MAX(0, scrub.progress));
+    CFTimeInterval time = kApolloDuoScrubBegin + progress * kApolloDuoScrubLength;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    scrub.feedView.layer.timeOffset = time;
+    scrub.fadeHost.layer.timeOffset = time;
+    if (scrub.opening) ApolloDuoSetThreadDragOffset(scrub.state.secondary.viewIfLoaded, (1 - progress) * scrub.travel);
+    else scrub.thread.transform = CGAffineTransformMakeTranslation(progress * scrub.travel, 0);
+    [CATransaction commit];
+}
+
+// A Back drag lays the columns out without the thread, but leaving its pages
+// on the stack and its view in the window: the view moves behind the columns
+// (within the same window, so no page disappears), where the feed covers it
+// and the thread's picture slides out above. Popping the thread at the start
+// would end its Find in Comments bar and shift its comments, which a
+// cancelled drag couldn't undo. The feed's appear still takes the header's
+// shared video into its row; ApolloVideoSwipeFix.xm moves it straight back.
+static void ApolloDuoParkThread(ApolloDuoSplitState *state, ApolloDuoFeedAnchor *anchor) {
+    UINavigationController *thread = state.secondary;
+    // Inside the split's own view: UIKit then still sees the split as the
+    // thread's container when a cancel puts it back in its column.
+    UIView *parking = state.split.viewIfLoaded;
+    UIView *view = thread.viewIfLoaded;
+    CGRect frame = view && parking ? [parking convertRect:view.bounds fromView:view] : CGRectNull;
+    state.threadParked = YES;
+    if (view && parking) {
+        [parking insertSubview:view atIndex:0];
+        view.frame = frame;
+        view.userInteractionEnabled = NO;
+    }
+    ApolloDuoPostsApplyDetailStack(state, thread.viewControllers, nil, CGRectNull, anchor);
+    // The split's column change mustn't have taken the view out of the window.
+    if (view && parking && view.superview != parking) {
+        ApolloLog(@"[DuoDrag] the column change moved the parked thread to %@ (window=%d)",
+                  view.superview.class, view.window != nil);
+        [parking insertSubview:view atIndex:0];
+        view.frame = frame;
+    }
+    ApolloLog(@"[DuoDrag] parked the thread (%lu page(s)) behind the feed",
+              (unsigned long)MAX((NSInteger)thread.viewControllers.count - 1, 0));
+}
+
+// The drag ends. Cancelled, the parked thread goes back into its column as it
+// was. Committed, its pages close now and are kept for a forward swipe.
+static void ApolloDuoUnparkThread(ApolloDuoSplitState *state, BOOL close, NSArray<UIViewController *> *pages,
+                                  CGRect pane) {
+    if (!state.threadParked) return;
+    UINavigationController *thread = state.secondary;
+    UIView *view = thread.viewIfLoaded;
+    UIViewController *backstop = thread.viewControllers.firstObject;
+    BOOL laidOut = state.split && state.feed && backstop;
+    ApolloDuoFeedAnchor *anchor = laidOut ? ApolloDuoCaptureFeedAnchor(
+        ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded)) : nil;
+    state.threadParked = NO;
+    view.userInteractionEnabled = YES;
+    if (!close && laidOut) {
+        ApolloDuoPostsApplyDetailStack(state, thread.viewControllers, nil, CGRectNull, anchor);
+        ApolloLog(@"[DuoDrag] put the parked thread back in its column (window=%d)", view.window != nil);
+        return;
+    }
+    // Pop while the view is still in the window, so the pages see a real pop.
+    if (backstop && thread.viewControllers.count > 1) {
+        state.changing = YES;
+        [thread setViewControllers:@[backstop] animated:NO];
+        ApolloDuoRunNavigationChangeNow(thread);
+        state.changing = NO;
+    }
+    if (view && !thread.parentViewController) [view removeFromSuperview];
+    if (laidOut) ApolloDuoPostsApplyDetailStack(state, @[backstop], pages, pane, anchor);
+    ApolloLog(@"[DuoDrag] closed the parked thread (%lu page(s))", (unsigned long)pages.count);
+}
+
+// The thread open beside the Posts feed `feedPage` (its top page), parked
+// behind the feed by a Back drag included; nil without one.
+UIViewController *ApolloDuoSplitThreadBesideFeed(UIViewController *feedPage) {
+    UINavigationController *nav = feedPage.navigationController;
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    if (!state.split || nav != state.feed || state.secondary.viewControllers.count < 2) return nil;
+    return state.secondary.topViewController;
+}
+
+// Whether `page`, open in the Posts thread pane, sits beside the feed column
+// that shows `layer`.
+BOOL ApolloDuoSplitThreadBesideFeedLayer(UIViewController *page, CALayer *layer) {
+    UINavigationController *nav = page.navigationController;
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    if (!state.split || !state.feed || nav != state.secondary || nav.viewControllers.count < 2
+        || ![nav.viewControllers containsObject:page]) return NO;
+    CALayer *feedLayer = state.feed.viewIfLoaded.layer;
+    for (CALayer *ancestor = layer.superlayer; ancestor && feedLayer; ancestor = ancestor.superlayer) {
+        if (ancestor == feedLayer) return YES;
+    }
+    return NO;
+}
+
+// Ends the scrub at its target. Back at the start, the columns are put back
+// while the feed shows its starting geometry, so nothing on screen moves.
+static void ApolloDuoColumnScrubComplete(ApolloDuoColumnScrub *scrub) {
+    ApolloDuoSplitHost *host = scrub.host;
+    if (host && host.columnScrub != scrub) return;
+    host.columnScrub = nil;
+    [sDuoColumnScrubs removeObject:scrub];
+    [scrub.link invalidate];
+    scrub.link = nil;
+    ApolloDuoSplitState *state = scrub.state;
+    BOOL completed = scrub.target > 0.5;
+    BOOL laidOut = state.split && state.feed && state.host == host;
+    if (!scrub.opening) {
+        // A split that went away mid-drag closes the thread, as the drag began to.
+        ApolloDuoUnparkThread(state, completed || !laidOut, scrub.pages, scrub.pane);
+    } else if (!completed && laidOut) {
+        UIViewController *backstop = state.secondary.viewControllers.firstObject;
+        ApolloDuoFeedAnchor *anchor = ApolloDuoCaptureFeedAnchor(
+            ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded));
+        // Closed again, and still there for the next forward drag.
+        if (backstop) ApolloDuoPostsApplyDetailStack(state, @[backstop], scrub.pages, scrub.pane, anchor);
+    }
+    UIView *feedView = scrub.feedView;
+    ApolloDuoEndTextCrossfade(scrub.textFades, !completed);
+    ApolloDuoPostsStopGeometry(feedView);
+    feedView.layer.speed = 1;
+    feedView.layer.timeOffset = 0;
+    [scrub.fadeHost removeFromSuperview];
+    [scrub.thread removeFromSuperview];
+    ApolloDuoSetThreadDragOffset(state.secondary.viewIfLoaded, 0);
+    ApolloFullFrameRateEnd(0.1);
+    ApolloLog(@"[DuoDrag] column drag ended opening=%d completed=%d", scrub.opening, completed);
+    if (host) ApolloDuoUpdateDivider(host);
+    ApolloDuoSplitScheduleUpdate();
+}
+
+static void ApolloDuoColumnScrubFinishNow(ApolloDuoSplitHost *host) {
+    ApolloDuoColumnScrub *scrub = host.columnScrub;
+    if (scrub) ApolloDuoColumnScrubComplete(scrub);
+}
+
+static void ApolloDuoColumnScrubTick(ApolloDuoColumnScrub *scrub) {
+    ApolloDuoSplitHost *host = scrub.host;
+    // A fold, a rotation or the split ending mid-settle: end it there.
+    if (!host.view.window || !scrub.state.split || host.columnScrub != scrub
+        || !CGSizeEqualToSize(host.view.bounds.size, scrub.surfaceSize)) {
+        ApolloDuoColumnScrubComplete(scrub);
+        return;
+    }
+    // The drawer's spring, in progress units: e(t) = (e0 + (v0 + w e0) t) e^-wt,
+    // with the release velocity capped at w so it never overshoots.
+    double omega = ApolloDuoDrawerSpringOmega();
+    double distance = scrub.target - scrub.settleFrom;
+    double fraction = fabs(distance) > 1e-6 ? MIN(omega, MAX(0.0, scrub.settleVelocity / distance)) : 0.0;
+    double e0 = -distance;
+    double t = CACurrentMediaTime() - scrub.settleStart;
+    double e = (e0 + (fraction * distance + omega * e0) * t) * exp(-omega * t);
+    if (fabs(e) * scrub.travel < 0.5 || t > 1.5) {
+        ApolloDuoColumnScrubComplete(scrub);
+        return;
+    }
+    scrub.progress = scrub.target + e;
+    ApolloDuoColumnScrubApply(scrub);
+}
+
+// Begins a column drag, or returns nil without changing anything.
+static ApolloDuoColumnScrub *ApolloDuoColumnScrubBegin(ApolloDuoSplitState *state, BOOL opening,
+                                                       NSArray<UIViewController *> *pages) {
+    ApolloDuoSplitHost *host = state.host;
+    UIView *surface = host.view;
+    UIView *feedView = state.feed.viewIfLoaded;
+    UIViewController *backstop = state.secondary.viewControllers.firstObject;
+    if (!surface.window || !feedView || !state.split || !backstop) return nil;
+    ApolloDuoColumnScrubFinishNow(host);
+    [surface layoutIfNeeded];
+    CGRect pane = CGRectNull;
+    UIView *thread = nil;
+    if (!opening) {
+        pane = ApolloDuoPostsDetailPane(state);
+        thread = ApolloDuoPostsPanePicture(state, pane);
+        if (!thread) return nil;
+        pages = ApolloDuoClosedThreadPages(state.secondary.viewControllers);
+    } else {
+        ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventThreadOpened, 0.0);
+    }
+    [host.postsTransitionSnapshot removeFromSuperview];
+    host.postsTransitionSnapshot = nil;
+    [state.secondary.viewIfLoaded.layer removeAnimationForKey:@"ApolloDuoSlide"];
+    ApolloDuoSetThreadDragOffset(state.secondary.viewIfLoaded, 0);
+    ApolloDuoPostsStopGeometry(feedView);
+    ApolloDuoPostsStopGeometry(state.secondary.viewIfLoaded);
+    NSArray<ApolloDuoPostsGeometry *> *geometry = ApolloDuoPostsCaptureGeometryWithLayers(feedView, surface, YES);
+    NSMapTable<CALayer *, id> *text = ApolloDuoCaptureTextDrawings(@[feedView]);
+    ApolloDuoFeedAnchor *anchor = ApolloDuoCaptureFeedAnchor(
+        ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded));
+    if (opening) {
+        ApolloDuoPostsApplyDetailStack(state, [@[backstop] arrayByAddingObjectsFromArray:pages], nil, CGRectNull, anchor);
+        pane = ApolloDuoPostsDetailPane(state);
+    } else {
+        ApolloDuoParkThread(state, anchor);
+    }
+    CGFloat travel = CGRectIsNull(pane) ? 0 : CGRectGetMaxX(surface.bounds) - CGRectGetMinX(pane);
+    if (travel < 1) {
+        // Nothing to slide across; the columns stay as the drag left them.
+        if (!opening) ApolloDuoUnparkThread(state, YES, pages, pane);
+        ApolloDuoSplitScheduleUpdate();
+        return nil;
+    }
+    ApolloDuoColumnScrub *scrub = [ApolloDuoColumnScrub new];
+    scrub.state = state;
+    scrub.host = host;
+    scrub.feedView = feedView;
+    scrub.opening = opening;
+    scrub.travel = travel;
+    scrub.pages = pages;
+    scrub.pane = pane;
+    scrub.surfaceSize = surface.bounds.size;
+    UIView *fadeHost = [[UIView alloc] initWithFrame:surface.bounds];
+    fadeHost.userInteractionEnabled = NO;
+    [surface insertSubview:fadeHost belowSubview:host.listDismiss];
+    scrub.fadeHost = fadeHost;
+    if (thread) {
+        thread.frame = pane;
+        thread.userInteractionEnabled = NO;
+        [surface insertSubview:thread aboveSubview:fadeHost];
+        scrub.thread = thread;
+    }
+    for (CALayer *layer in @[feedView.layer, fadeHost.layer]) {
+        layer.speed = 0;
+        layer.timeOffset = kApolloDuoScrubBegin;
+    }
+    host.columnScrub = scrub;
+    if (!sDuoColumnScrubs) sDuoColumnScrubs = [NSHashTable weakObjectsHashTable];
+    [sDuoColumnScrubs addObject:scrub];
+    ApolloDuoGeometryTiming timing = {kApolloDuoScrubLength, YES, kApolloDuoScrubBegin};
+    NSMutableArray<ApolloDuoTextFade *> *pins = [NSMutableArray array];
+    // Recentered bar items slide with their column (no crossfade), and views the
+    // bar re-hosts (its title) move from where they were.
+    ApolloDuoAnimateGeometry(geometry, feedView, surface, timing, YES, NO, fadeHost, pins);
+    ApolloDuoFadeInNewBarItems(state.feed.navigationBar, geometry, timing);
+    [pins addObjectsFromArray:ApolloDuoCrossfadeTextLayout(@[feedView], text, timing)];
+    scrub.textFades = pins;
+    __weak ApolloDuoColumnScrub *weakScrub = scrub;
+    __weak ApolloDuoSplitHost *weakHost = host;
+    ApolloDuoScheduleRetarget(feedView, ^BOOL {
+        return weakScrub && weakHost.columnScrub == weakScrub;
+    });
+    ApolloDuoColumnScrubApply(scrub);
+    ApolloDuoUpdateDivider(host);
+    ApolloFullFrameRateBegin();
+    ApolloLog(@"[DuoDrag] column drag began opening=%d travel=%.0f pages=%lu", opening, travel, (unsigned long)pages.count);
+    return scrub;
+}
+
+// `offset` is how far the thread has moved: in when opening, out when closing.
+static void ApolloDuoColumnScrubMove(ApolloDuoColumnScrub *scrub, CGFloat offset) {
+    if (!scrub || scrub.link) return;
+    scrub.progress = ApolloDuoDragClamp(offset, scrub.travel) / scrub.travel;
+    ApolloDuoColumnScrubApply(scrub);
+}
+
+// `velocity` is toward completion, in points per second.
+static void ApolloDuoColumnScrubEnd(ApolloDuoColumnScrub *scrub, BOOL complete, CGFloat velocity) {
+    if (!scrub || scrub.link) return;
+    scrub.target = complete ? 1 : 0;
+    if (!scrub.host.view.window || UIAccessibilityIsReduceMotionEnabled()
+        || fabs(scrub.target - scrub.progress) * scrub.travel < 0.5) {
+        ApolloDuoColumnScrubComplete(scrub);
+        return;
+    }
+    scrub.settleFrom = scrub.progress;
+    scrub.settleVelocity = velocity / scrub.travel;
+    scrub.settleStart = CACurrentMediaTime();
+    CADisplayLink *link = [CADisplayLink displayLinkWithTarget:scrub selector:@selector(tick:)];
+    if (@available(iOS 15.0, *)) link.preferredFrameRateRange = CAFrameRateRangeMake(80, 120, 120);
+    else link.preferredFramesPerSecond = 120;
+    [link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+    scrub.link = link;
+    ApolloLog(@"[DuoDrag] column drag settling to %.0f from %.2f velocity=%.0f", scrub.target, scrub.progress, velocity);
 }
 
 // The forward swipe on the full-width Posts feed brings back the thread the
@@ -2883,7 +3624,8 @@ static void ApolloDuoPostsSetDetail(ApolloDuoSplitState *state, UIViewController
 // that no event caught is forgotten here, the first time a swipe asks.
 BOOL ApolloDuoSplitCanRestoreClosedThread(UINavigationController *nav) {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
-    if (!state.closedThread || state.feed != nav || !state.split || state.changing || state.postsTogglingSplit) return NO;
+    if (!state.closedThread || state.feed != nav || !state.split || state.changing || state.postsTogglingSplit
+        || state.host.columnScrub) return NO;
     ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventCheck, 0.0);
     return state.closedThread && !state.host.listVisible && !state.host.postsShowingDetail
         && state.secondary.viewControllers.count == 1;
@@ -2903,75 +3645,47 @@ BOOL ApolloDuoSplitRestoreClosedThread(UINavigationController *nav) {
 
 #pragma mark - Forward drags
 
-// A forward drag on the full-width feed slides the closed thread's picture in
-// from the trailing edge under the finger. Nothing is laid out until release:
-// a completed drag reopens the real pages from where the picture is (the
-// split's own open, continuing the motion), an early one slides it back out.
-// Without a picture (Reduce Motion, a resize since) the drag still restores
-// on release, without following the finger.
+// A forward drag on the full-width feed reopens the closed thread and slides
+// it in under the finger. With Reduce Motion, or after a resize, it restores
+// on release instead.
 static CGFloat ApolloDuoRestoreTravel(ApolloDuoSplitState *state) {
     ApolloDuoPostsClosedThread *closed = state.closedThread;
-    if (!closed.picture || CGRectIsNull(closed.pictureFrame)
+    if (!closed || CGRectIsNull(closed.paneFrame)
         || !CGSizeEqualToSize(closed.surfaceSize, state.host.view.bounds.size)) return 0;
-    return MAX(0, CGRectGetMaxX(state.host.view.bounds) - CGRectGetMinX(closed.pictureFrame));
+    return MAX(0, CGRectGetMaxX(state.host.view.bounds) - CGRectGetMinX(closed.paneFrame));
 }
 
 CGFloat ApolloDuoSplitRestoreDragTravel(UINavigationController *nav) {
-    return ApolloDuoRestoreTravel(ApolloDuoSplitStateForNavigation(nav, NO));
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    ApolloDuoColumnScrub *scrub = state.host.columnScrub;
+    return scrub.opening ? scrub.travel : ApolloDuoRestoreTravel(state);
 }
 
 BOOL ApolloDuoSplitBeginRestoreDrag(UINavigationController *nav) {
     if (!ApolloDuoSplitCanRestoreClosedThread(nav)) return NO;
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
-    CGFloat travel = ApolloDuoRestoreTravel(state);
-    if (travel <= 0 || UIAccessibilityIsReduceMotionEnabled()) return NO;
-    UIView *picture = state.closedThread.picture;
-    [picture.layer removeAllAnimations];
-    picture.frame = state.closedThread.pictureFrame;
-    picture.transform = CGAffineTransformMakeTranslation(travel, 0);
-    picture.userInteractionEnabled = NO;
-    [state.host.view insertSubview:picture belowSubview:state.host.listDismiss];
-    state.host.restoreDragPicture = picture;
-    ApolloLog(@"[DuoDrag] forward drag began travel=%.0f", travel);
-    return YES;
+    if (ApolloDuoRestoreTravel(state) <= 0 || UIAccessibilityIsReduceMotionEnabled()
+        || !state.host.view.window || !state.feed.viewIfLoaded || !state.secondary.viewControllers.firstObject) return NO;
+    NSArray<UIViewController *> *pages = state.closedThread.pages;
+    state.closedThread = nil;
+    if (sDuoPostsClosedThreadState == state) sDuoPostsClosedThreadState = nil;
+    ApolloDuoColumnScrub *scrub = ApolloDuoColumnScrubBegin(state, YES, pages);
+    ApolloLog(@"[DuoDrag] forward drag began follows=%d", scrub != nil);
+    return scrub != nil;
 }
 
 // `shown` is how far the thread has come in, 0 to travel.
 void ApolloDuoSplitMoveRestoreDrag(UINavigationController *nav, CGFloat shown) {
-    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
-    UIView *picture = state.host.restoreDragPicture;
-    CGFloat travel = ApolloDuoRestoreTravel(state);
-    if (!picture || travel <= 0) return;
-    picture.transform = CGAffineTransformMakeTranslation(travel - ApolloDuoDragClamp(shown, travel), 0);
+    ApolloDuoColumnScrub *scrub = ApolloDuoSplitStateForNavigation(nav, NO).host.columnScrub;
+    if (scrub.opening) ApolloDuoColumnScrubMove(scrub, shown);
 }
 
 void ApolloDuoSplitEndRestoreDrag(UINavigationController *nav, BOOL restore, CGFloat shown, CGFloat velocity) {
-    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
-    UIView *picture = state.host.restoreDragPicture;
-    state.host.restoreDragPicture = nil;
-    CGFloat travel = ApolloDuoRestoreTravel(state);
+    ApolloDuoColumnScrub *scrub = ApolloDuoSplitStateForNavigation(nav, NO).host.columnScrub;
     ApolloLog(@"[DuoDrag] forward drag ended restore=%d shown=%.0f velocity=%.0f", restore, shown, velocity);
-    if (restore && ApolloDuoSplitCanRestoreClosedThread(nav)) {
-        NSArray<UIViewController *> *pages = state.closedThread.pages;
-        state.closedThread = nil;
-        if (sDuoPostsClosedThreadState == state) sDuoPostsClosedThreadState = nil;
-        // The real pane takes over exactly where the picture is.
-        CGFloat remaining = travel > 0 ? MAX(1, travel - ApolloDuoDragClamp(shown, travel)) : 0;
-        ApolloDuoPostsSetDetailPagesFromDrag(state, pages, YES, remaining, -velocity);
-        ApolloDuoPostsSyncColumns(state);
-        [picture removeFromSuperview];
-        return;
-    }
-    if (!picture) return;
-    CGFloat from = (picture.layer.presentationLayer ?: picture.layer).transform.m41;
-    // As with the cover drag: a transaction completion still runs when a fold
-    // or the app leaving cuts the slide short, so the picture never lingers.
-    [CATransaction begin];
-    [CATransaction setCompletionBlock:^{
-        if (!state.host.restoreDragPicture || state.host.restoreDragPicture != picture) [picture removeFromSuperview];
-    }];
-    ApolloDuoSlideDrawer(picture, from, travel, velocity, picture.window != nil, nil);
-    [CATransaction commit];
+    if (!scrub.opening) return;
+    ApolloDuoColumnScrubMove(scrub, shown);
+    ApolloDuoColumnScrubEnd(scrub, restore, -velocity);
 }
 
 // The feed's scroll expiry (Forget Forward Swipe After Scrolling) asks about
@@ -3020,109 +3734,37 @@ BOOL ApolloDuoSplitPopRevealsContent(UINavigationController *nav) {
 // there closes the thread column (popViewControllerAnimated: below).
 BOOL ApolloDuoSplitCanDragThreadClosed(UINavigationController *nav) {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
-    return state.split && state.feed && !state.changing && nav == state.secondary
+    return state.split && state.feed && !state.changing && nav == state.secondary && !state.host.columnScrub
         && state.host.postsShowingDetail && nav.viewControllers.count == 2 && state.host.view.window;
 }
 
-// Starts a thread drag from wherever the pane is (mid-spring included) and
-// returns that offset, or -1 when the thread can't be dragged closed.
+// Starts a thread drag: its starting offset, or -1 if it can't close.
 CGFloat ApolloDuoSplitBeginThreadDrag(UINavigationController *nav) {
     if (!ApolloDuoSplitCanDragThreadClosed(nav)) return -1;
-    UIView *view = nav.view;
-    CGFloat offset = MAX(0, ApolloDuoThreadDragOffset(view));
-    {
-        // The pane as it stands, for a forward drag after the close.
-        ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
-        UIView *surface = state.host.view;
-        CGRect pane = ApolloDuoPostsDetailPane(state);
-        state.host.threadDragPicture = offset < 1 && surface.window && !CGRectIsNull(pane) && !CGRectIsEmpty(pane)
-            ? [surface resizableSnapshotViewFromRect:pane afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero] : nil;
-    }
-    ApolloDuoSetThreadDragOffset(view, offset);
-    // The feed follows the thread's edge. Re-laying out the real feed every
-    // frame would re-measure every row; the close widens the real feed under
-    // this filler once the finger lifts. Its bars (plain chrome) stretch from
-    // a 2pt slice of their trailing edge; below them the feed's own
-    // row color fills the gap, so media and Highlights cards that reach the
-    // column edge end there instead of smearing across it.
-    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
-    UIView *surface = state.host.view;
-    CGRect pane = ApolloDuoPostsDetailPane(state);
-    UIView *feedView = state.feed.viewIfLoaded;
-    if (!state.host.threadDragFiller && surface.window && feedView.window && !CGRectIsNull(pane) && CGRectGetMinX(pane) > 4) {
-        UITableView *table = ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded);
-        // Feed rows draw in the theme's card color, which the table's own
-        // background (the page color between rows) does not match.
-        UIColor *background = ApolloThemeCardBackgroundColor() ?: table.backgroundColor ?: UIColor.systemBackgroundColor;
-        UIView *filler = [[UIView alloc] initWithFrame:CGRectMake(CGRectGetMinX(pane), CGRectGetMinY(pane),
-                                                                  offset, CGRectGetHeight(pane))];
-        filler.userInteractionEnabled = NO;
-        filler.clipsToBounds = YES;
-        filler.backgroundColor = [background resolvedColorWithTraitCollection:feedView.traitCollection];
-        UIView *page = state.feed.topViewController.viewIfLoaded ?: feedView;
-        CGFloat barsBottom = [surface convertPoint:CGPointMake(0, page.safeAreaInsets.top) fromView:page].y;
-        CGFloat barsHeight = MIN(CGRectGetHeight(pane), barsBottom - CGRectGetMinY(pane));
-        if (barsHeight > 0) {
-            CGRect edge = CGRectMake(CGRectGetMinX(pane) - 4, CGRectGetMinY(pane), 2, barsHeight);
-            UIView *bars = [surface resizableSnapshotViewFromRect:edge afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero];
-            if (bars) {
-                bars.frame = CGRectMake(0, 0, offset, barsHeight);
-                bars.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-                [filler addSubview:bars];
-            }
-        }
-        [surface insertSubview:filler belowSubview:state.host.listDismiss];
-        state.host.threadDragFiller = filler;
-    }
-    ApolloLog(@"[DuoDrag] thread drag began offset=%.0f", offset);
-    return offset;
+    return ApolloDuoColumnScrubBegin(ApolloDuoSplitStateForNavigation(nav, NO), NO, nil) ? 0 : -1;
 }
 
-// Only the live pane moves: no layout, no re-measure, no snapshot. What it
-// uncovers on its leading side is its own surface, which runs under the feed.
 void ApolloDuoSplitDragThread(UINavigationController *nav, CGFloat offset) {
-    ApolloDuoSetThreadDragOffset(nav.viewIfLoaded, MAX(0, offset));
-    UIView *filler = ApolloDuoSplitStateForNavigation(nav, NO).host.threadDragFiller;
-    CGRect frame = filler.frame;
-    frame.size.width = MAX(0, offset);
-    filler.frame = frame;
+    ApolloDuoColumnScrub *scrub = ApolloDuoSplitStateForNavigation(nav, NO).host.columnScrub;
+    if (scrub && !scrub.opening) ApolloDuoColumnScrubMove(scrub, offset);
 }
 
 // The width a thread drag travels: the visible thread pane, rail included.
 CGFloat ApolloDuoSplitThreadDragTravel(UINavigationController *nav) {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    ApolloDuoColumnScrub *scrub = state.host.columnScrub;
+    if (scrub && !scrub.opening) return scrub.travel;
     CGRect pane = state.split ? ApolloDuoPostsDetailPane(state) : CGRectNull;
     return CGRectIsNull(pane) ? 0 : CGRectGetWidth(pane);
 }
 
-// Ends a thread drag. A close hands the dragged pane to the split's own
-// close (the same one as the close button), which continues from the finger.
-// Otherwise the pane springs back with the thread untouched.
+// Ends a thread drag: a close settles out, anything else springs back.
 void ApolloDuoSplitEndThreadDrag(UINavigationController *nav, BOOL close, CGFloat offset, CGFloat velocity) {
-    UIView *view = nav.viewIfLoaded;
-    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    ApolloDuoColumnScrub *scrub = ApolloDuoSplitStateForNavigation(nav, NO).host.columnScrub;
     ApolloLog(@"[DuoDrag] thread drag ended close=%d offset=%.0f velocity=%.0f", close, offset, velocity);
-    if (close && offset > 0 && ApolloDuoSplitCanDragThreadClosed(nav)) {
-        ApolloDuoPostsSetDetailPagesFromDrag(state, @[], YES, offset, velocity);
-        return;
-    }
-    state.host.threadDragPicture = nil;
-    if (!view) return;
-    CGFloat from = ApolloDuoThreadDragOffset(view);
-    BOOL animated = view.window != nil && !UIAccessibilityIsReduceMotionEnabled();
-    ApolloDuoSettleThreadDrag(view, from, velocity, animated);
-    // The feed's stretched edge shrinks back with the thread.
-    UIView *filler = state.host.threadDragFiller;
-    state.host.threadDragFiller = nil;
-    if (!filler || !animated) {
-        [filler removeFromSuperview];
-        return;
-    }
-    CGRect frame = filler.frame;
-    frame.size.width = 0;
-    [UIView animateWithDuration:0.35 delay:0 usingSpringWithDamping:1 initialSpringVelocity:0
-                        options:UIViewAnimationOptionBeginFromCurrentState animations:^{ filler.frame = frame; }
-                     completion:^(__unused BOOL finished) { [filler removeFromSuperview]; }];
+    if (!scrub || scrub.opening) return;
+    ApolloDuoColumnScrubMove(scrub, offset);
+    ApolloDuoColumnScrubEnd(scrub, close && offset > 0, velocity);
 }
 
 // Drawer drags started by a pane Back at the feed root.
@@ -4106,6 +4748,11 @@ static void ApolloDuoSplitClose(ApolloDuoSplitState *state, BOOL preserveDetail)
     // closed thread's pages go.
     ApolloDuoPostsForgetClosedThread(state, @"the split closed");
     if (!state.split || state.changing) return;
+    if (state.host.columnScrub) ApolloDuoColumnScrubFinishNow(state.host);
+    if (state.feed) {
+        ApolloDuoAttachPaneGestures(state.feed, nil);
+        ApolloDuoAttachPaneGestures(state.secondary, nil);
+    }
     state.changing = YES;
     NSMutableArray<UIViewController *> *moving = [NSMutableArray array];
     for (UINavigationController *nav in @[state.primary ?: (id)NSNull.null, state.feed ?: (id)NSNull.null,

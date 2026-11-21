@@ -7,6 +7,7 @@
 #import <QuartzCore/QuartzCore.h>
 
 #import "ApolloCommon.h"
+#import "ApolloDuoSplitView.h"
 #import "ApolloSwiftRuntime.h"
 
 // Exported from ApolloVideoUnmute.xm — fixes disconnected playerLayer
@@ -341,13 +342,18 @@ static BOOL HeaderRetakeRestore(id richMediaNode, NSString *reason) {
     if (!host || layer.superlayer == host) return NO;   // still ours (the common case)
 
     // Lost it. Name the reason when we can't take it back (logged once per
-    // reason, so a scroll doesn't repeat it every frame).
+    // reason, so a scroll doesn't repeat it every frame). On the Duo the feed
+    // column stays on screen beside an open thread, and a row there that took
+    // the layer (a forward swipe brought the thread back, or the feed appeared
+    // beside it) gives it up to the thread, as it did when the thread opened.
+    UIViewController *screen = HeaderRetakeScreenForNode(richMediaNode);
     NSString *blocked = nil;
     if (!HeaderRetakeVideoNodeIsShareable(videoNode)) blocked = @"video node not shareable";
     else if (HeaderRetakeSharedSublayer(videoNode)) blocked = @"showing another shared layer";
     else if (!layer.player) blocked = @"layer has no player";
     else if (!HeaderRetakeLayerIsOnScreen(host)) blocked = @"header not on screen";
-    else if (HeaderRetakeLayerIsOnScreen(layer)) blocked = @"layer on screen elsewhere";
+    else if (HeaderRetakeLayerIsOnScreen(layer) && !ApolloDuoSplitThreadBesideFeedLayer(screen, layer))
+        blocked = @"layer on screen elsewhere";
     if (blocked) {
         if (![record.lastBlockedReason isEqualToString:blocked]) {
             record.lastBlockedReason = blocked;
@@ -376,7 +382,6 @@ static BOOL HeaderRetakeRestore(id richMediaNode, NSString *reason) {
         ((void (*)(id, SEL))objc_msgSend)(videoNode, @selector(setNeedsLayout));
     }
 
-    UIViewController *screen = HeaderRetakeScreenForNode(richMediaNode);
     record.borrowedFrom = from;
     record.borrowedFromFrame = fromFrame;
     record.borrowingScreen = screen;
@@ -434,6 +439,18 @@ static void HeaderRetakeHandBack(UIViewController *screen, NSString *reason) {
     }
 }
 
+// Called from the Posts feed's viewWillAppear: right after Apollo's reclaim
+// (%orig). On the Duo the feed appears whenever it changes columns, including
+// while a thread stays open beside it (a Back drag lays the feed out full
+// width before the thread closes, and a cancelled one puts it back), and the
+// reclaim takes the thread header's video into the feed row. The thread is
+// still the one showing it, so the header takes it back at once; when the
+// thread does close, its header hands it back to the row (viewDidDisappear:).
+static void HeaderRetakeKeepThreadBesideFeed(UIViewController *feedPage) {
+    UIViewController *thread = ApolloDuoSplitThreadBesideFeed(feedPage);
+    if (thread) HeaderRetakeRestoreHeadersOfScreen(thread, @"thread open beside the feed");
+}
+
 // Called from the reclaiming parents' viewWillAppear: right after Apollo's
 // reclaim (%orig): if a comments screen is being popped off this navigation
 // controller, hand back whatever its header borrowed.
@@ -455,6 +472,7 @@ static void HeaderRetakeHandBackAfterReclaim(UIViewController *appearing) {
     if (DeferReclaimIfInteractivePop(self, animated)) return;
     %orig;
     HeaderRetakeHandBackAfterReclaim((UIViewController *)self);
+    HeaderRetakeKeepThreadBesideFeed((UIViewController *)self);
 }
 %end
 

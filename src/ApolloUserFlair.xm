@@ -1140,22 +1140,30 @@ static NSUInteger ApolloUserFlairMaxEmojisForTemplate(NSString *subreddit, NSStr
     return kApolloUserFlairMaxEmojis;
 }
 
-// One synchronous GET of `url` with `bearer`, parsed into templateID -> limits (nil on
-// any failure). `outDefinitive` reports whether Reddit itself answered the flair
-// question — i.e. whether an empty result may be cached as "asked, nothing usable".
-// That requires the answer to have come from oauth.reddit.com (on a keyless account
+// One synchronous GET of `url`, authenticated with `bearer` or else with the web
+// session's `cookie`, parsed into templateID -> limits (nil on any failure).
+// `outDefinitive` reports whether Reddit itself answered the flair question — i.e.
+// whether an empty result may be cached as "asked, nothing usable". For a bearer
+// that requires the answer to have come from oauth.reddit.com (on a keyless account
 // the transport layer can reroute this request to cookie auth on www, whose 403/HTML
 // answers are transport artifacts, not flair config — see ApolloWebJSONNoteResponse's
 // block-page handling) AND to look like a real API answer: a JSON array for 200, or a
 // JSON body for 403 ("flair self-assign off"; Reddit's transient rate-limit block
-// pages are text/html). Background queues only — bounded by the request timeout.
-static NSDictionary *ApolloUserFlairFetchTemplateLimits(NSURL *url, NSString *bearer, NSInteger *outStatus, BOOL *outDefinitive) {
+// pages are text/html). A cookie request is probe-marked, so it isn't rerouted and
+// a JSON array from it is definitive too. Background queues only — bounded by the
+// request timeout.
+static NSDictionary *ApolloUserFlairFetchTemplateLimits(NSURL *url, NSString *bearer, NSString *cookie,
+                                                        NSInteger *outStatus, BOOL *outDefinitive) {
     if (outStatus) *outStatus = 0;
     if (outDefinitive) *outDefinitive = NO;
-    if (!url || bearer.length == 0) return nil;
+    if (!url || (bearer.length == 0 && cookie.length == 0)) return nil;
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
-    [req setValue:[@"Bearer " stringByAppendingString:bearer] forHTTPHeaderField:@"Authorization"];
-    [req setValue:@"Apollo iOS" forHTTPHeaderField:@"User-Agent"];
+    if (bearer.length) {
+        [req setValue:[@"Bearer " stringByAppendingString:bearer] forHTTPHeaderField:@"Authorization"];
+    } else {
+        [req setValue:cookie forHTTPHeaderField:@"Cookie"];
+    }
+    [req setValue:(bearer.length || sUserAgent.length == 0 ? @"Apollo iOS" : sUserAgent) forHTTPHeaderField:@"User-Agent"];
     req.HTTPShouldHandleCookies = NO;
     req.timeoutInterval = 15;
     dispatch_semaphore_t sema = dispatch_semaphore_create(0);
@@ -1178,7 +1186,7 @@ static NSDictionary *ApolloUserFlairFetchTemplateLimits(NSURL *url, NSString *be
     }
     if (status != 200 || body.length == 0) return nil;
     id json = [NSJSONSerialization JSONObjectWithData:body options:0 error:NULL];
-    if (outDefinitive) *outDefinitive = fromOAuth && [json isKindOfClass:[NSArray class]];
+    if (outDefinitive) *outDefinitive = (fromOAuth || cookie.length) && [json isKindOfClass:[NSArray class]];
     return ApolloUserFlairParseTemplateLimits(json);
 }
 
@@ -1188,12 +1196,12 @@ static NSDictionary *ApolloUserFlairFetchTemplateLimits(NSURL *url, NSString *be
 // nothing usable) so reopening the editor doesn't refetch; a pure network failure is
 // left uncached so it can retry.
 //
-// Two transports, because the endpoint is OAuth-only: Apollo's own bearer works
-// directly for API-key accounts, but a keyless (web-session) account has none of its
-// own (ApolloActiveAccountRedditBearerToken returns nil for it) and user_flair_v2
-// rejects cookie auth on www, so we rescue with the session's token_v2 cookie, itself
-// a valid OAuth bearer on oauth.reddit.com (same trick as ApolloWebJSONRescueFlairList).
-// The rescue request is probe-marked so the transport hooks don't reroute it.
+// Two transports: Apollo's own bearer on oauth.reddit.com for API-key accounts, and
+// for a keyless (web-session) account, which has none of its own
+// (ApolloActiveAccountRedditBearerToken returns nil for it), the session cookie on
+// www at the ".json" path. www 404s the bare path, and oauth.reddit.com answers a
+// web-session bearer with its HTML block page (both checked live 2026-11-16). The
+// cookie request is probe-marked so the transport hooks don't reroute it.
 static void ApolloUserFlairEnsureTemplateLimits(NSString *subreddit, void (^completion)(void)) {
     void (^done)(void) = ^{
         if (!completion) return;
@@ -1204,8 +1212,8 @@ static void ApolloUserFlairEnsureTemplateLimits(NSString *subreddit, void (^comp
     NSString *enc = [subreddit stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLPathAllowedCharacterSet]] ?: subreddit;
     if (enc.length == 0) { done(); return; }
     NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"https://oauth.reddit.com/r/%@/api/user_flair_v2?raw_json=1", enc]];
-    // Everything below blocks on semaphores (fetches, and possibly a token_v2 mint
-    // inside ApolloWebJSONKeylessOAuthBearer) — keep it off the main thread and off
+    NSURL *webURL = [NSURL URLWithString:[NSString stringWithFormat:@"https://www.reddit.com/r/%@/api/user_flair_v2.json?raw_json=1", enc]];
+    // Everything below blocks on semaphores — keep it off the main thread and off
     // NSURLSession's own serial delegate queue.
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         NSInteger status = 0;
@@ -1213,19 +1221,19 @@ static void ApolloUserFlairEnsureTemplateLimits(NSString *subreddit, void (^comp
         NSDictionary *byTemplate = nil;
         NSString *apolloBearer = ApolloActiveAccountRedditBearerToken();
         if (apolloBearer.length) {
-            byTemplate = ApolloUserFlairFetchTemplateLimits(url, apolloBearer, &status, &definitive);
+            byTemplate = ApolloUserFlairFetchTemplateLimits(url, apolloBearer, nil, &status, &definitive);
             if (!byTemplate.count) {
                 ApolloLog(@"[UserFlair] limits fetch r/%@ primary HTTP %ld — %@", subreddit, (long)status,
-                    definitive ? @"no usable templates" : @"trying token_v2 rescue");
+                    definitive ? @"no usable templates" : @"trying the web session");
             }
         }
         if (!byTemplate.count) {
-            NSString *webBearer = ApolloWebJSONKeylessOAuthBearer(nil);
-            if (webBearer.length) {
-                // The rescue's verdict supersedes the primary's: if it errors out
+            NSString *cookie = ApolloActiveWebSession().cookieHeader;
+            if (cookie.length) {
+                // The web session's verdict supersedes the primary's: if it errors out
                 // (definitive becomes NO), the sub stays uncached and retries later.
-                byTemplate = ApolloUserFlairFetchTemplateLimits(ApolloWebJSONProbeURL(url), webBearer, &status, &definitive);
-                ApolloLog(@"[UserFlair] limits rescue r/%@ HTTP %ld templates=%lu (token_v2 bearer)",
+                byTemplate = ApolloUserFlairFetchTemplateLimits(ApolloWebJSONProbeURL(webURL), nil, cookie, &status, &definitive);
+                ApolloLog(@"[UserFlair] limits fetch r/%@ HTTP %ld templates=%lu (web session cookie)",
                     subreddit, (long)status, (unsigned long)byTemplate.count);
             }
         }

@@ -6,6 +6,9 @@ BOOL ApolloDuoHasBackSwipe(UINavigationController *navigation);
 /// Apollo's own interactive Back owns this pop and follows the finger, as on
 /// a regular iPhone; the Duo pane drag stands down for it.
 BOOL ApolloDuoPaneBackIsNative(UINavigationController *navigation);
+/// Hosts a pane's drag recognizers on `host` (nil: the pane's own view), so they
+/// survive the pane leaving the window mid-drag. They still take only its touches.
+void ApolloDuoAttachPaneGestures(UINavigationController *navigation, UIView *host);
 /// Cancels every pane drag in flight (fold, rotation, hinge); each springs back.
 void ApolloDuoCancelPaneDrags(void);
 /// Swipe Tab Bar to Navigate while the tab shows columns. Send every state of

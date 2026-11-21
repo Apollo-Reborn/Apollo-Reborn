@@ -663,6 +663,13 @@ void ApolloNavigationTitlePresentationRefresh(UINavigationBar *bar) {
     [owner scheduleRefresh];
 }
 
+void ApolloNavigationTitlePresentationSettle(UINavigationBar *bar) {
+    ApolloTitlePresentationOwner *owner = bar ? objc_getAssociatedObject(bar, &kApolloTitlePresentationOwnerKey) : nil;
+    if (!owner.scheduled) return;
+    owner.scheduled = NO;
+    [owner refresh];
+}
+
 BOOL ApolloNavigationTitlePresentationOwnsControl(UIView *control) {
     return [objc_getAssociatedObject(control, &kApolloTitlePresentationOwnedKey) boolValue];
 }

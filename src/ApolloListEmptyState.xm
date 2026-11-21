@@ -58,6 +58,11 @@
 #import "ApolloWebJSON.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloAccountCredentials.h"
+#import "ApolloSwiftRuntime.h"
+#import "ApolloClasses.h"
+
+extern "C" void ApolloSwiftAssignOptionalString(void *storage, const char *utf8Value);
+extern "C" void ApolloSwiftAssignString(void *storage, const char *utf8Value);
 
 @interface RDKPagination : NSObject
 @property (copy, nonatomic) NSString *after;
@@ -478,6 +483,75 @@ static NSString *ApolloUsernameFromListingPath(NSString *path) {
     return index != NSNotFound && index + 1 < parts.count ? parts[index + 1] : nil;
 }
 
+// Defined in Tweak.xm, next to the /r/random request rewrite.
+NSString *ApolloRandomPickExcluding(BOOL nsfw, NSString *excluded);
+
+// For a Random listing path ("r/random/best.json"): 1 for Random, 2 for Random
+// NSFW, else 0, with the index of the "random" component in `parts`.
+static NSInteger ApolloListRandomKind(NSArray<NSString *> *parts, NSUInteger *nameIndex) {
+    NSUInteger index = 0;
+    while (index < parts.count && parts[index].length == 0) index++; // leading "/"
+    if (index + 1 >= parts.count || ![parts[index] isEqualToString:@"r"]) return 0;
+    NSString *name = parts[index + 1].stringByDeletingPathExtension.lowercaseString;
+    NSInteger kind = [name isEqualToString:@"random"] ? 1 : [name isEqualToString:@"randnsfw"] ? 2 : 0;
+    if (kind && nameIndex) *nameIndex = index + 1;
+    return kind;
+}
+
+// A Random feed's first page came back with no posts (a banned or private
+// pick). Apollo only learns a random feed's community from a loaded post, so
+// both places it names the feed keep the previous community:
+//   * the error text ("r/x has been banned ..."), built from the Swift
+//     randomSubredditName (see the message switch at 0x10059b668), and
+//   * the title, the JumpBar's dropDownTitle and nameLabel.
+// Called before Apollo handles the page: point randomSubredditName at the pick.
+static void ApolloListNameFailedRandomPick(UIViewController *controller, NSString *pick) {
+    ptrdiff_t offset = controller ? ApolloIvarOffset(object_getClass(controller), "randomSubredditName") : -1;
+    if (offset < 0) {
+        ApolloLog(@"[Random] PostsViewController.randomSubredditName not found; error text keeps the old name");
+        return;
+    }
+    NSString *previous = ApolloReadSwiftStringIvar(controller, "randomSubredditName");
+    ApolloSwiftAssignOptionalString((uint8_t *)(__bridge void *)controller + offset, pick.UTF8String);
+    ApolloLog(@"[Random] failed random listing: randomSubredditName %@ -> %@", previous ?: @"nil", pick);
+}
+
+// Called after Apollo handled that page: title the feed with the pick, as
+// Apollo's own success path (0x1005b1504) does: the navigation item's title
+// (which ApolloSubredditHeaders reads) and the JumpBar's.
+static void ApolloListTitleFailedRandomPick(UIViewController *controller, NSString *pick) {
+    controller.navigationItem.title = pick;
+    // The success path then runs 0x1005988e0, which for a Random feed sets
+    // searchBarPlaceholder to "Search r/<randomSubredditName>" and puts it on
+    // searchTextField as an attributed placeholder (0x1002bd100).
+    NSString *placeholder = [@"Search r/" stringByAppendingString:pick];
+    ptrdiff_t placeholderOffset = controller ? ApolloIvarOffset(object_getClass(controller), "searchBarPlaceholder") : -1;
+    if (placeholderOffset >= 0) ApolloSwiftAssignString((uint8_t *)(__bridge void *)controller + placeholderOffset, placeholder.UTF8String);
+    UITextField *searchField = controller ? ApolloObjectIvar(controller, "searchTextField") : nil;
+    NSAttributedString *oldPlaceholder = [searchField isKindOfClass:UITextField.class] ? searchField.attributedPlaceholder : nil;
+    if (oldPlaceholder.length > 0) {
+        searchField.attributedPlaceholder = [[NSAttributedString alloc] initWithString:placeholder
+            attributes:[oldPlaceholder attributesAtIndex:0 effectiveRange:NULL]];
+    }
+    UIView *jumpBar = controller ? ApolloObjectIvar(controller, "jumpBar") : nil;
+    if (!ApolloClassJumpBar || ![jumpBar isKindOfClass:ApolloClassJumpBar]) {
+        ApolloLog(@"[Random] no JumpBar on the random feed; title keeps the old name");
+        return;
+    }
+    ptrdiff_t titleOffset = ApolloIvarOffset(object_getClass(jumpBar), "dropDownTitle");
+    if (titleOffset >= 0) ApolloSwiftAssignString((uint8_t *)(__bridge void *)jumpBar + titleOffset, pick.UTF8String);
+    // -setText:, as dropDownTitle's didSet (0x10062d154) does. Not
+    // -setAttributedText:: ApolloThemeRuntime keeps a label's attributed text
+    // and re-applies it, which would outlast Apollo's next title.
+    UILabel *label = ApolloObjectIvar(jumpBar, "nameLabel");
+    if ([label isKindOfClass:UILabel.class]) {
+        ApolloLog(@"[Random] failed random listing: title %@ -> %@", label.text ?: @"nil", pick);
+        label.text = pick;
+    }
+    [jumpBar invalidateIntrinsicContentSize];
+    [jumpBar setNeedsLayout];
+}
+
 static void ApolloListRegisterController(UIViewController *controller) {
     [sListControllers addObject:controller];
 }
@@ -544,6 +618,29 @@ static void ApolloListRegisterController(UIViewController *controller) {
     objc_setAssociatedObject(adapter, &kApolloListStateKey, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloListApply(adapter);
 
+    // Random / Random NSFW: pick this feed's next community here, where the
+    // feed is known, leaving out the one it shows (its randomSubredditName,
+    // which a failed pick also sets below), and send Apollo's path to it.
+    // Apollo still handles the page as a random listing and names the feed
+    // from its posts.
+    NSMutableArray<NSString *> *pathParts = [[path componentsSeparatedByString:@"/"] mutableCopy];
+    NSUInteger randomNameIndex = 0;
+    NSInteger randomKind = kind == ApolloListKindPosts ? ApolloListRandomKind(pathParts, &randomNameIndex) : 0;
+    NSString *randomPick = nil;
+    if (randomKind) {
+        NSString *shown = ApolloReadSwiftStringIvar(controller, "randomSubredditName");
+        randomPick = ApolloRandomPickExcluding(randomKind == 2, shown);
+        if (randomPick.length > 0) {
+            NSString *extension = pathParts[randomNameIndex].pathExtension;
+            pathParts[randomNameIndex] = extension.length > 0 ? [randomPick stringByAppendingPathExtension:extension] : randomPick;
+            NSString *randomPath = [pathParts componentsJoinedByString:@"/"];
+            ApolloLog(@"[Random] feed %p shows %@: %@ -> %@", controller, shown ?: @"nothing", path, randomPath);
+            path = randomPath;
+        } else {
+            ApolloLog(@"[Random] feed %p: no list loaded; %@ goes out unchanged", controller, path);
+        }
+    }
+    __weak UIViewController *weakController = controller;
     __weak id weakAdapter = adapter;
     ApolloListPageCompletion wrapped = ^(NSArray *items, RDKPagination *nextPagination, NSError *error) {
         ApolloListOutcome outcome = ApolloListOutcomeNone;
@@ -567,7 +664,11 @@ static void ApolloListRegisterController(UIViewController *controller) {
         // re-install its spinner synchronously inside that call.
         id strongAdapter = weakAdapter;
         ApolloListRecordOutcome(ApolloListStateFor(strongAdapter), outcome, ApolloListInstalledSpinner(strongAdapter) != nil);
+        UIViewController *strongController = weakController;
+        NSString *failedPick = items.count == 0 ? randomPick : nil;
+        if (failedPick.length > 0) ApolloListNameFailedRandomPick(strongController, failedPick);
         completion(items, nextPagination, error);
+        if (failedPick.length > 0) ApolloListTitleFailedRandomPick(strongController, failedPick);
         ApolloListFinishFirstPage(strongAdapter, path, outcome, error);
     };
     return %orig(path, parameters, pagination, wrapped);

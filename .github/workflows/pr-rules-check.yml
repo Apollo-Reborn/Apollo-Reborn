@@ -1,16 +1,24 @@
 name: Pull request rules
 
-# Pull requests from outside the core team have to link an issue, say whether
-# they're a bug fix, feature or refactor, show the bug reproduced on main and
-# include before/after media where that applies, and list the devices they
-# were tested on (CONTRIBUTING.md#pull-request-rules, with a section for each
-# in .github/pull_request_template.md). This checks a PR when it's opened or
-# marked ready for review. If anything is missing it labels the PR
-# `needs-verification`, comments with exactly what to add, and closes it. When
-# the author edits the description to fill it in, or a maintainer adds
-# `verification-not-needed`, the label comes off and the PR reopens.
-# Maintainers, bots, drafts and docs-only PRs are skipped. The logic lives in
-# .github/scripts/pr-rules-check.js; tests in tests/pr_rules_check_tests.js.
+# Pull requests from outside the core team have to link an issue (for a
+# feature, its request on request.apolloreborn.app works too; a refactor needs
+# none), say whether they're a bug fix, feature or refactor, show the bug
+# reproduced on main and include before/after media where that applies, and
+# list the devices they were tested on (CONTRIBUTING.md#pull-request-rules,
+# with a section for each in .github/pull_request_template.md). An author can
+# also have only a few PRs open at once. This checks a PR when it's opened or
+# marked ready for review (drafts only against the open PR limit). If anything
+# is missing it labels the PR `needs-verification`, comments with exactly what
+# to add, and closes it. When the author edits the description to fill it in,
+# or a maintainer adds `verification-not-needed`, the label comes off and the
+# PR reopens. A PR whose author asked for a device tester passes and gets
+# `needs-device-test`.
+#
+# Size is separate: a PR (draft or not) over the line limit is labelled
+# `needs-size-ok` and stays open until a maintainer adds `large-change-ok`. It's
+# rechecked on every push. Maintainers, bots and docs-only PRs are skipped.
+# The logic lives in .github/scripts/pr-rules-check.js; tests in
+# tests/pr_rules_check_tests.js.
 #
 # pull_request_target, so fork PRs get a token that can label, comment and
 # close. That runs this workflow and the script from the base branch: nothing
@@ -19,7 +27,7 @@ name: Pull request rules
 
 on:
   pull_request_target:
-    types: [opened, reopened, edited, ready_for_review, labeled]
+    types: [opened, reopened, edited, ready_for_review, labeled, synchronize]
 
 concurrency:
   # One run at a time per PR, so an edit made right after opening is seen
@@ -36,11 +44,12 @@ jobs:
   check:
     name: Check the PR against the rules
     # Cheap pre-filter; the script makes the real call (write access, labels,
-    # drafts, docs-only). A label only matters when it's the waiver.
+    # drafts, docs-only). A label only matters when it's the waiver or the
+    # large change OK.
     if: >-
       github.event.pull_request.user.type != 'Bot' &&
       !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) &&
-      (github.event.action != 'labeled' || github.event.label.name == 'verification-not-needed')
+      (github.event.action != 'labeled' || contains(fromJSON('["verification-not-needed","large-change-ok"]'), github.event.label.name))
     runs-on: ubuntu-latest
     steps:
       - name: Check out the check script (base branch, never the PR)
