@@ -142,6 +142,52 @@ static NSString *ApolloWebAuthConsentSubmitJS(BOOL accept) {
     }
 }
 
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    if (!self.offersSignInAlternatives) return;
+    // Once per sheet: a pushed Manual Sign-In or a popup coming back must not
+    // bring it up again.
+    self.offersSignInAlternatives = NO;
+    // iOS <= 15.3.1 already went straight to Manual Sign-In in viewDidLoad.
+    if (@available(iOS 15.4, *)) {
+        [self _offerSignInAlternatives];
+    }
+}
+
+#pragma mark - Sign-in alternatives
+
+// Shown when the sheet opens from Apollo's "Issue Signing In" button after the
+// person already closed this same sheet (see the SFSafariViewController hook
+// in Tweak.xm), so reopening it silently would look like the button did
+// nothing. Offers Manual Sign-In (otherwise tucked in the ••• menu) next to a
+// plain retry (a fresh page, as the web view's data store starts empty).
+// Manual Sign-In needs the Reynard browser and a userscript, so it's named
+// that way rather than offered as an easy way out. Old Reddit isn't offered:
+// its sign-in step is Reddit's same login page (old.reddit.com/login sends
+// signed-out visitors there), and it only differs at the consent page, where
+// the ••• menu still has it.
+- (void)_offerSignInAlternatives {
+    if (self.finished || self.presentedViewController) return;
+    ApolloLog(@"[WebAuth] Offering sign-in alternatives after \"Issue Signing In\"");
+
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Having Trouble Signing In?"
+                                                                   message:@"Try the Reddit page again. Manual Sign-In uses the Reynard browser and a userscript to get the code."
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    __weak typeof(self) weakSelf = self;
+    UIAlertAction *retry = [UIAlertAction actionWithTitle:@"Try Again" style:UIAlertActionStyleDefault
+                                                  handler:^(__unused UIAlertAction *action) {
+        ApolloLog(@"[WebAuth] Sign-in alternatives: trying the Reddit page again");
+    }];
+    [alert addAction:retry];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Manual Sign-In (Reynard)" style:UIAlertActionStyleDefault
+                                            handler:^(__unused UIAlertAction *action) {
+        ApolloLog(@"[WebAuth] Sign-in alternatives: opening Manual Sign-In");
+        [weakSelf _showManualSignIn];
+    }]];
+    alert.preferredAction = retry;
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
 - (BOOL)_isModernRedditSupported {
     if (@available(iOS 16, *)) return YES;
     return NO;
@@ -664,7 +710,7 @@ decisionHandler:(void (^)(WKNavigationResponsePolicy))decisionHandler {
 - (void)webView:(WKWebView *)webView didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
     [self.spinner stopAnimating];
     // (oldRedditLoadPending stays: these cancels can land after the rewritten
-    // Old Reddit load started, and a real failure ends the sign-in below.)
+    // Old Reddit load started, and a real failure stops at the retry prompt.)
     // NSURLErrorCancelled (-999): fired by our own decisionHandler cancel.
     // WebKitErrorDomain 102 (WebKitErrorFrameLoadInterruptedByPolicyChange): also
     // fired when decidePolicyForNavigationAction cancels a navigation — expected.
@@ -672,14 +718,64 @@ decisionHandler:(void (^)(WKNavigationResponsePolicy))decisionHandler {
     if ([error.domain isEqualToString:@"WebKitErrorDomain"] && error.code == 102) return;
     // Domain + code only: the error's userInfo carries the failing authorize URL.
     ApolloLogError(@"[WebAuth] Provisional navigation failed: %@ %ld (%@)", error.domain, (long)error.code, error.localizedDescription);
-    [self _finishWithURL:nil error:error];
+    [self _offerRetryAfterLoadError:error];
 }
 
 - (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error {
     [self.spinner stopAnimating];
     if (error.code == NSURLErrorCancelled) return;
     ApolloLogError(@"[WebAuth] Navigation failed: %@ %ld (%@)", error.domain, (long)error.code, error.localizedDescription);
-    [self _finishWithURL:nil error:error];
+    [self _offerRetryAfterLoadError:error];
+}
+
+#pragma mark - Load errors
+
+// A page that fails to load (offline, timed out, a host that can't be
+// reached) used to end the sign-in with that error. Apollo answers any error
+// other than a cancel by reopening the sign-in in SFSafariViewController
+// (0x10082f4d8), where an unregistered or http/https redirect URI can't come
+// back to the app. So the sign-in stays here and offers a retry; Cancel ends it
+// the way the Cancel button does.
+- (void)_offerRetryAfterLoadError:(NSError *)error {
+    if (self.finished) return;
+
+    // Retry the page that failed, unless it can't be loaded on its own (the
+    // grant endpoint) or isn't a web page; then start over from the authorize
+    // request.
+    NSURL *failingURL = error.userInfo[NSURLErrorFailingURLErrorKey];
+    if (![failingURL isKindOfClass:[NSURL class]]) failingURL = nil;
+    NSString *scheme = failingURL.scheme.lowercaseString;
+    BOOL isWebPage = [scheme isEqualToString:@"https"] || [scheme isEqualToString:@"http"];
+    NSURL *retryURL = (isWebPage && ![self _isGrantEndpointURL:failingURL]) ? failingURL : self.authURL;
+
+    UIViewController *top = self;
+    while (top.presentedViewController) top = top.presentedViewController;
+    if ([top isKindOfClass:[UIAlertController class]]) {
+        ApolloLog(@"[WebAuth] Load failed while an alert is up; not stacking a retry prompt");
+        return;
+    }
+
+    ApolloLog(@"[WebAuth] Offering a retry after the load failed (%@ %ld)", error.domain, (long)error.code);
+    NSString *message = [NSString stringWithFormat:@"%@\n\nCheck your connection and try again.",
+                         error.localizedDescription ?: @"The page couldn't be loaded."];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Couldn't Load Reddit"
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    __weak typeof(self) weakSelf = self;
+    UIAlertAction *retry = [UIAlertAction actionWithTitle:@"Try Again" style:UIAlertActionStyleDefault
+                                                  handler:^(__unused UIAlertAction *action) {
+        typeof(self) s = weakSelf;
+        if (!s || s.finished) return;
+        ApolloLog(@"[WebAuth] Retrying: %@", ApolloLogURL(retryURL));
+        [s.webView loadRequest:[NSURLRequest requestWithURL:retryURL]];
+    }];
+    [alert addAction:retry];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel
+                                            handler:^(__unused UIAlertAction *action) {
+        [weakSelf _cancelTapped];
+    }]];
+    alert.preferredAction = retry;
+    [top presentViewController:alert animated:YES completion:nil];
 }
 
 @end

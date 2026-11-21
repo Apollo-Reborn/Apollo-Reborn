@@ -668,60 +668,6 @@ typedef NS_ENUM(NSInteger, Tag) {
     [self apollo_textFieldInCell:cell].secureTextEntry = secure;
 }
 
-- (NSArray<NSString *> *)registeredURLSchemes {
-    NSArray *urlTypes = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleURLTypes"];
-    NSMutableArray *schemes = [NSMutableArray array];
-    for (NSDictionary *urlType in urlTypes) {
-        NSArray *urlSchemes = urlType[@"CFBundleURLSchemes"];
-        if (urlSchemes) {
-            for (NSString *scheme in urlSchemes) {
-                if (![scheme hasPrefix:@"twitterkit-"]) {
-                    [schemes addObject:scheme];
-                }
-            }
-        }
-    }
-    return schemes;
-}
-
-- (BOOL)isRedirectURISchemeValid:(NSString *)uriString {
-    if (uriString.length == 0) {
-        return YES; // Empty uses default, which is valid
-    }
-    NSURL *url = [NSURL URLWithString:uriString];
-    NSString *scheme = [url scheme];
-    if (!scheme) {
-        return NO;
-    }
-    NSArray *registeredSchemes = [self registeredURLSchemes];
-    for (NSString *registered in registeredSchemes) {
-        if ([scheme caseInsensitiveCompare:registered] == NSOrderedSame) {
-            return YES;
-        }
-    }
-    return NO;
-}
-
-- (BOOL)apollo_usesCustomOAuthSignIn {
-    return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseCustomOAuthSignIn];
-}
-
-- (NSString *)apollo_redirectURIDetailText {
-    if ([self apollo_usesCustomOAuthSignIn]) {
-        return @"Must match the redirect URI registered with your Reddit API app. Any URI scheme is supported, including http/https (required for \"Web app\" Reddit API clients).";
-    }
-
-    NSString *registered = [[self registeredURLSchemes] componentsJoinedByString:@", "];
-    if (registered.length == 0) registered = @"none";
-    return [NSString stringWithFormat:@"Must match the app whose API key you're using. URI scheme (part before ://) must be registered in Info.plist under CFBundleURLTypes. Registered: %@", registered];
-}
-
-- (void)apollo_applyRedirectURITextColorToCell:(UITableViewCell *)cell {
-    UITextField *textField = [self apollo_textFieldInCell:cell];
-    if (!textField) return;
-    textField.textColor = ([self apollo_usesCustomOAuthSignIn] || [self isRedirectURISchemeValid:textField.text]) ? [UIColor labelColor] : [UIColor systemRedColor];
-}
-
 - (UIImage *)decodeBase64ToImage:(NSString *)strEncodeData {
     NSData *data = [[NSData alloc]initWithBase64EncodedString:strEncodeData options:NSDataBase64DecodingIgnoreUnknownCharacters];
     return [UIImage imageWithData:data];
@@ -1627,8 +1573,7 @@ typedef NS_ENUM(NSInteger, Tag) {
                                                                      placeholder:defaultRedirectURI
                                                                             text:sRedirectURI
                                                                              tag:TagRedirectURI
-                                                                          detail:[weakSelf apollo_redirectURIDetailText]];
-            [weakSelf apollo_applyRedirectURITextColorToCell:cell];
+                                                                          detail:@"Must match the redirect URI registered with your Reddit API app. Any URI scheme is supported, including http/https (required for \"Web app\" Reddit API clients)."];
             return cell ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
         }
                                   onSelect:nil];
@@ -1720,18 +1665,6 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (ApolloSettingsSection *)buildAPIKeysSignInSection {
     __weak typeof(self) weakSelf = self;
 
-    ApolloSettingsRow *universalOAuth =
-        [ApolloSettingsRow customRowWithID:@"api.universalOAuth"
-                                      cell:^UITableViewCell *(__unused UITableView *tableView, __unused ApolloSettingsRow *row) {
-            return [weakSelf switchCellWithIdentifier:@"Cell_API_CustomOAuth"
-                                                label:@"Universal OAuth Sign-In"
-                                               detail:@"Signs in with an in-app web view so any Redirect URI works, including http/https (\"Web app\" Reddit API clients). Turn off for Apollo's native sign-in."
-                                                   on:[weakSelf apollo_usesCustomOAuthSignIn]
-                                               action:@selector(customOAuthSignInSwitchToggled:)]
-                ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
-        }
-                                  onSelect:nil];
-
     // reddit.com web sign-in, surfaced outside the Polls screen (issue #847):
     // the session powers polls, approximate vote breakdowns, and future
     // web-only features, so it belongs where accounts live. The Polls screen
@@ -1806,7 +1739,7 @@ typedef NS_ENUM(NSInteger, Tag) {
                                             footer:@"Choose how accounts sign in, or get help setting up your keys. "
                                                     "The reddit.com web sign-in unlocks features Reddit's API doesn't offer, "
                                                     "like polls and approximate vote breakdowns."
-                                              rows:@[ universalOAuth, webSignIn, troubleshooting, setupGuide ]];
+                                              rows:@[ webSignIn, troubleshooting, setupGuide ]];
 }
 
 #pragma mark - reddit.com web sign-in (issue #847)
@@ -4851,7 +4784,6 @@ static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
         textField.text = [textField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
         sRedirectURI = textField.text;
         [[NSUserDefaults standardUserDefaults] setValue:sRedirectURI forKey:UDKeyRedirectURI];
-        textField.textColor = ([self apollo_usesCustomOAuthSignIn] || [self isRedirectURISchemeValid:textField.text]) ? [UIColor labelColor] : [UIColor systemRedColor];
     } else if (textField.tag == TagUserAgent) {
         textField.text = [textField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
         sUserAgent = textField.text;
@@ -5138,12 +5070,6 @@ static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
     valueLabel.text = [NSString stringWithFormat:@"%.2f", snapped];
     sAllPlusNSFWBoost = snapped;
     [[NSUserDefaults standardUserDefaults] setDouble:snapped forKey:UDKeyAllPlusNSFWBoost];
-}
-
-- (void)customOAuthSignInSwitchToggled:(UISwitch *)sender {
-    [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyUseCustomOAuthSignIn];
-    // The Redirect URI row's explainer text and validity color both depend on this.
-    [self reloadRowWithID:@"api.redirectURI"];
 }
 
 // Subreddit List Enhancements, Modern Subreddit Dividers and Hide Multireddit
