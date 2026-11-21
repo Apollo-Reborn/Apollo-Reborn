@@ -654,6 +654,35 @@ static ApolloScrollReturn *ApolloScrollReturnState(UIViewController *owner) {
 }
 %end
 
+// In the Duo split the thread's page spans the window, so a top tap above the
+// feed reached it too. Keep the tap's location for scrollViewShouldScrollToTop:.
+static BOOL sApolloTopTapHasLocation;
+static CGPoint sApolloTopTapLocation;
+
+%hook UIScrollView
+- (void)_scrollToTopFromTouchAtScreenLocation:(CGPoint)location resultHandler:(id)handler {
+    BOOL hadLocation = sApolloTopTapHasLocation;
+    CGPoint previous = sApolloTopTapLocation;
+    sApolloTopTapHasLocation = YES;
+    sApolloTopTapLocation = location;
+    @try {
+        %orig;
+    } @finally {
+        sApolloTopTapHasLocation = hadLocation;
+        sApolloTopTapLocation = previous;
+    }
+}
+%end
+
+static BOOL ApolloTopTapIsOutsideSplitColumn(UIViewController *owner) {
+    UIWindow *window = owner.view.window;
+    if (!sApolloTopTapHasLocation || !window) return NO;
+    CGRect column = ApolloDuoSplitContentFrame(owner, window);
+    if (CGRectIsNull(column)) return NO;
+    CGFloat x = [window convertPoint:sApolloTopTapLocation fromWindow:nil].x;
+    return x < CGRectGetMinX(column) || x >= CGRectGetMaxX(column);
+}
+
 %hook ApolloScrollReturnTableController
 - (void)textFieldEditingChangedWithSender:(id)sender {
     [objc_getAssociatedObject(self, &kApolloScrollReturn) clearAnimated:YES];
@@ -677,6 +706,10 @@ static ApolloScrollReturn *ApolloScrollReturnState(UIViewController *owner) {
 }
 - (BOOL)scrollViewShouldScrollToTop:(UIScrollView *)sender {
     UIViewController *owner = (UIViewController *)self;
+    if (ApolloTopTapIsOutsideSplitColumn(owner)) {
+        ApolloLog(@"[ScrollReturn] Top tap outside %@'s split column; left alone", NSStringFromClass(owner.class));
+        return NO;
+    }
     ApolloScrollReturn *state = ApolloScrollReturnState(owner);
     UIScrollView *scroll = state.scrollView;
     if (!scroll || !owner.view.window || owner.navigationController.topViewController != owner) return %orig;
@@ -697,6 +730,23 @@ static ApolloScrollReturn *ApolloScrollReturnState(UIViewController *owner) {
     }
     [state scrollToTopSavingPosition];
     return NO;
+}
+%end
+
+// The Duo's only scroll-to-top is iOS 27's 64pt top tap region
+// (-[UIWindow _addWindowTopTapRegion]), which skips a tap another view takes.
+// Give a minimized header's area to the bar so the tap doesn't open a post.
+%hook UINavigationBar
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *hit = %orig(point, event);
+    if (!ApolloTopBarMinimizedHeaderContainsPoint(self, point)) return hit;
+    static NSTimeInterval lastLoggedTouch = -1;
+    if (hit != self && event.timestamp != lastLoggedTouch) {
+        lastLoggedTouch = event.timestamp;
+        ApolloLog(@"[ScrollReturn] Hidden header took a top tap from %@",
+            hit ? NSStringFromClass(hit.class) : @"the content below");
+    }
+    return self;
 }
 %end
 

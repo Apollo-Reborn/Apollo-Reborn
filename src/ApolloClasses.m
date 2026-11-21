@@ -112,6 +112,7 @@ Class ApolloClassHollaView;
 Class ApolloClassMessageInputBar;
 Class ApolloClassTranslatorViewController;
 Class ApolloClassUIBarBadgeView;
+Class ApolloClassUIBarContentView;
 Class ApolloClassUITabButton;
 Class ApolloClassUIButtonBarButton;
 Class ApolloClassUIButtonLabel;
@@ -255,6 +256,7 @@ __attribute__((constructor)) static void ApolloClassesResolve(void) {
     ApolloClassMessageInputBar = objc_getClass("_TtC6Apollo15MessageInputBar");
     ApolloClassTranslatorViewController = objc_getClass("_TtC6Apollo24TranslatorViewController");
     ApolloClassUIBarBadgeView = objc_getClass("_UIBarBadgeView");
+    ApolloClassUIBarContentView = objc_getClass("_UIBarContentView");
     ApolloClassUITabButton = objc_getClass("_UITabButton");
     ApolloClassUIButtonBarButton = objc_getClass("_UIButtonBarButton");
     ApolloClassUIButtonLabel = objc_getClass("UIButtonLabel");

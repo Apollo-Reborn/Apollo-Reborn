@@ -179,6 +179,26 @@ void ApolloTopBarApplyNativeScrollPolicy(UIViewController *controller,
         (long)behavior, setsSafeArea, editing, topJump, NSStringFromClass(controller.class));
 }
 
+BOOL ApolloTopBarMinimizedHeaderContainsPoint(UINavigationBar *bar, CGPoint point) {
+    if (!sHideTopBarOnScroll || !ApolloDuoUsesAdaptiveBars()) return NO;
+    if (!bar.window || bar.hidden || bar.alpha < 0.01 || !bar.userInteractionEnabled) return NO;
+    CGRect bounds = bar.bounds;
+    CGFloat windowTop = -[bar convertPoint:CGPointZero toView:nil].y;
+    if (point.y < windowTop || point.y >= CGRectGetMaxY(bounds) ||
+        point.x < CGRectGetMinX(bounds) || point.x >= CGRectGetMaxX(bounds)) return NO;
+    // Minimizing slides the bar's content view up out of the bar.
+    UIView *content = nil;
+    for (UIView *view in bar.subviews) {
+        if ([view isKindOfClass:ApolloClassUIBarContentView]) {
+            content = view;
+            break;
+        }
+    }
+    if (!content || CGRectGetMidY(content.frame) >= 0) return NO;
+    id navigation = bar.delegate;
+    return [navigation isKindOfClass:UINavigationController.class] && ApolloTopBarIsMainNavigation(navigation);
+}
+
 static void ApolloTopBarRestoreHeaderPart(ApolloTopBarHeaderPart *part) {
     [part.view.layer removeAnimationForKey:ApolloTopBarScrollAnimationKey];
     part.view.userInteractionEnabled = part.originalInteractionEnabled;
