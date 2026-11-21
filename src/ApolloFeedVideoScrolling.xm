@@ -2,6 +2,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
+#import <objc/message.h>
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
@@ -97,6 +98,7 @@ static const int32_t kApolloInlineVideoTimeObserverTimescale = 30;
 - (void)setPeriodicTimeObserverTimescale:(int32_t)timescale;
 - (id)asset;
 - (id)player;
+- (id)currentItem;
 - (id)constructPlayerItem;
 - (void)setCurrentItem:(id)item;
 - (void)setPlayer:(id)player;
@@ -110,6 +112,7 @@ static const int32_t kApolloInlineVideoTimeObserverTimescale = 30;
 @protocol ApolloVideoNodeDelegateProbe <NSObject>
 @optional
 - (void)videoNode:(id)videoNode didSetCurrentItem:(id)item;
+- (void)videoNode:(id)videoNode willChangePlayerState:(NSInteger)fromState toState:(NSInteger)toState;
 @end
 
 #if APOLLO_SIM_BUILD
@@ -143,51 +146,132 @@ static int32_t ApolloInlineVideoTimeObserverTimescale(void) {
 // =============================================================================
 
 static BOOL sFeedVideoPrewarmAvailable = NO;   // every selector we rely on exists (checked in %ctor)
+static BOOL sFeedVideoPrewarmCanTryLock = NO;  // the node answers -tryLock/-unlock (checked in %ctor)
 
 static dispatch_queue_t ApolloFeedVideoPrewarmQueue(void) {
     static dispatch_queue_t queue;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        // Serial: preloads arrive in bursts while flicking, and one construction
-        // at a time is plenty (each is a few ms); user-initiated because the
-        // cell is about to scroll on screen.
+        // Concurrent, not serial (issues #1698/#1714/#1716/#1720/#1721 on
+        // upstream): with a serial queue one build that stalls inside
+        // AVFoundation — a slow fig player creation, or -constructPlayerItem
+        // waiting on the node lock — held every later feed video behind it, so
+        // one stuck GIF became "multiple after will be stuck as well" (#1714).
+        // Builds are independent (each touches only its own node), so they
+        // must not wait on each other. User-initiated because the cell is about
+        // to scroll on screen.
         dispatch_queue_attr_t attr = dispatch_queue_attr_make_with_qos_class(
-            DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, 0);
+            DISPATCH_QUEUE_CONCURRENT, QOS_CLASS_USER_INITIATED, 0);
         queue = dispatch_queue_create("app.apolloreborn.feed-video-prewarm", attr);
     });
     return queue;
 }
 
-// The asset whose player is being built for this node (main thread only).
-// Keyed by asset, not a flag: a node can leave and re-enter the preload range
-// while a build is in flight, which gives it a fresh asset; the build for the
-// old one must then be dropped and a new one started, not swallowed.
+// A build that has not handed back a player after this long is treated as
+// stalled. A healthy build takes a few ms (see Overview §2); 2.5 s is far past
+// that yet short enough that a stuck spinner recovers on its own.
+static const NSTimeInterval kApolloFeedVideoPrewarmTimeout = 2.5;
+// Builds slower than this are logged in release logs, so in-app reports show
+// whether the pre-warm is where feed media stalls.
+static const NSTimeInterval kApolloFeedVideoPrewarmSlowLog = 0.5;
+
+// One background build for one node. Identity (not the asset) decides which
+// build may attach: a node can leave and re-enter the preload range, get a
+// fresh asset, or have a stalled build replaced by a retry, and only the
+// newest build's result may be used — late results are dropped, never
+// swallowed silently.
+@interface ApolloFeedVideoPrewarmBuild : NSObject
+@property (nonatomic, strong) AVAsset *asset;
+@property (nonatomic, copy) NSArray *keys;
+@property (nonatomic, assign) NSUInteger attempt;   // 1 = first build, 2 = retry after a stall
+@property (nonatomic, assign) CFTimeInterval startTime;
+@property (nonatomic, assign) NSUInteger lockWaits; // timer checks that found the node lock still held
+@end
+@implementation ApolloFeedVideoPrewarmBuild
+@end
+
+// The build currently allowed to attach to this node (main thread only).
 static const void *kApolloFeedVideoPrewarmAssetKey = &kApolloFeedVideoPrewarmAssetKey;
-// Set while the completion re-runs Texture's own -prepareToPlayAsset:withKeys:
-// for a node whose background build produced no player (the hook lets that
-// call straight through to %orig).
+// Set while Texture's own -prepareToPlayAsset:withKeys: is re-run for a node
+// whose background build produced no player or stalled twice (the hook lets
+// that call straight through to %orig).
 static const void *kApolloFeedVideoPrewarmBypassKey = &kApolloFeedVideoPrewarmBypassKey;
 
-// Returns YES when the player construction was taken over (the caller must
-// not run Texture's -prepareToPlayAsset:withKeys:); NO hands the call back to
-// Texture untouched — every failure or "already has a player" case goes down
-// the stock path so its error reporting stays exactly as before.
-static BOOL ApolloFeedVideoPrewarmPlayer(ASVideoNode *node, AVAsset *asset, NSArray *keys) {
-    if (!sFeedVideoPrewarmAvailable || !asset) return NO;
-    // Texture reads the _player ivar here (an existing player takes the
-    // replaceCurrentItemWithPlayerItem: path) — same test.
-    if (ApolloObjectIvar(node, "_player")) return NO;
-    if (objc_getAssociatedObject(node, kApolloFeedVideoPrewarmAssetKey) == asset) return YES; // in flight
-    // Texture's own preflight, so a failed key or an unplayable asset still
-    // reaches its delegate error path (videoNode:didFailToLoadValueForKey:...).
-    for (NSString *key in keys) {
-        NSError *error = nil;
-        if ([asset statusOfValueForKey:key error:&error] != AVKeyValueStatusLoaded) return NO;
-    }
-    if (![asset isPlayable]) return NO;
+static void ApolloFeedVideoPrewarmRunStockPath(ASVideoNode *node, AVAsset *asset, NSArray *keys) {
+    objc_setAssociatedObject(node, kApolloFeedVideoPrewarmBypassKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [node prepareToPlayAsset:asset withKeys:keys];
+    objc_setAssociatedObject(node, kApolloFeedVideoPrewarmBypassKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
 
-    objc_setAssociatedObject(node, kApolloFeedVideoPrewarmAssetKey, asset, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+static void ApolloFeedVideoPrewarmStart(ASVideoNode *node, AVAsset *asset, NSArray *keys, NSUInteger attempt);
+static void ApolloFeedVideoPrewarmArmTimeout(ASVideoNode *node, ApolloFeedVideoPrewarmBuild *build);
+
+// Main thread. NO when the node lock is held right now. Texture builds the
+// player item under that lock, so if a stalled build is stuck inside
+// -constructPlayerItem holding it, running the stock path here would block the
+// main thread until the build lets go (forever, if it never does). Without
+// -tryLock we can't tell, so keep the stock fallback.
+static BOOL ApolloFeedVideoPrewarmNodeLockIsFree(ASVideoNode *node) {
+    if (!sFeedVideoPrewarmCanTryLock) return YES;
+    if (!((BOOL (*)(id, SEL))objc_msgSend)(node, @selector(tryLock))) return NO;
+    ((void (*)(id, SEL))objc_msgSend)(node, @selector(unlock));
+    return YES;
+}
+
+// Main thread: the build's timer fired. If it is still the node's current
+// build it never came back — supersede it so its late result is dropped, then
+// retry once off the main thread (a retry can't freeze the UI even if the node
+// lock is still held). A second stall hands the node to Texture's stock path,
+// i.e. Apollo's behaviour with Smoother Video Scrolling off — but only once
+// the node lock is free; until then the retry stays current (it is waiting on
+// that lock off the main thread and attaches as soon as it gets it) and the
+// timer checks again, so a stuck lock leaves a spinner, never a frozen app.
+static void ApolloFeedVideoPrewarmCheckTimeout(ASVideoNode *node, ApolloFeedVideoPrewarmBuild *build) {
+    if (!node || objc_getAssociatedObject(node, kApolloFeedVideoPrewarmAssetKey) != build) return; // attached or superseded
+    if (ApolloObjectIvar(node, "_player")) { // Texture attached a player another way
+        objc_setAssociatedObject(node, kApolloFeedVideoPrewarmAssetKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return;
+    }
+    if (build.attempt >= 2 && !ApolloFeedVideoPrewarmNodeLockIsFree(node)) {
+        build.lockWaits += 1;
+        if (build.lockWaits == 1 || build.lockWaits % 12 == 0) {
+            ApolloLog(@"[FeedVideoScrolling] pre-warm retry stalled %.1fs and the node lock is still held node=%p — waiting off the main thread (check %lu)",
+                      CACurrentMediaTime() - build.startTime, node, (unsigned long)build.lockWaits);
+        }
+        ApolloFeedVideoPrewarmArmTimeout(node, build);
+        return;
+    }
+    objc_setAssociatedObject(node, kApolloFeedVideoPrewarmAssetKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (build.attempt < 2) {
+        ApolloLog(@"[FeedVideoScrolling] pre-warm stalled %.1fs node=%p — retrying in the background",
+                  CACurrentMediaTime() - build.startTime, node);
+        ApolloFeedVideoPrewarmStart(node, build.asset, build.keys, build.attempt + 1);
+        return;
+    }
+    ApolloLog(@"[FeedVideoScrolling] pre-warm retry also stalled %.1fs node=%p — falling back to Texture's path",
+              CACurrentMediaTime() - build.startTime, node);
+    ApolloFeedVideoPrewarmRunStockPath(node, build.asset, build.keys);
+}
+
+static void ApolloFeedVideoPrewarmArmTimeout(ASVideoNode *node, ApolloFeedVideoPrewarmBuild *build) {
     __weak ASVideoNode *weakNode = node;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kApolloFeedVideoPrewarmTimeout * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        ApolloFeedVideoPrewarmCheckTimeout(weakNode, build);
+    });
+}
+
+static void ApolloFeedVideoPrewarmStart(ASVideoNode *node, AVAsset *asset, NSArray *keys, NSUInteger attempt) {
+    ApolloFeedVideoPrewarmBuild *build = [ApolloFeedVideoPrewarmBuild new];
+    build.asset = asset;
+    build.keys = keys;
+    build.attempt = attempt;
+    build.startTime = CACurrentMediaTime();
+    objc_setAssociatedObject(node, kApolloFeedVideoPrewarmAssetKey, build, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloFeedVideoPrewarmArmTimeout(node, build);
+
+    __weak ASVideoNode *weakNode = node;
+
     dispatch_async(ApolloFeedVideoPrewarmQueue(), ^{
         ASVideoNode *bgNode = weakNode;
         if (!bgNode) return;
@@ -196,14 +280,26 @@ static BOOL ApolloFeedVideoPrewarmPlayer(ASVideoNode *node, AVAsset *asset, NSAr
         // URL creates its own AVURLAsset and stores it into _asset — the same
         // thing that happens on the stock path, just not on the main thread.
         AVPlayerItem *item = [bgNode constructPlayerItem];
+        bgNode = nil; // don't keep the node alive across the AVPlayer build
         AVAsset *itemAsset = item.asset;
         AVPlayer *player = item ? [AVPlayer playerWithPlayerItem:item] : nil;
+        CFTimeInterval buildSeconds = CACurrentMediaTime() - build.startTime;
         dispatch_async(dispatch_get_main_queue(), ^{
             ASVideoNode *strongNode = weakNode;
             if (!strongNode) return;
-            if (objc_getAssociatedObject(strongNode, kApolloFeedVideoPrewarmAssetKey) != asset) {
-                // A newer asset started its own build; this one is stale.
-                os_log_debug(ApolloFixLog(), "[ApolloFix] [FeedVideoScrolling] pre-warmed player dropped (superseded) node=%p", strongNode);
+            if (buildSeconds >= kApolloFeedVideoPrewarmSlowLog) {
+                ApolloLog(@"[FeedVideoScrolling] slow pre-warm build %.2fs node=%p attempt=%lu player=%d",
+                          buildSeconds, strongNode, (unsigned long)build.attempt, player != nil);
+            }
+            if (objc_getAssociatedObject(strongNode, kApolloFeedVideoPrewarmAssetKey) != build) {
+                // A newer build (new asset, or the retry after a stall) owns
+                // this node now; this result is stale.
+                if (buildSeconds >= kApolloFeedVideoPrewarmTimeout) {
+                    ApolloLog(@"[FeedVideoScrolling] late pre-warm result dropped after %.2fs node=%p attempt=%lu",
+                              buildSeconds, strongNode, (unsigned long)build.attempt);
+                } else {
+                    os_log_debug(ApolloFixLog(), "[ApolloFix] [FeedVideoScrolling] pre-warmed player dropped (superseded) node=%p", strongNode);
+                }
                 return;
             }
             objc_setAssociatedObject(strongNode, kApolloFeedVideoPrewarmAssetKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -222,9 +318,7 @@ static BOOL ApolloFeedVideoPrewarmPlayer(ASVideoNode *node, AVAsset *asset, NSAr
                 // Texture's own path so it reports/handles the failure exactly
                 // as it would have without us.
                 ApolloLog(@"[FeedVideoScrolling] pre-warm produced no player node=%p — falling back to Texture's path", strongNode);
-                objc_setAssociatedObject(strongNode, kApolloFeedVideoPrewarmBypassKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                [strongNode prepareToPlayAsset:asset withKeys:keys];
-                objc_setAssociatedObject(strongNode, kApolloFeedVideoPrewarmBypassKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                ApolloFeedVideoPrewarmRunStockPath(strongNode, asset, keys);
                 return;
             }
             // The tail of Texture's -prepareToPlayAsset:withKeys:, through its
@@ -245,12 +339,37 @@ static BOOL ApolloFeedVideoPrewarmPlayer(ASVideoNode *node, AVAsset *asset, NSAr
 #else
             (void)t0;
 #endif
+            if (build.attempt > 1) {
+                ApolloLog(@"[FeedVideoScrolling] pre-warm retry attached a player after a stall node=%p", strongNode);
+            }
             static dispatch_once_t once;
             dispatch_once(&once, ^{
                 ApolloLog(@"[FeedVideoScrolling] first pre-warmed player attached (built off the main thread) node=%p", strongNode);
             });
         });
     });
+}
+
+// Returns YES when the player construction was taken over (the caller must
+// not run Texture's -prepareToPlayAsset:withKeys:); NO hands the call back to
+// Texture untouched — every failure or "already has a player" case goes down
+// the stock path so its error reporting stays exactly as before.
+static BOOL ApolloFeedVideoPrewarmPlayer(ASVideoNode *node, AVAsset *asset, NSArray *keys) {
+    if (!sFeedVideoPrewarmAvailable || !asset) return NO;
+    // Texture reads the _player ivar here (an existing player takes the
+    // replaceCurrentItemWithPlayerItem: path) — same test.
+    if (ApolloObjectIvar(node, "_player")) return NO;
+    ApolloFeedVideoPrewarmBuild *inFlight = objc_getAssociatedObject(node, kApolloFeedVideoPrewarmAssetKey);
+    if (inFlight.asset == asset) return YES; // in flight; its timer recovers it if it stalls
+    // Texture's own preflight, so a failed key or an unplayable asset still
+    // reaches its delegate error path (videoNode:didFailToLoadValueForKey:...).
+    for (NSString *key in keys) {
+        NSError *error = nil;
+        if ([asset statusOfValueForKey:key error:&error] != AVKeyValueStatusLoaded) return NO;
+    }
+    if (![asset isPlayable]) return NO;
+
+    ApolloFeedVideoPrewarmStart(node, asset, keys, 1);
     return YES;
 }
 
@@ -270,6 +389,30 @@ static BOOL ApolloFeedCellHasInlineVideo(id cell) {
 // =============================================================================
 // MARK: - Hooks
 // =============================================================================
+
+// Starts loading the video tracks' sizes as soon as a player is attached, so
+// Apollo's RichMediaNode layout (which also reads -naturalSize, on the main
+// thread when Texture lays out there) finds them loaded instead of loading
+// them synchronously. Never blocks: everything here is asynchronous.
+static void ApolloFeedVideoPreloadVideoSizes(AVAsset *asset) {
+    if (!asset) return;
+    void (^loadSizes)(NSArray<AVAssetTrack *> *) = ^(NSArray<AVAssetTrack *> *tracks) {
+        for (AVAssetTrack *track in tracks) {
+            if ([track statusOfValueForKey:@"naturalSize" error:NULL] == AVKeyValueStatusLoaded) continue;
+            [track loadValuesAsynchronouslyForKeys:@[@"naturalSize"] completionHandler:^{}];
+        }
+    };
+    if (@available(iOS 15.0, *)) {
+        [asset loadTracksWithMediaType:AVMediaTypeVideo completionHandler:^(NSArray<AVAssetTrack *> *tracks, NSError *error) {
+            if (tracks.count) loadSizes(tracks);
+        }];
+    } else {
+        [asset loadValuesAsynchronouslyForKeys:@[@"tracks"] completionHandler:^{
+            if ([asset statusOfValueForKey:@"tracks" error:NULL] != AVKeyValueStatusLoaded) return;
+            loadSizes([asset tracksWithMediaType:AVMediaTypeVideo]);
+        }];
+    }
+}
 
 %group FeedVideoObserver
 
@@ -293,6 +436,7 @@ static BOOL ApolloFeedCellHasInlineVideo(id cell) {
         os_log_debug(ApolloFixLog(), "[ApolloFix] [FeedVideoScrolling] leaving non-default timescale %d on %{public}@",
                        timescale, [self class]);
     }
+    ApolloFeedVideoPreloadVideoSizes(player.currentItem.asset);
     %orig;
 }
 
@@ -321,6 +465,92 @@ static BOOL ApolloFeedCellHasInlineVideo(id cell) {
 - (BOOL)neverShowPlaceholders {
     if (sFeedVideoScrollSmoothing && ApolloFeedCellHasInlineVideo(self)) return NO;
     return %orig;
+}
+
+%end
+
+%end
+
+// =============================================================================
+// MARK: - Video size without blocking the main thread
+// =============================================================================
+//
+// Apollo's -[RichMediaNode videoNode:willChangePlayerState:toState:] walks the
+// player item's tracks, reads the video track's -naturalSize, compares it with
+// the node's bounds and then sets the player layer's videoGravity and un-hides
+// it. When that track's size hasn't loaded yet the read loads it synchronously
+// on the main thread. AVFoundation reports it ("[AVFoundation Hang Risk] Asset
+// track property "naturalSize" accessed synchronously before being loaded"),
+// and the wait also holds up every other asset's track property loads, so on a
+// slow host one feed video can freeze scrolling and leave the next ones
+// spinning (#1698/#1714/#1720/#1721 on upstream). Seen 84 times in one
+// 5-minute feed session on an iPhone 15 Pro (build 374).
+//
+// When a video track's size isn't loaded, load it asynchronously first and
+// replay the delegate call on the main thread once it is. Only a node's newest
+// call is replayed, and only while the node still shows the same item. Calls
+// whose size is already loaded run untouched.
+
+static const void *kApolloRichMediaSizeGenerationKey = &kApolloRichMediaSizeGenerationKey;
+static BOOL sApolloRichMediaSizeReplaying = NO; // main thread only
+
+static NSArray<AVAssetTrack *> *ApolloRichMediaUnloadedVideoTracks(AVPlayerItem *item) {
+    NSMutableArray<AVAssetTrack *> *pending = nil;
+    for (AVPlayerItemTrack *itemTrack in item.tracks) {
+        AVAssetTrack *track = itemTrack.assetTrack;
+        if (![track.mediaType isEqualToString:AVMediaTypeVideo]) continue;
+        if ([track statusOfValueForKey:@"naturalSize" error:NULL] == AVKeyValueStatusLoaded) continue;
+        if (!pending) pending = [NSMutableArray array];
+        [pending addObject:track];
+    }
+    return pending;
+}
+
+static NSUInteger ApolloRichMediaBumpSizeGeneration(id node) {
+    NSUInteger generation = [objc_getAssociatedObject(node, kApolloRichMediaSizeGenerationKey) unsignedIntegerValue] + 1;
+    objc_setAssociatedObject(node, kApolloRichMediaSizeGenerationKey, @(generation), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return generation;
+}
+
+%group FeedVideoNaturalSize
+
+%hook RichMediaNode
+
+- (void)videoNode:(ASVideoNode *)videoNode willChangePlayerState:(NSInteger)fromState toState:(NSInteger)toState {
+    if (sApolloRichMediaSizeReplaying || !videoNode) { %orig; return; }
+    NSUInteger generation = ApolloRichMediaBumpSizeGeneration(self);
+    AVPlayerItem *item = [videoNode currentItem];
+    NSArray<AVAssetTrack *> *pending = item ? ApolloRichMediaUnloadedVideoTracks(item) : nil;
+    if (pending.count == 0) { %orig; return; }
+
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        ApolloLog(@"[FeedVideoScrolling] video size not loaded at a player state change — loading it off the main thread before Apollo reads it");
+    });
+    CFTimeInterval start = CACurrentMediaTime();
+    __weak id weakSelf = self;
+    __weak ASVideoNode *weakVideoNode = videoNode;
+    __weak AVPlayerItem *weakItem = item;
+    dispatch_group_t group = dispatch_group_create();
+    for (AVAssetTrack *track in pending) {
+        dispatch_group_enter(group);
+        [track loadValuesAsynchronouslyForKeys:@[@"naturalSize"] completionHandler:^{ dispatch_group_leave(group); }];
+    }
+    dispatch_group_notify(group, dispatch_get_main_queue(), ^{
+        id strongSelf = weakSelf;
+        ASVideoNode *strongVideoNode = weakVideoNode;
+        AVPlayerItem *strongItem = weakItem;
+        if (!strongSelf || !strongVideoNode || !strongItem) return;
+        if ([objc_getAssociatedObject(strongSelf, kApolloRichMediaSizeGenerationKey) unsignedIntegerValue] != generation) return; // a newer state change ran
+        if ([strongVideoNode currentItem] != strongItem) return; // the node moved on to another item
+        CFTimeInterval seconds = CACurrentMediaTime() - start;
+        if (seconds >= kApolloFeedVideoPrewarmSlowLog) {
+            ApolloLog(@"[FeedVideoScrolling] video size took %.2fs to load node=%p (main thread stayed free)", seconds, strongVideoNode);
+        }
+        sApolloRichMediaSizeReplaying = YES;
+        [strongSelf videoNode:strongVideoNode willChangePlayerState:fromState toState:toState];
+        sApolloRichMediaSizeReplaying = NO;
+    });
 }
 
 %end
@@ -584,11 +814,24 @@ static void ApolloLogRangeTuningOnce(void) {
         && [videoNodeClass instancesRespondToSelector:@selector(setPlayer:)]
         && [videoNodeClass instancesRespondToSelector:@selector(generatePlaceholderImage)]
         && class_getInstanceVariable(videoNodeClass, "_player") != NULL;
+    sFeedVideoPrewarmCanTryLock = [videoNodeClass instancesRespondToSelector:@selector(tryLock)]
+        && [videoNodeClass instancesRespondToSelector:@selector(unlock)];
     %init(FeedVideoObserver, ASVideoNode = videoNodeClass);
-    ApolloLog(@"[FeedVideoScrolling] hook installed: ASVideoNode addPlayerObservers: (timescale %d → %d), prepareToPlayAsset:withKeys: (pre-warm %@, smoothing %@)",
+    ApolloLog(@"[FeedVideoScrolling] hook installed: ASVideoNode addPlayerObservers: (timescale %d → %d), prepareToPlayAsset:withKeys: (pre-warm %@, lock check %@, smoothing %@)",
               kTextureDefaultPeriodicTimeObserverTimescale, kApolloInlineVideoTimeObserverTimescale,
               sFeedVideoPrewarmAvailable ? @"available" : @"UNAVAILABLE — stock path",
+              sFeedVideoPrewarmCanTryLock ? @"on" : @"off",
               sFeedVideoScrollSmoothing ? @"on" : @"off");
+
+    Class richMediaClass = objc_getClass("_TtC6Apollo13RichMediaNode");
+    if (richMediaClass
+        && [richMediaClass instancesRespondToSelector:@selector(videoNode:willChangePlayerState:toState:)]
+        && [videoNodeClass instancesRespondToSelector:@selector(currentItem)]) {
+        %init(FeedVideoNaturalSize, RichMediaNode = richMediaClass);
+        ApolloLog(@"[FeedVideoScrolling] hook installed: RichMediaNode videoNode:willChangePlayerState:toState: (video size loads off the main thread)");
+    } else {
+        ApolloLog(@"[FeedVideoScrolling] ctor: RichMediaNode=%p lacks videoNode:willChangePlayerState:toState: — video size check stays synchronous", (__bridge void *)richMediaClass);
+    }
 
     Class cellClass = objc_getClass("_TtC6Apollo17LargePostCellNode");
     if (cellClass && [cellClass instancesRespondToSelector:@selector(neverShowPlaceholders)]) {
