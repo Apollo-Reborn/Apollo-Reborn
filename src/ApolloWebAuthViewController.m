@@ -156,20 +156,22 @@ static NSString *ApolloWebAuthConsentSubmitJS(BOOL accept) {
 
 #pragma mark - Sign-in alternatives
 
-// Shown when the sheet opens from Apollo's "Issue Signing In" button (see the
-// SFSafariViewController hook in Tweak.xm). The person just cancelled this
-// same sheet, so reopening it silently looks like the button did nothing.
-// Offer Manual Sign-In (otherwise tucked in the ••• menu) next to a plain
-// retry (a fresh page, as the web view's data store starts empty). Old Reddit
-// isn't offered: its sign-in step is Reddit's same login page (old.reddit.com
-// /login sends signed-out visitors there), and it only differs at the consent
-// page, where the ••• menu still has it.
+// Shown when the sheet opens from Apollo's "Issue Signing In" button after the
+// person already closed this same sheet (see the SFSafariViewController hook
+// in Tweak.xm), so reopening it silently would look like the button did
+// nothing. Offers Manual Sign-In (otherwise tucked in the ••• menu) next to a
+// plain retry (a fresh page, as the web view's data store starts empty).
+// Manual Sign-In needs the Reynard browser and a userscript, so it's named
+// that way rather than offered as an easy way out. Old Reddit isn't offered:
+// its sign-in step is Reddit's same login page (old.reddit.com/login sends
+// signed-out visitors there), and it only differs at the consent page, where
+// the ••• menu still has it.
 - (void)_offerSignInAlternatives {
     if (self.finished || self.presentedViewController) return;
     ApolloLog(@"[WebAuth] Offering sign-in alternatives after \"Issue Signing In\"");
 
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Having Trouble Signing In?"
-                                                                   message:@"Try the Reddit page again, or sign in with another browser and paste the code here."
+                                                                   message:@"Try the Reddit page again. Manual Sign-In uses the Reynard browser and a userscript to get the code."
                                                             preferredStyle:UIAlertControllerStyleAlert];
     __weak typeof(self) weakSelf = self;
     UIAlertAction *retry = [UIAlertAction actionWithTitle:@"Try Again" style:UIAlertActionStyleDefault
@@ -177,7 +179,7 @@ static NSString *ApolloWebAuthConsentSubmitJS(BOOL accept) {
         ApolloLog(@"[WebAuth] Sign-in alternatives: trying the Reddit page again");
     }];
     [alert addAction:retry];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Manual Sign-In" style:UIAlertActionStyleDefault
+    [alert addAction:[UIAlertAction actionWithTitle:@"Manual Sign-In (Reynard)" style:UIAlertActionStyleDefault
                                             handler:^(__unused UIAlertAction *action) {
         ApolloLog(@"[WebAuth] Sign-in alternatives: opening Manual Sign-In");
         [weakSelf _showManualSignIn];

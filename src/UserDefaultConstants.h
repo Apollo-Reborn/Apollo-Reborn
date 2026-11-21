@@ -25,7 +25,6 @@ static NSString *const UDKeyRedirectURI = @"RedirectURI";
 // An account with no entry here falls back to the global client id/secret/redirect
 // URI above.
 static NSString *const UDKeyPerAccountCredentials = @"PerAccountAPICredentials";
-static NSString *const UDKeyUseCustomOAuthSignIn = @"UseCustomOAuthSignIn";
 static NSString *const UDKeyUserAgent = @"UserAgent";
 static NSString *const UDKeyBlockAnnouncements = @"DisableApollonouncements";
 static NSString *const UDKeyEnableFLEX = @"EnableFlexDebugging";
