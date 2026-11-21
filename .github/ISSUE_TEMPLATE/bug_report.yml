@@ -110,6 +110,8 @@ body:
     validations:
       required: true
 
+  # The "Device" label is what .github/scripts/issue-device-label.js reads to
+  # add the `device: …` label, so keep the two in sync.
   - type: input
     id: device
     attributes:
