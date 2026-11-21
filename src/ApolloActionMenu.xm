@@ -198,6 +198,19 @@ static BOOL ApolloActionMenuControllerIsModeratorOnly(id controller) {
 }
 
 static char kApolloActionMenuControllerContextKey;
+static char kApolloActionMenuControllerOwnerKey;
+static __weak UIViewController *sApolloActionMenuArmedOwner = nil;
+
+void ApolloActionMenuArmOwner(UIViewController *owner) {
+    if (!NSThread.isMainThread) return;
+    sApolloActionMenuArmedOwner = owner;
+}
+
+UIViewController *ApolloActionMenuOwnerForController(id controller) {
+    if (!controller) return nil;
+    ApolloActionMenuCaptureContextForController(controller);
+    return [(NSHashTable *)objc_getAssociatedObject(controller, &kApolloActionMenuControllerOwnerKey) anyObject];
+}
 
 void ApolloActionMenuCaptureContextForController(id controller) {
     if (![controller isKindOfClass:ApolloClassActionController]) return;
@@ -218,6 +231,14 @@ void ApolloActionMenuCaptureContextForController(id controller) {
         return;
     }
     objc_setAssociatedObject(controller, &kApolloActionMenuControllerContextKey, context, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    UIViewController *owner = sApolloActionMenuArmedOwner;
+    if (owner) {
+        // Weak, so an open sheet never keeps its feed alive.
+        NSHashTable *holder = [NSHashTable weakObjectsHashTable];
+        [holder addObject:owner];
+        objc_setAssociatedObject(controller, &kApolloActionMenuControllerOwnerKey, holder, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        sApolloActionMenuArmedOwner = nil;
+    }
 }
 
 NSString *ApolloActionMenuContextForController(id controller) {

@@ -5,6 +5,7 @@
 #import "settings/ApolloSetupAssistant.h"
 #import "ApolloSignInSplash.h"
 #import "ApolloSpelling.h"
+#import "ApolloShowHiddenPosts.h"
 #import "settings/ApolloSiriSettingsViewController.h"
 #import "ApolloCommon.h"
 #import "ApolloAppIcon.h"
@@ -3186,6 +3187,68 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                                       perAccountFavorites, sortFavoritesAlphabetically, confirmFavoriteToggle ]];
 }
 
+- (ApolloSettingsSection *)buildSubredditFeedsSection {
+    __weak typeof(self) weakSelf = self;
+
+    ApolloSettingsRow *showHiddenPosts =
+        [ApolloSettingsRow switchRowWithID:@"sub.showHiddenPosts"
+                                     title:@"Show Hidden Posts"
+                                      isOn:^BOOL { return sShowHiddenPostsInSubreddits; }
+                                  onToggle:^(UISwitch *sender) {
+                                      sShowHiddenPostsInSubreddits = sender.isOn;
+                                      [[NSUserDefaults standardUserDefaults] setBool:sender.isOn
+                                                                              forKey:UDKeyShowHiddenPostsInSubreddits];
+                                      // Which saved choices still differ, and so the Reset row, depends on it.
+                                      [weakSelf visibilityDidChange];
+                                  }];
+    ApolloSettingsRow *rememberPerSubreddit =
+        [ApolloSettingsRow switchRowWithID:@"sub.showHiddenPostsRemember"
+                                     title:@"Remember Per Subreddit"
+                                      isOn:^BOOL { return sShowHiddenPostsRememberPerSubreddit; }
+                                  onToggle:^(UISwitch *sender) {
+                                      sShowHiddenPostsRememberPerSubreddit = sender.isOn;
+                                      [[NSUserDefaults standardUserDefaults] setBool:sender.isOn
+                                                                              forKey:UDKeyShowHiddenPostsRememberPerSubreddit];
+                                      // Choices made earlier in this launch are kept too.
+                                      if (sender.isOn) {
+                                          ApolloShowHiddenSaveSessionChoices(sShowHiddenPostsInSubreddits,
+                                                                             [NSUserDefaults standardUserDefaults]);
+                                      }
+                                      [weakSelf visibilityDidChange];
+                                  }];
+    ApolloSettingsRow *resetChoices =
+        [ApolloSettingsRow buttonRowWithID:@"sub.showHiddenPostsReset"
+                                     title:@"Reset Subreddit Choices"
+                                    action:^{
+            [weakSelf promptResetShowHiddenChoicesFromSourceView:[weakSelf cellForRowID:@"sub.showHiddenPostsReset"]];
+        }];
+    resetChoices.visible = ^BOOL {
+        return ApolloShowHiddenSavedChoiceCount(sShowHiddenPostsInSubreddits, [NSUserDefaults standardUserDefaults]) > 0;
+    };
+
+    return [ApolloSettingsSection sectionWithTitle:@"Subreddit Feeds"
+                                            footer:@"Show Hidden Posts: posts you hid show up again in subreddit feeds. Home, Popular, All and multireddits still hide them. Reddit's \"hide posts I voted on\" options don't apply in these feeds either. Pull to refresh an open feed.\n\nA subreddit's ••• menu changes this for that subreddit until Apollo quits. Remember Per Subreddit keeps that choice."
+                                              rows:@[ showHiddenPosts, rememberPerSubreddit, resetChoices ]];
+}
+
+- (void)promptResetShowHiddenChoicesFromSourceView:(UIView *)sourceView {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Reset Subreddit Choices?"
+                                                                   message:@"Every subreddit goes back to the Show Hidden Posts setting."
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"Reset" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
+        ApolloShowHiddenClearChoices([NSUserDefaults standardUserDefaults]);
+        [weakSelf visibilityDidChange];
+    }]];
+    UIPopoverPresentationController *popover = alert.popoverPresentationController;
+    if (popover && sourceView) {
+        popover.sourceView = sourceView;
+        popover.sourceRect = sourceView.bounds;
+    }
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
 - (ApolloSettingsSection *)buildSubredditsLayoutSection {
     __weak typeof(self) weakSelf = self;
 
@@ -5657,6 +5720,7 @@ static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
 }
 - (NSArray<ApolloSettingsSection *> *)buildForm {
     return [@[ [self buildSubredditsMainSection],
+               [self buildSubredditFeedsSection],
                [self buildSubredditsLayoutSection] ]
         arrayByAddingObjectsFromArray:[self buildSubredditsSearchSections]];
 }
