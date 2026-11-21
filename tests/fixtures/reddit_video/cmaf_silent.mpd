@@ -1,0 +1,37 @@
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" mediaPresentationDuration="PT14.049479S" minBufferTime="PT4S" profiles="urn:mpeg:dash:profile:isoff-on-demand:2011" type="static" xsi:schemaLocation="urn:mpeg:dash:schema:mpd:2011 DASH-MPD.xsd">
+  <Period duration="PT14.049479S" id="0">
+    <AdaptationSet contentType="video" id="1" maxFrameRate="15360/512" maxHeight="1052" maxWidth="720" par="13:19" sar="1:1" segmentAlignment="true" startWithSAP="1" subsegmentAlignment="true" subsegmentStartsWithSAP="1">
+      <SupplementalProperty schemeIdUri="urn:mpeg:mpegB:cicp:TransferCharacteristics" value="1" />
+      <Representation bandwidth="189206" codecs="avc1.4d401e" frameRate="15360/512" height="322" id="5" mimeType="video/mp4" width="220">
+        <BaseURL>CMAF_220.mp4</BaseURL>
+        <SegmentBase indexRange="894-973" timescale="15360">
+          <Initialization range="0-893" />
+        </SegmentBase>
+      </Representation>
+      <Representation bandwidth="352250" codecs="avc1.4d401e" frameRate="15360/512" height="394" id="6" mimeType="video/mp4" width="270">
+        <BaseURL>CMAF_270.mp4</BaseURL>
+        <SegmentBase indexRange="894-973" timescale="15360">
+          <Initialization range="0-893" />
+        </SegmentBase>
+      </Representation>
+      <Representation bandwidth="685936" codecs="avc1.4d401e" frameRate="15360/512" height="526" id="7" mimeType="video/mp4" width="360">
+        <BaseURL>CMAF_360.mp4</BaseURL>
+        <SegmentBase indexRange="894-973" timescale="15360">
+          <Initialization range="0-893" />
+        </SegmentBase>
+      </Representation>
+      <Representation bandwidth="1107502" codecs="avc1.4d401f" frameRate="15360/512" height="702" id="8" mimeType="video/mp4" width="480">
+        <BaseURL>CMAF_480.mp4</BaseURL>
+        <SegmentBase indexRange="894-973" timescale="15360">
+          <Initialization range="0-893" />
+        </SegmentBase>
+      </Representation>
+      <Representation bandwidth="1952778" codecs="avc1.4d401f" frameRate="15360/512" height="1052" id="9" mimeType="video/mp4" width="720">
+        <BaseURL>CMAF_720.mp4</BaseURL>
+        <SegmentBase indexRange="894-973" timescale="15360">
+          <Initialization range="0-893" />
+        </SegmentBase>
+      </Representation>
+    </AdaptationSet>
+  </Period>
+</MPD>
