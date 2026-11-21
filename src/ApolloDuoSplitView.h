@@ -18,6 +18,12 @@ CGSize ApolloDuoLayoutSize(CGSize liveSize);
 /// Apollo shares the opened display with a window stacked above or below it
 /// (Picture in Picture or another app on top): full width, but under 600pt tall.
 BOOL ApolloDuoSplitIsShortPane(void);
+/// Whether `table` is the subreddit list in the drawer that opens beside the
+/// feed rail. The rail already holds the feed shortcuts and the favorites, so
+/// the list leaves those rows out there.
+BOOL ApolloDuoSplitListOmitsRailRows(UITableView *table);
+/// The subreddit list reloaded; the feed rail rereads which shortcuts it has.
+void ApolloDuoSplitSubredditListDidReload(UITableView *table);
 /// The Original/Focused feed layout applies: unfolded, or a short pane.
 BOOL ApolloDuoSplitShowsFeedLayout(void);
 CGFloat ApolloDuoSplitTransitionContentWidth(UIView *view, CGFloat trailingInset);

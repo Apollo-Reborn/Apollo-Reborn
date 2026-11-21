@@ -574,6 +574,9 @@ static void ApolloTitlePresentationDetachCustom(UIView *source) {
         ? ApolloDeviceChromeInsetsForView(bar) : UIEdgeInsetsZero;
     CGFloat leading = coverInsets.left;
     CGFloat trailing = -coverInsets.right;
+    // A column that ends before the bar does (beside the Duo's feed rail, at
+    // the trailing divider) centers the title over what it shows.
+    if (splitColumn) trailing = MIN(0.0, CGRectGetMaxX(column) - CGRectGetMaxX(bar.bounds));
     if (fabs(self.columnLeading.constant - leading) > 0.1 ||
         fabs(self.columnTrailing.constant - trailing) > 0.1) {
         self.columnLeading.constant = leading;

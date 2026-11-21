@@ -24,13 +24,14 @@ typedef enum {
 } ApolloDuoBackRoute;
 
 // Earlier rows win. `nativeOwns` is checked before the drawer and the thread
-// close so a deeper page above either one always pops natively first.
+// close so a deeper page above either one always pops natively first. A
+// thread paired beside the feed's root closes before the drawer opens.
 static inline ApolloDuoBackRoute ApolloDuoBackRouteFor(bool canNavigate, bool nativeOwns,
                                                        bool drawer, bool closeThread) {
     if (!canNavigate) return ApolloDuoBackRouteNone;
     if (nativeOwns) return ApolloDuoBackRouteNative;
-    if (drawer) return ApolloDuoBackRouteDrawer;
     if (closeThread) return ApolloDuoBackRouteCloseThread;
+    if (drawer) return ApolloDuoBackRouteDrawer;
     return ApolloDuoBackRoutePop;
 }
 

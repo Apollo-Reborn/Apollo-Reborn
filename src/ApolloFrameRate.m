@@ -15,6 +15,13 @@ void ApolloAnimationUsesFullFrameRate(CAAnimation *animation) {
     }
 }
 
+void ApolloDisplayLinkUsesFullFrameRate(CADisplayLink *link) {
+    if (@available(iOS 15.0, *)) {
+        float maximum = ApolloFullFrameRateMaximum();
+        if (maximum > 0) link.preferredFrameRateRange = CAFrameRateRangeMake(MIN(80.0f, maximum), maximum, maximum);
+    }
+}
+
 // A display link that does no work holds the rate; its frame count logs the
 // rate a drag got.
 @interface ApolloFullFrameRateTicker : NSObject

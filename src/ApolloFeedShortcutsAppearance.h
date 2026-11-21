@@ -30,6 +30,9 @@ UIImage *ApolloFeedShortcutIconImage(NSInteger index,
                                      ApolloSubredditFeedLayout layout,
                                      NSUInteger itemCount);
 UIImage *ApolloSubredditClassicMetaFeedIcon(NSInteger index);
+// The shortcut's bare glyph as a template image (Home and Popular are Apollo's
+// bundled art; All and Moderator are SF Symbols), for chrome outside the list.
+UIImage *ApolloFeedShortcutTemplateGlyph(NSInteger index);
 
 ApolloSubredditFeedLayout ApolloFeedShortcutEffectiveLayout(ApolloSubredditFeedLayout preferredLayout,
                                                              NSUInteger itemCount,

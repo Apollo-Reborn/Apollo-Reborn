@@ -20,4 +20,7 @@ void ApolloFullFrameRateFollowGesture(UIGestureRecognizer *gesture, NSTimeInterv
 /// Asks for the display's full rate for one explicit animation.
 void ApolloAnimationUsesFullFrameRate(CAAnimation *animation);
 
+/// Asks for the display's full rate for a display link that tracks motion.
+void ApolloDisplayLinkUsesFullFrameRate(CADisplayLink *link);
+
 __END_DECLS

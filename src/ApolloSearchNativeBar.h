@@ -15,8 +15,9 @@ BOOL ApolloNativeFeedSearchActiveQuery(UIScrollView *tableView);
 // Flush and restore an expanded feed search before a cancelled navigation is drawn.
 void ApolloNativeFeedSearchRestoreCancelledNavigation(UIViewController *vc);
 
-// The Duo split is about to move this feed page to its other column. A list
-// resting at its revealed top keeps the bar revealed through the move.
+// The Duo split is about to move this feed or comments page to its other
+// column. A list resting at its revealed top keeps the bar revealed through
+// the move.
 void ApolloNativeFeedSearchWillMoveBetweenColumns(UIViewController *vc);
 // ...and the move has been laid out: repair the bar before anything captures it.
 void ApolloNativeFeedSearchFinishColumnMove(UIViewController *vc);
