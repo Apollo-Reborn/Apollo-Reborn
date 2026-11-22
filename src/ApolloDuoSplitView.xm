@@ -1643,8 +1643,9 @@ CGFloat ApolloDuoSplitTransitionContentWidth(UIView *view, CGFloat trailingInset
         BOOL paired = state.host.postsSplitEnabled && landscape && (state.secondary.viewControllers.count > 1 || state.feed.viewControllers.count > 1);
         if (paired) width *= 0.5;
         BOOL feedColumn = paired && owner.navigationController == state.feed;
-        // Feed pages sit beside the leading rail, unless a thread pairs.
-        CGFloat rail = landscape && !feedColumn && state.host.subredditList && owner.navigationController == state.feed
+        // Feed pages sit beside the leading rail while it's on, unless a thread pairs.
+        CGFloat rail = sDuoFeedSidebarEnabled && landscape && !feedColumn && state.host.subredditList
+            && owner.navigationController == state.feed
             && ApolloDuoFeedRailReservesPage(owner) ? ApolloDuoFeedRail.reservedWidth : 0;
         return MAX(0, width - rail - (!feedColumn && landscape ? trailingInset : 0));
     }
