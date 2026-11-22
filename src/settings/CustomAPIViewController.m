@@ -30,6 +30,7 @@
 #import "ApolloWebSessionStore.h"
 #import "ApolloReduceRateLimiting.h"
 #import "ApolloBudgetPauseCell.h"
+#import "ApolloRateLimitMeter.h"
 #import "ApolloWebJSONBudget.h"
 #import "ApolloWebJSONRouteUpdates.h"
 #import "settings/ApolloKeylessRouteStatusViewController.h"
@@ -1874,6 +1875,34 @@ typedef NS_ENUM(NSInteger, Tag) {
                                   onSelect:nil];
     pauseExtrasAt.visible = ^BOOL { return sWebJSONEnabled && sReduceRateLimiting; };
 
+    // Two optional ways to watch the same budget (ApolloRateLimitMeter.h).
+    // Neither depends on Reduce Rate Limiting being on.
+    ApolloSettingsRow *rateLimitWarnings =
+        [ApolloSettingsRow customRowWithID:@"api.rateLimitWarnings"
+                                      cell:^UITableViewCell *(__unused UITableView *tableView, __unused ApolloSettingsRow *row) {
+            return [weakSelf switchCellWithIdentifier:@"Cell_API_RateLimitWarnings"
+                                                label:@"Rate Limit Warnings"
+                                               detail:@"Shows a notice when you've used 50, 75 and 90 of Reddit's 100 requests, and when extras pause."
+                                                   on:sRateLimitWarnings
+                                               action:@selector(rateLimitWarningsSwitchToggled:)]
+                ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+        }
+                                  onSelect:nil];
+    rateLimitWarnings.visible = ^BOOL { return sWebJSONEnabled; };
+
+    ApolloSettingsRow *rateLimitMeter =
+        [ApolloSettingsRow customRowWithID:@"api.rateLimitMeter"
+                                      cell:^UITableViewCell *(__unused UITableView *tableView, __unused ApolloSettingsRow *row) {
+            return [weakSelf switchCellWithIdentifier:@"Cell_API_RateLimitMeter"
+                                                label:@"Rate Limit Meter"
+                                               detail:@"A small floating gauge with the live count, green to red. Drag it anywhere; tap it for the time left."
+                                                   on:sRateLimitMeter
+                                               action:@selector(rateLimitMeterSwitchToggled:)]
+                ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+        }
+                                  onSelect:nil];
+    rateLimitMeter.visible = ^BOOL { return sWebJSONEnabled; };
+
     // Which routes API-key-free reads are taking, what Reddit has blocked
     // since launch, and the Use Route Updates switch
     // (ApolloKeylessRouteStatusViewController).
@@ -1921,7 +1950,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 
     return [ApolloSettingsSection sectionWithTitle:@"Experimental"
                                             footer:@"Sign in to reddit.com instead of using API keys."
-                                              rows:@[ webJSON, webSessionLogin, reduceRateLimiting, pauseExtrasAt, routeStatus, modernChat, modernModmail ]];
+                                              rows:@[ webJSON, webSessionLogin, reduceRateLimiting, pauseExtrasAt, rateLimitWarnings, rateLimitMeter, routeStatus, modernChat, modernModmail ]];
 }
 
 - (ApolloSettingsSection *)buildAPIKeysExtrasSection {
@@ -4994,10 +5023,25 @@ static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
 
     // The Web Session Login row only exists while the mode is on.
     [self visibilityDidChange];
+    // And the Rate Limit Meter is only up for an API-Key-Free account.
+    ApolloRateLimitMeterSettingsChanged();
 }
 
 - (void)reduceRateLimitingSwitchToggled:(UISwitch *)sender {
     ApolloReduceRateLimitingSetEnabled(sender.isOn);
+}
+
+- (void)rateLimitWarningsSwitchToggled:(UISwitch *)sender {
+    sRateLimitWarnings = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sRateLimitWarnings forKey:UDKeyRateLimitWarnings];
+    ApolloRateLimitMeterSettingsChanged();
+}
+
+- (void)rateLimitMeterSwitchToggled:(UISwitch *)sender {
+    sRateLimitMeter = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sRateLimitMeter forKey:UDKeyRateLimitMeter];
+    // Up or gone at once: the meter never outlives its switch.
+    ApolloRateLimitMeterSettingsChanged();
 }
 
 // Reddit's budget for the account the slider is about: the active

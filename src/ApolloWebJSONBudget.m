@@ -5,9 +5,13 @@
 @property (nonatomic) double used;
 @property (nonatomic) double limit;
 @property (nonatomic) NSTimeInterval windowEnd;
+// The highest warning mark handed out in this window (ApolloWebJSONBudgetTakeMark).
+@property (nonatomic) NSInteger takenMark;
 @end
 @implementation ApolloWebJSONBudgetReport
 @end
+
+NSNotificationName const ApolloWebJSONBudgetDidChangeNotification = @"ApolloWebJSONBudgetDidChangeNotification";
 
 // Two answers belong to the same window when their window ends agree to within
 // this. `x-ratelimit-reset` is whole seconds and answers take a moment to
@@ -83,7 +87,10 @@ BOOL ApolloWebJSONBudgetNoteResponse(NSString *username, NSHTTPURLResponse *resp
         report.used = used;
         report.limit = limit;
         // Keep the window's first end: later answers' ends only wobble around it.
-        if (!sameWindow) report.windowEnd = windowEnd;
+        if (!sameWindow) {
+            report.windowEnd = windowEnd;
+            report.takenMark = 0;   // a new window's marks are all still to come
+        }
         return YES;
     }
 }
@@ -115,6 +122,25 @@ NSTimeInterval ApolloWebJSONBudgetPause(NSString *username, NSInteger pauseAtPer
     if (!state.known) return 0;
     double stop = state.limit * (double)MIN(pauseAtPercent, 100) / 100.0;
     return state.used >= stop ? state.resetsIn : 0;
+}
+
+NSInteger ApolloWebJSONBudgetTakeMark(NSString *username, const NSInteger *marks, NSUInteger markCount) {
+    NSString *key = ApolloWebJSONBudgetKey(username);
+    if (!key || !marks || markCount == 0) return 0;
+    NSTimeInterval now = ApolloWebJSONBudgetNow();
+    @synchronized (ApolloWebJSONBudgetLock()) {
+        ApolloWebJSONBudgetReport *report = sApolloWebJSONBudgetReports[key];
+        if (!report || report.windowEnd <= now) return 0;
+        NSInteger reached = 0;
+        for (NSUInteger i = 0; i < markCount; i++) {
+            NSInteger mark = marks[i];
+            if (mark <= reached || mark <= 0) continue;
+            if (report.used >= report.limit * (double)MIN(mark, 100) / 100.0) reached = mark;
+        }
+        if (reached <= report.takenMark) return 0;
+        report.takenMark = reached;
+        return reached;
+    }
 }
 
 NSString *ApolloWebJSONBudgetStatusText(NSString *username) {

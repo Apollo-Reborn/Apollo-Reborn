@@ -129,6 +129,39 @@ int main(void) {
         CHECK(ApolloWebJSONBudgetNoteResponse(@"mix", Report(@"4", @"596.0", @"599")), "next window: the roomier count is all there is");
         CHECK(ApolloWebJSONBudgetCurrent(@"mix").limit == 600, "so it's kept until a tighter one arrives");
 
+        // Warning marks: each comes back once per window, a jump over several gives only the
+        // highest, and a new window starts them over.
+        ApolloWebJSONBudgetResetForTesting();
+        At(0);
+        const NSInteger marks[] = { 50, 75, 90 };
+        const NSInteger unsorted[] = { 90, 50, 70, 75 };
+        CHECK(ApolloWebJSONBudgetTakeMark(@"warn", marks, 3) == 0, "nothing reported: no mark");
+        ApolloWebJSONBudgetNoteResponse(@"warn", Report(@"49", @"51.0", @"300"));
+        CHECK(ApolloWebJSONBudgetTakeMark(@"warn", marks, 3) == 0, "49 of 100 is under the first mark");
+        ApolloWebJSONBudgetNoteResponse(@"warn", Report(@"50", @"50.0", @"299"));
+        CHECK(ApolloWebJSONBudgetTakeMark(@"WARN", marks, 3) == 50, "exactly at a mark takes it, any username casing");
+        CHECK(ApolloWebJSONBudgetTakeMark(@"warn", marks, 3) == 0, "and only once");
+        ApolloWebJSONBudgetNoteResponse(@"warn", Report(@"60", @"40.0", @"298"));
+        CHECK(ApolloWebJSONBudgetTakeMark(@"warn", marks, 3) == 0, "still between marks");
+        ApolloWebJSONBudgetNoteResponse(@"warn", Report(@"92", @"8.0", @"297"));
+        CHECK(ApolloWebJSONBudgetTakeMark(@"warn", marks, 3) == 90, "a jump past two marks gives the highest");
+        CHECK(ApolloWebJSONBudgetTakeMark(@"warn", marks, 3) == 0, "and the one it jumped over is spent too");
+        CHECK(ApolloWebJSONBudgetTakeMark(@"other", marks, 3) == 0, "another account has its own marks");
+        CHECK(ApolloWebJSONBudgetTakeMark(@"warn", NULL, 3) == 0 && ApolloWebJSONBudgetTakeMark(@"warn", marks, 0) == 0, "no marks: nothing");
+        ApolloWebJSONBudgetNoteResponse(@"late", Report(@"60", @"40.0", @"296"));   // reaches 50, never asked about it
+        At(301);
+        CHECK(ApolloWebJSONBudgetTakeMark(@"warn", marks, 3) == 0, "the window ended: nothing to take");
+        CHECK(ApolloWebJSONBudgetTakeMark(@"late", marks, 3) == 0, "not even a mark nobody took while it lasted");
+        ApolloWebJSONBudgetNoteResponse(@"warn", Report(@"76", @"24.0", @"599"));
+        CHECK(ApolloWebJSONBudgetTakeMark(@"warn", unsorted, 4) == 75, "a new window starts the marks over, in any order given");
+        CHECK(ApolloWebJSONBudgetTakeMark(@"warn", unsorted, 4) == 0, "once");
+        // A mark is a share of the limit Reddit reports, and anything past 100 is 100.
+        ApolloWebJSONBudgetNoteResponse(@"wide", Report(@"299", @"301.0", @"100"));
+        CHECK(ApolloWebJSONBudgetTakeMark(@"wide", marks, 3) == 0, "299 of 600 is under half");
+        ApolloWebJSONBudgetNoteResponse(@"wide", Report(@"600", @"0.0", @"99"));
+        const NSInteger over[] = { 50, 250 };
+        CHECK(ApolloWebJSONBudgetTakeMark(@"wide", over, 2) == 250, "a mark past 100 is reached when everything is used");
+
         ApolloWebJSONBudgetResetForTesting();
         ApolloWebJSONBudgetSetNowForTesting(0);
     }

@@ -27,6 +27,11 @@ NS_ASSUME_NONNULL_BEGIN
 extern "C" {
 #endif
 
+// Posted on the main thread after an account's report changes (by
+// ApolloWebJSON.m, which feeds the answers in). userInfo: @"username", as it
+// was passed to ApolloWebJSONBudgetNoteResponse.
+extern NSNotificationName const ApolloWebJSONBudgetDidChangeNotification;
+
 typedef struct {
     BOOL known;               // NO: Reddit hasn't reported on this account in the current window
     double used;              // units spent
@@ -51,6 +56,14 @@ ApolloWebJSONBudgetState ApolloWebJSONBudgetCurrent(NSString *_Nullable username
 // of 100 or more pauses only once nothing is left; one of 0 or less never
 // pauses.
 NSTimeInterval ApolloWebJSONBudgetPause(NSString *_Nullable username, NSInteger pauseAtPercent);
+
+// For the Rate Limit Warnings notices: the highest of `marks` (percent of the
+// budget used, any order) that `username`'s count has reached in the current
+// window and that hasn't been handed out for it yet, or 0. Each mark comes back
+// once per window. Reaching several at once returns only the highest; the ones
+// under it count as handed out too, so a jump from 40 to 92 is one notice, not
+// three.
+NSInteger ApolloWebJSONBudgetTakeMark(NSString *_Nullable username, const NSInteger *_Nullable marks, NSUInteger markCount);
 
 // "34 of 100 used, resets in 6 min", or nil when nothing is known.
 NSString *_Nullable ApolloWebJSONBudgetStatusText(NSString *_Nullable username);

@@ -411,6 +411,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloWebJSONWriteRepair.m \
     $(SRC_DIR)/ApolloWebJSONRoutes.m \
     $(SRC_DIR)/ApolloWebJSONBudget.m \
+    $(SRC_DIR)/ApolloRateLimitMeter.m \
     $(SRC_DIR)/ApolloWebJSONRouteUpdates.m \
     $(SRC_DIR)/ApolloWebJSONIdentity.xm \
     $(SRC_DIR)/ApolloSubscriptionRefreshGuard.m \

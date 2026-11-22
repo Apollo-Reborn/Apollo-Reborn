@@ -664,6 +664,10 @@ extern BOOL sReduceRateLimiting;
 // UDKeyReduceRateLimitingPauseAt: percent of Reddit's request budget used at
 // which Reduce Rate Limiting pauses optional lookups. 30-100; default 70.
 extern NSInteger sReduceRateLimitingPauseAt;
+// UDKeyRateLimitWarnings / UDKeyRateLimitMeter: the budget notices and the
+// floating gauge (ApolloRateLimitMeter.h). Both default NO.
+extern BOOL sRateLimitWarnings;
+extern BOOL sRateLimitMeter;
 // Use Route Updates (UDKeyKeylessRouteUpdates): keyless-routes.json may adjust
 // the API-Key-Free route table (ApolloWebJSONRouteUpdates.h). Default YES.
 extern BOOL sKeylessRouteUpdates;

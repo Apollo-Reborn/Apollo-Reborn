@@ -664,6 +664,18 @@ static NSString *const UDKeyReduceRateLimiting = @"ReduceRateLimiting";
 // (percent used, 30-100 in steps of 5) at which optional lookups pause until it
 // resets (ApolloWebJSONOptionalReadPause). 100 never pauses early. Default 70.
 static NSString *const UDKeyReduceRateLimitingPauseAt = @"ReduceRateLimitingPauseAt";
+// Rate Limit Warnings (API-Key-Free accounts): a notice when the account in use
+// reaches 50, 75 and 90 percent of Reddit's request budget, and when Reduce
+// Rate Limiting's Pause Extras At stop is reached (ApolloRateLimitMeter.h).
+// Default NO.
+static NSString *const UDKeyRateLimitWarnings = @"RateLimitWarnings";
+// Rate Limit Meter: a small floating gauge with the live count for the
+// API-Key-Free account in use (ApolloRateLimitMeter.h). Default NO.
+static NSString *const UDKeyRateLimitMeter = @"RateLimitMeter";
+// Where the meter was last dropped: @[x, y] as fractions of the space it can
+// move in, so it lands in the same spot after a rotation or a fold. Not
+// user-facing.
+static NSString *const UDKeyRateLimitMeterPosition = @"RateLimitMeterPosition";
 // Set once the Reduce Rate Limiting prompt has been shown (at the first
 // API-key-free sign-in, or at the first rate limit for accounts that signed in
 // before the prompt existed), so it never asks twice. Not user-facing.

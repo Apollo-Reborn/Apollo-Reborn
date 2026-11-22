@@ -2675,6 +2675,27 @@ static BOOL ApolloSimDebugHandleIntegratedMainCommand(NSString *contents) {
         ApolloLog(@"[SimDebugTap] route health:\n%@", ApolloWebJSONRouteHealthDescription([NSDate timeIntervalSinceReferenceDate]));
         return YES;
     }
+    // "budget <used> [limit] [seconds]" gives the active account a request-budget
+    // report as if Reddit had sent it (default limit 100, 300 s left); "budget
+    // clear" forgets every report. Drives Reduce Rate Limiting's Pause Extras At
+    // stop, the Rate Limit Warnings and the Rate Limit Meter.
+    if ([contents hasPrefix:@"budget "]) {
+        NSArray<NSString *> *parts = [[[contents substringFromIndex:7]
+            stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]
+            componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        NSString *username = ApolloActiveWebSessionUsername();
+        if ([parts.firstObject isEqualToString:@"clear"]) {
+            ApolloWebJSONSimSetBudget(username, 0, 0, 0);
+            ApolloLog(@"[SimDebugTap] budget cleared");
+            return YES;
+        }
+        double used = parts.count > 0 ? parts[0].doubleValue : 0;
+        double limit = parts.count > 1 ? parts[1].doubleValue : 100;
+        NSTimeInterval seconds = parts.count > 2 ? parts[2].doubleValue : 300;
+        ApolloWebJSONSimSetBudget(username, used, limit, seconds);
+        ApolloLog(@"[SimDebugTap] budget %.0f of %.0f, %.0fs left for the active account", used, limit, seconds);
+        return YES;
+    }
     if ([contents hasPrefix:@"lpm "]) {
         NSString *payload = [[contents substringFromIndex:4]
             stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];

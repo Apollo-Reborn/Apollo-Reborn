@@ -340,6 +340,12 @@ void ApolloWebJSONSimSetGatedRoutes(NSUInteger routeMask);
 // chokepoint (Tweak.xm) through ApolloWebJSONSimBlockOAuthRead.
 void ApolloWebJSONSimSetOAuthBlockedReads(BOOL on);
 void ApolloWebJSONSimBlockOAuthRead(NSMutableURLRequest *request);
+// Debug bridge ("budget <used> [limit] [seconds]" / "budget clear"): hands
+// `username` a budget report as if Reddit had sent it, through the same path as
+// a real answer, so the Pause Extras At stop, the warnings and the meter can be
+// driven without spending real requests. A limit of 0 forgets every report.
+// Real answers keep arriving and replace it when their count is higher.
+void ApolloWebJSONSimSetBudget(NSString *username, double used, double limit, NSTimeInterval resetsIn);
 #endif
 
 // Seconds left on Reddit's rate limit of `username`'s web session, or 0 when it

@@ -49,6 +49,7 @@
 #import "ApolloWebJSONRoutes.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloReduceRateLimiting.h"
+#import "ApolloRateLimitMeter.h"
 #import "ApolloWebSessionLoginViewController.h"
 #import "ApolloMessageDraftStore.h"
 #import "ApolloAccountCredentials.h"
@@ -4348,6 +4349,8 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyWebJSONEnabled: @NO,
                                     UDKeyReduceRateLimiting: @NO,
                                     UDKeyReduceRateLimitingPauseAt: @70,
+                                    UDKeyRateLimitWarnings: @NO,
+                                    UDKeyRateLimitMeter: @NO,
                                     UDKeyKeylessRouteUpdates: @YES,
                                     UDKeyReduceRateLimitingOffered: @NO,
                                     UDKeyAllPlusNSFWEnabled: @NO,
@@ -4767,6 +4770,8 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     sReduceRateLimiting = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyReduceRateLimiting];
     sReduceRateLimitingPauseAt = ApolloReduceRateLimitingClampPauseAt(
         [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyReduceRateLimitingPauseAt]);
+    sRateLimitWarnings = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyRateLimitWarnings];
+    sRateLimitMeter = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyRateLimitMeter];
     sKeylessRouteUpdates = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyKeylessRouteUpdates];
     sPollsFeatureEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyPollsEnabled];
     sPollOptionAlignment = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyPollOptionAlignment];
@@ -4804,6 +4809,9 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
         NSTimeInterval wait = ApolloWebJSONOptionalReadBackoff(ApolloActiveWebSessionUsername());
         if (wait > 0) ApolloShowRedditRateLimitToast(wait);
     }];
+    // The budget notices and the floating gauge follow the count Reddit's
+    // answers report (ApolloRateLimitMeter.h). Both are off unless switched on.
+    ApolloRateLimitMeterInstall();
     // Picture-in-Picture hydration.
     sPiPEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyPictureInPictureEnabled];
     sPiPActivationMode = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyPictureInPictureActivation];

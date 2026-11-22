@@ -1321,6 +1321,14 @@ static NSTimeInterval ApolloWebJSONBudgetHold(NSString *username) {
 // holding those lookups back.
 static void ApolloWebJSONNoteBudget(NSString *username, NSHTTPURLResponse *http) {
     if (!ApolloWebJSONBudgetNoteResponse(username, http)) return;
+    // The meter and the warnings (ApolloRateLimitMeter.m) follow the count on
+    // the main thread.
+    NSString *changed = [username copy];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:ApolloWebJSONBudgetDidChangeNotification
+                                                            object:nil
+                                                          userInfo:@{ @"username": changed }];
+    });
     NSTimeInterval pause = ApolloWebJSONBudgetHold(username);
     if (pause <= 0) return;
     NSString *key = username.lowercaseString;
@@ -1338,6 +1346,28 @@ static void ApolloWebJSONNoteBudget(NSString *username, NSHTTPURLResponse *http)
 NSTimeInterval ApolloWebJSONOptionalReadPause(NSString *username) {
     return MAX(ApolloWebJSONOptionalReadBackoff(username), ApolloWebJSONBudgetHold(username));
 }
+
+#if APOLLO_SIM_BUILD
+void ApolloWebJSONSimSetBudget(NSString *username, double used, double limit, NSTimeInterval resetsIn) {
+    if (username.length == 0) return;
+    if (limit <= 0) {
+        // "clear": forget every report, as a new window does, and say so.
+        ApolloWebJSONBudgetResetForTesting();
+        @synchronized (ApolloWebJSONExpiryLock()) { [sBudgetPauseLoggedUntilByUser removeAllObjects]; }
+        [[NSNotificationCenter defaultCenter] postNotificationName:ApolloWebJSONBudgetDidChangeNotification
+                                                            object:nil
+                                                          userInfo:@{ @"username": username }];
+        return;
+    }
+    // Through the same door as a real answer.
+    NSDictionary *headers = @{ @"x-ratelimit-used": [NSString stringWithFormat:@"%.0f", used],
+                               @"x-ratelimit-remaining": [NSString stringWithFormat:@"%.1f", MAX(0.0, limit - used)],
+                               @"x-ratelimit-reset": [NSString stringWithFormat:@"%.0f", resetsIn] };
+    NSHTTPURLResponse *answer = [[NSHTTPURLResponse alloc] initWithURL:[NSURL URLWithString:@"https://www.reddit.com/api/me.json"]
+                                                            statusCode:200 HTTPVersion:@"HTTP/2" headerFields:headers];
+    ApolloWebJSONNoteBudget(username, answer);
+}
+#endif
 
 #pragma mark - Duplicate account reads
 
