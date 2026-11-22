@@ -2890,7 +2890,7 @@ static BOOL ApolloSubredditIndexListIsEditing(UITableView *tableView) {
 }
 
 // Whether `section` is one the rail lists: Favorites, Multireddits or both,
-// as Sidebar Shows picks. The sections are found by Apollo's index glyphs
+// as Show in Sidebar picks. The sections are found by Apollo's index glyphs
 // (★ favorites, ○ multireddits; read from the binary's title table) and kept
 // until the sections change in number or the list reloads (the reloadData
 // hook drops them).

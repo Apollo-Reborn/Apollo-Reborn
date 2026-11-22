@@ -6044,7 +6044,7 @@ void ApolloDuoSplitFeedSidebarChanged(void) {
         ApolloDuoSplitHost *host = ApolloDuoSplitStateForNavigation((UINavigationController *)child, NO).host;
         if (!host.subredditList) continue;
         [host.viewIfLoaded setNeedsLayout];
-        // The drawer leaves out what the sidebar lists, which Sidebar Shows picks.
+        // The drawer leaves out what the sidebar lists, which Show in Sidebar picks.
         if (host.listOmitsRailRows) {
             [ApolloDuoSplitFindTable(host.subredditList.viewControllers.firstObject.viewIfLoaded) reloadData];
         }
