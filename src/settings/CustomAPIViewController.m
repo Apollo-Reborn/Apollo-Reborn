@@ -2502,13 +2502,14 @@ typedef NS_ENUM(NSInteger, Tag) {
         [ApolloSettingsRow valueRowWithID:@"interface.duoFeedSidebarStyle"
                                    title:@"Sidebar Style"
                                   detail:^NSString * {
-            return sDuoFeedSidebarStyle == ApolloDuoFeedSidebarStyleFilled ? @"Filled" : @"Rounded";
+            return sDuoFeedSidebarStyle == ApolloDuoFeedSidebarStyleStandard ? @"Standard" : @"Liquid Glass";
         }
                                 onSelect:^{
             ApolloSettingsPresentPicker(weakSelf, [weakSelf cellForRowID:@"interface.duoFeedSidebarStyle"],
-                @"Sidebar Style", @[ @"Rounded", @"Filled" ],
-                sDuoFeedSidebarStyle == ApolloDuoFeedSidebarStyleFilled ? 1 : 0, ^(NSInteger picked) {
-                    NSInteger style = picked == 1 ? ApolloDuoFeedSidebarStyleFilled : ApolloDuoFeedSidebarStyleRounded;
+                // Listed like Subreddit Panel Style's options.
+                @"Sidebar Style", @[ @"Standard", @"Liquid Glass" ],
+                sDuoFeedSidebarStyle == ApolloDuoFeedSidebarStyleStandard ? 0 : 1, ^(NSInteger picked) {
+                    NSInteger style = picked == 0 ? ApolloDuoFeedSidebarStyleStandard : ApolloDuoFeedSidebarStyleLiquidGlass;
                     if (sDuoFeedSidebarStyle == style) return;
                     sDuoFeedSidebarStyle = style;
                     [NSUserDefaults.standardUserDefaults setInteger:style forKey:UDKeyDuoFeedSidebarStyle];

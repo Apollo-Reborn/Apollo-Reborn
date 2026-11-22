@@ -216,10 +216,11 @@ extern BOOL sDuoSubredditPanelGlassEnabled;
 // The feed sidebar beside Posts on the open Duo in landscape (default NO).
 extern BOOL sDuoFeedSidebarEnabled;
 typedef NS_ENUM(NSInteger, ApolloDuoFeedSidebarStyle) {
-    ApolloDuoFeedSidebarStyleRounded = 0,
-    ApolloDuoFeedSidebarStyleFilled = 1,
+    ApolloDuoFeedSidebarStyleLiquidGlass = 0,
+    ApolloDuoFeedSidebarStyleStandard = 1,
 };
-// Rounded (default) or Filled for the feed sidebar.
+// Liquid Glass (default; a rounded glass panel) or Standard (a solid column)
+// for the feed sidebar.
 extern NSInteger sDuoFeedSidebarStyle;
 typedef NS_ENUM(NSInteger, ApolloDuoFeedSidebarContent) {
     ApolloDuoFeedSidebarContentFavorites = 0,

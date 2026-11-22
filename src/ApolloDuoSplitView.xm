@@ -892,7 +892,7 @@ static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
 // clear of the feed rail's panel.
 - (CGFloat)listLeading {
     if (![self showsFeedRail]) return 12;
-    return [ApolloDuoFeedRail panelMaxXFilled:sDuoFeedSidebarStyle == ApolloDuoFeedSidebarStyleFilled] + 12;
+    return [ApolloDuoFeedRail panelMaxXFilled:sDuoFeedSidebarStyle == ApolloDuoFeedSidebarStyleStandard] + 12;
 }
 // The display's corner radius, which container-concentric corners follow.
 // UIWindow reports 0 and a view resolves its radius only after a layout pass,
@@ -1005,7 +1005,7 @@ static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
     }
     if (!self.feedRail && self.listContainer) [self installFeedRail];
     if (!self.feedRail) return;
-    self.feedRail.filled = sDuoFeedSidebarStyle == ApolloDuoFeedSidebarStyleFilled;
+    self.feedRail.filled = sDuoFeedSidebarStyle == ApolloDuoFeedSidebarStyleStandard;
     self.feedRail.content = sDuoFeedSidebarContent;
     [self layoutTrailingBackdrop:rail];
     if (self.listOmitsRailRows != rail) {

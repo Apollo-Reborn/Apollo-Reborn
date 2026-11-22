@@ -549,7 +549,15 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     self.separator.frame = CGRectMake(contentX + 16, contentY + y + 6, columnWidth - 32, hairline * 2);
     y += 12;
     // The favorites fill the rest of the panel and scroll when they don't fit.
-    self.favorites.frame = CGRectMake(contentX, contentY + y, columnWidth, MAX(0, height - y));
+    // Filled, the list runs to the display's bottom edge instead of stopping
+    // at the rounded panel's inset, and scrolls its last favorite that much
+    // further so it still clears the corner.
+    CGFloat favoritesBottom = self.filled ? self.bounds.size.height : contentY + height;
+    self.favorites.frame = CGRectMake(contentX, contentY + y, columnWidth, MAX(0, favoritesBottom - contentY - y));
+    CGFloat bottomInset = kRailFavoritesBottomInset + (self.filled ? kRailInset : 0);
+    if (fabs(self.favorites.contentInset.bottom - bottomInset) > 0.5) {
+        self.favorites.contentInset = UIEdgeInsetsMake(0, 0, bottomInset, 0);
+    }
     CGFloat favoriteY = 0;
     for (NSUInteger index = 0; index < self.favoriteButtons.count; index++) {
         if (index == self.groupBreak) {
@@ -560,7 +568,7 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
         favoriteY += kRailFavoriteHeight;
     }
     self.favorites.contentSize = CGSizeMake(columnWidth, favoriteY);
-    self.favorites.alwaysBounceVertical = favoriteY + kRailFavoritesBottomInset > self.favorites.bounds.size.height;
+    self.favorites.alwaysBounceVertical = favoriteY + bottomInset > self.favorites.bounds.size.height;
     self.separator.hidden = self.favoriteButtons.count == 0;
     [self requestVisibleIcons];
 }
