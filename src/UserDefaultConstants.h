@@ -394,7 +394,7 @@ static NSString *const UDKeyDuoSubredditPanelGlassEnabled = @"DuoSubredditPanelG
 // button (default), YES = the sidebar.
 static NSString *const UDKeyDuoFeedSidebarEnabled = @"DuoFeedSidebarEnabled";
 // The feed sidebar's look: ApolloDuoFeedSidebarStyle (0 = Liquid Glass, a
-// rounded glass panel, default; 1 = Standard, a solid column edge to edge).
+// rounded glass panel; 1 = Standard, a solid column edge to edge, default).
 static NSString *const UDKeyDuoFeedSidebarStyle = @"DuoFeedSidebarStyle";
 // What the feed sidebar lists under Subreddits: ApolloDuoFeedSidebarContent
 // (0 = Favorites, default; 1 = Multireddits; 2 = Both).

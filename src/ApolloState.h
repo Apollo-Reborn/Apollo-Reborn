@@ -219,7 +219,7 @@ typedef NS_ENUM(NSInteger, ApolloDuoFeedSidebarStyle) {
     ApolloDuoFeedSidebarStyleLiquidGlass = 0,
     ApolloDuoFeedSidebarStyleStandard = 1,
 };
-// Liquid Glass (default; a rounded glass panel) or Standard (a solid column)
+// Standard (default; a solid column) or Liquid Glass (a rounded glass panel)
 // for the feed sidebar.
 extern NSInteger sDuoFeedSidebarStyle;
 typedef NS_ENUM(NSInteger, ApolloDuoFeedSidebarContent) {

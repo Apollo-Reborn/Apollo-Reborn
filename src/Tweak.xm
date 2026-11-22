@@ -4286,7 +4286,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyDuoUnfoldedFeedLayout: @0,
                                     UDKeyDuoSubredditPanelGlassEnabled: @NO,
                                     UDKeyDuoFeedSidebarEnabled: @NO,
-                                    UDKeyDuoFeedSidebarStyle: @(ApolloDuoFeedSidebarStyleLiquidGlass),
+                                    UDKeyDuoFeedSidebarStyle: @(ApolloDuoFeedSidebarStyleStandard),
                                     UDKeyDuoFeedSidebarContent: @(ApolloDuoFeedSidebarContentFavorites),
                                     UDKeySubredditSwitcherSheetEnabled: @(ApolloDeviceIsDuo()),
                                     UDKeyIPadPaneLayout: @NO,
