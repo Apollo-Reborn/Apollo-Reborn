@@ -2640,6 +2640,45 @@ static BOOL ApolloReopenRedditSignIn(ASWebAuthenticationSession *previous) {
 
 %end
 
+// #1729: a listing page that names the same post more than once shows it more
+// than once, until the next page loads.
+//
+// Reddit's Home listing (/best) sometimes repeats posts inside one page. The
+// report's first page had 12 entries but only 6 posts, and every repeated copy
+// carried a different (fuzzed) score, so Reddit rendered each copy separately:
+// the repeats are in the response itself, not added on our side.
+//
+// Apollo 1.15.11 shows a first page exactly as delivered:
+// handleNewLinks(_:withPagination:error:) sets `links` to the page. Every later
+// page goes through appendNewLinks(...), which rebuilds `links` as the unique
+// concatenation of old and new posts, keeping each post's first occurrence
+// (RDKThing's -isEqual:/-hash compare fullName). That's why the repeats vanished
+// once the reporter scrolled far enough to load the next page.
+//
+// So drop repeats here, where RedditKit turns every listing page into objects
+// (on its background parse queue, so this stays pure), by the same rule:
+// fullName, first occurrence kept. A first page then reaches Apollo the way its
+// own next-page path would have left it, and nothing moves when page 2 lands.
+// Objects without a fullName pass through untouched.
+static NSArray *ApolloListingObjectsWithoutRepeats(NSArray *objects) {
+    if (![objects isKindOfClass:[NSArray class]] || objects.count < 2) return objects;
+    NSMutableSet<NSString *> *seen = [NSMutableSet setWithCapacity:objects.count];
+    NSMutableArray *kept = [NSMutableArray arrayWithCapacity:objects.count];
+    for (id object in objects) {
+        id fullName = [object respondsToSelector:@selector(fullName)]
+            ? ((id (*)(id, SEL))objc_msgSend)(object, @selector(fullName)) : nil;
+        if ([fullName isKindOfClass:[NSString class]] && [(NSString *)fullName length] > 0) {
+            if ([seen containsObject:fullName]) continue;
+            [seen addObject:fullName];
+        }
+        [kept addObject:object];
+    }
+    if (kept.count == objects.count) return objects;
+    ApolloLog(@"[ListingResponse] Dropped %lu repeated item(s) from a %lu-item listing page (Reddit sent them more than once)",
+              (unsigned long)(objects.count - kept.count), (unsigned long)objects.count);
+    return [kept copy];
+}
+
 %hook RDKClient
 
 - (NSString *)userAgent {
@@ -2694,12 +2733,13 @@ static BOOL ApolloReopenRedditSignIn(ASWebAuthenticationSession *previous) {
 
 // Defensive guard: bail out if the response isn't a dictionary. Apollo otherwise
 // crashes with "unrecognized selector" when it does `response[@"kind"]` on a string.
+// A page that repeats a post loses the repeats (#1729, see above).
 - (NSArray *)objectsFromListingResponse:(id)response {
     if (![response isKindOfClass:[NSDictionary class]]) {
         ApolloLog(@"[ListingResponse] Non-dict response of class %@; returning nil to avoid crash", NSStringFromClass([response class]));
         return nil;
     }
-    return %orig;
+    return ApolloListingObjectsWithoutRepeats(%orig);
 }
 
 %end
