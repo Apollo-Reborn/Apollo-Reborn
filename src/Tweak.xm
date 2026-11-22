@@ -49,7 +49,6 @@
 #import "ApolloWebJSONRoutes.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloReduceRateLimiting.h"
-#import "ApolloRateLimitMeter.h"
 #import "ApolloWebSessionLoginViewController.h"
 #import "ApolloMessageDraftStore.h"
 #import "ApolloAccountCredentials.h"
@@ -57,6 +56,7 @@
 #import "ApolloFavoritesSorting.h"
 #import "ApolloSubredditInfoCache.h"
 #import "ApolloAICloudBridge.h"
+#import "ApolloRateLimitMeter.h"
 #import "crash/ApolloCrashManager.h"
 #import "crash/ApolloCrashContext.h"
 #import "crash/ApolloCrashPromptCoordinator.h"
@@ -4772,6 +4772,9 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
         [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyReduceRateLimitingPauseAt]);
     sRateLimitWarnings = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyRateLimitWarnings];
     sRateLimitMeter = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyRateLimitMeter];
+    // The budget notices and the floating gauge follow the count Reddit's
+    // answers report (ApolloRateLimitMeter.h). Both are off unless switched on.
+    ApolloRateLimitMeterInstall();
     sKeylessRouteUpdates = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyKeylessRouteUpdates];
     sPollsFeatureEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyPollsEnabled];
     sPollOptionAlignment = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyPollOptionAlignment];
@@ -4809,9 +4812,6 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
         NSTimeInterval wait = ApolloWebJSONOptionalReadBackoff(ApolloActiveWebSessionUsername());
         if (wait > 0) ApolloShowRedditRateLimitToast(wait);
     }];
-    // The budget notices and the floating gauge follow the count Reddit's
-    // answers report (ApolloRateLimitMeter.h). Both are off unless switched on.
-    ApolloRateLimitMeterInstall();
     // Picture-in-Picture hydration.
     sPiPEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyPictureInPictureEnabled];
     sPiPActivationMode = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyPictureInPictureActivation];
