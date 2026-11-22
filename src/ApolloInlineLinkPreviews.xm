@@ -23,6 +23,7 @@
 #import <CoreImage/CoreImage.h>
 #import <Foundation/Foundation.h>
 #import <math.h>
+#import <os/proc.h>
 #import <QuartzCore/QuartzCore.h>
 #import <SafariServices/SafariServices.h>
 #import <UIKit/UIKit.h>
@@ -1582,6 +1583,47 @@ static CIDetector *ApolloLPFaceDetector(void) {
     return detector;
 }
 
+// #1744: CIDetector's face engine is Vision's legacy FaceCore. Every scan it
+// valloc()s ~7 MB of integral-image buffers and never checks them, so a failed
+// allocation goes straight into bzero() in IntegralImage::setAnglePrivate and
+// kills the app (EXC_BAD_ACCESS at 0x0). Allocations fail when Apollo is at its
+// memory ceiling, e.g. just as the media viewer decodes a full-size image. The
+// scan is optional crop polish, so it only runs when the process plainly has
+// room: headroom under the jetsam limit, and an allocation of about twice the
+// scan's size succeeding right now (address-space exhaustion fails allocations
+// while the footprint still looks fine). Vision's VNDetectFaceRectanglesRequest
+// fails gracefully instead, but it keeps ~27 MB of model resident and peaks
+// ~45 MB higher per scan: the wrong trade for an app that dies of memory.
+static size_t const kApolloLPFaceScanMinHeadroomBytes = 256u * 1024u * 1024u;
+static size_t const kApolloLPFaceScanProbeBytes = 16u * 1024u * 1024u;
+
+// Face-scan queue only (serial), which is what keeps `paused` unsynchronized.
+static BOOL ApolloLPFaceScanHasMemoryRoom(void) {
+    static BOOL paused = NO;
+    size_t reported = os_proc_available_memory();
+    size_t headroom = reported;
+#if TARGET_OS_SIMULATOR
+    // The simulator enforces no app memory limit and reports 0 for it. On a
+    // device, 0 means the app is already past its limit.
+    if (headroom == 0) headroom = SIZE_MAX;
+#endif
+    BOOL room = headroom >= kApolloLPFaceScanMinHeadroomBytes;
+    if (room) {
+        // Reserved, never touched: address space for an instant, no footprint.
+        void *probe = valloc(kApolloLPFaceScanProbeBytes);
+        room = probe != NULL;
+        free(probe);
+    }
+    if (!room && !paused) {
+        paused = YES;
+        ApolloLog(@"[LinkPreviews] face scans paused, memory tight (headroom=%.0fMB)", reported / 1048576.0);
+    } else if (room && paused) {
+        paused = NO;
+        ApolloLog(@"[LinkPreviews] face scans resumed (headroom=%.0fMB)", reported / 1048576.0);
+    }
+    return room;
+}
+
 // Nodes whose crop anchor should be re-refined when a face scan lands, keyed
 // by image URL. Values are weak hash tables — dead nodes just drop out.
 static NSMapTable<NSString *, NSHashTable<ASNetworkImageNode *> *> *ApolloLPCropRefinementNodes(void) {
@@ -1730,6 +1772,13 @@ static void ApolloLPStartFaceScanIfNeeded(NSString *key, UIImage *image, NSStrin
         // but re-check the unscannable cases in case it was replaced.
         if (scanUIImage.images.count > 1 || scanUIImage.imageOrientation != UIImageOrientationUp) {
             [ApolloLPFaceRegionCache() setObject:[NSValue valueWithCGRect:CGRectNull] forKey:key];
+            @synchronized (ApolloLPFaceScanPending()) { [ApolloLPFaceScanPending() removeObject:key]; }
+            return;
+        }
+        // Never enter FaceCore without memory to spare (see
+        // ApolloLPFaceScanHasMemoryRoom). No verdict is cached, so the card
+        // keeps its default anchor and the next kick for this URL retries.
+        if (!ApolloLPFaceScanHasMemoryRoom()) {
             @synchronized (ApolloLPFaceScanPending()) { [ApolloLPFaceScanPending() removeObject:key]; }
             return;
         }
