@@ -11,10 +11,11 @@
 // The panel sits 12pt in from the display's top, bottom and leading edges,
 // like the subreddit drawer that opens beside it.
 static const CGFloat kRailInset = 12;
-static const CGFloat kRailColumnWidth = 76;
-// Filled: the buttons span the column this far from its edges.
-static const CGFloat kRailFilledMargin = 4;
-static const CGFloat kRailGap = 12;
+// The buttons' width in either style: room for a subreddit name under its icon.
+static const CGFloat kRailColumnWidth = 92;
+// The buttons' distance from the display edge and from the divider before
+// the feed; the rounded panel's too.
+static const CGFloat kRailSideInset = 4;
 static const CGFloat kRailButtonHeight = 62;
 static const CGFloat kRailFavoriteHeight = 60;
 static const CGFloat kRailGlyphSize = 24;
@@ -264,7 +265,10 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
 
 @implementation ApolloDuoFeedRail
 
-+ (CGFloat)reservedWidth { return kRailInset + kRailColumnWidth + kRailGap; }
++ (CGFloat)reservedWidth { return kRailSideInset * 2 + kRailColumnWidth; }
++ (CGFloat)panelMaxXFilled:(BOOL)filled {
+    return filled ? ApolloDuoFeedRail.reservedWidth : kRailSideInset + kRailColumnWidth;
+}
 
 - (instancetype)initWithFrame:(CGRect)frame {
     if (!(self = [super initWithFrame:frame])) return nil;
@@ -423,18 +427,15 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     CGFloat height = MAX(0, self.bounds.size.height - kRailInset * 2);
     CGFloat scale = self.window.screen.scale ?: UIScreen.mainScreen.scale;
     CGFloat hairline = 1 / scale;
-    // Filled, the panel runs to the display edges and the divider, and the
-    // buttons span it so names get the extra width; they keep the rounded
-    // panel's distance from the top and bottom.
+    // Filled, the panel runs to the display edges and the divider; the
+    // buttons keep the rounded panel's place.
     CGFloat contentX = 0, contentY = 0, columnWidth = kRailColumnWidth;
     if (self.filled) {
-        CGFloat panelWidth = MAX(0, self.bounds.size.width - hairline);
-        self.panel.frame = CGRectMake(0, 0, panelWidth, self.bounds.size.height);
-        contentX = kRailFilledMargin;
+        self.panel.frame = CGRectMake(0, 0, MAX(0, self.bounds.size.width - hairline), self.bounds.size.height);
+        contentX = kRailSideInset;
         contentY = kRailInset;
-        columnWidth = MAX(0, panelWidth - kRailFilledMargin * 2);
     } else {
-        self.panel.frame = CGRectMake(kRailInset, kRailInset, kRailColumnWidth, height);
+        self.panel.frame = CGRectMake(kRailSideInset, kRailInset, kRailColumnWidth, height);
     }
     self.divider.frame = CGRectMake(self.bounds.size.width - hairline, 0, hairline, self.bounds.size.height);
     // The top button's highlight follows the panel's rounded top-left from

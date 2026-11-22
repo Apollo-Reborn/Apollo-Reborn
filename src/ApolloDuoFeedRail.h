@@ -3,7 +3,7 @@
 NS_ASSUME_NONNULL_BEGIN
 
 // Duo, flat, landscape: the leading column beside the Posts feed. A
-// full-height panel (rounded glass inset like the subreddit drawer, or filled:
+// full-height panel (rounded glass inset from the display edges, or filled:
 // solid and square across the whole column) on a plain backdrop that ends in
 // a divider where the feed begins: the feed shortcuts
 // the subreddit list shows (Home, Popular, All, Moderator, in its icon style)
@@ -11,11 +11,13 @@ NS_ASSUME_NONNULL_BEGIN
 // account's favorite subreddits and followed users. The host sizes the view to
 // the column's reserved width and shows it.
 @interface ApolloDuoFeedRail : UIView
-/// Width the feed reserves for the column: the panel, its 12pt inset from
-/// the display edge and a 12pt gap before the feed.
+/// Width the feed reserves for the column, in either style: the buttons and
+/// a 4pt inset from the display edge and before the feed.
 @property(class, nonatomic, readonly) CGFloat reservedWidth;
+/// Where the panel ends: at the divider filled, 4pt before it rounded.
++ (CGFloat)panelMaxXFilled:(BOOL)filled;
 /// The panel fills the column from the display edge to the divider, square
-/// and solid, instead of a rounded glass panel inset like the drawer.
+/// and solid, instead of a rounded glass panel inset from the edges.
 @property(nonatomic) BOOL filled;
 /// 0 Home, 1 Popular, 2 All, 3 Moderator; -1 when the feed is none of them.
 @property(nonatomic) NSInteger selectedFeed;

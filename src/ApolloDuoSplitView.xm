@@ -886,13 +886,11 @@ static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
     if (table.decelerating) [table setContentOffset:table.contentOffset animated:NO];
     self.listScrollTop = @(table.contentOffset.y + table.adjustedContentInset.top);
 }
-// The drawer's leading edge when shown: 12pt in from the display, or beside
-// the feed rail.
-// The drawer keeps 12pt from the display edge, the rounded rail's gap, or a
-// filled rail's divider.
+// The drawer's leading edge when shown: 12pt in from the display, or 12pt
+// clear of the feed rail's panel.
 - (CGFloat)listLeading {
     if (![self showsFeedRail]) return 12;
-    return ApolloDuoFeedRail.reservedWidth + (self.feedRail.filled ? 12 : 0);
+    return [ApolloDuoFeedRail panelMaxXFilled:sDuoFeedSidebarStyle == ApolloDuoFeedSidebarStyleFilled] + 12;
 }
 // The display's corner radius, which container-concentric corners follow.
 // UIWindow reports 0 and a view resolves its radius only after a layout pass,
