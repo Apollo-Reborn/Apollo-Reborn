@@ -8,6 +8,7 @@
 #import "ApolloTextureDecls.h"
 #import "ApolloState.h"
 #import "ApolloCommon.h"
+#import "ApolloClasses.h"
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <math.h>
@@ -253,6 +254,21 @@ static BOOL ApolloDuoMediaUpdateViewport(UITableView *table) {
     return changed;
 }
 
+// Reports a cell's new size through Texture's container path: the table
+// re-measures the node, sets its frame and requeries the row height in one
+// pass. setNeedsLayout alone waits for the node's own layout pass; when a
+// row-height query measures it first, the row grows but the node keeps its old
+// frame and its content is cut off at that height. Does nothing when no table
+// hosts the cell.
+static void ApolloDuoMediaRelayoutHostedCell(ASDisplayNode *cell) {
+    SEL interactionDelegate = @selector(interactionDelegate);
+    SEL invalidateSize = @selector(_rootNodeDidInvalidateSize);
+    if (![cell respondsToSelector:interactionDelegate] || ![cell respondsToSelector:invalidateSize]) return;
+    id container = ((id (*)(id, SEL))objc_msgSend)(cell, interactionDelegate);
+    if (!ApolloClassASTableView || ![container isKindOfClass:ApolloClassASTableView]) return;
+    ((void (*)(id, SEL))objc_msgSend)(cell, invalidateSize);
+}
+
 static void ApolloDuoMediaInvalidateChangedCells(UITableView *table) {
     id tableNode = ((id (*)(id, SEL))objc_msgSend)(table, NSSelectorFromString(@"tableNode"));
     NSArray *cells = nil;
@@ -267,11 +283,14 @@ static void ApolloDuoMediaInvalidateChangedCells(UITableView *table) {
         if (objc_getAssociatedObject(cell, &kApolloDuoFeedGeometryKey) == geometry
             && (!rich || (measuredHeight && fabs(measuredHeight.doubleValue - geometry.height) <= 0.5))) continue;
         // A parent/child may hold a valid Texture layout for the same width.
-        // Invalidate it through ASCellNode's native size-update transaction.
+        // setNeedsLayout reapplies the cell's layout even when only the column
+        // moves and the size stays the same; the container path resizes the
+        // cell and its row when the size changes.
         ASDisplayNode *album = ApolloDuoMediaObjectIvar(rich, "albumThumbnailsNode");
         [album invalidateCalculatedLayout];
         [rich invalidateCalculatedLayout];
         [cell setNeedsLayout];
+        ApolloDuoMediaRelayoutHostedCell(cell);
     }
 }
 
