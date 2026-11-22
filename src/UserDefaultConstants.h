@@ -390,6 +390,9 @@ static NSString *const UDKeyDuoUnfoldedFeedLayout = @"DuoLandscapeFeedLayout";
 // Open Duo subreddit panel appearance: NO = Standard
 // (default), YES = Liquid Glass. The panel keeps the same size and navigation.
 static NSString *const UDKeyDuoSubredditPanelGlassEnabled = @"DuoSubredditPanelGlassEnabled";
+// The feed sidebar beside Posts on the open Duo in landscape: NO = the List
+// button (default), YES = the sidebar.
+static NSString *const UDKeyDuoFeedSidebarEnabled = @"DuoFeedSidebarEnabled";
 // Subreddit quick-switcher (feed title tap, Posts tab long press): YES = the
 // tweak's Modern search sheet (default on Duo), NO = Apollo's Classic inline popup
 // (default elsewhere; it doesn't carry over a Duo unfold).

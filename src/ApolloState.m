@@ -85,6 +85,7 @@ BOOL sIPadTabBarBottom = NO;   // opt-in (default OFF via registerDefaults, UDKe
 BOOL sTabBarSwipeNavigation = NO;   // opt-in (default OFF via registerDefaults, UDKeyTabBarSwipeNavigation); Liquid Glass only, see ApolloLiquidGlass.xm
 NSInteger sDuoUnfoldedFeedLayout = 0;
 BOOL sDuoSubredditPanelGlassEnabled = NO;
+BOOL sDuoFeedSidebarEnabled = NO;
 BOOL sSubredditSwitcherSheetEnabled = NO;
 BOOL sIPadPaneLayout = NO;     // opt-in (default OFF via registerDefaults, UDKeyIPadPaneLayout); iPad-gated, relaunch to apply
 BOOL sKeepSearchBarInPlace = NO;

@@ -1,6 +1,8 @@
 #import <UIKit/UIKit.h>
 __BEGIN_DECLS
 void ApolloDuoSplitScheduleUpdate(void);
+/// The feed sidebar setting changed; Posts lays it out again.
+void ApolloDuoSplitFeedSidebarChanged(void);
 BOOL ApolloDuoSplitIsResizing(void);
 /// A drag is moving the Posts columns; a cancelled one puts the old widths back.
 BOOL ApolloDuoSplitIsColumnDragging(void);

@@ -2485,6 +2485,19 @@ typedef NS_ENUM(NSInteger, Tag) {
         return ApolloPaneLayoutDeviceSupported();
     };
 
+    // The Standard build has no Duo layout. Checks the hardware, so a cold
+    // launch on the closed screen still shows it.
+    ApolloSettingsRow *duoFeedSidebar =
+        [ApolloSettingsRow switchRowWithID:@"interface.duoFeedSidebar"
+                                     title:@"Feed Sidebar"
+                                      isOn:^BOOL { return sDuoFeedSidebarEnabled; }
+                                  onToggle:^(UISwitch *sender) {
+            sDuoFeedSidebarEnabled = sender.isOn;
+            [NSUserDefaults.standardUserDefaults setBool:sender.isOn forKey:UDKeyDuoFeedSidebarEnabled];
+            ApolloDuoSplitFeedSidebarChanged();
+        }];
+    duoFeedSidebar.visible = ^BOOL { return ApolloDeviceIsDuo() && IsLiquidGlass(); };
+
     // Overrides the top scroll-edge glass under the nav bar (iOS 26+). Liquid
     // Glass only — hidden otherwise rather than shown-disabled, since the row
     // has nothing to preview/explain on a non-Glass device.
@@ -2634,9 +2647,12 @@ typedef NS_ENUM(NSInteger, Tag) {
     if (IsLiquidGlass()) {
         footer = [footer stringByAppendingString:@" Group navigation buttons under •••. Tap to expand."];
     }
+    if (ApolloDeviceIsDuo() && IsLiquidGlass()) {
+        footer = [footer stringByAppendingString:@" On iPhone Duo, Feed Sidebar shows your feeds and favorites beside Posts in landscape, in place of the List button."];
+    }
     return [ApolloSettingsSection sectionWithTitle:@"Display & Navigation"
                                             footer:footer
-                                              rows:@[ spelling, scrollReturnButton, trueBlackKeyboard, collapseActions, centerBetween, switcherStyle, iPadPaneLayout, scrollEdgeEffect ]];
+                                              rows:@[ spelling, scrollReturnButton, trueBlackKeyboard, collapseActions, centerBetween, switcherStyle, iPadPaneLayout, duoFeedSidebar, scrollEdgeEffect ]];
 }
 
 // Display order differs from stored values; Blur is optional, while Hidden

@@ -44,6 +44,7 @@ static void ApolloDuoToggleFeedLayout(ApolloDuoSplitHost *host);
 static void ApolloDuoToggleVisibleFeedLayout(UIViewController *controller, BOOL enabled);
 static BOOL ApolloDuoFeedRailReservesPage(UIViewController *page);
 static void ApolloDuoFeedRailApplyInsets(ApolloDuoSplitHost *host, UIViewController *top, UIViewController *leaving);
+static void ApolloDuoFeedRailRelease(ApolloDuoSplitHost *host);
 static CGFloat ApolloDuoPostsLeadingReserve(ApolloDuoSplitHost *host, UIViewController *page);
 static void ApolloDuoFeedRailSelect(ApolloDuoSplitHost *host, NSInteger feed);
 static void ApolloDuoFeedRailOpenSubreddit(ApolloDuoSplitHost *host, NSString *subreddit);
@@ -458,16 +459,6 @@ static void ApolloDuoColumnScrubFinishNow(ApolloDuoSplitHost *host);
         self.listCloseStripPan.name = @"ApolloReborn.Duo.ListCloseStrip";
         self.listCloseStripPan.delegate = (id<UIGestureRecognizerDelegate>)self;
         [self.listContainer addGestureRecognizer:self.listCloseStripPan];
-        // Above the drawer and its scrim: the drawer slides out from under
-        // the rail, which stays usable while it is open.
-        self.feedRail = [ApolloDuoFeedRail new];
-        self.feedRail.alpha = 0;
-        self.feedRail.userInteractionEnabled = NO;
-        __weak ApolloDuoSplitHost *weakRailHost = self;
-        self.feedRail.selectFeed = ^(NSInteger feed) { ApolloDuoFeedRailSelect(weakRailHost, feed); };
-        self.feedRail.selectSubreddit = ^(NSString *subreddit) { ApolloDuoFeedRailOpenSubreddit(weakRailHost, subreddit); };
-        self.feedRail.toggleSubreddits = ^{ [weakRailHost toggleList]; };
-        [self.view addSubview:self.feedRail];
         // Over the columns, under everything else, including the scrim.
         self.trailingBackdrop = [UIView new];
         self.trailingBackdrop.userInteractionEnabled = NO;
@@ -932,10 +923,10 @@ static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
     if (width <= 0) width = MIN(360, self.view.bounds.size.width - 84 - [self listLeading]);
     return MAX(0, width) + [self listLeading];
 }
-// Landscape, where the feed has room for the rail. Unfolded portrait and a
-// short pane keep the List button instead.
+// Landscape, where the feed has room for the rail, while the Feed Sidebar
+// setting is on. Unfolded portrait and a short pane keep the List button.
 - (BOOL)usesFeedRail {
-    if (!self.subredditList || ApolloDuoSplitIsShortPane()) return NO;
+    if (!sDuoFeedSidebarEnabled || !self.subredditList || ApolloDuoSplitIsShortPane()) return NO;
     CGSize size = self.view.bounds.size;
     return size.width > size.height;
 }
@@ -945,6 +936,7 @@ static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
     return [self usesFeedRail] && !self.postsColumnsPaired;
 }
 - (void)refreshFeedRailSelection {
+    if (!self.feedRail) return;
     UINavigationController *feed = self.postsNavigation;
     NSInteger selection = ApolloDuoFeedRailSelection(feed);
     NSString *subreddit = ApolloDuoFeedRailSubreddit(feed);
@@ -982,7 +974,33 @@ static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
     if (![self.trailingBackdrop.backgroundColor isEqual:backdrop]) self.trailingBackdrop.backgroundColor = backdrop;
     if (![self.trailingDivider.backgroundColor isEqual:divider]) self.trailingDivider.backgroundColor = divider;
 }
+// Above the drawer and its scrim: the drawer slides out from under the rail,
+// which stays usable while it is open.
+- (void)installFeedRail {
+    self.feedRail = [ApolloDuoFeedRail new];
+    self.feedRail.alpha = 0;
+    self.feedRail.userInteractionEnabled = NO;
+    __weak ApolloDuoSplitHost *weakRailHost = self;
+    self.feedRail.selectFeed = ^(NSInteger feed) { ApolloDuoFeedRailSelect(weakRailHost, feed); };
+    self.feedRail.selectSubreddit = ^(NSString *subreddit) { ApolloDuoFeedRailOpenSubreddit(weakRailHost, subreddit); };
+    self.feedRail.toggleSubreddits = ^{ [weakRailHost toggleList]; };
+    [self.view insertSubview:self.feedRail aboveSubview:self.listContainer];
+    ApolloLog(@"[DuoSplit] feed sidebar built");
+}
 - (void)layoutFeedRail:(BOOL)rail {
+    // Only built while the setting is on, so the List button's users carry
+    // no hidden rail or favorite icon loads. Turning it off gives back every
+    // inset and drawer row it held, as folding does.
+    if (!sDuoFeedSidebarEnabled) {
+        if (!self.feedRail) return;
+        ApolloDuoFeedRailRelease(self);
+        [self.feedRail removeFromSuperview];
+        self.feedRail = nil;
+        [self layoutTrailingBackdrop:NO];
+        ApolloLog(@"[DuoSplit] feed sidebar removed (turned off)");
+        return;
+    }
+    if (!self.feedRail && self.listContainer) [self installFeedRail];
     if (!self.feedRail) return;
     [self layoutTrailingBackdrop:rail];
     if (self.listOmitsRailRows != rail) {
@@ -6005,6 +6023,18 @@ static void ApolloDuoSplitUpdate(void) {
             __weak ApolloDuoSplitHost *weakHost = host;
             dispatch_async(dispatch_get_main_queue(), ^{ [weakHost revealRestoredFeedControls]; });
         }
+    }
+}
+
+// The Feed Sidebar setting changed: each Posts host builds or removes the
+// sidebar on its next layout, including one in a tab not on screen.
+void ApolloDuoSplitFeedSidebarChanged(void) {
+    UITabBarController *tabs = (id)ApolloMainTabBarController();
+    if (![tabs isKindOfClass:UITabBarController.class]) return;
+    for (UIViewController *child in tabs.viewControllers) {
+        if (![child isKindOfClass:UINavigationController.class]) continue;
+        ApolloDuoSplitHost *host = ApolloDuoSplitStateForNavigation((UINavigationController *)child, NO).host;
+        if (host.subredditList) [host.viewIfLoaded setNeedsLayout];
     }
 }
 
