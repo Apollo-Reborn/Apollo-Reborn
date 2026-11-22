@@ -97,10 +97,17 @@
 // mod-power check running on another thread is never caught by the window.
 static __thread NSInteger sListFilterDepth = 0;
 
-// While the Subreddits list is in Edit mode the filter is bypassed entirely so
-// hidden rows are shown (faded) and can be unhidden. Set on the main thread in
-// setEditing:; read by the getter.
+// While the Subreddits list is in Edit mode the MODERATOR section bypasses the
+// filter so hidden rows are shown (faded) and can be unhidden. Set on the main
+// thread in setEditing:; read by the getter.
 static BOOL sShowHiddenForEditing = NO;
+
+// Section 0 holds Home, Popular, All and the Moderator feed, which Apollo adds
+// only while the (filtered) moderated list is non-empty. It stays filtered in
+// Edit, by the hidden list Edit started with, so the Moderator feed keeps its
+// state and the section its row count until Done.
+static NSArray<NSString *> *sEditStartHiddenList = nil;
+static __thread BOOL sKeepFilterWhileEditing = NO;
 
 // YES only while a MODERATOR-section tap or context-menu %orig is resolving
 // which row was selected. The moderatedSubreddits getter filters during this
@@ -127,12 +134,16 @@ static void ApolloHideModSetHiddenList(NSArray<NSString *> *list) {
     ApolloLog(@"[HideModSubs] hidden list now has %lu entries", (unsigned long)list.count);
 }
 
-static BOOL ApolloHideModNameIsHidden(NSString *name) {
+static BOOL ApolloHideModListContainsName(NSArray<NSString *> *list, NSString *name) {
     if (name.length == 0) return NO;
-    for (NSString *hidden in ApolloHideModHiddenList()) {
+    for (NSString *hidden in list) {
         if ([hidden caseInsensitiveCompare:name] == NSOrderedSame) return YES;
     }
     return NO;
+}
+
+static BOOL ApolloHideModNameIsHidden(NSString *name) {
+    return ApolloHideModListContainsName(ApolloHideModHiddenList(), name);
 }
 
 static void ApolloHideModAddHidden(NSString *name) {
@@ -174,14 +185,14 @@ static NSString *ApolloHideModNameForEntry(id entry) {
 // Returns the moderated-subreddits array with hidden entries removed. Returns
 // the input unchanged when nothing is hidden, so the common case allocates
 // nothing.
-static NSArray *ApolloHideModFilteredList(NSArray *full) {
+static NSArray *ApolloHideModFilteredList(NSArray *full, NSArray<NSString *> *hidden) {
     if (![full isKindOfClass:[NSArray class]] || full.count == 0) return full;
-    if (ApolloHideModHiddenList().count == 0) return full;
+    if (hidden.count == 0) return full;
 
     NSMutableArray *filtered = [NSMutableArray arrayWithCapacity:full.count];
     for (id entry in full) {
         NSString *name = ApolloHideModNameForEntry(entry);
-        if (name.length > 0 && ApolloHideModNameIsHidden(name)) continue;
+        if (name.length > 0 && ApolloHideModListContainsName(hidden, name)) continue;
         [filtered addObject:entry];
     }
     if (filtered.count == full.count) return full;
@@ -192,13 +203,13 @@ static NSArray *ApolloHideModFilteredList(NSArray *full) {
 
 // Source of truth for moderator powers app-wide. Return the full list normally;
 // return the hidden-filtered list ONLY while the Subreddits list is reading it
-// for display and we're not in Edit mode. This hides the rows without ever
-// telling the rest of the app you moderate fewer subreddits.
+// for display (in Edit mode, only for section 0). This hides the rows without
+// ever telling the rest of the app you moderate fewer subreddits.
 - (NSArray *)moderatedSubreddits {
     NSArray *full = %orig;
     if (sListFilterDepth <= 0 && !sNavResolveFilterActive) return full;
-    if (sShowHiddenForEditing) return full;
-    return ApolloHideModFilteredList(full);
+    if (!sShowHiddenForEditing) return ApolloHideModFilteredList(full, ApolloHideModHiddenList());
+    return sKeepFilterWhileEditing ? ApolloHideModFilteredList(full, sEditStartHiddenList) : full;
 }
 
 %end
@@ -587,9 +598,12 @@ static void ApolloHideModDecorateCell(UIViewController *viewController, UITableV
 // through the whole push would reintroduce the PR #500 mod-tools bug.
 
 - (long long)tableView:(UITableView *)tableView numberOfRowsInSection:(long long)section {
+    BOOL keep = sKeepFilterWhileEditing;
+    sKeepFilterWhileEditing = section == 0;
     sListFilterDepth++;
     long long result = %orig;
     sListFilterDepth--;
+    sKeepFilterWhileEditing = keep;
     return result;
 }
 
@@ -670,9 +684,12 @@ static void ApolloHideModDecorateCell(UIViewController *viewController, UITableV
 // The %orig is run inside the display-scope window so the filtered getter
 // produces the right row content; decoration afterwards only reads the cell.
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    BOOL keep = sKeepFilterWhileEditing;
+    sKeepFilterWhileEditing = indexPath.section == 0;
     sListFilterDepth++;
     UITableViewCell *cell = %orig;
     sListFilterDepth--;
+    sKeepFilterWhileEditing = keep;
 
     NSString *sectionTitle = ApolloHideModSectionTitle(self, tableView, indexPath.section);
     BOOL isModeratorRow = [sectionTitle isEqualToString:@"MODERATOR"];
@@ -702,8 +719,11 @@ static void ApolloHideModDecorateCell(UIViewController *viewController, UITableV
         [transition stopAnimation:NO];
         [transition finishAnimationAtPosition:UIViewAnimatingPositionEnd];
     }
+    // Done applies what changed during Edit to section 0, even when nothing is hidden now.
+    BOOL anyHidden = ApolloHideModHiddenList().count || sEditStartHiddenList.count;
     sShowHiddenForEditing = editing;
-    if (ApolloHideModHiddenList().count) {
+    sEditStartHiddenList = editing ? ApolloHideModHiddenList() : nil;
+    if (anyHidden) {
         NSMutableIndexSet *changedSections = [NSMutableIndexSet new];
         for (NSInteger section = 0; section < tableView.numberOfSections; section++) {
             NSInteger displayed = [tableView numberOfRowsInSection:section];
@@ -712,9 +732,13 @@ static void ApolloHideModDecorateCell(UIViewController *viewController, UITableV
         }
         // Only moderator visibility changes. Keep all other cells and their
         // loaded icons intact, including when the hidden list belongs to another account.
+        // When the Moderator feed comes or goes in section 0, Apollo re-vends
+        // the cells mid-slide and they keep the slide's offset, so that change
+        // is instant.
         if (changedSections.count) {
             ApolloHideModReloadSections(tableView, changedSections,
-                                        animated && !UIAccessibilityIsReduceMotionEnabled());
+                                        animated && !UIAccessibilityIsReduceMotionEnabled() &&
+                                        ![changedSections containsIndex:0]);
         }
     }
     %orig;
@@ -740,8 +764,9 @@ static void ApolloHideModDecorateCell(UIViewController *viewController, UITableV
         ApolloHideModAddHidden(name);
     }
 
-    // Re-style the tapped row in place; the row only actually disappears
-    // when Edit mode ends and the filtered getter takes effect on reload.
+    // Re-style the tapped row in place; the row only actually disappears, and
+    // the Moderator feed follows, when Edit mode ends and the filtered getter
+    // takes effect on reload.
     UIView *view = sender;
     while (view && ![view isKindOfClass:[UITableViewCell class]]) view = view.superview;
     if (view) {
