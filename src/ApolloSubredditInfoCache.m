@@ -4,7 +4,7 @@
 #import "ApolloCommon.h"               // ApolloLog
 #import "ApolloNativeSubredditIcons.h"
 #import "ApolloState.h"
-#import "ApolloWebJSON.h"              // ApolloWebJSONOptionalReadBackoff, ApolloWebJSONHasUsableSession
+#import "ApolloWebJSON.h"              // ApolloWebJSONOptionalReadPause, ApolloWebJSONHasUsableSession
 #import "ApolloWebSessionStore.h"      // ApolloActiveWebSessionUsername
 
 NSString * const ApolloSubredditInfoUpdatedNotification = @"ApolloSubredditInfoUpdatedNotification";
@@ -566,12 +566,13 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
 
     // With no bearer (an API-Key-Free account) the chokepoint signs this in
     // with the web session cookie. While Reddit has that session rate-limited,
-    // fall back to the cached entry (or nothing) instead of adding to it; the
-    // subreddit's own posts are waiting on the same window to reset.
+    // or Reduce Rate Limiting is saving the rest of its window, fall back to
+    // the cached entry (or nothing) instead of adding to it; the subreddit's
+    // own posts are waiting on the same window to reset.
     NSString *webSessionUsername = [self webSessionUsernameForRequest:request];
-    NSTimeInterval budgetWait = ApolloWebJSONOptionalReadBackoff(webSessionUsername);
+    NSTimeInterval budgetWait = ApolloWebJSONOptionalReadPause(webSessionUsername);
     if (budgetWait > 0) {
-        ApolloLog(@"[SubredditHeaders] Info fetch r/%@ held for %.0fs while Reddit rate-limits u/%@",
+        ApolloLog(@"[SubredditHeaders] Info fetch r/%@ held for %.0fs while optional lookups are paused for u/%@",
                   key, budgetWait, webSessionUsername);
         [self finishRequestForKey:key info:cached];
         return;
@@ -733,8 +734,9 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
     NSString *path = [NSString stringWithFormat:@"/api/info.json?raw_json=1&sr_name=%@",
                       [escaped componentsJoinedByString:@","]];
     NSURLRequest *request = [self requestForRedditPath:path];
-    // Optional work: never spend a rate-limited web session on it.
-    if (ApolloWebJSONOptionalReadBackoff([self webSessionUsernameForRequest:request]) > 0) {
+    // Optional work: never spend a rate-limited web session on it, or the part
+    // of its window Reduce Rate Limiting is saving.
+    if (ApolloWebJSONOptionalReadPause([self webSessionUsernameForRequest:request]) > 0) {
         finish(NO);
         return;
     }

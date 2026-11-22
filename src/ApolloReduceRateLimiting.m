@@ -30,6 +30,24 @@ void ApolloReduceRateLimitingSetEnabled(BOOL enabled) {
     [[NSNotificationCenter defaultCenter] postNotificationName:ApolloReduceRateLimitingDidChangeNotification object:nil];
 }
 
+const NSInteger ApolloReduceRateLimitingPauseAtMinimum = 30;
+const NSInteger ApolloReduceRateLimitingPauseAtMaximum = 100;
+const NSInteger ApolloReduceRateLimitingPauseAtStep = 5;
+
+NSInteger ApolloReduceRateLimitingClampPauseAt(NSInteger percent) {
+    NSInteger step = ApolloReduceRateLimitingPauseAtStep;
+    NSInteger stop = ((percent + step / 2) / step) * step;
+    return MIN(MAX(stop, ApolloReduceRateLimitingPauseAtMinimum), ApolloReduceRateLimitingPauseAtMaximum);
+}
+
+void ApolloReduceRateLimitingSetPauseAt(NSInteger percent) {
+    NSInteger stop = ApolloReduceRateLimitingClampPauseAt(percent);
+    if (stop == sReduceRateLimitingPauseAt) return;
+    sReduceRateLimitingPauseAt = stop;
+    [[NSUserDefaults standardUserDefaults] setInteger:stop forKey:UDKeyReduceRateLimitingPauseAt];
+    ApolloLog(@"[ReduceRateLimiting] pause extras at %ld%% of Reddit's budget", (long)stop);
+}
+
 static BOOL ApolloReduceRateLimitingShouldOffer(void) {
     if (sReduceRateLimiting) return NO;
     return ![[NSUserDefaults standardUserDefaults] boolForKey:UDKeyReduceRateLimitingOffered];

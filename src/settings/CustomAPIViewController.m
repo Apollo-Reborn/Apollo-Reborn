@@ -29,6 +29,8 @@
 #import "settings/ApolloAISettingsViewController.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloReduceRateLimiting.h"
+#import "ApolloBudgetPauseCell.h"
+#import "ApolloWebJSONBudget.h"
 #import "ApolloWebJSONRouteUpdates.h"
 #import "settings/ApolloKeylessRouteStatusViewController.h"
 #import "ApolloKagiSearch.h"         // Kagi Session Link (Search tab's Kagi mode)
@@ -1861,6 +1863,17 @@ typedef NS_ENUM(NSInteger, Tag) {
                                   onSelect:nil];
     reduceRateLimiting.visible = ^BOOL { return sWebJSONEnabled; };
 
+    // Reduce Rate Limiting's slider: how much of Reddit's ten-minute budget may
+    // be used before the optional lookups stop for the rest of it
+    // (ApolloWebJSONOptionalReadPause). Only there while the switch is on.
+    ApolloSettingsRow *pauseExtrasAt =
+        [ApolloSettingsRow customRowWithID:@"api.reduceRateLimitingPauseAt"
+                                      cell:^UITableViewCell *(__unused UITableView *tableView, __unused ApolloSettingsRow *row) {
+            return [weakSelf budgetPauseCell] ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+        }
+                                  onSelect:nil];
+    pauseExtrasAt.visible = ^BOOL { return sWebJSONEnabled && sReduceRateLimiting; };
+
     // Which routes API-key-free reads are taking, what Reddit has blocked
     // since launch, and the Use Route Updates switch
     // (ApolloKeylessRouteStatusViewController).
@@ -1908,7 +1921,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 
     return [ApolloSettingsSection sectionWithTitle:@"Experimental"
                                             footer:@"Sign in to reddit.com instead of using API keys."
-                                              rows:@[ webJSON, webSessionLogin, reduceRateLimiting, routeStatus, modernChat, modernModmail ]];
+                                              rows:@[ webJSON, webSessionLogin, reduceRateLimiting, pauseExtrasAt, routeStatus, modernChat, modernModmail ]];
 }
 
 - (ApolloSettingsSection *)buildAPIKeysExtrasSection {
@@ -4987,6 +5000,42 @@ static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
     ApolloReduceRateLimitingSetEnabled(sender.isOn);
 }
 
+// Reddit's budget for the account the slider is about: the active
+// API-Key-Free one. 100 until Reddit has reported on it.
+static double ApolloBudgetPauseLimit(void) {
+    ApolloWebJSONBudgetState state = ApolloWebJSONBudgetCurrent(ApolloActiveWebSessionUsername());
+    return state.known && state.limit > 0 ? state.limit : 100.0;
+}
+
+- (UITableViewCell *)budgetPauseCell {
+    static NSString *const identifier = @"Cell_API_ReduceRateLimitingPauseAt";
+    ApolloBudgetPauseCell *cell = [self.tableView dequeueReusableCellWithIdentifier:identifier];
+    if (!cell) cell = [[ApolloBudgetPauseCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:identifier];
+    cell.valueText = ^NSString *(NSInteger stop) {
+        if (stop >= ApolloReduceRateLimitingPauseAtMaximum) return @"Only at the limit";
+        double limit = ApolloBudgetPauseLimit();
+        return [NSString stringWithFormat:@"%ld of %ld", lround(limit * (double)stop / 100.0), lround(limit)];
+    };
+    cell.statusText = ^NSString *{
+        // The row is only up while the switch is on, so "not active" here
+        // means the account in use isn't an API-Key-Free one.
+        if (!ApolloReduceRateLimitingActive()) return @"Now: this account uses an API key, so nothing is paused";
+        NSString *status = ApolloWebJSONBudgetStatusText(ApolloActiveWebSessionUsername());
+        return status ? [@"Now: " stringByAppendingString:status] : @"Now: nothing reported in this 10 minutes yet";
+    };
+    cell.onCommit = ^(NSInteger stop) {
+        ApolloReduceRateLimitingSetPauseAt(stop);
+    };
+    [cell configureWithTitle:@"Pause Extras At"
+                      detail:@"Reddit allows about 100 requests every 10 minutes. Once this many are used, profile pictures, link previews, subreddit headers and icons, and Community Highlights stop loading until it resets. Posts and comments keep loading."
+                        stop:sReduceRateLimitingPauseAt
+                     minimum:ApolloReduceRateLimitingPauseAtMinimum
+                     maximum:ApolloReduceRateLimitingPauseAtMaximum
+                        step:ApolloReduceRateLimitingPauseAtStep
+                      accent:[self apollo_themeAccentColor]];
+    return cell;
+}
+
 // Modern Chat / Modmail are a plain app-wide choice for every account.
 - (void)modernRedditChatSwitchToggled:(UISwitch *)sender {
     [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyUseModernRedditChat];
@@ -5563,6 +5612,8 @@ static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
         UISwitch *toggle = (UISwitch *)subview;
         if (toggle.isOn != sReduceRateLimiting) [toggle setOn:sReduceRateLimiting animated:YES];
     }
+    // The Pause Extras At slider only exists while the switch is on.
+    [self visibilityDidChange];
 }
 - (NSArray<ApolloSettingsSection *> *)buildForm {
     return @[ [self buildAPIKeysDefaultSection],

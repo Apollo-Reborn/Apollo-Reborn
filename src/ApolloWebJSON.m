@@ -6,6 +6,7 @@
 #import "ApolloAccountCredentials.h" // ApolloActiveAccountUsername() — write-fixup author for API-key actives
 #import "ApolloWebSessionStore.h"
 #import "ApolloWebJSONRoutes.h"
+#import "ApolloWebJSONBudget.h"
 #import "ApolloWebSessionLoginViewController.h" // silent re-harvest before the expiry prompt
 #import <objc/message.h>
 #import <os/lock.h>
@@ -945,6 +946,7 @@ static const NSUInteger kProbeBackoffDelayCount = sizeof(kProbeBackoffDelays) / 
 
 static void ApolloWebJSONMergeSetCookiesFromResponse(NSString *username, NSHTTPURLResponse *http);
 static void ApolloWebJSONRecordRateLimit(NSString *username, NSURLRequest *request, NSHTTPURLResponse *http);
+static void ApolloWebJSONNoteBudget(NSString *username, NSHTTPURLResponse *http);
 
 static void ApolloWebJSONResetBlockStreak(NSString *username) {
     @synchronized (ApolloWebJSONExpiryLock()) {
@@ -1022,6 +1024,7 @@ static void ApolloWebJSONVerifySessionThenAnnounce(NSString *username) {
         // 429 limits the session all the same, and at launch it's often the
         // first request out, so start the hold (and the notice) from it too.
         if (http.statusCode == 429) ApolloWebJSONRecordRateLimit(username, req, http);
+        ApolloWebJSONNoteBudget(username, http);
         BOOL malformedAccountResponse;
         @synchronized (ApolloWebJSONExpiryLock()) {
             malformedAccountResponse = [sMalformedAccountResponseUsers containsObject:username];
@@ -1227,15 +1230,15 @@ static void ApolloWebJSONMergeSetCookiesFromResponse(NSString *username, NSHTTPU
 
 #pragma mark - Session rate limit
 
-// Reddit meters each web session per ten-minute window but never says how much
-// is left: cookie-authenticated www.reddit.com JSON responses carry no
-// x-ratelimit headers. Once the budget is spent it answers HTTP 429 to
-// everything until the window resets, Apollo's own feed and comment loads
-// included, which shows up as a feed that keeps spinning (issue #1163). The
-// tweak's optional reads (author avatars, subreddit header info) go out on the
-// same cookie, so after a 429 they stand down until the reset instead of piling
-// on. Lowercased username -> epoch seconds the hold lasts until, guarded by the
-// expiry lock like the rest of the per-account state.
+// Reddit meters each account's web session per ten-minute window. Once the
+// budget is spent it answers HTTP 429 to everything until the window resets,
+// Apollo's own feed and comment loads included, which shows up as a feed that
+// keeps spinning (issue #1163). The tweak's optional reads (author avatars,
+// subreddit header info) go out on the same cookie, so after a 429 they stand
+// down until the reset instead of piling on. Lowercased username -> epoch
+// seconds the hold lasts until, guarded by the expiry lock like the rest of the
+// per-account state. (Until November 2026 the 429 was the only sign; Reddit's
+// answers now also say how much is left, see ApolloWebJSONNoteBudget below.)
 static NSMutableDictionary<NSString *, NSNumber *> *sRateLimitedUntilByUser;
 
 // Seconds from a header Reddit sends as a decimal string ("412", "412.0").
@@ -1291,6 +1294,49 @@ NSTimeInterval ApolloWebJSONOptionalReadBackoff(NSString *username) {
         until = sRateLimitedUntilByUser[key].doubleValue;
     }
     return MAX(0.0, until - [[NSDate date] timeIntervalSince1970]);
+}
+
+#pragma mark - Session request budget
+
+// Lowercased username -> epoch seconds until which the "paused" line below has
+// been logged, so it's written once per window. Guarded by the expiry lock.
+static NSMutableDictionary<NSString *, NSNumber *> *sBudgetPauseLoggedUntilByUser;
+
+// Seconds Reduce Rate Limiting's Pause Extras At stop holds `username`'s
+// optional lookups for, or 0. API-Key-Free accounts only (the primary
+// web-session index, as in ApolloReduceRateLimitingActive): an API-key
+// account's lookups ride its key's own, far larger budget, and the count on a
+// web session it keeps for Chat and polls says nothing about them.
+static NSTimeInterval ApolloWebJSONBudgetHold(NSString *username) {
+    if (!sWebJSONEnabled || !sReduceRateLimiting) return 0;
+    NSString *key = username.lowercaseString;
+    if (key.length == 0 || ![ApolloWebSessionUsernames() containsObject:key]) return 0;
+    return ApolloWebJSONBudgetPause(key, sReduceRateLimitingPauseAt);
+}
+
+// Reddit's count for the account, kept off every answer to one of its
+// API-shaped requests (ApolloWebJSONBudget.h). Nothing here decides anything:
+// ApolloWebJSONOptionalReadPause reads the count when an optional lookup asks.
+// This only notes it, and logs once per window when Reduce Rate Limiting starts
+// holding those lookups back.
+static void ApolloWebJSONNoteBudget(NSString *username, NSHTTPURLResponse *http) {
+    if (!ApolloWebJSONBudgetNoteResponse(username, http)) return;
+    NSTimeInterval pause = ApolloWebJSONBudgetHold(username);
+    if (pause <= 0) return;
+    NSString *key = username.lowercaseString;
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    @synchronized (ApolloWebJSONExpiryLock()) {
+        if (!sBudgetPauseLoggedUntilByUser) sBudgetPauseLoggedUntilByUser = [NSMutableDictionary dictionary];
+        if (sBudgetPauseLoggedUntilByUser[key].doubleValue > now) return;
+        sBudgetPauseLoggedUntilByUser[key] = @(now + pause);
+    }
+    ApolloWebJSONBudgetState state = ApolloWebJSONBudgetCurrent(username);
+    ApolloLog(@"[WebJSON] Reddit reports u/%@ at %.0f of %.0f requests this window; Reduce Rate Limiting pauses optional lookups for %.0fs (set to %ld%%)",
+              key, state.used, state.limit, pause, (long)sReduceRateLimitingPauseAt);
+}
+
+NSTimeInterval ApolloWebJSONOptionalReadPause(NSString *username) {
+    return MAX(ApolloWebJSONOptionalReadBackoff(username), ApolloWebJSONBudgetHold(username));
 }
 
 #pragma mark - Duplicate account reads
@@ -1504,6 +1550,10 @@ void ApolloWebJSONNoteResponse(NSURLRequest *request, NSURLResponse *response) {
     // the active account changed since.
     NSString *username = ApolloWebJSONAccountFromURL(url);
     if (username.length == 0) return;
+
+    // Every answer here is to an API-shaped request of this account's, cookie
+    // or bearer route alike, and carries Reddit's count for it.
+    ApolloWebJSONNoteBudget(username, (NSHTTPURLResponse *)response);
 
     // Route health (ApolloWebJSONRoutes.h), for every keyless path: a block page
     // counts toward the route's cooldown, a success clears it. The path a route

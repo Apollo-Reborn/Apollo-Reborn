@@ -661,6 +661,9 @@ extern BOOL sWebJSONEnabled;
 // active account is API-key-free; read it through
 // ApolloReduceRateLimitingActive() (ApolloReduceRateLimiting.h). Default NO.
 extern BOOL sReduceRateLimiting;
+// UDKeyReduceRateLimitingPauseAt: percent of Reddit's request budget used at
+// which Reduce Rate Limiting pauses optional lookups. 30-100; default 70.
+extern NSInteger sReduceRateLimitingPauseAt;
 // Use Route Updates (UDKeyKeylessRouteUpdates): keyless-routes.json may adjust
 // the API-Key-Free route table (ApolloWebJSONRouteUpdates.h). Default YES.
 extern BOOL sKeylessRouteUpdates;

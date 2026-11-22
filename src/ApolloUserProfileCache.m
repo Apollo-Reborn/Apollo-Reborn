@@ -6,7 +6,7 @@
 #import "ApolloLinkPreviewCache.h"
 #import "ApolloMemoryDiagnostics.h"
 #import "ApolloState.h"
-#import "ApolloWebJSON.h"             // ApolloWebJSONOptionalReadBackoff, ApolloWebJSONHasUsableSession
+#import "ApolloWebJSON.h"             // ApolloWebJSONOptionalReadPause, ApolloWebJSONHasUsableSession
 #import "ApolloWebSessionStore.h"      // ApolloActiveWebSessionUsername
 
 #import <CommonCrypto/CommonDigest.h>
@@ -749,14 +749,15 @@ static NSString *ApolloUserProfileChargedWebSessionUsername(void) {
 }
 
 // Runs on `queue`. YES (after logging, at most once per hold) while Reddit has
-// the web session rate-limited, so the lookup waits for the window to reset.
+// the web session rate-limited, or Reduce Rate Limiting is saving the rest of
+// its window, so the lookup waits for the window to reset.
 - (BOOL)holdLookupForWebSessionUsername:(NSString *)webSessionUsername {
-    NSTimeInterval wait = ApolloWebJSONOptionalReadBackoff(webSessionUsername);
+    NSTimeInterval wait = ApolloWebJSONOptionalReadPause(webSessionUsername);
     if (wait <= 0) return NO;
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     if (now >= self.budgetHoldLogAllowedAt) {
         self.budgetHoldLogAllowedAt = now + wait;
-        ApolloLog(@"[UserAvatars] Holding profile lookups for %.0fs while Reddit rate-limits u/%@", wait, webSessionUsername);
+        ApolloLog(@"[UserAvatars] Holding profile lookups for %.0fs while optional lookups are paused for u/%@", wait, webSessionUsername);
     }
     return YES;
 }

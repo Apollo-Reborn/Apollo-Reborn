@@ -660,6 +660,10 @@ static NSString *const UDKeyWebJSONEnabled = @"WebJSONEnabled";
 // runs every 10 minutes instead of every minute. No effect on API-key accounts.
 // Default NO; offered once at the first API-key-free sign-in.
 static NSString *const UDKeyReduceRateLimiting = @"ReduceRateLimiting";
+// With Reduce Rate Limiting on: the share of Reddit's ten-minute request budget
+// (percent used, 30-100 in steps of 5) at which optional lookups pause until it
+// resets (ApolloWebJSONOptionalReadPause). 100 never pauses early. Default 70.
+static NSString *const UDKeyReduceRateLimitingPauseAt = @"ReduceRateLimitingPauseAt";
 // Set once the Reduce Rate Limiting prompt has been shown (at the first
 // API-key-free sign-in, or at the first rate limit for accounts that signed in
 // before the prompt existed), so it never asks twice. Not user-facing.

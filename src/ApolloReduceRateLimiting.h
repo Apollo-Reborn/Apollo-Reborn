@@ -11,17 +11,21 @@ extern "C" {
 //
 // An API-key-free account reads Reddit through its web session cookie on
 // www.reddit.com/....json, and Reddit gives that a far smaller request budget
-// than an API key: it counts per ten-minute window, never says how much is
-// left, and answers HTTP 429 to everything (Apollo's own feed included) once
-// it's spent (see ApolloWebJSONOptionalReadBackoff). While such an account is
-// active, this mode trades a little polish for fewer requests:
+// than an API key: 100 requests per ten-minute window, and HTTP 429 to
+// everything (Apollo's own feed included) once it's spent (see
+// ApolloWebJSONOptionalReadBackoff). While such an account is active, this
+// mode trades a little polish for fewer requests:
 //   • profile pictures come only from batched lookups (ApolloUserAvatars.xm):
 //     feed authors are batched too and nobody is looked up one at a time, so
 //     they show without collectible frames;
 //   • Community Highlights refresh every 30 minutes instead of every 2
 //     (ApolloSubredditHighlights.xm); pull-to-refresh still refreshes;
 //   • the session check runs every 10 minutes instead of every minute
-//     (ApolloWebJSONCheckAccountSession).
+//     (ApolloWebJSONCheckAccountSession);
+//   • once Reddit reports a chosen share of the window as used (the Pause
+//     Extras At slider under the switch, UDKeyReduceRateLimitingPauseAt), the
+//     optional lookups stop until the window resets, so what's left goes to
+//     the feed and comments (ApolloWebJSONOptionalReadPause).
 // Off by default. Offered once: at the first API-key-free sign-in, or at the
 // first rate limit for an account that signed in before the offer existed.
 
@@ -35,6 +39,17 @@ BOOL ApolloReduceRateLimitingActive(void);
 
 // Turns the setting on or off (persisted) and records the offer as answered.
 void ApolloReduceRateLimitingSetEnabled(BOOL enabled);
+
+// The Pause Extras At slider: the percent of Reddit's budget used at which
+// optional lookups pause. Stops run from 30 to 100 in steps of 5; 100 never
+// pauses early.
+extern const NSInteger ApolloReduceRateLimitingPauseAtMinimum;
+extern const NSInteger ApolloReduceRateLimitingPauseAtMaximum;
+extern const NSInteger ApolloReduceRateLimitingPauseAtStep;
+// `percent` moved onto the nearest stop.
+NSInteger ApolloReduceRateLimitingClampPauseAt(NSInteger percent);
+// Sets the stop (persisted). Takes effect on the next optional lookup.
+void ApolloReduceRateLimitingSetPauseAt(NSInteger percent);
 
 // Sign-in offer. When it hasn't been made yet and the setting is off, presents
 // the one-time alert on `presenter` and calls `then` once it's answered;

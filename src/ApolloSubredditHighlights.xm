@@ -1169,12 +1169,13 @@ static NSString *ApolloHLRequestBearerToken(void) {
 // with the (possibly empty) item array. Caches the result. completion may be nil
 // (warm the cache only).
 // YES while Reddit is refusing the active API-Key-Free account (HTTP 429 until
-// its ten-minute window resets; see ApolloWebJSONOptionalReadBackoff). These
+// its ten-minute window resets), or Reduce Rate Limiting is saving the rest of
+// that window (see ApolloWebJSONOptionalReadPause). These
 // fetches spend the same budget as the feed, so during a hold they stand down:
 // the cached carousel stays up and nothing is negative-cached, so the next
 // visit after the reset fetches as usual. Always NO for API-key accounts.
 static BOOL ApolloHLRateLimitHoldActive(void) {
-    return ApolloWebJSONOptionalReadBackoff(ApolloActiveWebSessionUsername()) > 0;
+    return ApolloWebJSONOptionalReadPause(ApolloActiveWebSessionUsername()) > 0;
 }
 
 static void ApolloHLFetchHighlights(NSString *subredditName, BOOL force, void (^completion)(NSArray<ApolloHLItem *> *items)) {

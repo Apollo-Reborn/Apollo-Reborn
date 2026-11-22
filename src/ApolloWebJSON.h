@@ -342,17 +342,26 @@ void ApolloWebJSONSimSetOAuthBlockedReads(BOOL on);
 void ApolloWebJSONSimBlockOAuthRead(NSMutableURLRequest *request);
 #endif
 
-// Seconds the tweak's optional reads (author avatars, subreddit header info)
-// for `username`'s web session should wait, or 0 when they may go ahead.
-// Reddit doesn't report a web session's remaining request budget (cookie
-// responses carry no x-ratelimit headers); the only signal is the HTTP 429 it
-// sends once the budget is spent, and that 429 also stops Apollo's own feed and
-// comment loads until the window resets. After one, this returns the time left
-// until the reset so the optional reads stop adding to it. Fed by
-// ApolloWebJSONNoteResponse from every cookie-authenticated response. 0 for
-// API-key accounts, when Web JSON is off, or when no 429 has been seen. Any
-// thread.
+// Seconds left on Reddit's rate limit of `username`'s web session, or 0 when it
+// isn't limited. Once the session's request budget is spent Reddit answers
+// HTTP 429 to everything, Apollo's own feed and comment loads included, until
+// its ten-minute window resets; after one, this returns the time left until
+// that reset. Fed by ApolloWebJSONNoteResponse from every cookie-authenticated
+// response. 0 for API-key accounts, when Web JSON is off, or when no 429 has
+// been seen. Any thread. This is "Reddit is refusing the account": what the
+// notice, the empty-list message and anything the user asked for directly go
+// by. The tweak's optional lookups go by ApolloWebJSONOptionalReadPause.
 NSTimeInterval ApolloWebJSONOptionalReadBackoff(NSString *username);
+
+// Seconds the tweak's optional lookups (author avatars, subreddit header info
+// and icons, link preview lookups, Community Highlights) for `username`'s web
+// session should wait, or 0 when they may go ahead. That is the rate limit
+// above, and with Reduce Rate Limiting on also the rest of the window once
+// Reddit reports the chosen share of an API-Key-Free account's budget as used
+// (sReduceRateLimitingPauseAt, ApolloWebJSONBudget.h), so what's left goes to
+// the feed and comments. Read fresh on every call: turning the setting off or
+// moving its slider takes effect at once. Any thread.
+NSTimeInterval ApolloWebJSONOptionalReadPause(NSString *username);
 
 // Duplicate account reads for API-Key-Free accounts. Apollo asks for the same
 // account data twice in quick succession (at launch its account refresh repeats

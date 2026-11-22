@@ -9,7 +9,7 @@
 #import "ApolloSubredditInfoCache.h"
 #import "ApolloUserProfileCache.h"
 #import "ApolloWebTextDecoding.h"
-#import "ApolloWebJSON.h"              // ApolloWebJSONOptionalReadBackoff
+#import "ApolloWebJSON.h"              // ApolloWebJSONOptionalReadPause
 #import "ApolloWebSessionStore.h"      // ApolloActiveWebSessionUsername
 
 static const NSUInteger ApolloLinkPreviewMaxHTMLBytes = 2 * 1024 * 1024;
@@ -1539,12 +1539,13 @@ static NSURL *ApolloLinkPreviewWWWSiblingURL(NSURL *url) {
     NSString *token = ApolloActiveAccountRedditBearerToken();
     // Without a bearer this goes out on the active API-Key-Free session's
     // cookie, and it is an optional lookup: while Reddit refuses that session
-    // (HTTP 429, ApolloWebJSONOptionalReadBackoff) it would only be refused
-    // too, and pile onto the limit.
+    // (HTTP 429) it would only be refused too and pile onto the limit, and
+    // while Reduce Rate Limiting is saving the rest of the window it waits
+    // with the other extras (ApolloWebJSONOptionalReadPause).
     if (token.length == 0) {
-        NSTimeInterval hold = ApolloWebJSONOptionalReadBackoff(ApolloActiveWebSessionUsername());
+        NSTimeInterval hold = ApolloWebJSONOptionalReadPause(ApolloActiveWebSessionUsername());
         if (hold > 0) {
-            ApolloLog(@"[LinkPreviews] Skipping the Reddit info lookup host=%@ while Reddit rate-limits the session (%.0fs)",
+            ApolloLog(@"[LinkPreviews] Skipping the Reddit info lookup host=%@ while the session's optional lookups are paused (%.0fs)",
                       ApolloLinkPreviewHost(url), hold);
             completion(nil, NO);
             return;

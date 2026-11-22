@@ -978,8 +978,9 @@ static void ApolloDevvitRunSubscriptionCheck(NSString *subreddit, NSString *key,
     }
     // An optional read, like the header's info fetch: while Reddit is
     // rate-limiting the web session (API-Key-Free accounts sign these with
-    // it), stand down rather than add to the window everything else waits on.
-    if (ApolloWebJSONOptionalReadBackoff(ApolloActiveWebSessionUsername()) > 0) return;
+    // it), or Reduce Rate Limiting is saving what's left of its window, stand
+    // down rather than add to the window everything else waits on.
+    if (ApolloWebJSONOptionalReadPause(ApolloActiveWebSessionUsername()) > 0) return;
     if (!ApolloDevvitTakeSubscriptionCheck(key)) return;
     SEL fetch = @selector(subredditWithName:completion:);
     if (![client respondsToSelector:fetch]) return;

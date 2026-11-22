@@ -60,6 +60,8 @@ static NSString *ApolloWebJSONAccountFromURL(NSURL *url) { (void)url; return @"a
 #undef NSURLSession
 #undef NSURLSessionDataTask
 static void ApolloWebJSONMergeSetCookiesFromResponse(NSString *username, NSHTTPURLResponse *response) { (void)username; (void)response; merges++; }
+// Reddit's budget report off each answer goes to ApolloWebJSONBudget (tested on its own).
+static void ApolloWebJSONNoteBudget(NSString *username, NSHTTPURLResponse *http) { (void)username; (void)http; }
 static void require(BOOL okay) { if (!okay) { NSLog(@"FAIL"); abort(); } }
 static NSHTTPURLResponse *response(NSInteger status, NSString *mime) {
     return [[NSHTTPURLResponse alloc] initWithURL:[NSURL URLWithString:@"https://www.reddit.com/api/me.json"] statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:@{@"Content-Type":mime}];
