@@ -25,11 +25,16 @@ static const CGFloat kRailButtonHeight = 62;
 static const CGFloat kRailFavoriteHeight = 60;
 static const CGFloat kRailGlyphSize = 24;
 static const CGFloat kRailAvatarSize = 32;
-// The highlight sits this far inside the panel's sides, and 2pt inside its
-// button's top and bottom.
+// The first highlight sits this far below the panel's top; every highlight
+// sits 2pt inside its button's top and bottom.
 static const CGFloat kRailSelectionInset = 4;
+// The highlight's distance from the button's sides, and the name's from the
+// highlight's: the closest a name comes while it clears the highlight's
+// rounded bottom corners.
+static const CGFloat kRailSelectionSideInset = 4;
+static const CGFloat kRailLabelInset = 5;
 // A rounded rectangle rather than the lens's capsule, whose curve would cut
-// into the names along its bottom; at this radius the longest name fits.
+// into the names along its bottom.
 static const CGFloat kRailSelectionRadius = 16;
 // Room under the last favorite, so its highlight clears the panel's rounded
 // bottom when the list is scrolled to the end.
@@ -151,12 +156,19 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     return self;
 }
 - (instancetype)initWithSubreddit:(NSString *)subreddit iconURL:(NSURL *)iconURL {
-    if (!(self = [self initWithTitle:subreddit])) return nil;
+    // A followed user shows without "u/", for room; its avatar and the spoken
+    // label still say it is a user.
+    NSString *username = ApolloDuoFeedRailUsername(subreddit);
+    if (!(self = [self initWithTitle:username ?: subreddit])) return nil;
     self.avatar = YES;
     self.subreddit = subreddit;
-    NSString *username = ApolloDuoFeedRailUsername(subreddit);
     self.accessibilityLabel = username ? subreddit : [@"r/" stringByAppendingString:subreddit];
+    // A name that doesn't fit shrinks a little, then runs out at the edge
+    // rather than ending in an ellipsis.
     self.label.font = [UIFont systemFontOfSize:10 weight:UIFontWeightMedium];
+    self.label.adjustsFontSizeToFitWidth = YES;
+    self.label.lineBreakMode = NSLineBreakByClipping;
+    self.label.minimumScaleFactor = 0.85;
     self.icon.contentMode = UIViewContentModeScaleAspectFill;
     self.icon.clipsToBounds = YES;
     self.icon.layer.cornerRadius = kRailAvatarSize / 2;
@@ -214,19 +226,18 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGRect bounds = self.bounds;
-    CGRect selection = CGRectInset(bounds, kRailSelectionInset, 2);
+    CGRect selection = CGRectInset(bounds, kRailSelectionSideInset, 2);
     self.selection.frame = selection;
     [self shapeSelection];
-    // Icon and name sit in the middle of the highlight, the name well above
-    // its rounded bottom corners and inset from its sides.
+    // Icon and name sit in the middle of the highlight, the name inset from
+    // its sides far enough to clear its rounded bottom corners.
     BOOL large = self.avatar || self.styled;
     CGFloat iconSize = large ? kRailAvatarSize : kRailGlyphSize;
     CGFloat iconTop = CGRectGetMinY(selection) + (large ? 5 : 8);
     self.icon.frame = CGRectMake((bounds.size.width - iconSize) / 2, iconTop, iconSize, iconSize);
     self.initial.frame = self.icon.frame;
-    CGFloat labelInset = self.avatar ? 6 : 5;
-    self.label.frame = CGRectMake(CGRectGetMinX(selection) + labelInset, CGRectGetMaxY(self.icon.frame) + (large ? 3 : 5),
-                                  CGRectGetWidth(selection) - labelInset * 2, self.avatar ? 12 : 13);
+    self.label.frame = CGRectMake(CGRectGetMinX(selection) + kRailLabelInset, CGRectGetMaxY(self.icon.frame) + (large ? 3 : 5),
+                                  CGRectGetWidth(selection) - kRailLabelInset * 2, self.avatar ? 12 : 13);
 }
 // Under the panel's rounded top, the highlight's top follows it in circular
 // arcs, as the panel's corners are, so the gap there matches the sides'.
@@ -519,9 +530,9 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     // inside it, no closer to it than the highlight sits from its edges.
     CGFloat cornerRadius = self.filled ? 0 : columnWidth / 2;
     if (@available(iOS 26.0, *)) cornerRadius = [self.panel effectiveRadiusForCorner:UIRectCornerTopLeft];
-    CGFloat cornerInset = MAX(contentX, contentY) + kRailSelectionInset;
+    CGFloat cornerInset = MAX(contentX + kRailSelectionSideInset, contentY + kRailSelectionInset);
     CGFloat topRadius = MAX(kRailSelectionRadius,
-                            MIN(columnWidth / 2 - kRailSelectionInset, cornerRadius - cornerInset));
+                            MIN(columnWidth / 2 - kRailSelectionSideInset, cornerRadius - cornerInset));
     // Home, Popular and All, then Subreddits, which opens the drawer.
     NSMutableArray<ApolloDuoFeedRailButton *> *buttons = [self.feedButtons mutableCopy] ?: [NSMutableArray array];
     [buttons addObject:self.subredditsButton];
