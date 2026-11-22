@@ -1,3 +1,4 @@
+#import "ApolloOfflineLibrary.h"
 #import "ApolloProfileBannerURL.h"
 #import "ApolloUserProfileCache.h"
 #import "ApolloAccountCredentials.h"   // ApolloActiveAccountUsername() — follow-state account scoping
@@ -519,6 +520,8 @@ static NSTimeInterval const ApolloUserProfileImageNotFoundTTL = 15.0 * 60.0;
     }
     NSString *userAgent = sUserAgent.length > 0 ? sUserAgent : @"ApolloProfileAvatars/1.0";
     [request setValue:userAgent forHTTPHeaderField:@"User-Agent"];
+    // Lets Offline Mode answer this lookup from its saved authors (stays on the device).
+    [NSURLProtocol setProperty:@YES forKey:ApolloOfflineProfileLookupProperty inRequest:request];
     return request;
 }
 
@@ -570,7 +573,10 @@ static NSTimeInterval const ApolloUserProfileImageNotFoundTTL = 15.0 * 60.0;
     info.aboutText = aboutText;
     info.hasSnoovatar = snoovatarURL != nil;
     info.isSuspended = isSuspended;
-    info.suspensionChecked = YES;
+    // Offline Mode's small stand-in (see ApolloOfflineProfileLookupProperty):
+    // name and picture only, like a batch entry, so the next online profile
+    // open still fetches the full one.
+    info.suspensionChecked = ![dataDict[@"apollo_offline_lightweight"] boolValue];
     id linkKarma = dataDict[@"link_karma"];
     id commentKarma = dataDict[@"comment_karma"];
     id createdUTC = dataDict[@"created_utc"];

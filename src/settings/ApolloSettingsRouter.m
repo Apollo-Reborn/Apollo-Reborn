@@ -2,6 +2,7 @@
 #import "ApolloSettingsRouter.h"
 #import "settings/ApolloSetupAssistant.h"
 #import "ApolloSiriSettingsViewController.h"
+#import "settings/ApolloOfflineModeSettingsViewController.h"
 
 #import <objc/message.h>
 
@@ -87,6 +88,7 @@ static void ApolloSettingsRouterEnsureRegistry(void) {
         add(@"profile-layout", @"Profile Layout", @"Apollo Reborn → Features → User Profiles", ApolloSettingsInsetGrouped([ApolloProfileLayoutViewController class]));
         add(@"settings-shortcuts", @"Settings Shortcuts", @"Apollo Reborn → Interface → Tab Bar", ApolloSettingsInsetGrouped([ApolloSettingsShortcutsViewController class]));
         add(@"interface", @"Interface", @"Apollo Reborn → Features", ApolloSettingsInsetGrouped([ApolloInterfaceSettingsViewController class]));
+        add(@"offline-mode", @"Offline Mode", @"Apollo Reborn → Features", ApolloSettingsInsetGrouped([ApolloOfflineModeSettingsViewController class]));
         add(@"action-menus", @"Customize Action Menus", @"Apollo Reborn → Features → Interface", ApolloSettingsInsetGrouped([ApolloActionMenuSettingsViewController class]));
         // One route per menu editor (settings search indexes a screen per route,
         // so each menu's items stay searchable and open in the right editor).
