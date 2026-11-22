@@ -87,6 +87,7 @@ NSInteger sDuoUnfoldedFeedLayout = 0;
 BOOL sDuoSubredditPanelGlassEnabled = NO;
 BOOL sDuoFeedSidebarEnabled = NO;
 NSInteger sDuoFeedSidebarStyle = 0;
+NSInteger sDuoFeedSidebarContent = 0;
 BOOL sSubredditSwitcherSheetEnabled = NO;
 BOOL sIPadPaneLayout = NO;     // opt-in (default OFF via registerDefaults, UDKeyIPadPaneLayout); iPad-gated, relaunch to apply
 BOOL sKeepSearchBarInPlace = NO;

@@ -11,6 +11,7 @@
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
 #import "ApolloAccountCredentials.h"
+#import "ApolloMultiredditEdit.h"
 #import "ApolloSubredditCustomIconCache.h"
 #import "ApolloClasses.h"
 #import "ApolloSpelling.h"
@@ -728,7 +729,8 @@ static id ApolloMultiEditIssue858InjectedResponse(id responseObject, NSString *m
     __weak typeof(self) weakClient = self;
     void (^wrapped)(NSArray *, NSError *) = ^(NSArray *collection, NSError *error) {
         id client = weakClient;
-        if (client && [collection isKindOfClass:[NSArray class]] && collection.count > 0) {
+        // An empty list counts too: the last multireddit was deleted.
+        if (client && !error && [collection isKindOfClass:[NSArray class]]) {
             // The map is read from the main thread (didSelect / cellForRow),
             // so mutate it there too; completions aren't guaranteed on main.
             void (^store)(void) = ^{
@@ -739,6 +741,7 @@ static id ApolloMultiEditIssue858InjectedResponse(id responseObject, NSString *m
                 ApolloLog(@"[MultiEdit] captured %lu multireddits for client %p%@",
                           (unsigned long)collection.count, client,
                           client == ApolloActiveAccountClient() ? @" (active)" : @"");
+                [NSNotificationCenter.defaultCenter postNotificationName:ApolloMultiredditsCapturedNotification object:nil];
             };
             if ([NSThread isMainThread]) store();
             else dispatch_async(dispatch_get_main_queue(), store);
@@ -749,6 +752,50 @@ static id ApolloMultiEditIssue858InjectedResponse(id responseObject, NSString *m
 }
 
 %end
+
+// MARK: - Entries for other modules
+
+NSString *const ApolloMultiredditsCapturedNotification = @"ApolloMultiredditsCapturedNotification";
+NSString *const ApolloMultiredditEntryPath = @"path";
+NSString *const ApolloMultiredditEntryTitle = @"title";
+NSString *const ApolloMultiredditEntrySubreddit = @"subreddit";
+NSString *const ApolloMultiredditEntryIcon = @"icon";
+
+// "/user/<owner>/m/<name>", the form ApolloMultiredditPathFromViewController
+// gives an open multireddit feed, so the two compare.
+static NSString *ApolloMultiEditNormalizedPath(RDKMultireddit *multireddit) {
+    NSString *path = [multireddit respondsToSelector:@selector(path)] ? [multireddit path] : nil;
+    if (![path isKindOfClass:[NSString class]]) return nil;
+    NSMutableArray<NSString *> *components = [NSMutableArray array];
+    for (NSString *component in path.pathComponents) {
+        if (component.length && ![component isEqualToString:@"/"]) [components addObject:component];
+    }
+    if (components.count != 4 || ![components[0].lowercaseString isEqualToString:@"user"]
+        || ![components[2].lowercaseString isEqualToString:@"m"]) return nil;
+    return [@"/" stringByAppendingString:[components componentsJoinedByString:@"/"]];
+}
+
+NSArray<NSDictionary<NSString *, id> *> *ApolloActiveAccountMultiredditEntries(void) {
+    id client = ApolloActiveAccountClient();
+    NSArray *list = client ? [sMultiredditsByClient objectForKey:client] : nil;
+    NSMutableArray<NSDictionary<NSString *, id> *> *entries = [NSMutableArray array];
+    for (RDKMultireddit *multireddit in list) {
+        NSString *path = ApolloMultiEditNormalizedPath(multireddit);
+        NSString *title = ApolloMultiEditDisplayTitle(multireddit);
+        if (!path || !title.length) continue;
+        NSMutableDictionary<NSString *, id> *entry = [@{ ApolloMultiredditEntryPath: path,
+                                                         ApolloMultiredditEntryTitle: title } mutableCopy];
+        NSString *first = ApolloMultiEditSubredditNames(multireddit).firstObject;
+        if (first.length) entry[ApolloMultiredditEntrySubreddit] = first;
+        UIImage *icon = ApolloMultiEditCustomIcon(multireddit);
+        if (icon) entry[ApolloMultiredditEntryIcon] = icon;
+        [entries addObject:entry];
+    }
+    [entries sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        return [a[ApolloMultiredditEntryTitle] localizedCaseInsensitiveCompare:b[ApolloMultiredditEntryTitle]];
+    }];
+    return entries;
+}
 
 // MARK: - Custom icon enforcement
 

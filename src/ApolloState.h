@@ -221,6 +221,13 @@ typedef NS_ENUM(NSInteger, ApolloDuoFeedSidebarStyle) {
 };
 // Rounded (default) or Filled for the feed sidebar.
 extern NSInteger sDuoFeedSidebarStyle;
+typedef NS_ENUM(NSInteger, ApolloDuoFeedSidebarContent) {
+    ApolloDuoFeedSidebarContentFavorites = 0,
+    ApolloDuoFeedSidebarContentMultireddits = 1,
+    ApolloDuoFeedSidebarContentBoth = 2,
+};
+// What the feed sidebar lists under Subreddits (default Favorites).
+extern NSInteger sDuoFeedSidebarContent;
 // Modern sheet or Apollo's Classic popup for the subreddit quick-switcher.
 extern BOOL sSubredditSwitcherSheetEnabled;
 BOOL ApolloSupportsNativeTabBarScrollBehavior(void);

@@ -2517,6 +2517,25 @@ typedef NS_ENUM(NSInteger, Tag) {
                 });
         }];
     duoFeedSidebarStyle.visible = ^BOOL { return ApolloDeviceIsDuo() && IsLiquidGlass() && sDuoFeedSidebarEnabled; };
+    NSArray<NSString *> *sidebarContents = @[ @"Favorites", @"Multireddits", @"Both" ];
+    ApolloSettingsRow *duoFeedSidebarContent =
+        [ApolloSettingsRow valueRowWithID:@"interface.duoFeedSidebarContent"
+                                   title:@"Sidebar Shows"
+                                  detail:^NSString * {
+            NSInteger content = sDuoFeedSidebarContent;
+            return content >= 0 && content < (NSInteger)sidebarContents.count ? sidebarContents[content] : sidebarContents[0];
+        }
+                                onSelect:^{
+            ApolloSettingsPresentPicker(weakSelf, [weakSelf cellForRowID:@"interface.duoFeedSidebarContent"],
+                @"Sidebar Shows", sidebarContents, sDuoFeedSidebarContent, ^(NSInteger picked) {
+                    if (sDuoFeedSidebarContent == picked) return;
+                    sDuoFeedSidebarContent = picked;
+                    [NSUserDefaults.standardUserDefaults setInteger:picked forKey:UDKeyDuoFeedSidebarContent];
+                    [weakSelf reloadRowWithID:@"interface.duoFeedSidebarContent"];
+                    ApolloDuoSplitFeedSidebarChanged();
+                });
+        }];
+    duoFeedSidebarContent.visible = duoFeedSidebarStyle.visible;
 
     // Overrides the top scroll-edge glass under the nav bar (iOS 26+). Liquid
     // Glass only — hidden otherwise rather than shown-disabled, since the row
@@ -2668,11 +2687,11 @@ typedef NS_ENUM(NSInteger, Tag) {
         footer = [footer stringByAppendingString:@" Group navigation buttons under •••. Tap to expand."];
     }
     if (ApolloDeviceIsDuo() && IsLiquidGlass()) {
-        footer = [footer stringByAppendingString:@" On iPhone Duo, Feed Sidebar shows your feeds and favorites beside Posts in landscape, in place of the List button."];
+        footer = [footer stringByAppendingString:@" On iPhone Duo, Feed Sidebar shows your feeds beside Posts in landscape, in place of the List button, with your favorites, multireddits or both."];
     }
     return [ApolloSettingsSection sectionWithTitle:@"Display & Navigation"
                                             footer:footer
-                                              rows:@[ spelling, scrollReturnButton, trueBlackKeyboard, collapseActions, centerBetween, switcherStyle, iPadPaneLayout, duoFeedSidebar, duoFeedSidebarStyle, scrollEdgeEffect ]];
+                                              rows:@[ spelling, scrollReturnButton, trueBlackKeyboard, collapseActions, centerBetween, switcherStyle, iPadPaneLayout, duoFeedSidebar, duoFeedSidebarStyle, duoFeedSidebarContent, scrollEdgeEffect ]];
 }
 
 // Display order differs from stored values; Blur is optional, while Hidden

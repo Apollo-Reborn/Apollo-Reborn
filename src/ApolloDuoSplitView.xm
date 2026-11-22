@@ -53,6 +53,8 @@ static NSString *ApolloDuoFeedRailSubreddit(UINavigationController *feed);
 static NSUInteger ApolloDuoFeedStackKeptCount(UINavigationController *feed);
 static void ApolloDuoFeedRailRefreshSoon(ApolloDuoSplitHost *host);
 static BOOL ApolloDuoListShowsModerator(UINavigationController *list);
+// ApolloSubredditHeaders.xm: an open multireddit feed's "/user/<owner>/m/<name>".
+extern NSString *ApolloMultiredditPathFromViewController(UIViewController *viewController);
 
 @protocol ApolloDuoLayoutControl <NSObject>
 - (void)updateFeedLayoutButton;
@@ -1004,6 +1006,7 @@ static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
     if (!self.feedRail && self.listContainer) [self installFeedRail];
     if (!self.feedRail) return;
     self.feedRail.filled = sDuoFeedSidebarStyle == ApolloDuoFeedSidebarStyleFilled;
+    self.feedRail.content = sDuoFeedSidebarContent;
     [self layoutTrailingBackdrop:rail];
     if (self.listOmitsRailRows != rail) {
         // The list measures those rows again (ApolloDuoSplitListOmitsRailRows).
@@ -2365,11 +2368,12 @@ static BOOL ApolloDuoListShowsModerator(UINavigationController *list) {
 }
 
 // The subreddit the feed shows (nil for Home and other multi-subreddit feeds).
+// The subreddit the feed shows, or a multireddit's "/user/<owner>/m/<name>".
 static NSString *ApolloDuoFeedRailSubreddit(UINavigationController *feed) {
     NSUInteger count = ApolloDuoFeedStackKeptCount(feed);
     UIViewController *page = count ? feed.viewControllers[count - 1] : nil;
-    return ApolloClassPostsViewController && [page isKindOfClass:ApolloClassPostsViewController]
-        ? ApolloNamedSubredditForPostsController(page) : nil;
+    if (!ApolloClassPostsViewController || ![page isKindOfClass:ApolloClassPostsViewController]) return nil;
+    return ApolloNamedSubredditForPostsController(page) ?: ApolloMultiredditPathFromViewController(page);
 }
 
 // Looks again once a feed that just opened has had time to name itself.
@@ -2451,9 +2455,10 @@ static void ApolloDuoFeedRailOpenSubreddit(ApolloDuoSplitHost *host, NSString *s
     NSURLComponents *url = [NSURLComponents new];
     url.scheme = @"apollo";
     url.host = @"reddit.com";
-    // A followed user is a favorite too ("u/name").
+    // A followed user is a favorite too ("u/name"); a multireddit is its path.
     BOOL user = [subreddit.lowercaseString hasPrefix:@"u/"];
-    url.path = user ? [@"/user/" stringByAppendingString:[subreddit substringFromIndex:2]]
+    url.path = [subreddit hasPrefix:@"/"] ? subreddit
+        : user ? [@"/user/" stringByAppendingString:[subreddit substringFromIndex:2]]
         : [@"/r/" stringByAppendingString:subreddit];
     host.feedRailSwitchDeadline = CACurrentMediaTime() + 3.0;
     ApolloDuoFeedRailNotePick(host, -1, subreddit);
@@ -2463,7 +2468,7 @@ static void ApolloDuoFeedRailOpenSubreddit(ApolloDuoSplitHost *host, NSString *s
         host.feedRailPickDeadline = 0;
         [host refreshFeedRailSelection];
     }
-    ApolloLog(@"[DuoFeedRail] opening a favorite routed=%d", routed);
+    ApolloLog(@"[DuoFeedRail] opening a %@ routed=%d", [subreddit hasPrefix:@"/"] ? @"multireddit" : @"favorite", routed);
 }
 
 // A rail shortcut: the subreddit list's own row for that feed, as the list
@@ -6037,7 +6042,12 @@ void ApolloDuoSplitFeedSidebarChanged(void) {
     for (UIViewController *child in tabs.viewControllers) {
         if (![child isKindOfClass:UINavigationController.class]) continue;
         ApolloDuoSplitHost *host = ApolloDuoSplitStateForNavigation((UINavigationController *)child, NO).host;
-        if (host.subredditList) [host.viewIfLoaded setNeedsLayout];
+        if (!host.subredditList) continue;
+        [host.viewIfLoaded setNeedsLayout];
+        // The drawer leaves out what the sidebar lists, which Sidebar Shows picks.
+        if (host.listOmitsRailRows) {
+            [ApolloDuoSplitFindTable(host.subredditList.viewControllers.firstObject.viewIfLoaded) reloadData];
+        }
     }
 }
 

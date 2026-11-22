@@ -2778,7 +2778,7 @@ static void ApolloSubredditIndexHeaderLayoutSubviewsHook(id self, SEL _cmd) {
 // It opens beside the Duo's feed rail, which already holds the feed shortcuts
 // and the favorites (ApolloDuoSplitListOmitsRailRows). Those rows and the
 // Favorites header collapse there; the rest of the list is unchanged.
-static char kApolloSubredditRailFavoritesSectionKey;
+static char kApolloSubredditRailSectionsKey;
 static char kApolloSubredditHiddenOnRailKey;
 static char kApolloSubredditRailEditingKey;
 
@@ -2789,18 +2789,25 @@ static BOOL ApolloSubredditIndexListIsEditing(UITableView *tableView) {
     return [list isKindOfClass:UIViewController.class] && [(UIViewController *)list isEditing];
 }
 
-// The favorites section, kept until the sections change in number or the
-// list reloads (the reloadData hook drops it).
-static NSInteger ApolloSubredditIndexRailFavoritesSection(UITableView *tableView) {
+// Whether `section` is one the rail lists: Favorites, Multireddits or both,
+// as Sidebar Shows picks. The sections are found by Apollo's index glyphs
+// (★ favorites, ○ multireddits; read from the binary's title table) and kept
+// until the sections change in number or the list reloads (the reloadData
+// hook drops them).
+static BOOL ApolloSubredditIndexSectionIsOnRail(UITableView *tableView, NSInteger section) {
     id<UITableViewDataSource> dataSource = tableView.dataSource;
     NSInteger sections = [dataSource respondsToSelector:@selector(numberOfSectionsInTableView:)]
         ? [dataSource numberOfSectionsInTableView:tableView] : 1;
-    NSArray<NSNumber *> *cached = objc_getAssociatedObject(tableView, &kApolloSubredditRailFavoritesSectionKey);
-    if (cached.count == 2 && cached[0].integerValue == sections) return cached[1].integerValue;
-    NSInteger favorites = ApolloSubredditIndexSectionForIndexTitle(tableView, @"★");
-    objc_setAssociatedObject(tableView, &kApolloSubredditRailFavoritesSectionKey, @[@(sections), @(favorites)],
-                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    return favorites;
+    NSArray<NSNumber *> *cached = objc_getAssociatedObject(tableView, &kApolloSubredditRailSectionsKey);
+    if (cached.count != 3 || cached[0].integerValue != sections) {
+        cached = @[@(sections), @(ApolloSubredditIndexSectionForIndexTitle(tableView, @"★")),
+                   @(ApolloSubredditIndexSectionForIndexTitle(tableView, @"○"))];
+        objc_setAssociatedObject(tableView, &kApolloSubredditRailSectionsKey, cached, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    NSInteger favorites = cached[1].integerValue, multireddits = cached[2].integerValue;
+    BOOL showsFavorites = sDuoFeedSidebarContent != ApolloDuoFeedSidebarContentMultireddits;
+    BOOL showsMultireddits = sDuoFeedSidebarContent != ApolloDuoFeedSidebarContentFavorites;
+    return (showsFavorites && section == favorites) || (showsMultireddits && section == multireddits);
 }
 
 static BOOL ApolloSubredditIndexRowIsOnDuoRail(UITableView *tableView, NSIndexPath *indexPath) {
@@ -2814,14 +2821,12 @@ static BOOL ApolloSubredditIndexRowIsOnDuoRail(UITableView *tableView, NSIndexPa
                ApolloSubredditIndexMetaFeedRowsValidated(tableView, visible);
     }
     if (ApolloSubredditIndexListIsEditing(tableView)) return NO;
-    NSInteger favorites = ApolloSubredditIndexRailFavoritesSection(tableView);
-    return favorites != NSNotFound && indexPath.section == favorites;
+    return ApolloSubredditIndexSectionIsOnRail(tableView, indexPath.section);
 }
 
 static BOOL ApolloSubredditIndexHeaderIsOnDuoRail(UITableView *tableView, NSInteger section) {
     if (!ApolloDuoSplitListOmitsRailRows(tableView) || ApolloSubredditIndexListIsEditing(tableView)) return NO;
-    NSInteger favorites = ApolloSubredditIndexRailFavoritesSection(tableView);
-    return favorites != NSNotFound && section == favorites;
+    return ApolloSubredditIndexSectionIsOnRail(tableView, section);
 }
 
 // Hides (or shows again) a view the drawer leaves out, showing only views it
@@ -2837,25 +2842,25 @@ static void ApolloSubredditIndexSetHiddenOnRail(UIView *view, BOOL hide) {
     }
 }
 
-// Edit and Done open and close the favorites in place, once per change.
+// Edit and Done open and close the rail's sections in place, once per change.
 static void ApolloSubredditIndexRefreshRailFavorites(UITableView *tableView, BOOL animated) {
     BOOL editing = ApolloSubredditIndexListIsEditing(tableView);
     if ([objc_getAssociatedObject(tableView, &kApolloSubredditRailEditingKey) boolValue] == editing) return;
     objc_setAssociatedObject(tableView, &kApolloSubredditRailEditingKey, editing ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (!ApolloDuoSplitListOmitsRailRows(tableView)) return;
-    NSInteger favorites = ApolloSubredditIndexRailFavoritesSection(tableView);
-    if (favorites == NSNotFound) return;
     NSMutableArray<UIView *> *views = [NSMutableArray array];
     for (UITableViewCell *cell in tableView.visibleCells) {
         NSIndexPath *indexPath = [tableView indexPathForCell:cell];
-        if (indexPath && indexPath.section == favorites) [views addObject:cell];
+        if (indexPath && ApolloSubredditIndexSectionIsOnRail(tableView, indexPath.section)) [views addObject:cell];
     }
     // Apollo's headers are plain views, which headerViewForSection: doesn't
     // return; the display hook stamps each with its section.
     NSHashTable<UIView *> *headers = objc_getAssociatedObject(tableView, &kApolloSubredditVisibleHeadersKey);
     for (UIView *header in headers) {
         NSNumber *section = objc_getAssociatedObject(header, &kApolloSubredditHeaderSectionKey);
-        if (header.superview == tableView && section && section.integerValue == favorites) [views addObject:header];
+        if (header.superview == tableView && section && ApolloSubredditIndexSectionIsOnRail(tableView, section.integerValue)) {
+            [views addObject:header];
+        }
     }
     // Rows that open fade in as they grow, so their content never overlaps.
     for (UIView *view in views) {
@@ -2875,7 +2880,9 @@ static void ApolloSubredditIndexRefreshRailFavorites(UITableView *tableView, BOO
 }
 
 static CGFloat ApolloSubredditIndexHeightForHeaderHook(id self, SEL _cmd, UITableView *tableView, NSInteger section) {
-    if (ApolloSubredditIndexHeaderIsOnDuoRail(tableView, section)) return 0.01;
+    // Under a custom section order the remap may call in here with Apollo's
+    // native section; the rail sections are visible ones.
+    if (ApolloSubredditIndexHeaderIsOnDuoRail(tableView, ApolloFollowingVisibleSectionForCallout(tableView, section))) return 0.01;
     if (orig_ApolloRedditListHeightForHeader) return orig_ApolloRedditListHeightForHeader(self, _cmd, tableView, section);
     return tableView.sectionHeaderHeight;
 }
@@ -3197,8 +3204,8 @@ static void ApolloSubredditIndexScheduleGeometryRefresh(UITableView *tableView, 
 
 - (void)reloadData {
     // Sections may have changed without changing in number.
-    if (objc_getAssociatedObject(self, &kApolloSubredditRailFavoritesSectionKey)) {
-        objc_setAssociatedObject(self, &kApolloSubredditRailFavoritesSectionKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (objc_getAssociatedObject(self, &kApolloSubredditRailSectionsKey)) {
+        objc_setAssociatedObject(self, &kApolloSubredditRailSectionsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     %orig;
     ApolloSubredditIndexInstallOrUpdate((UITableView *)self);

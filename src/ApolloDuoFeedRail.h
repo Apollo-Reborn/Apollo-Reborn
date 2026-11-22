@@ -25,7 +25,11 @@ NS_ASSUME_NONNULL_BEGIN
 /// subreddit list has its row (the account moderates). Set before
 /// -reloadShortcuts.
 @property(nonatomic) BOOL showsModerator;
-/// The subreddit the feed shows, matched against the favorites; nil for none.
+/// What it lists under Subreddits (ApolloDuoFeedSidebarContent): favorites,
+/// the account's multireddits, or both in the Subreddits list's order.
+@property(nonatomic) NSInteger content;
+/// The subreddit the feed shows (a multireddit's "/user/<owner>/m/<name>"
+/// path), matched against the listed entries; nil for none.
 @property(nonatomic, copy, nullable) NSString *selectedSubreddit;
 @property(nonatomic) BOOL subredditsSelected;
 @property(nonatomic, copy, nullable) void (^selectFeed)(NSInteger feed);
