@@ -14,8 +14,10 @@
 // The panel sits 12pt in from the display's top and bottom, like the
 // subreddit drawer that opens beside it.
 static const CGFloat kRailInset = 12;
-// The buttons' width in either style: room for a subreddit name under its icon.
-static const CGFloat kRailColumnWidth = 92;
+// The buttons' width in either style. With kRailSideInset each side the
+// column is 84pt, as wide as the tab rail across the feed, so the feed sits
+// centered between them.
+static const CGFloat kRailColumnWidth = 76;
 // The buttons' distance from the display edge and from the divider before
 // the feed; the rounded panel's too.
 static const CGFloat kRailSideInset = 4;
