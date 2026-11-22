@@ -215,6 +215,12 @@ extern NSInteger sDuoUnfoldedFeedLayout;
 extern BOOL sDuoSubredditPanelGlassEnabled;
 // The feed sidebar beside Posts on the open Duo in landscape (default NO).
 extern BOOL sDuoFeedSidebarEnabled;
+typedef NS_ENUM(NSInteger, ApolloDuoFeedSidebarStyle) {
+    ApolloDuoFeedSidebarStyleRounded = 0,
+    ApolloDuoFeedSidebarStyleFilled = 1,
+};
+// Rounded (default) or Filled for the feed sidebar.
+extern NSInteger sDuoFeedSidebarStyle;
 // Modern sheet or Apollo's Classic popup for the subreddit quick-switcher.
 extern BOOL sSubredditSwitcherSheetEnabled;
 BOOL ApolloSupportsNativeTabBarScrollBehavior(void);

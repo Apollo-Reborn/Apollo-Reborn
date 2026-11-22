@@ -888,8 +888,11 @@ static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
 }
 // The drawer's leading edge when shown: 12pt in from the display, or beside
 // the feed rail.
+// The drawer keeps 12pt from the display edge, the rounded rail's gap, or a
+// filled rail's divider.
 - (CGFloat)listLeading {
-    return [self showsFeedRail] ? ApolloDuoFeedRail.reservedWidth : 12;
+    if (![self showsFeedRail]) return 12;
+    return ApolloDuoFeedRail.reservedWidth + (self.feedRail.filled ? 12 : 0);
 }
 // The display's corner radius, which container-concentric corners follow.
 // UIWindow reports 0 and a view resolves its radius only after a layout pass,
@@ -1002,6 +1005,7 @@ static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
     }
     if (!self.feedRail && self.listContainer) [self installFeedRail];
     if (!self.feedRail) return;
+    self.feedRail.filled = sDuoFeedSidebarStyle == ApolloDuoFeedSidebarStyleFilled;
     [self layoutTrailingBackdrop:rail];
     if (self.listOmitsRailRows != rail) {
         // The list measures those rows again (ApolloDuoSplitListOmitsRailRows).
@@ -6026,8 +6030,8 @@ static void ApolloDuoSplitUpdate(void) {
     }
 }
 
-// The Feed Sidebar setting changed: each Posts host builds or removes the
-// sidebar on its next layout, including one in a tab not on screen.
+// The Feed Sidebar or Sidebar Style setting changed: each Posts host applies
+// it on its next layout, including one in a tab not on screen.
 void ApolloDuoSplitFeedSidebarChanged(void) {
     UITabBarController *tabs = (id)ApolloMainTabBarController();
     if (![tabs isKindOfClass:UITabBarController.class]) return;
