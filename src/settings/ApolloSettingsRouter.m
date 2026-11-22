@@ -87,6 +87,9 @@ static void ApolloSettingsRouterEnsureRegistry(void) {
         add(@"profile-layout", @"Profile Layout", @"Apollo Reborn → Features → User Profiles", ApolloSettingsInsetGrouped([ApolloProfileLayoutViewController class]));
         add(@"settings-shortcuts", @"Settings Shortcuts", @"Apollo Reborn → Interface → Tab Bar", ApolloSettingsInsetGrouped([ApolloSettingsShortcutsViewController class]));
         add(@"interface", @"Interface", @"Apollo Reborn → Features", ApolloSettingsInsetGrouped([ApolloInterfaceSettingsViewController class]));
+        if (ApolloDeviceIsDuo() && IsLiquidGlass()) {
+            add(@"iphone-duo", @"iPhone Duo", @"Apollo Reborn → Features", ApolloSettingsInsetGrouped([ApolloDuoSettingsViewController class]));
+        }
         add(@"action-menus", @"Customize Action Menus", @"Apollo Reborn → Features → Interface", ApolloSettingsInsetGrouped([ApolloActionMenuSettingsViewController class]));
         // One route per menu editor (settings search indexes a screen per route,
         // so each menu's items stay searchable and open in the right editor).

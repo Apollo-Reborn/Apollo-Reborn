@@ -94,9 +94,9 @@ Host checks: `sh tests/run_duo_video_geometry_tests.sh`,
   Controls toggle on a Duo-only settings page that also mirrored Landscape
   Feed Layout and Subreddit Panel Style.
 - Current: tabletop is standard behavior whenever the fold geometry
-  qualifies. The Duo settings page, preference key, and layout-change
-  notification are gone. Subreddit Panel Style stays under Subreddits; Landscape
-  Feed Layout stays as the in-feed control.
+  qualifies, with no preference key or layout-change notification. Subreddit
+  Panel Style is under Features → iPhone Duo; Landscape Feed Layout stays as
+  the in-feed control.
 
 ### Review revision (PR #1591)
 
