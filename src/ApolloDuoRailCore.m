@@ -161,7 +161,11 @@ static BOOL ApolloDuoRailIsFeedContentController(UIViewController *controller) {
         // Account > Comments uses its own Texture controller, including
         // inline media and the attached post preview beneath each comment.
         || [name isEqualToString:@"Apollo.UserCommentsViewController"]
-        || [name isEqualToString:@"Apollo.ProfileViewController"];
+        || [name isEqualToString:@"Apollo.ProfileViewController"]
+        // Inbox rows change height in place when Translation swaps a body.
+        // Unlisted, Texture re-measured such a row at the full table width
+        // and left its node shorter than the row, clipping the footer.
+        || [name isEqualToString:@"Apollo.InboxViewController"];
 }
 
 static char kApolloDuoFeedTableKey;
