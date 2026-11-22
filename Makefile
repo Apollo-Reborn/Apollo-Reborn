@@ -116,6 +116,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/settings/ApolloAutomaticBackupViewController.m \
     $(SRC_DIR)/settings/ApolloKeylessRouteStatusViewController.m \
     $(SRC_DIR)/settings/ApolloBudgetPauseCell.m \
+    $(SRC_DIR)/settings/ApolloRateLimitSettingsViewController.m \
     $(SRC_DIR)/settings/ApolloLocalBackupsViewController.m \
     $(SRC_DIR)/settings/ApolloBackupActionsCell.m \
     $(SRC_DIR)/settings/ApolloThanksToViewController.m \

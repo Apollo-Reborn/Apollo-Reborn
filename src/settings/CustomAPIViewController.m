@@ -28,10 +28,8 @@
 #import "ApolloAllPlusNSFW.h"        // ApolloAllPlusInvalidate() -- drop cached candidates on toggle
 #import "settings/ApolloAISettingsViewController.h"
 #import "ApolloWebSessionStore.h"
-#import "ApolloReduceRateLimiting.h"
-#import "ApolloBudgetPauseCell.h"
 #import "ApolloRateLimitMeter.h"
-#import "ApolloWebJSONBudget.h"
+#import "settings/ApolloRateLimitSettingsViewController.h"
 #import "ApolloWebJSONRouteUpdates.h"
 #import "settings/ApolloKeylessRouteStatusViewController.h"
 #import "ApolloKagiSearch.h"         // Kagi Session Link (Search tab's Kagi mode)
@@ -1848,60 +1846,19 @@ typedef NS_ENUM(NSInteger, Tag) {
     // Only exists while API-Key-Free Mode is on (see -_applyWebJSONEnabled:).
     webSessionLogin.visible = ^BOOL { return sWebJSONEnabled; };
 
-    // Reddit gives API-key-free accounts a much smaller request budget, so this
-    // trades a little polish for fewer requests while one is active (see
-    // ApolloReduceRateLimiting.h). Offered once at the first API-key-free sign-in.
-    ApolloSettingsRow *reduceRateLimiting =
-        [ApolloSettingsRow customRowWithID:@"api.reduceRateLimiting"
-                                      cell:^UITableViewCell *(__unused UITableView *tableView, __unused ApolloSettingsRow *row) {
-            return [weakSelf switchCellWithIdentifier:@"Cell_API_ReduceRateLimiting"
-                                                label:@"Reduce Rate Limiting"
-                                               detail:@"Reddit limits API-key-free accounts more tightly. This uses fewer requests: profile pictures load in batches (without frames), Community Highlights refresh every 30 minutes, and your sign-in is checked less often."
-                                                   on:sReduceRateLimiting
-                                               action:@selector(reduceRateLimitingSwitchToggled:)]
-                ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
-        }
-                                  onSelect:nil];
-    reduceRateLimiting.visible = ^BOOL { return sWebJSONEnabled; };
-
-    // Reduce Rate Limiting's slider: how much of Reddit's ten-minute budget may
-    // be used before the optional lookups stop for the rest of it
-    // (ApolloWebJSONOptionalReadPause). Only there while the switch is on.
-    ApolloSettingsRow *pauseExtrasAt =
-        [ApolloSettingsRow customRowWithID:@"api.reduceRateLimitingPauseAt"
-                                      cell:^UITableViewCell *(__unused UITableView *tableView, __unused ApolloSettingsRow *row) {
-            return [weakSelf budgetPauseCell] ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
-        }
-                                  onSelect:nil];
-    pauseExtrasAt.visible = ^BOOL { return sWebJSONEnabled && sReduceRateLimiting; };
-
-    // Two optional ways to watch the same budget (ApolloRateLimitMeter.h).
-    // Neither depends on Reduce Rate Limiting being on.
-    ApolloSettingsRow *rateLimitWarnings =
-        [ApolloSettingsRow customRowWithID:@"api.rateLimitWarnings"
-                                      cell:^UITableViewCell *(__unused UITableView *tableView, __unused ApolloSettingsRow *row) {
-            return [weakSelf switchCellWithIdentifier:@"Cell_API_RateLimitWarnings"
-                                                label:@"Rate Limit Warnings"
-                                               detail:@"Shows a notice when you've used 50, 75 and 90 of Reddit's 100 requests, and when extras pause."
-                                                   on:sRateLimitWarnings
-                                               action:@selector(rateLimitWarningsSwitchToggled:)]
-                ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
-        }
-                                  onSelect:nil];
-    rateLimitWarnings.visible = ^BOOL { return sWebJSONEnabled; };
-
-    ApolloSettingsRow *rateLimitMeter =
-        [ApolloSettingsRow customRowWithID:@"api.rateLimitMeter"
-                                      cell:^UITableViewCell *(__unused UITableView *tableView, __unused ApolloSettingsRow *row) {
-            return [weakSelf switchCellWithIdentifier:@"Cell_API_RateLimitMeter"
-                                                label:@"Rate Limit Meter"
-                                               detail:@"A small floating gauge with the live count, green to red. Drag it anywhere; tap it for the time left."
-                                                   on:sRateLimitMeter
-                                               action:@selector(rateLimitMeterSwitchToggled:)]
-                ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
-        }
-                                  onSelect:nil];
-    rateLimitMeter.visible = ^BOOL { return sWebJSONEnabled; };
+    // Everything about Reddit's request budget for API-key-free accounts has
+    // a screen of its own (ApolloRateLimitSettingsViewController): Reduce Rate
+    // Limiting with its Pause Extras At slider, Rate Limit Warnings and the
+    // Rate Limit Meter.
+    ApolloSettingsRow *rateLimit =
+        [ApolloSettingsRow disclosureRowWithID:@"api.rateLimit"
+                                         title:@"Rate Limit"
+                                        detail:^NSString *{ return @"Use fewer requests, get warnings, show a live meter"; }
+                                          push:^UIViewController *{
+            return [[ApolloRateLimitSettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+        }];
+    rateLimit.detailAsSubtitle = YES;
+    rateLimit.visible = ^BOOL { return sWebJSONEnabled; };
 
     // Which routes API-key-free reads are taking, what Reddit has blocked
     // since launch, and the Use Route Updates switch
@@ -1950,7 +1907,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 
     return [ApolloSettingsSection sectionWithTitle:@"Experimental"
                                             footer:@"Sign in to reddit.com instead of using API keys."
-                                              rows:@[ webJSON, webSessionLogin, reduceRateLimiting, pauseExtrasAt, rateLimitWarnings, rateLimitMeter, routeStatus, modernChat, modernModmail ]];
+                                              rows:@[ webJSON, webSessionLogin, rateLimit, routeStatus, modernChat, modernModmail ]];
 }
 
 - (ApolloSettingsSection *)buildAPIKeysExtrasSection {
@@ -5027,59 +4984,6 @@ static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
     ApolloRateLimitMeterSettingsChanged();
 }
 
-- (void)reduceRateLimitingSwitchToggled:(UISwitch *)sender {
-    ApolloReduceRateLimitingSetEnabled(sender.isOn);
-}
-
-- (void)rateLimitWarningsSwitchToggled:(UISwitch *)sender {
-    sRateLimitWarnings = sender.isOn;
-    [[NSUserDefaults standardUserDefaults] setBool:sRateLimitWarnings forKey:UDKeyRateLimitWarnings];
-    ApolloRateLimitMeterSettingsChanged();
-}
-
-- (void)rateLimitMeterSwitchToggled:(UISwitch *)sender {
-    sRateLimitMeter = sender.isOn;
-    [[NSUserDefaults standardUserDefaults] setBool:sRateLimitMeter forKey:UDKeyRateLimitMeter];
-    // Up or gone at once: the meter never outlives its switch.
-    ApolloRateLimitMeterSettingsChanged();
-}
-
-// Reddit's budget for the account the slider is about: the active
-// API-Key-Free one. 100 until Reddit has reported on it.
-static double ApolloBudgetPauseLimit(void) {
-    ApolloWebJSONBudgetState state = ApolloWebJSONBudgetCurrent(ApolloActiveWebSessionUsername());
-    return state.known && state.limit > 0 ? state.limit : 100.0;
-}
-
-- (UITableViewCell *)budgetPauseCell {
-    static NSString *const identifier = @"Cell_API_ReduceRateLimitingPauseAt";
-    ApolloBudgetPauseCell *cell = [self.tableView dequeueReusableCellWithIdentifier:identifier];
-    if (!cell) cell = [[ApolloBudgetPauseCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:identifier];
-    cell.valueText = ^NSString *(NSInteger stop) {
-        if (stop >= ApolloReduceRateLimitingPauseAtMaximum) return @"Only at the limit";
-        double limit = ApolloBudgetPauseLimit();
-        return [NSString stringWithFormat:@"%ld of %ld", lround(limit * (double)stop / 100.0), lround(limit)];
-    };
-    cell.statusText = ^NSString *{
-        // The row is only up while the switch is on, so "not active" here
-        // means the account in use isn't an API-Key-Free one.
-        if (!ApolloReduceRateLimitingActive()) return @"Now: this account uses an API key, so nothing is paused";
-        NSString *status = ApolloWebJSONBudgetStatusText(ApolloActiveWebSessionUsername());
-        return status ? [@"Now: " stringByAppendingString:status] : @"Now: nothing reported in this 10 minutes yet";
-    };
-    cell.onCommit = ^(NSInteger stop) {
-        ApolloReduceRateLimitingSetPauseAt(stop);
-    };
-    [cell configureWithTitle:@"Pause Extras At"
-                      detail:@"Reddit allows about 100 requests every 10 minutes. Once this many are used, profile pictures, link previews, subreddit headers and icons, and Community Highlights stop loading until it resets. Posts and comments keep loading."
-                        stop:sReduceRateLimitingPauseAt
-                     minimum:ApolloReduceRateLimitingPauseAtMinimum
-                     maximum:ApolloReduceRateLimitingPauseAtMaximum
-                        step:ApolloReduceRateLimitingPauseAtStep
-                      accent:[self apollo_themeAccentColor]];
-    return cell;
-}
-
 // Modern Chat / Modmail are a plain app-wide choice for every account.
 - (void)modernRedditChatSwitchToggled:(UISwitch *)sender {
     [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyUseModernRedditChat];
@@ -5636,29 +5540,6 @@ static double ApolloBudgetPauseLimit(void) {
 
 @implementation ApolloAccountsAPIKeysViewController
 - (NSString *)apollo_screenTitle { return @"Accounts & API Keys"; }
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    // The sign-in and rate-limit offers can turn Reduce Rate Limiting on while
-    // this screen stays on the stack (the sign-in sheet doesn't trigger
-    // another viewWillAppear), so follow the setting directly.
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(apollo_reduceRateLimitingDidChange:)
-                                                 name:ApolloReduceRateLimitingDidChangeNotification
-                                               object:nil];
-}
-- (void)apollo_reduceRateLimitingDidChange:(NSNotification *)notification {
-    (void)notification;
-    // Update the switch in place: a reload here would cut short the switch's
-    // own animation when the change came from tapping it.
-    UITableViewCell *cell = [self cellForRowID:@"api.reduceRateLimiting"];
-    for (UIView *subview in cell.contentView.subviews) {
-        if (![subview isKindOfClass:[UISwitch class]]) continue;
-        UISwitch *toggle = (UISwitch *)subview;
-        if (toggle.isOn != sReduceRateLimiting) [toggle setOn:sReduceRateLimiting animated:YES];
-    }
-    // The Pause Extras At slider only exists while the switch is on.
-    [self visibilityDidChange];
-}
 - (NSArray<ApolloSettingsSection *> *)buildForm {
     return @[ [self buildAPIKeysDefaultSection],
               [self buildAPIKeysKagiSection],

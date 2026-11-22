@@ -2,10 +2,10 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-// Reduce Rate Limiting's "Pause Extras At" row: a title with the chosen stop
-// beside it, a slider, what it does, and a line showing where the account
-// stands with Reddit right now. Laid out by hand like the screen's switch
-// cells, so the wrapped text measures at its real width.
+// Reduce Rate Limiting's "Pause Extras At" row (Settings > Accounts & API Keys
+// > Rate Limit): a title with the chosen stop beside it, a slider, what it
+// does, and a line showing where the account stands with Reddit right now.
+// Laid out by hand, so the wrapped text measures at its real width.
 //
 // The slider moves in whole stops. The value text follows the thumb while it's
 // dragged; `onCommit` runs once, when the finger lifts on a different stop.

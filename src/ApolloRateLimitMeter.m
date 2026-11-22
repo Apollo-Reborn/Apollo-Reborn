@@ -285,8 +285,10 @@ static UIColor *ApolloRateLimitMeterColor(double fraction) {
 - (instancetype)init {
     if (!(self = [super init])) return nil;
     _lastLimit = 100.0;
-    // Top right, under the navigation bar, until it's been moved.
-    _unitPosition = CGPointMake(1.0, 0.12);
+    // Bottom left, above the tab bar, until it's been moved: the corner with
+    // the least under it (switches and the comment jump button sit on the
+    // right, navigation at the top).
+    _unitPosition = CGPointMake(0.0, 0.88);
     NSArray *saved = [[NSUserDefaults standardUserDefaults] arrayForKey:UDKeyRateLimitMeterPosition];
     if (saved.count == 2 && [saved[0] isKindOfClass:[NSNumber class]] && [saved[1] isKindOfClass:[NSNumber class]]) {
         _unitPosition = CGPointMake(MIN(1.0, MAX(0.0, [saved[0] doubleValue])), MIN(1.0, MAX(0.0, [saved[1] doubleValue])));

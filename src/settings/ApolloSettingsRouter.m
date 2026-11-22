@@ -20,6 +20,7 @@
 #import "settings/CustomAPIViewController.h"
 #import "crash/ApolloCrashReportsViewController.h"
 #import "settings/ApolloKeylessRouteStatusViewController.h"
+#import "settings/ApolloRateLimitSettingsViewController.h"
 #import "settings/InfoRowSettingsViewController.h"
 #import "settings/InlineMediaSettingsViewController.h"
 #import "settings/SavedCategoriesViewController.h"
@@ -113,6 +114,7 @@ static void ApolloSettingsRouterEnsureRegistry(void) {
         });
         add(@"crash-reports", @"Crash Reports", @"Apollo Reborn → Privacy", ApolloSettingsInsetGrouped([ApolloCrashReportsViewController class]));
         add(@"keyless-route-status", @"Routes", @"Apollo Reborn → Accounts & API Keys", ApolloSettingsInsetGrouped([ApolloKeylessRouteStatusViewController class]));
+        add(@"rate-limit", @"Rate Limit", @"Apollo Reborn → Accounts & API Keys", ApolloSettingsInsetGrouped([ApolloRateLimitSettingsViewController class]));
         add(@"theme-manager", @"Theme Manager", @"Appearance", ^UIViewController *{
             return [[ApolloThemeManagerViewController alloc] init]; // default init = hub/list mode
         });
