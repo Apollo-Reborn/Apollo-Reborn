@@ -49,6 +49,7 @@
 #import "ApolloWebJSONRoutes.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloReduceRateLimiting.h"
+#import "ApolloSuspensionBanner.h"
 #import "ApolloWebSessionLoginViewController.h"
 #import "ApolloMessageDraftStore.h"
 #import "ApolloAccountCredentials.h"
@@ -4789,6 +4790,10 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(NSNotification *note) {
         NSTimeInterval seconds = [note.userInfo[@"seconds"] doubleValue];
+        // A suspended account is limited because it's suspended (Reddit gives
+        // it a fraction of the usual budget), so its banner says that instead,
+        // ahead of the offer below, which is about a setting that can't help.
+        if (ApolloSuspensionBannerShowForRateLimit()) return;
         // An account that signed in before the Reduce Rate Limiting offer
         // existed gets it here, once, in place of the toast.
         if (ApolloReduceRateLimitingOfferAtRateLimit(seconds)) return;
@@ -4799,8 +4804,10 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(__unused NSNotification *note) {
         NSTimeInterval wait = ApolloWebJSONOptionalReadBackoff(ApolloActiveWebSessionUsername());
-        if (wait > 0) ApolloShowRedditRateLimitToast(wait);
+        if (wait > 0 && !ApolloSuspensionBannerShowForRateLimit()) ApolloShowRedditRateLimitToast(wait);
     }];
+    // Reddit's own red bar for a suspended account, which Apollo never showed.
+    ApolloSuspensionBannerInstall();
     // Picture-in-Picture hydration.
     sPiPEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyPictureInPictureEnabled];
     sPiPActivationMode = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyPictureInPictureActivation];

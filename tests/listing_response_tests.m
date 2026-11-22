@@ -51,6 +51,10 @@ static BOOL ApolloWebJSONShouldActForClient(RDKClient *client) { (void)client; r
 static NSString *ApolloWebJSONClientUsername(RDKClient *client) { (void)client; return nil; }
 static void ApolloWebJSONNoteMalformedAccountResponse(NSString *username, NSString *path) { (void)username; (void)path; }
 static void ApolloWebJSONCheckAccountSession(NSString *username) { (void)username; }
+// The hook also hands account objects to ApolloAccountSuspension (tested on its own).
+static BOOL ApolloAccountSuspensionNoteResponse(NSString *clientUsername, NSString *method, NSString *path, id responseObject) {
+    (void)clientUsername; (void)method; (void)path; (void)responseObject; return NO;
+}
 static NSError *ApolloWebJSONAccountSessionError(NSString *username) { (void)username; return nil; }
 // PRODUCTION_HOOK
 

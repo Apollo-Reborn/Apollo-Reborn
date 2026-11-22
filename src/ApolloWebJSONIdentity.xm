@@ -75,6 +75,7 @@
 #import "ApolloCommon.h"
 #import "ApolloUserProfileCache.h"
 #import "ApolloWebSessionStore.h"
+#import "ApolloAccountSuspension.h"
 #import "ApolloReduceRateLimiting.h"
 #import "ApolloAllPlusNSFW.h"
 #import "ApolloSubscriptionRefreshGuard.h"
@@ -1155,6 +1156,9 @@ static void ApolloSubscriptionWalkDeliver(NSString *walkUsername, NSHTTPURLRespo
     parameters = ApolloWebJSONParametersForAccountRead(username, requestMethod, requestPath, parameters);
     RDKClient *client = self;
     id sentParameters = parameters;
+    // The account this client reads for, API-key or API-Key-Free, for the
+    // suspension check on its own account object below.
+    NSString *ownUsername = username ?: ApolloWebJSONClientUsername(self);
     // Every account's subscriptions walk (#1635), not only API-Key-Free ones.
     NSString *walkUsername = ApolloSubscriptionWalkUsername(self, username, requestMethod, requestPath);
     void (^wrapped)(NSHTTPURLResponse *, id, NSError *) = ^(NSHTTPURLResponse *response, id object, NSError *error) {
@@ -1225,6 +1229,10 @@ static void ApolloSubscriptionWalkDeliver(NSString *walkUsername, NSHTTPURLRespo
             });
             return;
         }
+        // Reddit's description of the account itself (api/v1/me, its own
+        // about.json) says whether it's suspended (ApolloAccountSuspension.h).
+        // Any other read is turned away on its path, before its body is looked at.
+        if (!error && response.statusCode == 200) ApolloAccountSuspensionNoteResponse(ownUsername, requestMethod, requestPath, object);
         id guarded = ApolloWebJSONGuardListingTaskResponse(requestMethod, requestPath, response, object, &error);
         // Only a malformed (non-dictionary) body is a reason to check the
         // session; a refused one (a 429's error JSON) is just a failed load.

@@ -41,6 +41,7 @@
 #import <objc/message.h>
 #import "ApolloCommon.h"
 #import "ApolloAccountCredentials.h"
+#import "ApolloAccountSuspension.h"
 
 // RedditKit's RDKObjectCompletionBlock: the parsed RDKComment (or nil) and an error.
 typedef void (^ApolloCommentFailureSubmitCompletion)(id object, NSError *error);
@@ -53,7 +54,8 @@ static const NSInteger kApolloCommentFailureAuthRequiredCode = 1;     // not sig
 static const NSInteger kApolloCommentFailureRateLimitedCode = 204;    // RATELIMIT → "Posting Too Often"
 static const NSInteger kApolloCommentFailureArchivedCode = 206;       // TOO_OLD
 static const NSInteger kApolloCommentFailureReSignInCode = 400;       // account needs signing in again
-// (402 is HTTP 403 — Apollo's "Authentication Error"; looked up like any other refusal.)
+// HTTP 403 — Apollo's "Authentication Error"; looked up like any other refusal.
+static const NSInteger kApolloCommentFailureForbiddenCode = 402;
 static const NSInteger kApolloCommentFailureServerErrorFirstCode = 501; // HTTP 500 … 504
 static const NSInteger kApolloCommentFailureServerErrorLastCode = 504;
 
@@ -389,6 +391,28 @@ static ApolloCommentFailureExplanation *ApolloCommentFailureExplainReply(ApolloC
     return nil;
 }
 
+// Reddit refuses everything a suspended account posts with a bare HTTP 403 (no json.errors
+// code), which Apollo reads as "Authentication Error — Reddit thinks there's something weird
+// with your account". When Reddit's own description of the posting account says it's suspended
+// (ApolloAccountSuspension.h), that is the reason, and nothing on the thread would add to it.
+// A refusal that names its own reason (BANNED_FROM_SUBREDDIT, THREAD_LOCKED…) keeps it.
+static ApolloCommentFailureExplanation *ApolloCommentFailureExplainSuspension(NSString *username, ApolloCommentFailureReply *reply,
+                                                                              NSError *error) {
+    if (reply.code.length > 0 || !ApolloAccountIsSuspended(username)) return nil;
+    BOOL refused = reply.status == 403 ||
+        ([error.domain isEqualToString:kApolloCommentFailureRDKErrorDomain] && error.code == kApolloCommentFailureForbiddenCode);
+    if (!refused) return nil;
+    NSString *left = ApolloAccountSuspensionTimeLeftText(username);
+    NSString *reason = left
+        ? [NSString stringWithFormat:@"Reddit has suspended u/%@ (%@), so it can't comment.", username, left.lowercaseString]
+        : [NSString stringWithFormat:@"Reddit has suspended u/%@, so it can't comment.", username];
+    ApolloCommentFailureExplanation *explanation = ApolloCommentFailureMake(@"account-suspended", @"Account Suspended", reason,
+                                                                           @"Reddit's message about it is in your inbox.");
+    // Read off Reddit's own account state, so it may replace the 403 alert like a thread state does.
+    explanation.fromThreadState = YES;
+    return explanation;
+}
+
 static BOOL ApolloCommentFailureShouldLookUp(NSString *thingID, ApolloCommentFailureReply *reply, NSError *error) {
     // Only comments on posts and comments; a t4 (message) reply has its own UI.
     if (![thingID hasPrefix:@"t3_"] && ![thingID hasPrefix:@"t1_"]) return NO;
@@ -560,6 +584,15 @@ static void ApolloCommentFailureDeliver(ApolloCommentFailureSubmitCompletion com
         ctx.username = ApolloCommentFailureClientUsername(client);
         ctx.reply = reply;
         ctx.error = error;
+        // A suspended account: answered from what's already known, with no lookups (each would
+        // come out of the small request budget Reddit leaves a suspended API-Key-Free account).
+        ApolloCommentFailureExplanation *suspension = ApolloCommentFailureExplainSuspension(ctx.username, reply, error);
+        if (suspension) {
+            ApolloLogError(@"[CommentFailure] comment on %@ failed (reddit %@/%ld) and u/%@ is suspended: %@",
+                      thingID, reply.code ?: @"-", (long)reply.status, ctx.username, suspension.kind);
+            ApolloCommentFailureDeliver(completion, object, error, suspension);
+            return;
+        }
         ApolloLogError(@"[CommentFailure] comment on %@ failed (error %@/%ld, reddit %@/%ld) — looking the thread up",
                   thingID, error.domain ?: @"-", (long)error.code, reply.code ?: @"-", (long)reply.status);
         ApolloCommentFailureLookUp(client, ctx, ^(ApolloCommentFailureExplanation *explanation) {

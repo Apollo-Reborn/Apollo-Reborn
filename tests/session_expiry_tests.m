@@ -14,6 +14,8 @@ static NSMutableDictionary *entries;
 static Entry *ApolloWebSessionFor(NSString *username) { return entries[username]; }
 static NSURL *ApolloWebJSONURLWithFragment(NSURL *url, NSString *fragment) { (void)fragment; return url; }
 static NSString *ApolloWebJSONBrowserUserAgent(void) { return @"test"; }
+// The live probe also hands its account object to ApolloAccountSuspension (tested on its own).
+static BOOL ApolloAccountSuspensionNoteUserData(NSString *username, NSDictionary *userData) { (void)username; (void)userData; return NO; }
 static NSMutableArray *pending;
 static NSMutableArray *silent;
 static NSMutableArray *delayed;
