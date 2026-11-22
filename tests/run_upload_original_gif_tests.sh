@@ -24,4 +24,7 @@ PY
 xcrun --sdk macosx clang -fobjc-arc -fblocks -Wall -Wno-unused-function \
     -I "$gif_root/src" -framework Foundation -framework ImageIO -framework CoreGraphics \
     "$gif_tmp/tests.m" -o "$gif_tmp/tests"
+# Each mode is its own process: the store resolves its folder once per launch.
 "$gif_tmp/tests"
+"$gif_tmp/tests" nil-tmp   # NSTemporaryDirectory() nil, as in #1755's %ctor
+"$gif_tmp/tests" nil-all   # no tmp and no Caches
