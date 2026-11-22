@@ -185,18 +185,40 @@ NSString *ApolloAISummaryLanguage(BOOL *picked) {
     return summaryLanguage;
 }
 
-// `instructions` led by the summary language, worded as Apple's guide words it
-// ("You MUST respond in Italian"). It has to come FIRST: appended after the
-// summary rules, the on-device model still answered the Record (Portuguese)
-// article in Portuguese; leading, it answers in the reader's language for every
-// prompt and detail level here. Unchanged when there is no summary language.
-static NSString *ApolloAIInSummaryLanguage(NSString *instructions) {
+// The summary language's English name ("English", "Portuguese", "Chinese
+// (Traditional)"), as the prompts name it. nil when there is no summary language.
+static NSString *ApolloAISummaryLanguageName(void) {
     NSString *language = ApolloAISummaryLanguage(NULL);
     NSString *name = language.length > 0
         ? [[NSLocale localeWithLocaleIdentifier:@"en_US"] localizedStringForLocaleIdentifier:language]
         : nil;
+    return name.length > 0 ? name : nil;
+}
+
+// `instructions` led by the summary language, worded as Apple's guide words it
+// ("You MUST respond in Italian"). It has to come FIRST: appended after the
+// summary rules, the on-device model still answered the Record (Portuguese)
+// article in Portuguese. Unchanged when there is no summary language.
+static NSString *ApolloAIInSummaryLanguage(NSString *instructions) {
+    NSString *name = ApolloAISummaryLanguageName();
     if (name.length == 0) return instructions;
     return [NSString stringWithFormat:@"You MUST respond in %@. %@", name, instructions];
+}
+
+// The text to summarize, closed by the summary language too. The instructions
+// line alone doesn't hold once the text is long and in another script: with it,
+// the on-device model wrote 8 of 12 In-depth arriyadiyah.com link summaries in
+// Arabic under an English device. Naming the language again after the text, the
+// last thing the model reads before it answers, brought that to 12 of 12, and
+// it held for the post, comment and post-and-link prompts and for other source
+// languages. Cloud models get the same line; they already followed the
+// instructions, so it changes nothing there. Unchanged when there is no summary
+// language: the model then answers in the text's own language, as before.
+static NSString *ApolloAIPromptInSummaryLanguage(NSString *text) {
+    NSString *name = ApolloAISummaryLanguageName();
+    if (name.length == 0 || text.length == 0) return text;
+    ApolloLog(@"[AISummary] prompt closes with the summary language (%@)", name);
+    return [NSString stringWithFormat:@"%@\n\nWrite the summary in %@.", text, name];
 }
 
 static NSString *ApolloAIPostInstructionsForDetail(ApolloAISummaryDetail detail) {
@@ -320,6 +342,14 @@ static NSMutableDictionary<NSString *, NSNumber *> *sCommentSummaryDetails;
 static NSMutableDictionary<NSString *, NSString *> *sPostSummaryProfiles;
 static NSMutableDictionary<NSString *, NSString *> *sCommentSummaryProfiles;
 
+// Ends the on-device profile when the prompts name a language. "2": the text
+// itself now closes with the language too (ApolloAIPromptInSummaryLanguage), and
+// an on-device summary cached before that can be in the article's language
+// instead ("apple|en" never equals "apple|en|2"), so those regenerate once.
+// Cloud profiles don't carry it: cloud models already answered in the named
+// language, and regenerating would spend the user's API credits for nothing.
+static NSString *const kApolloAIOnDevicePromptRevision = @"2";
+
 static NSString *ApolloAICurrentGenerationProfile(void) {
     NSString *provider = sAISummaryProvider;
     // The summary language is part of what produced the text, so a summary in
@@ -330,7 +360,9 @@ static NSString *ApolloAICurrentGenerationProfile(void) {
     if (![provider isEqualToString:@"openrouter"] &&
         ![provider isEqualToString:@"gemini"] &&
         ![provider isEqualToString:@"custom"]) {
-        return [@"apple|" stringByAppendingString:language];
+        return language.length > 0
+            ? [NSString stringWithFormat:@"apple|%@|%@", language, kApolloAIOnDevicePromptRevision]
+            : @"apple|";
     }
     // Same effective model the cloud bridge would actually send (stored value or
     // the provider default), so switching models invalidates cached summaries.
@@ -2859,7 +2891,7 @@ static void ApolloAISummarizeArticleText(ApolloAISummaryRequest *request, NSStri
     NSString *generationProfile = ApolloAICurrentGenerationProfile();
     ApolloLog(@"[AISummary] generating link/article summary for %@ (%lu chars)…", fullName, (unsigned long)text.length);
     [bridge prepareSession:requestID instructions:instructions];
-    [bridge summarize:text
+    [bridge summarize:ApolloAIPromptInSummaryLanguage(text)
            identifier:requestID
          instructions:instructions
 maximumResponseTokens:responseTokens
@@ -3137,7 +3169,7 @@ static void ApolloAIGenerateForController(UIViewController *vc) {
             ApolloLog(@"[AISummary] generating POST summary for %@ (%lu chars)…", fullName, (unsigned long)postText.length);
             [bridge prepareSession:requestID instructions:ApolloAIPostInstructionsForDetail(postDetail)];
             ApolloAIScheduleGenerationTimeout(request);
-            [bridge summarize:postText
+            [bridge summarize:ApolloAIPromptInSummaryLanguage(postText)
                    identifier:requestID
                  instructions:ApolloAIPostInstructionsForDetail(postDetail)
        maximumResponseTokens:ApolloAIPostResponseTokensForDetail(postDetail)
@@ -3270,7 +3302,7 @@ static void ApolloAIGenerateForController(UIViewController *vc) {
             ApolloLog(@"[AISummary] generating COMMENT summary for %@…", fullName);
             [bridge prepareSession:requestID instructions:ApolloAICommentInstructionsForDetail(commentDetail)];
             ApolloAIScheduleGenerationTimeout(request);
-            [bridge summarize:commentPrompt
+            [bridge summarize:ApolloAIPromptInSummaryLanguage(commentPrompt)
                    identifier:requestID
                  instructions:ApolloAICommentInstructionsForDetail(commentDetail)
        maximumResponseTokens:ApolloAICommentResponseTokensForDetail(commentDetail)
