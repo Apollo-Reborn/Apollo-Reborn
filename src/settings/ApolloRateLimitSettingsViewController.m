@@ -132,7 +132,7 @@ static double ApolloRateLimitSettingsLimit(void) {
                                          footer:@"Reddit limits API-key-free accounts more tightly. This uses fewer requests: profile pictures load in batches (without frames), Community Highlights refresh every 30 minutes, and your sign-in is checked less often."
                                            rows:@[ reduce, pauseAt ]],
         [ApolloSettingsSection sectionWithTitle:nil
-                                         footer:@"Shows a notice when you've used 50, 75 and 90 of Reddit's 100 requests, and when extras pause."
+                                         footer:@"Shows a notice when you've used 50, 75 and 90 of Reddit's 100 requests, and when extras pause. Reaching the limit itself always shows one notice."
                                            rows:@[ warnings ]],
         [ApolloSettingsSection sectionWithTitle:nil
                                          footer:@"A small floating gauge with the live count, green to red. Drag it anywhere; tap it for the time left.\n\nAll of this is for accounts signed in without an API key. An account with its own key has a far larger allowance, so nothing here applies while you're using one."

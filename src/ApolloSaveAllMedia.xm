@@ -51,9 +51,15 @@ static BOOL ApolloSaveAllShowNativeSuccess(NSUInteger count) {
     return YES;
 }
 
+// Defined in ApolloListEmptyState.xm: Apollo's list-failed banner for the
+// request that starts a rate limit isn't shown over the rate-limit notice.
+extern "C" void ApolloListFailedBannerAttached(UIView *banner);
+
+// The one hook on Holla's status view; each banner passes through as it attaches.
 %hook _TtC6Apollo15HollaStatusView
 - (void)didMoveToSuperview {
     %orig;
+    ApolloListFailedBannerAttached((UIView *)self);
     if (!sApolloSaveAllPendingBannerToken || !((UIView *)self).superview) return;
     id value = ApolloObjectIvar(self, "textLabel");
     if (![value isKindOfClass:UILabel.class]) return;

@@ -346,6 +346,12 @@ void ApolloWebJSONSimBlockOAuthRead(NSMutableURLRequest *request);
 // driven without spending real requests. A limit of 0 forgets every report.
 // Real answers keep arriving and replace it when their count is higher.
 void ApolloWebJSONSimSetBudget(NSString *username, double used, double limit, NSTimeInterval resetsIn);
+// Debug bridge ("ratelimit <seconds>" / "ratelimit off"): holds `username` as a
+// refused request (HTTP 429) does, for `seconds`, and announces it the same
+// way; 0 ends the hold now. Nothing is sent or refused for real, so this shows
+// what the tweak does during a limit (notices, held lookups, lists waiting for
+// the reset), not Apollo's own handling of a failed request.
+void ApolloWebJSONSimSetRateLimit(NSString *username, NSTimeInterval seconds);
 #endif
 
 // Seconds left on Reddit's rate limit of `username`'s web session, or 0 when it
@@ -358,6 +364,12 @@ void ApolloWebJSONSimSetBudget(NSString *username, double used, double limit, NS
 // notice, the empty-list message and anything the user asked for directly go
 // by. The tweak's optional lookups go by ApolloWebJSONOptionalReadPause.
 NSTimeInterval ApolloWebJSONOptionalReadBackoff(NSString *username);
+
+// Seconds since Reddit's current rate limit of `username`'s web session began
+// (the refusal that started the hold above; later refusals only move its end),
+// or -1 when it isn't limited. Lets a caller tell the moment a limit starts,
+// when its notice goes up, from the minutes that follow.
+NSTimeInterval ApolloWebJSONRateLimitAge(NSString *username);
 
 // Seconds the tweak's optional lookups (author avatars, subreddit header info
 // and icons, link preview lookups, Community Highlights) for `username`'s web
