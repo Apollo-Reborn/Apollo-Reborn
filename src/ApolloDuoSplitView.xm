@@ -2301,6 +2301,11 @@ static void ApolloDuoFeedTransitionStartTracking(ApolloDuoSplitHost *host, UIVie
 static void ApolloDuoFeedRailFollowNavigation(ApolloDuoSplitHost *host) {
     UINavigationController *feed = host.postsNavigation;
     if (!host.feedRail || !feed) return;
+    // While the split moves its stacks (opening, the Split View toggle, a
+    // fold), layout places the rail once they settle. A fold has already
+    // given the insets back (ApolloDuoFeedRailRelease); applying them again
+    // here sent the thread's pages to the cover 20pt too wide.
+    if (ApolloDuoSplitStateForNavigation(feed, NO).changing) return;
     id<UIViewControllerTransitionCoordinator> coordinator = feed.transitionCoordinator;
     UIViewController *to = [coordinator viewControllerForKey:UITransitionContextToViewControllerKey] ?: feed.topViewController;
     UIViewController *from = [coordinator viewControllerForKey:UITransitionContextFromViewControllerKey];
@@ -6847,7 +6852,7 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
 %new
 - (void)navigationController:(UINavigationController *)navigation willShowViewController:(UIViewController *)controller animated:(BOOL)animated {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(navigation, NO);
-    if (navigation == state.feed && !state.changing) ApolloDuoFeedRailFollowNavigation(state.host);
+    if (navigation == state.feed) ApolloDuoFeedRailFollowNavigation(state.host);
 }
 - (void)navigationController:(UINavigationController *)navigation didShowViewController:(UIViewController *)controller animated:(BOOL)animated {
     %orig(navigation, controller, animated);
