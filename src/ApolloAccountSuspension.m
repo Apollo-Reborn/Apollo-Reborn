@@ -211,6 +211,25 @@ void ApolloAccountSuspensionKeepOnly(NSSet<NSString *> *usernames) {
     }
 }
 
+const NSTimeInterval ApolloSuspensionBannerQuietPeriod = 6.0 * 60.0 * 60.0;
+const NSTimeInterval ApolloSuspensionBannerReminderGap = 60.0;
+
+BOOL ApolloSuspensionBannerIsDue(ApolloSuspensionBannerOccasion occasion, NSTimeInterval now, NSTimeInterval lastShownAt,
+                                 NSTimeInterval limitEndsAt, NSTimeInterval announcedLimitEndsAt) {
+    BOOL limited = limitEndsAt > now;
+    switch (occasion) {
+        case ApolloSuspensionBannerOccasionUnprompted:
+            return lastShownAt <= 0 || now - lastShownAt >= ApolloSuspensionBannerQuietPeriod;
+        case ApolloSuspensionBannerOccasionLimitStarted:
+            // The limit a banner already named is still running: this is the
+            // same one (a later refusal only moves its end), not news.
+            return announcedLimitEndsAt <= now;
+        case ApolloSuspensionBannerOccasionBackDuringLimit:
+            return limited && (lastShownAt <= 0 || now - lastShownAt >= ApolloSuspensionBannerReminderGap);
+    }
+    return NO;
+}
+
 void ApolloAccountSuspensionSetNowForTesting(NSTimeInterval now) {
     sApolloAccountSuspensionTestNow = now;
 }

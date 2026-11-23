@@ -14,12 +14,11 @@ static UIColor *ApolloSuspensionBannerRed(void) {
     return [UIColor colorWithRed:0.69 green:0.165 blue:0.12 alpha:1.0];
 }
 
-// An unprompted show (launch, a return to the app, an account switch) is kept
-// to once per account in this long; Reddit's answer about the account changing
-// starts it over. Forced ones (the rate limit starting) only skip a repeat
-// within kApolloSuspensionBannerForcedGap.
-static const NSTimeInterval kApolloSuspensionBannerQuietPeriod = 6.0 * 60.0 * 60.0;
-static const NSTimeInterval kApolloSuspensionBannerForcedGap = 20.0;
+// How often the banner may go up is ApolloSuspensionBannerIsDue's call
+// (ApolloAccountSuspension.h): an unprompted one (launch, a return to the app,
+// an account switch) once per account every six hours, with Reddit's answer
+// about the account changing starting that over; a limit once when it starts,
+// and once more on coming back to the app after a while away during it.
 // The banner goes in the app's window, under anything presented over it (the
 // What's New sheet at launch, the account switcher, a composer, an alert) and
 // under the Touch ID & Passcode lock. A request made while the screen is
@@ -69,6 +68,9 @@ static const NSUInteger kApolloSuspensionBannerCoveredChecks = 400;
 static __weak ApolloSuspensionBannerView *sApolloSuspensionBanner = nil;
 // Lowercased username -> when its banner last went up (timeIntervalSinceReferenceDate).
 static NSMutableDictionary<NSString *, NSNumber *> *sApolloSuspensionBannerShownAt = nil;
+// Lowercased username -> when the limit its banner last named resets (same
+// clock), so that limit is announced once.
+static NSMutableDictionary<NSString *, NSNumber *> *sApolloSuspensionBannerAnnouncedLimitEnd = nil;
 
 static UIWindow *ApolloSuspensionBannerWindow(void) {
     UIWindow *keyWindow = ApolloKeyWindow();
@@ -262,7 +264,7 @@ static NSString *ApolloSuspensionBannerActiveAccount(void) {
 
 // A request waiting for the screen to clear. Main thread only.
 static BOOL sApolloSuspensionBannerPending = NO;
-static BOOL sApolloSuspensionBannerPendingForced = NO;
+static ApolloSuspensionBannerOccasion sApolloSuspensionBannerPendingOccasion = ApolloSuspensionBannerOccasionUnprompted;
 static NSString *sApolloSuspensionBannerPendingReason = nil;
 static NSUInteger sApolloSuspensionBannerPendingChecksLeft = 0;
 
@@ -287,7 +289,20 @@ static BOOL ApolloSuspensionBannerScreenIsCovered(UIWindow *window) {
     return NO;
 }
 
-static BOOL ApolloSuspensionBannerShow(NSString *reason, BOOL forced);
+static BOOL ApolloSuspensionBannerShow(NSString *reason, ApolloSuspensionBannerOccasion occasion);
+
+// Of two requests waiting for the screen, the one to keep: a limit starting is
+// news, a reminder of one is next, and an unprompted banner gives way to both.
+static ApolloSuspensionBannerOccasion ApolloSuspensionBannerStrongerOccasion(ApolloSuspensionBannerOccasion a,
+                                                                           ApolloSuspensionBannerOccasion b) {
+    if (a == ApolloSuspensionBannerOccasionLimitStarted || b == ApolloSuspensionBannerOccasionLimitStarted) {
+        return ApolloSuspensionBannerOccasionLimitStarted;
+    }
+    if (a == ApolloSuspensionBannerOccasionBackDuringLimit || b == ApolloSuspensionBannerOccasionBackDuringLimit) {
+        return ApolloSuspensionBannerOccasionBackDuringLimit;
+    }
+    return ApolloSuspensionBannerOccasionUnprompted;
+}
 
 // One waiting request at a time; a newer one makes the older check a no-op.
 static NSUInteger sApolloSuspensionBannerPendingGeneration = 0;
@@ -302,20 +317,21 @@ static void ApolloSuspensionBannerCheckPending(NSUInteger generation) {
                        dispatch_get_main_queue(), ^{ ApolloSuspensionBannerCheckPending(generation); });
         return;
     }
-    BOOL forced = sApolloSuspensionBannerPendingForced;
+    ApolloSuspensionBannerOccasion occasion = sApolloSuspensionBannerPendingOccasion;
     NSString *reason = sApolloSuspensionBannerPendingReason;
     sApolloSuspensionBannerPending = NO;
-    sApolloSuspensionBannerPendingForced = NO;
+    sApolloSuspensionBannerPendingOccasion = ApolloSuspensionBannerOccasionUnprompted;
     sApolloSuspensionBannerPendingReason = nil;
     if (covered) {
         ApolloLog(@"[Suspension] banner gave up waiting for the screen to clear (%@)", reason);
         return;
     }
-    ApolloSuspensionBannerShow(reason, forced);
+    ApolloSuspensionBannerShow(reason, occasion);
 }
 
-static void ApolloSuspensionBannerWaitForScreen(NSString *reason, BOOL forced) {
-    sApolloSuspensionBannerPendingForced = sApolloSuspensionBannerPendingForced || forced;
+static void ApolloSuspensionBannerWaitForScreen(NSString *reason, ApolloSuspensionBannerOccasion occasion) {
+    sApolloSuspensionBannerPendingOccasion = sApolloSuspensionBannerPending
+        ? ApolloSuspensionBannerStrongerOccasion(sApolloSuspensionBannerPendingOccasion, occasion) : occasion;
     sApolloSuspensionBannerPendingReason = [reason copy];
     if (sApolloSuspensionBannerPending) return;
     sApolloSuspensionBannerPending = YES;
@@ -326,17 +342,17 @@ static void ApolloSuspensionBannerWaitForScreen(NSString *reason, BOOL forced) {
                    dispatch_get_main_queue(), ^{ ApolloSuspensionBannerCheckPending(generation); });
 }
 
-// Shows the banner for the active account when it's suspended, now or once the
-// screen is clear. Returns whether that account is suspended (shown, waiting to
-// be shown, or shown too recently to repeat).
-static BOOL ApolloSuspensionBannerShow(NSString *reason, BOOL forced) {
+// Shows the banner for the active account when it's suspended and one is due
+// (ApolloSuspensionBannerIsDue), now or once the screen is clear. Returns
+// whether that account is suspended (shown, waiting to be shown, or not due).
+static BOOL ApolloSuspensionBannerShow(NSString *reason, ApolloSuspensionBannerOccasion occasion) {
     NSString *account = ApolloSuspensionBannerActiveAccount();
     ApolloSuspensionBannerView *visible = sApolloSuspensionBanner;
     if (account.length == 0 || !ApolloAccountIsSuspended(account)) {
         // Whatever is up or waiting belongs to another account, or to a
         // suspension that ended.
         sApolloSuspensionBannerPending = NO;
-        sApolloSuspensionBannerPendingForced = NO;
+        sApolloSuspensionBannerPendingOccasion = ApolloSuspensionBannerOccasionUnprompted;
         sApolloSuspensionBannerPendingReason = nil;
         if (visible) ApolloSuspensionBannerDismiss(visible, YES);
         return NO;
@@ -345,22 +361,27 @@ static BOOL ApolloSuspensionBannerShow(NSString *reason, BOOL forced) {
 
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
     if (!sApolloSuspensionBannerShownAt) sApolloSuspensionBannerShownAt = [NSMutableDictionary dictionary];
-    NSNumber *last = sApolloSuspensionBannerShownAt[account];
-    NSTimeInterval gap = forced ? kApolloSuspensionBannerForcedGap : kApolloSuspensionBannerQuietPeriod;
-    if (last && now - last.doubleValue < gap) return YES;
+    if (!sApolloSuspensionBannerAnnouncedLimitEnd) sApolloSuspensionBannerAnnouncedLimitEnd = [NSMutableDictionary dictionary];
+    // While Reddit is refusing the account's requests the banner says that and
+    // for how long; read now, since the banner may have waited for the screen.
+    NSTimeInterval limited = ApolloWebJSONOptionalReadBackoff(account);
+    NSTimeInterval limitEndsAt = limited > 0 ? now + limited : 0;
+    if (!ApolloSuspensionBannerIsDue(occasion, now, sApolloSuspensionBannerShownAt[account].doubleValue, limitEndsAt,
+                                     sApolloSuspensionBannerAnnouncedLimitEnd[account].doubleValue)) {
+        return YES;
+    }
 
     UIWindow *window = ApolloSuspensionBannerWindow();
     if (!window || ApolloSuspensionBannerScreenIsCovered(window)) {
-        ApolloSuspensionBannerWaitForScreen(reason, forced);
+        ApolloSuspensionBannerWaitForScreen(reason, occasion);
         return YES;
     }
     sApolloSuspensionBannerShownAt[account] = @(now);
+    // Whatever brought it up, a banner that names the limit has announced it.
+    if (limited > 0) sApolloSuspensionBannerAnnouncedLimitEnd[account] = @(limitEndsAt);
 
     NSString *title = [NSString stringWithFormat:@"Reddit suspended u/%@", ApolloSuspensionBannerDisplayName(account)];
     NSString *left = ApolloAccountSuspensionTimeLeftText(account);
-    // While Reddit is refusing the account's requests, say that and for how
-    // long; read now, since the banner may have waited for the screen.
-    NSTimeInterval limited = ApolloWebJSONOptionalReadBackoff(account);
     NSString *detail = nil;
     if (limited > 0) {
         NSString *wait = limited < 60.0 ? @"under a minute"
@@ -376,9 +397,10 @@ static BOOL ApolloSuspensionBannerShow(NSString *reason, BOOL forced) {
     return YES;
 }
 
-BOOL ApolloSuspensionBannerShowForRateLimit(void) {
+BOOL ApolloSuspensionBannerShowForRateLimit(BOOL backAfterAway) {
     if (!NSThread.isMainThread) return NO;
-    return ApolloSuspensionBannerShow(@"rate limit", YES);
+    return backAfterAway ? ApolloSuspensionBannerShow(@"back during the rate limit", ApolloSuspensionBannerOccasionBackDuringLimit)
+                         : ApolloSuspensionBannerShow(@"rate limit", ApolloSuspensionBannerOccasionLimitStarted);
 }
 
 void ApolloSuspensionBannerInstall(void) {
@@ -398,21 +420,21 @@ void ApolloSuspensionBannerInstall(void) {
             // News about the account, so the quiet period since its last
             // banner doesn't apply.
             if ([username isKindOfClass:[NSString class]]) [sApolloSuspensionBannerShownAt removeObjectForKey:username];
-            ApolloSuspensionBannerShow(@"suspension changed", NO);
+            ApolloSuspensionBannerShow(@"suspension changed", ApolloSuspensionBannerOccasionUnprompted);
         }];
         // Launch and every return to the app, from what the last launch stored.
         // A beat later, so it drops in over a drawn screen.
         [center addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:main
                         usingBlock:^(__unused NSNotification *note) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                ApolloSuspensionBannerShow(@"app active", NO);
+                ApolloSuspensionBannerShow(@"app active", ApolloSuspensionBannerOccasionUnprompted);
             });
         }];
         // Switching accounts: the new one's banner, or the old one's taken down.
         // After the switcher has closed, so the banner isn't lost behind it.
         void (^accountChanged)(NSNotification *) = ^(__unused NSNotification *note) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                ApolloSuspensionBannerShow(@"account switch", NO);
+                ApolloSuspensionBannerShow(@"account switch", ApolloSuspensionBannerOccasionUnprompted);
             });
         };
         [center addObserverForName:@"com.christianselig.RedditCurrentAccountChanged" object:nil queue:main usingBlock:accountChanged];

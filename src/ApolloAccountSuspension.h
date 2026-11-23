@@ -65,6 +65,35 @@ NSString *_Nullable ApolloAccountSuspensionTimeLeftText(NSString *_Nullable user
 // signed-in accounts), so a removed account leaves nothing behind.
 void ApolloAccountSuspensionKeepOnly(NSSet<NSString *> *usernames);
 
+// Why the banner (ApolloSuspensionBanner.h) is being asked for.
+typedef NS_ENUM(NSInteger, ApolloSuspensionBannerOccasion) {
+    // Launch, a return to the app, an account switch: nothing just happened.
+    ApolloSuspensionBannerOccasionUnprompted = 0,
+    // Reddit has just started refusing the account's requests.
+    ApolloSuspensionBannerOccasionLimitStarted,
+    // Back in the app after a while away, and Reddit is still refusing them.
+    ApolloSuspensionBannerOccasionBackDuringLimit,
+};
+
+// An unprompted banner is kept to once per account in this long.
+extern const NSTimeInterval ApolloSuspensionBannerQuietPeriod;
+// A reminder on coming back during a limit isn't repeated within this long.
+extern const NSTimeInterval ApolloSuspensionBannerReminderGap;
+
+// Whether one account's banner is due. Every time is in seconds on one clock;
+// 0 means "never": `lastShownAt` is when its banner last went up,
+// `limitEndsAt` when Reddit's limit on it resets (0 or a past time: it isn't
+// limited), and `announcedLimitEndsAt` the reset time of the limit its banner
+// last named.
+//   Unprompted          once per ApolloSuspensionBannerQuietPeriod.
+//   LimitStarted        once per limit: a limit whose banner has already been
+//                       up isn't announced again while it lasts, however often
+//                       a request is refused or the app comes forward.
+//   BackDuringLimit     only while the limit lasts, and not within
+//                       ApolloSuspensionBannerReminderGap of the last banner.
+BOOL ApolloSuspensionBannerIsDue(ApolloSuspensionBannerOccasion occasion, NSTimeInterval now, NSTimeInterval lastShownAt,
+                                 NSTimeInterval limitEndsAt, NSTimeInterval announcedLimitEndsAt);
+
 // Tests only: a fixed clock (epoch seconds; 0 restores the real one), and a
 // reload of the stored state.
 void ApolloAccountSuspensionSetNowForTesting(NSTimeInterval now);

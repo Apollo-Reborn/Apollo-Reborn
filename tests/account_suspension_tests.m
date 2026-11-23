@@ -104,6 +104,32 @@ int main(void) {
         ApolloAccountSuspensionKeepOnly([NSSet setWithArray:@[ @"Rem", @"someoneelse" ]]);
         CHECK(ApolloAccountIsSuspended(@"rem") && !ApolloAccountIsSuspended(@"gone"), "only signed-in accounts are kept");
 
+        // When the banner is due. Times in seconds on one clock; 0 = never.
+        const NSTimeInterval t = 100000.0;
+        const NSTimeInterval quiet = ApolloSuspensionBannerQuietPeriod, gap = ApolloSuspensionBannerReminderGap;
+        CHECK(quiet == 6.0 * 3600.0 && gap == 60.0, "six hours between unprompted banners, a minute between reminders");
+        // Unprompted (launch, return to the app, account switch): once per quiet period.
+        CHECK(ApolloSuspensionBannerIsDue(ApolloSuspensionBannerOccasionUnprompted, t, 0, 0, 0), "never shown: due");
+        CHECK(!ApolloSuspensionBannerIsDue(ApolloSuspensionBannerOccasionUnprompted, t, t - 30.0, 0, 0), "shown 30 s ago: not again");
+        CHECK(!ApolloSuspensionBannerIsDue(ApolloSuspensionBannerOccasionUnprompted, t, t - quiet + 1.0, 0, 0), "a second short of the quiet period: not yet");
+        CHECK(ApolloSuspensionBannerIsDue(ApolloSuspensionBannerOccasionUnprompted, t, t - quiet, 0, 0), "the quiet period over: due");
+        CHECK(!ApolloSuspensionBannerIsDue(ApolloSuspensionBannerOccasionUnprompted, t, t - 30.0, t + 300.0, 0), "a limit running doesn't make an unprompted banner due");
+        // The limit starting: once per limit.
+        CHECK(ApolloSuspensionBannerIsDue(ApolloSuspensionBannerOccasionLimitStarted, t, 0, t + 300.0, 0), "first limit: due");
+        CHECK(ApolloSuspensionBannerIsDue(ApolloSuspensionBannerOccasionLimitStarted, t, t - 5.0, t + 300.0, 0), "a banner seconds earlier that named no limit doesn't hold this one back");
+        CHECK(!ApolloSuspensionBannerIsDue(ApolloSuspensionBannerOccasionLimitStarted, t + 51.0, t, t + 300.0, t + 300.0), "the same limit, 51 s on (the report's repeat): not again");
+        CHECK(!ApolloSuspensionBannerIsDue(ApolloSuspensionBannerOccasionLimitStarted, t + 299.0, t, t + 330.0, t + 300.0), "a refusal that moved the limit's end doesn't make it new");
+        CHECK(ApolloSuspensionBannerIsDue(ApolloSuspensionBannerOccasionLimitStarted, t + 300.0, t, t + 900.0, t + 300.0), "the announced limit over and another started: due");
+        CHECK(ApolloSuspensionBannerIsDue(ApolloSuspensionBannerOccasionLimitStarted, t + 700.0, t, t + 900.0, t + 300.0), "the next window's limit: due");
+        // Back in the app while it's still limited.
+        CHECK(ApolloSuspensionBannerIsDue(ApolloSuspensionBannerOccasionBackDuringLimit, t + 120.0, t, t + 300.0, t + 300.0), "two minutes after the banner, still limited: due");
+        CHECK(!ApolloSuspensionBannerIsDue(ApolloSuspensionBannerOccasionBackDuringLimit, t + gap - 1.0, t, t + 300.0, t + 300.0), "inside the reminder gap: not again");
+        CHECK(ApolloSuspensionBannerIsDue(ApolloSuspensionBannerOccasionBackDuringLimit, t + gap, t, t + 300.0, t + 300.0), "the reminder gap over: due");
+        CHECK(!ApolloSuspensionBannerIsDue(ApolloSuspensionBannerOccasionBackDuringLimit, t + 301.0, t, t + 300.0, t + 300.0), "the limit over: nothing to remind of");
+        CHECK(!ApolloSuspensionBannerIsDue(ApolloSuspensionBannerOccasionBackDuringLimit, t + 120.0, t, 0, 0), "not limited: nothing to remind of");
+        CHECK(ApolloSuspensionBannerIsDue(ApolloSuspensionBannerOccasionBackDuringLimit, t, 0, t + 300.0, 0), "limited and never shown: due");
+        CHECK(!ApolloSuspensionBannerIsDue((ApolloSuspensionBannerOccasion)99, t, 0, t + 300.0, 0), "an unknown occasion is never due");
+
         // Bad input.
         CHECK(!ApolloAccountIsSuspended(nil) && !ApolloAccountIsSuspended(@"  "), "no username: not suspended");
         CHECK(!ApolloAccountSuspensionNoteUserData(@"", User(@"x", @YES, nil)), "empty username stores nothing");
