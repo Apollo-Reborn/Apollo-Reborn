@@ -416,8 +416,12 @@ static UIColor *FGAccent(UIViewController *vc) {
     return @[self.navigatorItem];
 }
 
+// Only the bridge places the navigator, so any write that keeps it is ours.
+// Other setter hooks may add their own items beside it (the Duo's layout
+// control); refusing those writes leaves the bar out of step with what they
+// expect, and they write again from inside the setter until the stack runs out.
 - (BOOL)itemsAreOurs:(NSArray<UIBarButtonItem *> *)items {
-    return self.navigatorItem && items.count == 1 && items[0] == self.navigatorItem;
+    return self.navigatorItem && [items indexOfObjectIdenticalTo:self.navigatorItem] != NSNotFound;
 }
 
 // Reflect Apollo's match state into the navigator: "n/m" (Apollo's own label
