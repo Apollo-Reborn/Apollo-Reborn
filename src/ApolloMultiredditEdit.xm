@@ -775,11 +775,22 @@ static NSString *ApolloMultiEditNormalizedPath(RDKMultireddit *multireddit) {
     return [@"/" stringByAppendingString:[components componentsJoinedByString:@"/"]];
 }
 
-NSArray<NSDictionary<NSString *, id> *> *ApolloActiveAccountMultiredditEntries(void) {
+static NSArray *ApolloMultiEditActiveAccountList(void) {
     id client = ApolloActiveAccountClient();
-    NSArray *list = client ? [sMultiredditsByClient objectForKey:client] : nil;
+    return client ? [sMultiredditsByClient objectForKey:client] : nil;
+}
+
+NSUInteger ApolloActiveAccountMultiredditCount(void) {
+    NSUInteger count = 0;
+    for (RDKMultireddit *multireddit in ApolloMultiEditActiveAccountList()) {
+        if (ApolloMultiEditNormalizedPath(multireddit) && ApolloMultiEditDisplayTitle(multireddit).length) count++;
+    }
+    return count;
+}
+
+NSArray<NSDictionary<NSString *, id> *> *ApolloActiveAccountMultiredditEntries(void) {
     NSMutableArray<NSDictionary<NSString *, id> *> *entries = [NSMutableArray array];
-    for (RDKMultireddit *multireddit in list) {
+    for (RDKMultireddit *multireddit in ApolloMultiEditActiveAccountList()) {
         NSString *path = ApolloMultiEditNormalizedPath(multireddit);
         NSString *title = ApolloMultiEditDisplayTitle(multireddit);
         if (!path || !title.length) continue;

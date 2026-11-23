@@ -10,6 +10,7 @@
 #import "ApolloDuoRail.h"
 #import "ApolloDuoSplitView.h"
 #import "ApolloMetaFeedRowRecovery.h"
+#import "ApolloMultiredditEdit.h"
 #import "ApolloFeedShortcutsAppearance.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
@@ -2893,20 +2894,24 @@ static BOOL ApolloSubredditIndexListIsEditing(UITableView *tableView) {
 // as Show in Sidebar picks. The sections are found by Apollo's index glyphs
 // (★ favorites, ○ multireddits; read from the binary's title table) and kept
 // until the sections change in number or the list reloads (the reloadData
-// hook drops them).
+// hook drops them). Multireddits count only while the rail has some: it lists
+// the ones the last working fetch captured, but Apollo fills this section from
+// the account, so after a failed fetch (offline, a 429, or at launch before it
+// lands) they stay here. A capture that changes that reloads the list (%ctor).
 static BOOL ApolloSubredditIndexSectionIsOnRail(UITableView *tableView, NSInteger section) {
     id<UITableViewDataSource> dataSource = tableView.dataSource;
     NSInteger sections = [dataSource respondsToSelector:@selector(numberOfSectionsInTableView:)]
         ? [dataSource numberOfSectionsInTableView:tableView] : 1;
     NSArray<NSNumber *> *cached = objc_getAssociatedObject(tableView, &kApolloSubredditRailSectionsKey);
-    if (cached.count != 3 || cached[0].integerValue != sections) {
+    if (cached.count != 4 || cached[0].integerValue != sections) {
         cached = @[@(sections), @(ApolloSubredditIndexSectionForIndexTitle(tableView, @"★")),
-                   @(ApolloSubredditIndexSectionForIndexTitle(tableView, @"○"))];
+                   @(ApolloSubredditIndexSectionForIndexTitle(tableView, @"○")),
+                   @(ApolloActiveAccountMultiredditCount() > 0)];
         objc_setAssociatedObject(tableView, &kApolloSubredditRailSectionsKey, cached, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     NSInteger favorites = cached[1].integerValue, multireddits = cached[2].integerValue;
     BOOL showsFavorites = sDuoFeedSidebarContent != ApolloDuoFeedSidebarContentMultireddits;
-    BOOL showsMultireddits = sDuoFeedSidebarContent != ApolloDuoFeedSidebarContentFavorites;
+    BOOL showsMultireddits = sDuoFeedSidebarContent != ApolloDuoFeedSidebarContentFavorites && cached[3].boolValue;
     return (showsFavorites && section == favorites) || (showsMultireddits && section == multireddits);
 }
 
@@ -4270,6 +4275,18 @@ void ApolloSubredditIndexDebugDescribeTables(void) {
                   ApolloSubredditEnhancementsEnabled(),
                   sModernSubredditDividers,
                   (unsigned long)sApolloSubredditKnownTables.allObjects.count);
+    }];
+    // The rail's multireddits arrived or went: the drawer beside it shows its
+    // Multireddits section again, or hides it (ApolloSubredditIndexSectionIsOnRail).
+    [[NSNotificationCenter defaultCenter] addObserverForName:ApolloMultiredditsCapturedNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(__unused NSNotification *notification) {
+        BOOL listed = ApolloActiveAccountMultiredditCount() > 0;
+        for (UITableView *tableView in sApolloSubredditKnownTables.allObjects) {
+            NSArray<NSNumber *> *cached = objc_getAssociatedObject(tableView, &kApolloSubredditRailSectionsKey);
+            if (cached.count == 4 && cached[3].boolValue != listed) [tableView reloadData];
+        }
     }];
     [[NSNotificationCenter defaultCenter] addObserverForName:ApolloHideSubredditListDescriptionsChangedNotification
                                                       object:nil

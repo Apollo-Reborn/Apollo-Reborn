@@ -17,6 +17,9 @@ FOUNDATION_EXPORT NSString *const ApolloMultiredditEntryIcon;      // custom ico
 // ApolloMultiredditEdit.xm (Objective-C++), called from plain .m files too.
 __BEGIN_DECLS
 NSArray<NSDictionary<NSString *, id> *> *ApolloActiveAccountMultiredditEntries(void);
+// How many entries ApolloActiveAccountMultiredditEntries() would return,
+// without building them (no icons). Main thread only.
+NSUInteger ApolloActiveAccountMultiredditCount(void);
 __END_DECLS
 
 NS_ASSUME_NONNULL_END
