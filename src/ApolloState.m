@@ -188,6 +188,7 @@ NSArray<NSString *> *sTranslationSkipLanguages = nil;
 BOOL sAppleTranslateSheet = NO;
 
 BOOL sWebJSONEnabled = NO;
+BOOL sWebJSONGraphQLEnabled = NO;
 BOOL sReduceRateLimiting = NO;
 BOOL sKeylessRouteUpdates = YES;
 BOOL sPollsFeatureEnabled = NO;

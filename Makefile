@@ -412,6 +412,10 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloWebJSONWriteRepair.m \
     $(SRC_DIR)/ApolloWebJSONRoutes.m \
     $(SRC_DIR)/ApolloWebJSONRouteUpdates.m \
+    $(SRC_DIR)/graphql/ApolloGQLRichText.m \
+    $(SRC_DIR)/graphql/ApolloGQLLegacy.m \
+    $(SRC_DIR)/graphql/ApolloGQLPlan.m \
+    $(SRC_DIR)/graphql/ApolloGQLRoute.m \
     $(SRC_DIR)/ApolloWebJSONIdentity.xm \
     $(SRC_DIR)/ApolloSubscriptionRefreshGuard.m \
     $(SRC_DIR)/ApolloAllPlusMerge.m \

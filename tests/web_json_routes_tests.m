@@ -219,7 +219,8 @@ static void TestRouteTransforms(void) {
           @"oauth keeps a relative path");
     CHECK([ApolloWebJSONRouteName(ApolloWebJSONRouteOAuth) isEqualToString:@"oauth"], @"oauth name");
     CHECK(ApolloWebJSONRouteApi == 3 && ApolloWebJSONRouteOAuth == 4, @"route numbers in URL markers stay put");
-    CHECK(ApolloWebJSONRouteOAuthBearer == 5 && ApolloWebJSONRouteWwwRAll == 6 && ApolloWebJSONRouteLast == 14,
+    CHECK(ApolloWebJSONRouteOAuthBearer == 5 && ApolloWebJSONRouteWwwRAll == 6 && ApolloWebJSONRouteOAuthRAllBearer == 14 &&
+          ApolloWebJSONRouteGraphQL == 15 && ApolloWebJSONRouteLast == 15,
           @"routes after the first five keep their numbers too");
     CHECK([ApolloWebJSONRouteName(ApolloWebJSONRouteWwwDotJSON) isEqualToString:@"www-dotjson"], @"name");
 }
@@ -708,7 +709,7 @@ static void TestMatchedEntryHealth(void) {
 static void TestRouteParts(void) {
     NSArray<NSString *> *names = @[ @"www", @"www-dotjson", @"old", @"api", @"oauth", @"oauth+bearer", @"www-r-all", @"old-dotjson",
                                     @"old-r-all", @"api-dotjson", @"api-r-all", @"oauth-dotjson", @"oauth-r-all",
-                                    @"oauth-dotjson+bearer", @"oauth-r-all+bearer" ];
+                                    @"oauth-dotjson+bearer", @"oauth-r-all+bearer", @"graphql" ];
     CHECK(names.count == ApolloWebJSONRouteLast + 1, @"every route named");
     for (NSInteger r = ApolloWebJSONRouteWww; r <= ApolloWebJSONRouteLast; r++) {
         CHECK([ApolloWebJSONRouteName((ApolloWebJSONRoute)r) isEqualToString:names[r]], @"route %ld is %@ (got %@)", (long)r, names[r],
@@ -727,6 +728,87 @@ static void TestRouteParts(void) {
     CHECK([ApolloWebJSONRoutePath(ApolloWebJSONRouteOldDotJSON, @"/api/info.json") isEqualToString:@"/api/info/.json"], @"old dotjson");
     CHECK([ApolloWebJSONRoutePath(ApolloWebJSONRouteOAuthBearer, @"/r/all/best.json") isEqualToString:@"/r/all/best.json"], @"bearer same path");
     CHECK(ApolloWebJSONRouteGetPathForm(ApolloWebJSONRouteOAuthDotJSONBearer) == ApolloWebJSONRoutePathDotJSON, @"parts");
+    CHECK(ApolloWebJSONRouteGetAuth(ApolloWebJSONRouteGraphQL) == ApolloWebJSONRouteAuthWebToken, @"graphql auth");
+    CHECK([ApolloWebJSONRouteHost(ApolloWebJSONRouteGraphQL) isEqualToString:@"gql-fed.reddit.com"], @"graphql host");
+    // The GraphQL route can only be named, never assembled from parts.
+    NSArray<NSString *> *rejections = nil;
+    NSDictionary *table = ParseJSON(@"{\"version\":1,\"endpoints\":{\"GET /api/x\":{\"routes\":[{\"host\":\"gql-fed\"}]}}}", &rejections);
+    CHECK(table.count == 0 && rejections.count == 1, @"gql-fed isn't a host a route can be built from (%@)", rejections);
+}
+
+// The GraphQL route: first for whatever the handler says it answers, never for
+// the transport, and where keyless-routes.json puts it when that names it.
+static void TestGraphQLRoute(void) {
+    ApolloWebJSONRouteHealthReset();
+    ApolloWebJSONRouteSetRemoteTable(nil);
+    ApolloWebJSONRoute graphql = ApolloWebJSONRouteGraphQL;
+    NSUInteger graphqlBit = 1u << graphql;
+    NSString *feed = @"/r/ios/zzsort", *other = @"/r/ios/zzother", *info = @"/api/info.json";
+    NSArray *feedRoutes = ApolloWebJSONRoutesForRequest(@"GET", feed), *infoRoutes = ApolloWebJSONRoutesForRequest(@"GET", info);
+
+    // No handler: nothing changes anywhere.
+    CHECK(![feedRoutes containsObject:@(graphql)] && ![infoRoutes containsObject:@(graphql)], @"off without a handler");
+    CHECK(!ApolloWebJSONRouteRequestMayRetry(@"GET", feed), @"an unmatched read still has one route");
+
+    __block BOOL accountReady = YES;
+    ApolloWebJSONRouteSetGraphQLHandler(^BOOL(NSString *account, NSString *method, NSString *path) {
+        if (![method isEqualToString:@"GET"]) return NO;
+        if (![path hasPrefix:@"/r/ios/zzsort"] && ![path hasPrefix:@"/api/info"]) return NO;
+        return account == nil || ([account isEqualToString:@"alice"] && accountReady);
+    });
+    CHECK([ApolloWebJSONRoutesForRequest(@"GET", feed) isEqualToArray:(@[ @(graphql), @(ApolloWebJSONRouteWww) ])], @"first, then www");
+    NSArray *expectedInfo = [@[ @(graphql) ] arrayByAddingObjectsFromArray:infoRoutes];
+    CHECK([ApolloWebJSONRoutesForRequest(@"GET", info) isEqualToArray:expectedInfo], @"first, then the built-in routes");
+    CHECK([ApolloWebJSONRoutesForRequest(@"GET", other) isEqualToArray:R(ApolloWebJSONRouteWww)], @"only what the handler answers");
+    CHECK([ApolloWebJSONRoutesForRequest(@"POST", feed) isEqualToArray:R(ApolloWebJSONRouteWww)], @"writes never");
+    CHECK(ApolloWebJSONRouteRequestMayRetry(@"GET", feed), @"a read GraphQL answers can fall back to www");
+
+    // Choosing: GraphQL for the request hook, never for the transport.
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", feed, 0, 1) == graphql, @"chosen first");
+    CHECK(ApolloWebJSONRouteChooseForTransport(@"alice", @"GET", feed, 0, 1) == ApolloWebJSONRouteWww, @"the transport gets www");
+    CHECK(ApolloWebJSONRouteChoose(@"bob", @"GET", feed, 0, 1) == ApolloWebJSONRouteWww, @"an account it can't answer for skips it");
+    accountReady = NO;
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", feed, 0, 1) == ApolloWebJSONRouteWww, @"skipped while the account isn't ready");
+    accountReady = YES;
+    // After GraphQL had no answer, the next route; the mask alone doesn't make
+    // the transport think its own routes were tried.
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", feed, graphqlBit, 1) == ApolloWebJSONRouteWww, @"www after graphql");
+    CHECK(ApolloWebJSONRouteChooseForTransport(@"alice", @"GET", feed, graphqlBit, 1) == ApolloWebJSONRouteWww, @"same for the transport");
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", feed, graphqlBit | (1u << ApolloWebJSONRouteWww), 1) == -1, @"then nothing");
+    // With www cooling down and only GraphQL tried, www is still sent (as it
+    // is for a request nothing has tried), not dropped.
+    BlockTimes(@"alice", feed, ApolloWebJSONRouteWww, 3, 10);
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", feed, 0, 11) == graphql, @"graphql while www cools down");
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", feed, graphqlBit, 11) == ApolloWebJSONRouteWww, @"www anyway once graphql failed");
+    CHECK(ApolloWebJSONRouteChooseForTransport(@"alice", @"GET", feed, 0, 11) == ApolloWebJSONRouteWww, @"and for the transport");
+    ApolloWebJSONRouteHealthReset();
+
+    // Its own cooldown, per endpoint group like any route.
+    BlockTimes(@"alice", feed, graphql, 3, 20);
+    CHECK(ApolloWebJSONRouteCooldownRemaining(@"alice", @"GET", feed, graphql, 21) > 0, @"three refusals cool it down");
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", feed, 0, 21) == ApolloWebJSONRouteWww, @"www while graphql cools down");
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", info, 0, 21) == graphql, @"other endpoints keep it");
+    ApolloWebJSONRouteHealthNoteSuccess(@"alice", @"GET", feed, graphql, 22);
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", feed, 0, 23) == graphql, @"a success brings it back");
+    ApolloWebJSONRouteHealthReset();
+
+    // keyless-routes.json: an entry is the whole order. It can put graphql
+    // later, or leave it out to keep an endpoint off GraphQL.
+    NSDictionary *later = ParseJSON(@"{\"version\":1,\"endpoints\":{\"GET /api/info\":{\"routes\":[\"oauth\",\"graphql\"]}}}", NULL);
+    CHECK([later[@"GET /api/info"] isEqualToArray:R2(ApolloWebJSONRouteOAuth, graphql)], @"graphql parses as a route name");
+    ApolloWebJSONRouteSetRemoteTable(later);
+    CHECK([ApolloWebJSONRoutesForRequest(@"GET", info) isEqualToArray:R2(ApolloWebJSONRouteOAuth, graphql)], @"the file's order");
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", info, 0, 30) == ApolloWebJSONRouteOAuth, @"oauth first");
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", info, 1u << ApolloWebJSONRouteOAuth, 30) == graphql, @"graphql as the fallback");
+    CHECK(ApolloWebJSONRouteChooseForTransport(@"alice", @"GET", info, 1u << ApolloWebJSONRouteOAuth, 30) == -1, @"not for the transport");
+    ApolloWebJSONRouteSetRemoteTable(ParseJSON(@"{\"version\":1,\"endpoints\":{\"GET /api/info\":{\"routes\":[\"oauth\"]}}}", NULL));
+    CHECK([ApolloWebJSONRoutesForRequest(@"GET", info) isEqualToArray:R(ApolloWebJSONRouteOAuth)], @"left out by the file");
+    CHECK([ApolloWebJSONRoutesForRequest(@"GET", feed) isEqualToArray:(@[ @(graphql), @(ApolloWebJSONRouteWww) ])], @"other endpoints unaffected");
+
+    ApolloWebJSONRouteSetRemoteTable(nil);
+    ApolloWebJSONRouteSetGraphQLHandler(nil);
+    ApolloWebJSONRouteHealthReset();
+    CHECK([ApolloWebJSONRoutesForRequest(@"GET", feed) isEqualToArray:R(ApolloWebJSONRouteWww)], @"back to www without a handler");
 }
 
 static void TestBearerRoutes(void) {
@@ -874,6 +956,7 @@ int main(int argc, const char *argv[]) {
         TestMatchedEntryHealth();
         TestRouteParts();
         TestBearerRoutes();
+        TestGraphQLRoute();
         TestOAuthReads();
     }
     if (sFailures) {

@@ -32,6 +32,18 @@ Every other combination works the same way (`old-dotjson`, `oauth-r-all+bearer`,
 
 `api` isn't in the `/api/` entries: as of 2026-10-24 it refused both of them for the cookie, and the file can list it for them again if Reddit reopens it. For `/api/info` alone, `www.reddit.com/r/all/api/info.json` (`www-r-all`) also answered the cookie then, but since 2026-10-28 www blocks every path under `/r/all`, that one included.
 
+### The `graphql` route
+
+`graphql` is one more route name, with no parts: it can't be written as `{"host": …}`. It doesn't send the request to another host. The app asks gql-fed.reddit.com, the GraphQL API Reddit's own apps read through, for the same data and hands Apollo the answer in the shape of the legacy response (`src/graphql/`). It uses the desktop web client's token (the session's `token_v2`, or one minted for that client from the cookie), and Reddit counts its requests apart from the cookie's.
+
+It's behind a switch that is off by default (`WebJSONGraphQLEnabled`). While it's on:
+
+- For a request it can answer, `graphql` goes first on its own, ahead of the built-in routes. No entry is needed. Today that is a single subreddit's feed (`GET /r/<sub>`, `/r/<sub>/<sort>`) and `GET /api/info` for post ids.
+- An entry in this file is the whole order for its endpoint, as for any other route. List `"graphql"` where it should be tried, or leave it out to keep that endpoint off GraphQL: `"GET /api/info": { "routes": ["oauth", "graphql"] }` tries GraphQL second, `{ "routes": ["oauth"] }` never does.
+- When GraphQL has no answer (a block page, a token Reddit refuses, a query it no longer knows, a network error), the request is sent by its next route. Refusals count toward the route's cooldown like a block page does; a network error or a rate limit (HTTP 429) doesn't, and a 429 keeps the account off GraphQL until Reddit's window resets.
+
+A version of the app without the route rejects an entry that names `graphql` and keeps its built-in routes for that endpoint.
+
 ## Built-in entries
 
 | Entry | Routes |

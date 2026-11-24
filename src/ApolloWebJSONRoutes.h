@@ -43,7 +43,14 @@ typedef NS_ENUM(NSInteger, ApolloWebJSONRoute) {
     ApolloWebJSONRouteOAuthRAll,
     ApolloWebJSONRouteOAuthDotJSONBearer,
     ApolloWebJSONRouteOAuthRAllBearer,
-    ApolloWebJSONRouteLast = ApolloWebJSONRouteOAuthRAllBearer,
+    // gql-fed.reddit.com, the GraphQL API Reddit's own apps read through, with
+    // the website's own token (ApolloWebJSONRouteAuthWebToken). Not a host and
+    // path the rewrite can send a request by: the RedditKit request hook asks
+    // it for the same data and hands Apollo the answer in the legacy shape
+    // (src/graphql/). It's on its own request budget, apart from the cookie's.
+    // Named "graphql".
+    ApolloWebJSONRouteGraphQL,
+    ApolloWebJSONRouteLast = ApolloWebJSONRouteGraphQL,
 };
 
 // How a route changes the path: not at all, /api/<endpoint>/.json ("dotjson"),
@@ -57,9 +64,12 @@ typedef NS_ENUM(NSInteger, ApolloWebJSONRoutePathForm) {
 // The session cookie, or a bearer minted for Reddit's mobile client from the
 // cookie (never the token_v2 cookie, which is the desktop web client's token).
 // Bearer auth is only offered on oauth.reddit.com, the one host that reads it.
+// The GraphQL route's auth is the desktop web client's token, the one the
+// website itself uses (gql-fed.reddit.com refuses the mobile client's).
 typedef NS_ENUM(NSInteger, ApolloWebJSONRouteAuth) {
     ApolloWebJSONRouteAuthCookie = 0,
     ApolloWebJSONRouteAuthBearer,
+    ApolloWebJSONRouteAuthWebToken,
 };
 
 // The route's name, for logs and keyless-routes.json: the host ("www", "old",
@@ -77,7 +87,11 @@ ApolloWebJSONRouteAuth ApolloWebJSONRouteGetAuth(ApolloWebJSONRoute route);
 BOOL ApolloWebJSONRequestIsSearchRead(NSString *method, NSString *path);
 
 // The routes to try for a request, in order; always at least one. Requests no
-// entry matches get @[www]. `path` may be RedditKit's relative form
+// entry matches get @[www]. While the GraphQL route is on and can answer the
+// request (ApolloWebJSONRouteSetGraphQLHandler), it comes first, ahead of the
+// built-in routes. A keyless-routes.json entry is used as written instead: it
+// lists "graphql" where it wants it, or leaves it out to keep that endpoint off
+// GraphQL. `path` may be RedditKit's relative form
 // ("api/info.json") or a URL path, with or without .json, a trailing slash or
 // a query.
 //
@@ -134,6 +148,12 @@ void ApolloWebJSONRouteSetBearerReadyHandler(BOOL (^_Nullable handler)(NSString 
 // route with bearer auth, so a bearer is worth minting ahead of time.
 BOOL ApolloWebJSONRouteTableUsesBearerAuth(void);
 
+// Whether the GraphQL route can answer `method` and `path`: for `account` when
+// one is given (it needs a web session), in general when it's nil. The tweak
+// sets it (src/graphql/ApolloGQLRoute.m); without one, the route is never used
+// and every request keeps the routes it had. The handler must not block.
+void ApolloWebJSONRouteSetGraphQLHandler(BOOL (^_Nullable handler)(NSString *_Nullable account, NSString *method, NSString *path));
+
 #pragma mark - Remote route table (keyless-routes.json)
 
 // Maintainers can change routes without a release through keyless-routes.json
@@ -186,6 +206,11 @@ NSTimeInterval ApolloWebJSONRouteCooldownRemaining(NSString *account, NSString *
 // on cooldown and none has been tried, the first of them anyway, so a route
 // that recovers is noticed. -1 when there's no route left to send by.
 NSInteger ApolloWebJSONRouteChoose(NSString *account, NSString *method, NSString *path, NSUInteger triedMask, NSTimeInterval now);
+
+// The same choice among the routes a request can be rewritten to, for the
+// transport: never the GraphQL route, and a request that only GraphQL has
+// tried counts as not tried yet.
+NSInteger ApolloWebJSONRouteChooseForTransport(NSString *account, NSString *method, NSString *path, NSUInteger triedMask, NSTimeInterval now);
 
 // `path` with its variable segments (subreddit, user, post and comment ids)
 // replaced by "*", or "+" for names joined with "+", so the counts group by
