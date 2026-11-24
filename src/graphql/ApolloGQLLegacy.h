@@ -36,6 +36,26 @@ NSDictionary<NSString *, id> *ApolloGQLLegacyListing(NSArray<NSDictionary *> *ch
 // answer isn't a PostsByIds result at all.
 NSArray<NSDictionary *> *_Nullable ApolloGQLLegacyLinksFromPostsByIds(NSDictionary *answer, NSArray<NSString *> *fullnames, BOOL rawJSON);
 
+// The body of /comments/<id>.json for a PostComments answer (its whole JSON
+// body): [the post's Listing, the comments' Listing], each comment's replies
+// nested inside it. `linkThing` is the post as a t3 thing (PostsByIds has it;
+// PostComments only names it). A thread's "load more" rows become legacy `more`
+// things whose one child id is ApolloGQLMoreToken's, which Apollo hands back
+// through /api/morechildren. nil when the answer has no comment list.
+NSArray *_Nullable ApolloGQLLegacyCommentsPage(NSDictionary *answer, NSDictionary *linkThing, BOOL rawJSON);
+
+// The body of /api/morechildren for a PostComments answer that continued a
+// "load more" row: {"json": {"errors": [], "data": {"things": […]}}}, the things
+// flat and each naming its parent, which is how Apollo places them
+// (sub_1005256fc). `depth` is the row's own depth (the answer counts from 0
+// again). nil when the answer has no comment list.
+NSDictionary *_Nullable ApolloGQLLegacyMoreChildren(NSDictionary *answer, NSInteger depth, BOOL rawJSON);
+
+// The child id a "load more" row is given, and the cursor and depth back out of
+// one. nil for an id that isn't one of these (a real comment's).
+NSString *ApolloGQLMoreToken(NSString *cursor, NSInteger depth);
+NSString *_Nullable ApolloGQLMoreTokenCursor(NSString *_Nullable token, NSInteger *_Nullable depth);
+
 // The post fullnames of a feed answer (SubredditFeedSdui and the like), in
 // order, without the cells that aren't posts (sort bar, recommendations, ads).
 // `nextAfter` gets the fullname the next page starts after (the answer's

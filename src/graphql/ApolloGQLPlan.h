@@ -19,6 +19,12 @@ typedef NS_ENUM(NSInteger, ApolloGQLRequestKind) {
     // GET /r/<subreddit>[/<sort>]: a subreddit's feed. SubredditFeedSdui gives
     // the page's post ids (6 on a first page, 24 after), PostsByIds the posts.
     ApolloGQLRequestKindSubredditFeed,
+    // GET /comments/<id>[.json], /r/<subreddit>/comments/<id>[/<slug>]: a post
+    // and its comments. PostComments gives the thread, PostsByIds the post.
+    ApolloGQLRequestKindComments,
+    // POST /api/morechildren: the replies behind a "load more" row of a thread
+    // that came from PostComments (ApolloGQLMoreToken). One PostComments call.
+    ApolloGQLRequestKindMoreComments,
 };
 
 @interface ApolloGQLRequest : NSObject
@@ -33,13 +39,22 @@ typedef NS_ENUM(NSInteger, ApolloGQLRequestKind) {
 @property (nonatomic, copy, readonly, nullable) NSString *timeRange;
 @property (nonatomic, copy, readonly, nullable) NSString *after;
 @property (nonatomic, readonly) NSInteger limit;
+// Comments and MoreComments: the post, and GraphQL's comment sort
+// ("CONFIDENCE"). `limit` is how many comments a Comments request wanted, 0 for
+// Reddit's own page size.
+@property (nonatomic, copy, readonly, nullable) NSString *linkFullname;
+@property (nonatomic, copy, readonly, nullable) NSString *commentSort;
+// MoreComments: the row's cursor and its depth in the thread.
+@property (nonatomic, copy, readonly, nullable) NSString *moreCursor;
+@property (nonatomic, readonly) NSInteger moreDepth;
 // Whether the legacy request carried raw_json=1 (ApolloGQLLegacyLinkData).
 @property (nonatomic, readonly) BOOL rawJSON;
 @end
 
 // YES when a request to `path` is one of the kinds above, going by the method
 // and path alone. The request itself may still not be answerable (an /api/info
-// for comments, a feed page asked for by `before`).
+// for comments, a feed page asked for by `before`, a thread opened at one
+// comment, a "load more" row of a thread the legacy API sent).
 BOOL ApolloGQLCanAnswerPath(NSString *method, NSString *path);
 
 // The GraphQL request for a legacy one, or nil when GraphQL can't answer it and
@@ -52,6 +67,7 @@ ApolloGQLRequest *_Nullable ApolloGQLRequestForLegacy(NSString *method, NSString
 
 extern NSString *const ApolloGQLOperationPostsByIds;
 extern NSString *const ApolloGQLOperationSubredditFeed;
+extern NSString *const ApolloGQLOperationPostComments;
 
 // The most post ids one PostsByIds call is given.
 extern const NSUInteger ApolloGQLPostsByIdsBatch;
@@ -69,6 +85,10 @@ NSDictionary *ApolloGQLPostsByIdsVariables(NSArray<NSString *> *fullnames);
 // `after` is the fullname the page starts after (the request's own, or the one
 // a previous page of the same request ended on), or nil for the first page.
 NSDictionary *ApolloGQLSubredditFeedVariables(ApolloGQLRequest *request, NSString *_Nullable after);
+
+// A thread's first page (Comments) or the replies behind one of its "load
+// more" rows (MoreComments).
+NSDictionary *ApolloGQLPostCommentsVariables(ApolloGQLRequest *request);
 
 #ifdef __cplusplus
 }

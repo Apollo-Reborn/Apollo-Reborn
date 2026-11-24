@@ -319,9 +319,11 @@ static BOOL ApolloWebJSONRouteGraphQLAnswers(NSString *account, NSString *method
 NSArray<NSNumber *> *ApolloWebJSONRoutesForRequest(NSString *method, NSString *path) {
     NSDictionary *entry = ApolloWebJSONRouteMatch(method, path);
     NSArray<NSNumber *> *routes = entry[@"routes"] ?: @[ @(ApolloWebJSONRouteWww) ];
-    // GraphQL goes first for whatever it can answer, unless keyless-routes.json
-    // set this endpoint's routes: then its list is the whole order.
-    if ([entry[@"remote"] boolValue] || [routes containsObject:@(ApolloWebJSONRouteGraphQL)]) return routes;
+    // GraphQL goes first for whatever it can answer. A keyless-routes.json
+    // entry can name it to try it later instead; one that doesn't name it was
+    // written for the routes after it (the entries published before this route
+    // existed, and a "load more" row GraphQL made has no other route at all).
+    if ([routes containsObject:@(ApolloWebJSONRouteGraphQL)]) return routes;
     if (!ApolloWebJSONRouteGraphQLAnswers(nil, method, path)) return routes;
     return [@[ @(ApolloWebJSONRouteGraphQL) ] arrayByAddingObjectsFromArray:routes];
 }

@@ -12,6 +12,10 @@
 // keys are the ones Apollo's RedditKit maps for a link (the "data.<key>"
 // strings in the 1.15.11 binary) plus the media, flair and gallery keys the
 // tweak's own readers of listing JSON use.
+//
+// tests/fixtures/graphql/comments.json holds two threads the same way: rows of
+// what PostComments answered, and the legacy /comments/<id>.json data of the
+// same comments.
 
 static int sFailures = 0;
 
@@ -38,12 +42,25 @@ static BOOL PathIsExempt(NSString *path, NSString *kind) {
     if ([path hasSuffix:@"resolutions[].height"] || [path hasSuffix:@".p[].y"]) return YES;
     if ([path containsString:@"oembed.thumbnail_"]) return YES;
     if ([path hasSuffix:@"poll_data.total_vote_count"] && [kind isEqualToString:@"poll-open"]) return YES;
+    // Comments:
+    // - the legacy API no longer describes a Giphy embed ("status": "invalid");
+    //   GraphQL has the GIF itself;
+    // - a deleted comment's score isn't in the GraphQL answer.
+    if ([kind isEqualToString:@"giphy"] && [path hasPrefix:@"media_metadata"]) return YES;
+    if ([kind isEqualToString:@"deleted"] && ([path isEqualToString:@"score"] || [path isEqualToString:@"ups"])) return YES;
     return NO;
 }
 
 static id Loosened(id value, NSString *path) {
     if (![value isKindOfClass:[NSString class]]) return value;
     NSString *text = value;
+    // An image a comment embeds is the file's own i.redd.it address on GraphQL
+    // and a signed preview.redd.it one on the legacy route (same file).
+    if ([path isEqualToString:@"body"] || [path isEqualToString:@"body_html"]) {
+        NSRegularExpression *preview = [NSRegularExpression regularExpressionWithPattern:@"https://preview\\.redd\\.it/([A-Za-z0-9]+\\.[a-z]+)\\?[^\\s\"<]*"
+                                                                                 options:0 error:NULL];
+        return [preview stringByReplacingMatchesInString:text options:0 range:NSMakeRange(0, text.length) withTemplate:@"https://i.redd.it/$1"];
+    }
     if ([path hasSuffix:@"oembed.html"] || [path hasSuffix:@"embed.content"]) {
         text = [text stringByReplacingOccurrencesOfString:@"&amp;enablejsapi=1" withString:@""];
         return [text stringByReplacingOccurrencesOfString:@"&enablejsapi=1" withString:@""];
@@ -123,6 +140,189 @@ static void TestPostsAgainstLegacy(NSString *repoRoot) {
     }
     NSSet *expected = [NSSet setWithArray:@[ @"image", @"gallery", @"video", @"embed", @"link", @"self", @"gif", @"poll", @"poll-open", @"crosspost" ]];
     CHECK([kinds isEqualToSet:expected], @"every kind of post is covered (%@)", kinds);
+}
+
+#pragma mark - Comments against the legacy answer
+
+// Every comment under `things`, by fullname, and the "load more" rows.
+static void FlattenComments(NSArray *things, NSMutableDictionary<NSString *, NSDictionary *> *comments, NSMutableArray<NSDictionary *> *mores) {
+    for (NSDictionary *thing in things) {
+        if ([thing[@"kind"] isEqualToString:@"more"]) { [mores addObject:thing[@"data"]]; continue; }
+        comments[thing[@"data"][@"name"]] = thing[@"data"];
+        id replies = thing[@"data"][@"replies"];
+        if ([replies isKindOfClass:[NSDictionary class]]) FlattenComments(replies[@"data"][@"children"], comments, mores);
+    }
+}
+
+// "t1_a(t1_b(t1_c) more) t1_d": a thread's shape.
+static NSString *CommentShape(NSArray *things) {
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    for (NSDictionary *thing in things) {
+        if ([thing[@"kind"] isEqualToString:@"more"]) { [parts addObject:@"more"]; continue; }
+        id replies = thing[@"data"][@"replies"];
+        [parts addObject:[replies isKindOfClass:[NSDictionary class]]
+            ? [NSString stringWithFormat:@"%@(%@)", thing[@"data"][@"name"], CommentShape(replies[@"data"][@"children"])]
+            : thing[@"data"][@"name"]];
+    }
+    return [parts componentsJoinedByString:@" "];
+}
+
+static NSArray<NSDictionary *> *CommentsFixtureThreads(NSString *repoRoot) {
+    NSData *data = [NSData dataWithContentsOfFile:[repoRoot stringByAppendingPathComponent:@"tests/fixtures/graphql/comments.json"]];
+    NSDictionary *fixture = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
+    return fixture[@"threads"];
+}
+
+static void TestCommentsAgainstLegacy(NSString *repoRoot) {
+    NSArray<NSDictionary *> *threads = CommentsFixtureThreads(repoRoot);
+    CHECK(threads.count == 2, @"fixture has its two threads (%lu)", (unsigned long)threads.count);
+    NSMutableSet<NSString *> *kinds = [NSMutableSet set];
+    for (NSDictionary *thread in threads) {
+        NSString *name = thread[@"thread"];
+        NSDictionary *linkThing = ApolloGQLLegacyThing(@"t3", thread[@"link"]);
+        NSArray *page = ApolloGQLLegacyCommentsPage(thread[@"graphql"], linkThing, YES);
+        CHECK(page.count == 2, @"%@: a post listing and a comment listing", name);
+        if (page.count != 2) continue;
+        CHECK([page[0][@"data"][@"children"] isEqualToArray:@[ linkThing ]] && [page[0][@"data"][@"dist"] isEqual:@1], @"%@: the post comes first", name);
+        CHECK([page[1][@"kind"] isEqualToString:@"Listing"] && page[1][@"data"][@"after"] == [NSNull null], @"%@: comments are a Listing", name);
+        NSMutableDictionary<NSString *, NSDictionary *> *ours = [NSMutableDictionary dictionary];
+        NSMutableArray<NSDictionary *> *mores = [NSMutableArray array];
+        FlattenComments(page[1][@"data"][@"children"], ours, mores);
+        NSDictionary<NSString *, NSDictionary *> *legacy = thread[@"legacy"];
+        CHECK(ours.count == legacy.count, @"%@: every comment once (%lu, legacy %lu)", name, (unsigned long)ours.count, (unsigned long)legacy.count);
+        for (NSString *fullname in [legacy.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+            NSString *kind = thread[@"kinds"][fullname] ?: @"plain";
+            [kinds addObject:kind];
+            NSDictionary *comment = ours[fullname];
+            CHECK(comment != nil, @"%@: %@ (%@) is in the thread", name, fullname, kind);
+            if (!comment) continue;
+            NSMutableArray<NSString *> *differences = [NSMutableArray array];
+            for (NSString *key in [legacy[fullname].allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+                // A flair that is only a CSS class (old Reddit's) isn't in
+                // GraphQL; the legacy API gives it colours but no text, and
+                // nothing reads the colours of a flair without text.
+                if (legacy[fullname][@"author_flair_text"] == [NSNull null] &&
+                    ([key isEqualToString:@"author_flair_background_color"] || [key isEqualToString:@"author_flair_text_color"])) continue;
+                if (!comment[key]) { [differences addObject:[key stringByAppendingString:@" is missing"]]; continue; }
+                Compare(comment[key], legacy[fullname][key], key, kind, differences);
+            }
+            CHECK(differences.count == 0, @"%@: the %@ comment %@ differs from the legacy answer:\n  %@", name, kind, fullname,
+                  [differences componentsJoinedByString:@"\n  "]);
+        }
+    }
+    NSSet *expected = [NSSet setWithArray:@[ @"plain", @"image", @"giphy", @"collapsed", @"score-hidden", @"op-reply", @"more", @"deleted", @"flair", @"edited" ]];
+    CHECK([kinds isEqualToSet:expected], @"every kind of comment is covered (%@)", kinds);
+}
+
+static void TestCommentThreads(NSString *repoRoot) {
+    NSArray<NSDictionary *> *threads = CommentsFixtureThreads(repoRoot);
+    if (threads.count != 2) return;
+    NSDictionary *pics = threads[0], *mega = threads[1];
+
+    // Rows in reading order with a depth and a parent become nested replies.
+    NSArray *page = ApolloGQLLegacyCommentsPage(pics[@"graphql"], ApolloGQLLegacyThing(@"t3", pics[@"link"]), YES);
+    NSString *shape = CommentShape(page[1][@"data"][@"children"]);
+    CHECK([shape isEqualToString:@"t1_19t36jz9s846c(t1_19t37auzy2omc(t1_19t37tecl8izk)) t1_19t431jhx1ezl t1_19t3awfe4ars2 "
+           "t1_19t3ia29toizk(more) t1_19t36fnmizswy t1_19t37tjtiqcdg"], @"thread shape (%@)", shape);
+    NSMutableDictionary<NSString *, NSDictionary *> *comments = [NSMutableDictionary dictionary];
+    NSMutableArray<NSDictionary *> *mores = [NSMutableArray array];
+    FlattenComments(page[1][@"data"][@"children"], comments, mores);
+    CHECK([comments[@"t1_19t431jhx1ezl"][@"replies"] isEqual:@""], @"no replies is an empty string, as the legacy API has it");
+    NSDictionary *replies = comments[@"t1_19t36jz9s846c"][@"replies"];
+    CHECK([replies[@"kind"] isEqualToString:@"Listing"] && replies[@"data"][@"dist"] == [NSNull null], @"replies are a Listing without a count");
+    CHECK([comments[@"t1_19t37tecl8izk"][@"parent_id"] isEqualToString:@"t1_19t37auzy2omc"] && [comments[@"t1_19t37tecl8izk"][@"depth"] isEqual:@2],
+          @"a reply names its parent and depth");
+    CHECK([comments[@"t1_19t36jz9s846c"][@"parent_id"] isEqualToString:@"t3_1y3u73f"] && [comments[@"t1_19t36jz9s846c"][@"link_id"] isEqualToString:@"t3_1y3u73f"],
+          @"a top-level comment's parent is the post");
+    CHECK([comments[@"t1_19t36jz9s846c"][@"subreddit_type"] isEqualToString:pics[@"link"][@"subreddit_type"]], @"the subreddit's type comes from the post");
+    // An embedded image: its address in the Markdown, its sizes in media_metadata.
+    NSDictionary *image = comments[@"t1_19t3awfe4ars2"];
+    CHECK([image[@"body"] hasSuffix:@"\n\nhttps://i.redd.it/fwgjbaio1g3i1.jpeg"], @"image address in the body (%@)", image[@"body"]);
+    CHECK([image[@"media_metadata"][@"fwgjbaio1g3i1"][@"s"][@"u"] isEqualToString:@"https://i.redd.it/fwgjbaio1g3i1.jpeg"] &&
+          [image[@"media_metadata"][@"fwgjbaio1g3i1"][@"e"] isEqualToString:@"Image"], @"image metadata");
+    // A Giphy embed stays as typed, links to its page, and has the GIF Apollo
+    // plays inline (-[RDKComment inlineGiphyIDsToURLs] reads s.mp4, then s.gif).
+    NSDictionary *giphy = comments[@"t1_19t37tjtiqcdg"];
+    CHECK([giphy[@"body"] isEqualToString:@"![gif](giphy|W7KqOEzpG9iC9H58zc)"], @"giphy body (%@)", giphy[@"body"]);
+    CHECK([giphy[@"body_html"] containsString:@"<a href=\"https://giphy.com/gifs/W7KqOEzpG9iC9H58zc\" target=\"_blank\">"], @"giphy link (%@)", giphy[@"body_html"]);
+    CHECK([giphy[@"media_metadata"][@"giphy|W7KqOEzpG9iC9H58zc"][@"s"][@"gif"] hasPrefix:@"https://"], @"giphy GIF address");
+
+    // A "load more" row: a legacy `more` thing whose one child id carries the
+    // cursor and the row's depth.
+    CHECK(mores.count == 1, @"one load-more row (%lu)", (unsigned long)mores.count);
+    NSDictionary *more = mores.firstObject;
+    NSString *token = [more[@"children"] firstObject];
+    CHECK([more[@"count"] isEqual:@2] && [more[@"parent_id"] isEqualToString:@"t1_19t3ia29toizk"] && [more[@"depth"] isEqual:@1], @"more row (%@)", more);
+    CHECK([more[@"children"] count] == 1 && [more[@"id"] isEqualToString:token] && [more[@"name"] isEqualToString:[@"t1_" stringByAppendingString:token]],
+          @"its id, name and one child are the token");
+    NSInteger depth = -1;
+    NSString *cursor = ApolloGQLMoreTokenCursor(token, &depth);
+    CHECK([cursor isEqualToString:@"commenttree:fixture1,::1:ex:,X;<b$\"N'v"] && depth == 1, @"the token gives the cursor back (%@, %ld)", cursor, (long)depth);
+    NSCharacterSet *notID = [[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdefghijklmnopqrstuvwxyz"] invertedSet];
+    CHECK([token rangeOfCharacterFromSet:notID].location == NSNotFound, @"the token is made of a comment id's characters");
+
+    // A deleted comment has no id in the answer; its reply names it. The
+    // thread's last row loads more top-level comments.
+    NSArray *megaPage = ApolloGQLLegacyCommentsPage(mega[@"graphql"], ApolloGQLLegacyThing(@"t3", mega[@"link"]), YES);
+    NSString *megaShape = CommentShape(megaPage[1][@"data"][@"children"]);
+    CHECK([megaShape isEqualToString:@"t1_19ss7cj2tvste(t1_19ss7jrolipwl(t1_19ss8gxzp1lls)) t1_19ss7h66alw9t t1_19ss8fv9tgdcx(t1_19ss8hjpxqvtw) more"],
+          @"thread with a deleted comment (%@)", megaShape);
+    [comments removeAllObjects];
+    [mores removeAllObjects];
+    FlattenComments(megaPage[1][@"data"][@"children"], comments, mores);
+    NSDictionary *deleted = comments[@"t1_19ss7jrolipwl"];
+    CHECK([deleted[@"author"] isEqualToString:@"[deleted]"] && [deleted[@"body"] isEqualToString:@"[deleted]"] && deleted[@"author_fullname"] == nil,
+          @"what Apollo reads as a deleted comment (%@ / %@)", deleted[@"author"], deleted[@"body"]);
+    CHECK([deleted[@"permalink"] isEqualToString:@"/r/apple/comments/1xyr1v3/post_title/19ss7jrolipwl/"], @"its permalink is the thread's plus its id (%@)", deleted[@"permalink"]);
+    CHECK([mores.firstObject[@"parent_id"] isEqualToString:@"t3_1xyr1v3"] && [mores.firstObject[@"depth"] isEqual:@0] && [mores.firstObject[@"count"] isEqual:@326],
+          @"the thread's own load-more row (%@)", mores.firstObject);
+
+    // The same rows as the answer to a "load more" tap: flat, each naming its
+    // parent, depths counted from the row's.
+    NSDictionary *moreChildren = ApolloGQLLegacyMoreChildren(mega[@"graphql"], 3, YES);
+    NSArray<NSDictionary *> *things = moreChildren[@"json"][@"data"][@"things"];
+    CHECK([moreChildren[@"json"][@"errors"] isEqualToArray:@[]] && things.count == 7, @"morechildren body (%lu things)", (unsigned long)things.count);
+    NSMutableArray<NSString *> *flat = [NSMutableArray array];
+    for (NSDictionary *thing in things) {
+        [flat addObject:[NSString stringWithFormat:@"%@:%@<%@@%@", thing[@"kind"], [thing[@"kind"] isEqualToString:@"more"] ? @"-" : thing[@"data"][@"name"],
+                         thing[@"data"][@"parent_id"], thing[@"data"][@"depth"]]];
+        if ([thing[@"kind"] isEqualToString:@"t1"]) CHECK([thing[@"data"][@"replies"] isEqual:@""], @"flat things carry no replies");
+    }
+    NSArray *expected = @[ @"t1:t1_19ss7cj2tvste<t3_1xyr1v3@3", @"t1:t1_19ss7jrolipwl<t1_19ss7cj2tvste@4", @"t1:t1_19ss8gxzp1lls<t1_19ss7jrolipwl@5",
+                           @"t1:t1_19ss7h66alw9t<t3_1xyr1v3@3", @"t1:t1_19ss8fv9tgdcx<t3_1xyr1v3@3", @"t1:t1_19ss8hjpxqvtw<t1_19ss8fv9tgdcx@4",
+                           @"more:-<t3_1xyr1v3@3" ];
+    CHECK([flat isEqualToArray:expected], @"flat order, parents and depths (%@)", flat);
+
+    // Without raw_json=1 every string is escaped, the HTML included.
+    NSArray *escaped = ApolloGQLLegacyCommentsPage(pics[@"graphql"], ApolloGQLLegacyThing(@"t3", pics[@"link"]), NO);
+    [comments removeAllObjects];
+    [mores removeAllObjects];
+    FlattenComments(escaped[1][@"data"][@"children"], comments, mores);
+    CHECK([comments[@"t1_19t431jhx1ezl"][@"body"] isEqualToString:@"Comment 4 says this &amp; &lt;that&gt;."], @"escaped body (%@)", comments[@"t1_19t431jhx1ezl"][@"body"]);
+    CHECK([comments[@"t1_19t431jhx1ezl"][@"body_html"] isEqualToString:@"&lt;div class=\"md\"&gt;&lt;p&gt;Comment 4 says this &amp;amp; &amp;lt;that&amp;gt;.&lt;/p&gt;\n&lt;/div&gt;"],
+          @"escaped HTML (%@)", comments[@"t1_19t431jhx1ezl"][@"body_html"]);
+
+    // Answers that aren't a thread.
+    CHECK(ApolloGQLLegacyCommentsPage(@{ @"data": @{ @"postInfoById": [NSNull null] } }, ApolloGQLLegacyThing(@"t3", pics[@"link"]), YES) == nil, @"no post");
+    CHECK(ApolloGQLLegacyCommentsPage(@{ @"data": @{ @"postInfoById": @{ @"id": @"t3_x" } } }, ApolloGQLLegacyThing(@"t3", pics[@"link"]), YES) == nil, @"no comment list");
+    CHECK(ApolloGQLLegacyMoreChildren(@{ @"errors": @[ @{ @"message": @"nope" } ] }, 0, YES) == nil, @"an error answer");
+    NSArray *empty = ApolloGQLLegacyCommentsPage(@{ @"data": @{ @"postInfoById": @{ @"id": @"t3_x", @"commentForest": @{ @"trees": @[] } } } },
+                                                 ApolloGQLLegacyThing(@"t3", pics[@"link"]), YES);
+    CHECK([empty[1][@"data"][@"children"] isEqualToArray:@[]], @"a thread without comments");
+}
+
+static void TestMoreToken(void) {
+    for (NSString *cursor in @[ @"commenttree:8530017d,::3:d1:t1_19t3ia29toizk", @"a:b,c|d\"e'f\\g h\n", @"ünïcödé ✓", @":" ]) {
+        NSInteger depth = -1;
+        NSString *back = ApolloGQLMoreTokenCursor(ApolloGQLMoreToken(cursor, 7), &depth);
+        CHECK([back isEqualToString:cursor] && depth == 7, @"round trip of %@ (%@, %ld)", cursor, back, (long)depth);
+    }
+    CHECK([ApolloGQLMoreTokenCursor(ApolloGQLMoreToken(@"x", 0), NULL) isEqualToString:@"x"], @"depth is optional");
+    // Real comment ids, and anything else that isn't a token.
+    for (id notToken in @[ @"19t3ia29toizk", @"abc,def", @"", @"gqlmore", @"gqlmorezz", @"gqlmore3", @"gqlmore78", @"gqlmore3a78", @"gqlmore313a",
+                           @"GQLMORE313a78", @42, [NSNull null] ]) {
+        CHECK(ApolloGQLMoreTokenCursor(notToken, NULL) == nil, @"%@ isn't a token", notToken);
+    }
 }
 
 #pragma mark - Post details
@@ -293,7 +493,12 @@ static void TestRichText(void) {
     NSArray *media = @[ @{ @"id": @"img1", @"url": @"https://i.redd.it/img1.png" } ];
     NSString *image = ApolloGQLRichTextHTML(@"{\"document\":[{\"e\":\"img\",\"id\":\"img1\",\"c\":\"A caption\"},{\"e\":\"gif\",\"id\":\"giphy|XYZ|downsized\"},{\"e\":\"img\",\"id\":\"gone\"}]}", media, NO);
     CHECK([image isEqualToString:@"<div class=\"md\"><p><a href=\"https://i.redd.it/img1.png\">https://i.redd.it/img1.png</a></p>\n\n<p>A caption</p>\n\n"
-           "<p><a href=\"https://giphy.com/gifs/XYZ\">https://giphy.com/gifs/XYZ</a></p>\n</div>"], @"embedded media become links (%@)", image);
+           "<p><a href=\"https://giphy.com/gifs/XYZ\" target=\"_blank\">https://giphy.com/gifs/XYZ</a></p>\n</div>"], @"embedded media become links (%@)", image);
+    // A Giphy embed links to its page even when the answer lists the GIF.
+    NSString *listed = ApolloGQLRichTextHTML(@"{\"document\":[{\"e\":\"par\",\"c\":[{\"e\":\"gif\",\"id\":\"giphy|XYZ\"}]}]}",
+                                             @[ @{ @"id": @"giphy|XYZ", @"url": @"https://external-preview.redd.it/x.gif" } ], NO);
+    CHECK([listed isEqualToString:@"<div class=\"md\"><p><a href=\"https://giphy.com/gifs/XYZ\" target=\"_blank\">https://giphy.com/gifs/XYZ</a></p>\n</div>"],
+          @"giphy page over the listed GIF (%@)", listed);
 
     NSString *selfPost = ApolloGQLRichTextHTML(@"{\"document\":[{\"e\":\"par\",\"c\":[{\"e\":\"text\",\"t\":\"Hi\"}]}]}", nil, YES);
     CHECK([selfPost isEqualToString:@"<!-- SC_OFF --><div class=\"md\"><p>Hi</p>\n</div><!-- SC_ON -->"], @"a post's body has Reddit's markers (%@)", selfPost);
@@ -338,13 +543,64 @@ static void TestPlan(void) {
     CHECK(ApolloGQLRequestForLegacy(@"GET", @"r/apple/hot", @{ @"before": @"t3_x" }) == nil, @"no backwards paging");
     CHECK(ApolloGQLRequestForLegacy(@"GET", @"r/apple/hot", @{ @"after": @"t1_x" }) == nil, @"only a post can be a feed cursor");
     for (NSString *path in @[ @"r/all/hot", @"r/popular", @"r/mod/new", @"r/friends", @"r/random", @"r/apple+ios/hot", @"r/all-apple/hot",
-                              @"r/u_someone/hot", @"r/apple/about", @"r/apple/comments/abc", @"r/apple/search", @"hot", @"best", @"user/x/submitted",
+                              @"r/u_someone/hot", @"r/apple/about", @"r/apple/comments", @"r/apple/search", @"hot", @"best", @"user/x/submitted",
                               @"r/apple/wiki/index", @"r/a/hot" ]) {
         CHECK(ApolloGQLRequestForLegacy(@"GET", path, nil) == nil, @"%@ isn't a single subreddit's feed", path);
         CHECK(!ApolloGQLCanAnswerPath(@"GET", path), @"%@ by path", path);
     }
     CHECK(ApolloGQLCanAnswerPath(@"GET", @"/r/apple/hot.json") && ApolloGQLCanAnswerPath(@"get", @"api/info.json?id=t1_x"), @"by path alone");
-    CHECK(!ApolloGQLCanAnswerPath(@"POST", @"/r/apple/hot.json") && !ApolloGQLCanAnswerPath(@"GET", @"api/morechildren"), @"not these");
+    CHECK(!ApolloGQLCanAnswerPath(@"POST", @"/r/apple/hot.json") && !ApolloGQLCanAnswerPath(@"POST", @"comments/abc.json"), @"not these");
+
+    // A thread.
+    ApolloGQLRequest *thread = ApolloGQLRequestForLegacy(@"GET", @"comments/1y3u73f.json", @{ @"sort": @"top", @"limit": @500, @"raw_json": @1 });
+    CHECK(thread.kind == ApolloGQLRequestKindComments && [thread.linkFullname isEqualToString:@"t3_1y3u73f"] && [thread.commentSort isEqualToString:@"TOP"],
+          @"a thread (%@ %@)", thread.linkFullname, thread.commentSort);
+    CHECK(thread.limit == 500 && thread.rawJSON, @"its limit and raw_json");
+    NSDictionary *threadVariables = ApolloGQLPostCommentsVariables(thread);
+    CHECK([threadVariables isEqualToDictionary:(@{ @"id": @"t3_1y3u73f", @"sortType": @"TOP", @"includePremiumAvatarTreatment": @NO,
+                                                   @"includeConsistencyToken": @NO })], @"Reddit's own page size for a big limit (%@)", threadVariables);
+    ApolloGQLRequest *small = ApolloGQLRequestForLegacy(@"GET", @"/r/Pics/comments/1y3u73f/some_title/.json?limit=50", nil);
+    CHECK(small.kind == ApolloGQLRequestKindComments && [small.linkFullname isEqualToString:@"t3_1y3u73f"] && [small.commentSort isEqualToString:@"CONFIDENCE"],
+          @"a thread by its permalink, Reddit's default sort (%@ %@)", small.linkFullname, small.commentSort);
+    CHECK([ApolloGQLPostCommentsVariables(small)[@"count"] isEqual:@50], @"a small limit is the count");
+    CHECK([ApolloGQLRequestForLegacy(@"GET", @"comments/abc/", @{ @"sort": @"confidence" }).commentSort isEqualToString:@"CONFIDENCE"] &&
+          [ApolloGQLRequestForLegacy(@"GET", @"comments/abc", @{ @"sort": @"QA" }).commentSort isEqualToString:@"QA"] &&
+          [ApolloGQLRequestForLegacy(@"GET", @"comments/abc", @{ @"sort": @"old" }).commentSort isEqualToString:@"OLD"], @"comment sorts");
+    for (NSString *sort in @[ @"hot", @"random", @"live", @"nonsense" ]) {
+        CHECK(ApolloGQLRequestForLegacy(@"GET", @"comments/abc", @{ @"sort": sort }) == nil, @"GraphQL has no %@ sort", sort);
+    }
+    CHECK(ApolloGQLRequestForLegacy(@"GET", @"comments/abc/_/def.json", @{ @"context": @3 }) == nil &&
+          ApolloGQLRequestForLegacy(@"GET", @"r/pics/comments/abc/title/def", nil) == nil, @"a thread opened at one comment");
+    CHECK(ApolloGQLRequestForLegacy(@"GET", @"comments/abc", @{ @"comment": @"def" }) == nil &&
+          ApolloGQLRequestForLegacy(@"GET", @"comments/abc?context=3", nil) == nil, @"or by ?comment= / ?context=");
+    for (NSString *path in @[ @"comments", @"comments/AB!", @"comments/abcdefghijklmnop", @"user/x/comments", @"r/pics/comments", @"api/comment" ]) {
+        CHECK(!ApolloGQLCanAnswerPath(@"GET", path), @"%@ isn't a thread", path);
+    }
+
+    // The replies behind a "load more" row.
+    NSString *token = ApolloGQLMoreToken(@"commenttree:x,::2:ex:,X;abc", 2);
+    NSDictionary *moreParameters = @{ @"api_type": @"json", @"children": token, @"id": [@"t1_" stringByAppendingString:token],
+                                      @"limit_children": @NO, @"link_id": @"t3_1y3u73f", @"sort": @"top" };
+    ApolloGQLRequest *more = ApolloGQLRequestForLegacy(@"POST", @"api/morechildren.json", moreParameters);
+    CHECK(more.kind == ApolloGQLRequestKindMoreComments && [more.linkFullname isEqualToString:@"t3_1y3u73f"] && [more.commentSort isEqualToString:@"TOP"],
+          @"load more (%@ %@)", more.linkFullname, more.commentSort);
+    CHECK([more.moreCursor isEqualToString:@"commenttree:x,::2:ex:,X;abc"] && more.moreDepth == 2, @"its cursor and depth (%@ %ld)", more.moreCursor, (long)more.moreDepth);
+    NSDictionary *moreVariables = ApolloGQLPostCommentsVariables(more);
+    CHECK([moreVariables[@"after"] isEqualToString:@"commenttree:x,::2:ex:,X;abc"] && [moreVariables[@"count"] isEqual:@200] &&
+          [moreVariables[@"id"] isEqualToString:@"t3_1y3u73f"], @"load-more variables (%@)", moreVariables);
+    CHECK(ApolloGQLRequestForLegacy(@"GET", @"api/morechildren", moreParameters).kind == ApolloGQLRequestKindMoreComments, @"as a GET too");
+    NSMutableDictionary *real = [moreParameters mutableCopy];
+    real[@"children"] = @"19t3s4u8py882,19t3h6s58c36o";
+    CHECK(ApolloGQLRequestForLegacy(@"POST", @"api/morechildren", real) == nil, @"a row of a thread the legacy API sent keeps its routes");
+    NSMutableDictionary *noLink = [moreParameters mutableCopy];
+    noLink[@"link_id"] = @"t1_abc";
+    CHECK(ApolloGQLRequestForLegacy(@"POST", @"api/morechildren", noLink) == nil, @"needs the post");
+    NSMutableDictionary *hotSort = [moreParameters mutableCopy];
+    hotSort[@"sort"] = @"hot";
+    CHECK(ApolloGQLRequestForLegacy(@"POST", @"api/morechildren", hotSort) == nil, @"and a sort GraphQL has");
+    CHECK(ApolloGQLCanAnswerPath(@"POST", @"api/morechildren.json") && ApolloGQLCanAnswerPath(@"GET", @"/api/morechildren/.json") &&
+          ApolloGQLCanAnswerPath(@"GET", @"comments/abc.json") && ApolloGQLCanAnswerPath(@"GET", @"/r/pics/comments/abc/title/"), @"threads by path alone");
+    CHECK(ApolloGQLOperationHash(ApolloGQLOperationPostComments).length == 64, @"PostComments is a known operation");
 
     // Operations.
     NSDictionary *body = [NSJSONSerialization JSONObjectWithData:ApolloGQLOperationBody(ApolloGQLOperationPostsByIds, ApolloGQLPostsByIdsVariables(@[ @"t3_a" ])) options:0 error:NULL];
@@ -362,6 +618,9 @@ int main(int argc, const char *argv[]) {
     @autoreleasepool {
         if (argc < 2) { fprintf(stderr, "usage: gql_legacy_tests <repo root>\n"); return 2; }
         TestPostsAgainstLegacy(@(argv[1]));
+        TestCommentsAgainstLegacy(@(argv[1]));
+        TestCommentThreads(@(argv[1]));
+        TestMoreToken();
         TestPostBasics();
         TestVideoFallback();
         TestListingAndFeed();

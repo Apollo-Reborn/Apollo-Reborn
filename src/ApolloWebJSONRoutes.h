@@ -89,9 +89,9 @@ BOOL ApolloWebJSONRequestIsSearchRead(NSString *method, NSString *path);
 // The routes to try for a request, in order; always at least one. Requests no
 // entry matches get @[www]. While the GraphQL route is on and can answer the
 // request (ApolloWebJSONRouteSetGraphQLHandler), it comes first, ahead of the
-// built-in routes. A keyless-routes.json entry is used as written instead: it
-// lists "graphql" where it wants it, or leaves it out to keep that endpoint off
-// GraphQL. `path` may be RedditKit's relative form
+// entry's routes, built-in or from keyless-routes.json; an entry that lists
+// "graphql" itself has it where it put it. `path` may be RedditKit's relative
+// form
 // ("api/info.json") or a URL path, with or without .json, a trailing slash or
 // a query.
 //

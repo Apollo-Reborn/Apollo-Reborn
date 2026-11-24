@@ -38,8 +38,8 @@ Every other combination works the same way (`old-dotjson`, `oauth-r-all+bearer`,
 
 It's behind a switch that is off by default (`WebJSONGraphQLEnabled`). While it's on:
 
-- For a request it can answer, `graphql` goes first on its own, ahead of the built-in routes. No entry is needed. Today that is a single subreddit's feed (`GET /r/<sub>`, `/r/<sub>/<sort>`) and `GET /api/info` for post ids.
-- An entry in this file is the whole order for its endpoint, as for any other route. List `"graphql"` where it should be tried, or leave it out to keep that endpoint off GraphQL: `"GET /api/info": { "routes": ["oauth", "graphql"] }` tries GraphQL second, `{ "routes": ["oauth"] }` never does.
+- For a request it can answer, `graphql` goes first on its own, ahead of the built-in routes. No entry is needed. Today that is a single subreddit's feed (`GET /r/<sub>`, `/r/<sub>/<sort>`), `GET /api/info` for post ids, a post's comments (`GET /comments/<id>`, `/r/<sub>/comments/<id>`; not a thread opened at one comment) and the replies behind a "load more" row of a thread GraphQL answered (`/api/morechildren`). Such a row has no other route: its child id is a GraphQL cursor, which the JSON endpoints don't know.
+- An entry in this file orders the routes after it: `"GET /api/info": { "routes": ["oauth"] }` is GraphQL, then `oauth`. List `"graphql"` to try it later instead: `{ "routes": ["oauth", "graphql"] }` tries it second. Leaving it out doesn't keep an endpoint off GraphQL, and this file can't switch the route off; the switch in the app does.
 - When GraphQL has no answer (a block page, a token Reddit refuses, a query it no longer knows, a network error), the request is sent by its next route. Refusals count toward the route's cooldown like a block page does; a network error or a rate limit (HTTP 429) doesn't, and a 429 keeps the account off GraphQL until Reddit's window resets.
 
 A version of the app without the route rejects an entry that names `graphql` and keeps its built-in routes for that endpoint.

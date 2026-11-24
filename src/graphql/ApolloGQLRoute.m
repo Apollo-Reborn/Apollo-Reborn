@@ -204,6 +204,72 @@ static NSArray<NSDictionary *> *ApolloGQLRoutePosts(NSString *account, NSArray<N
     return things;
 }
 
+// How many comments a list of comment things holds, replies included.
+static NSUInteger ApolloGQLRouteCommentCount(NSArray *things) {
+    NSUInteger count = 0;
+    for (id thing in things) {
+        if (![thing isKindOfClass:[NSDictionary class]] || ![thing[@"kind"] isEqual:@"t1"]) continue;
+        count++;
+        id replies = thing[@"data"][@"replies"];
+        if ([replies isKindOfClass:[NSDictionary class]]) count += ApolloGQLRouteCommentCount(replies[@"data"][@"children"]);
+    }
+    return count;
+}
+
+// The body of /comments/<id>.json: the thread from PostComments and the post
+// from PostsByIds (PostComments only names the post), asked for side by side.
+static id ApolloGQLRouteCommentsPage(NSString *account, ApolloGQLRequest *request, NSUInteger *calls,
+                                     ApolloGQLCallOutcome *outcome, NSString **detail, NSString **summary) {
+    __block NSDictionary *thread = nil;
+    __block NSArray<NSDictionary *> *posts = nil;
+    __block ApolloGQLCallOutcome threadOutcome = ApolloGQLCallFailed, postOutcome = ApolloGQLCallFailed;
+    __block NSString *threadDetail = nil, *postDetail = nil;
+    __block NSUInteger postCalls = 0;
+    dispatch_group_t both = dispatch_group_create();
+    dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+    dispatch_group_async(both, queue, ^{
+        thread = ApolloGQLRouteCall(account, ApolloGQLOperationPostComments, ApolloGQLPostCommentsVariables(request),
+                                    &threadOutcome, &threadDetail);
+    });
+    dispatch_group_async(both, queue, ^{
+        posts = ApolloGQLRoutePosts(account, @[ request.linkFullname ], request.rawJSON, &postCalls, &postOutcome, &postDetail);
+    });
+    dispatch_group_wait(both, DISPATCH_TIME_FOREVER);  // each call has its own timeout
+    *calls += 1 + postCalls;
+    if (!thread) { *outcome = threadOutcome; *detail = threadDetail; return nil; }
+    if (!posts) { *outcome = postOutcome; *detail = postDetail; return nil; }
+    // No post, or no comment list, is how GraphQL reports a thread it won't
+    // show (removed subreddit, private, missing). The legacy route has the
+    // error Apollo knows how to present.
+    NSArray *page = posts.count == 1 ? ApolloGQLLegacyCommentsPage(thread, posts[0], request.rawJSON) : nil;
+    if (!page) {
+        *outcome = ApolloGQLCallFailed;
+        *detail = posts.count == 1 ? @"PostComments answered without a thread" : @"PostsByIds didn't have the thread's post";
+        return nil;
+    }
+    *summary = [NSString stringWithFormat:@"a thread of %lu comments",
+                (unsigned long)ApolloGQLRouteCommentCount(page[1][@"data"][@"children"])];
+    return page;
+}
+
+// The body of /api/morechildren for one of this route's "load more" rows.
+static id ApolloGQLRouteMoreComments(NSString *account, ApolloGQLRequest *request, NSUInteger *calls,
+                                     ApolloGQLCallOutcome *outcome, NSString **detail, NSString **summary) {
+    (*calls)++;
+    NSDictionary *answer = ApolloGQLRouteCall(account, ApolloGQLOperationPostComments, ApolloGQLPostCommentsVariables(request),
+                                              outcome, detail);
+    if (!answer) return nil;
+    NSDictionary *body = ApolloGQLLegacyMoreChildren(answer, request.moreDepth, request.rawJSON);
+    if (!body) {
+        *outcome = ApolloGQLCallFailed;
+        *detail = @"PostComments answered without the replies";
+        return nil;
+    }
+    *summary = [NSString stringWithFormat:@"%lu more comments",
+                (unsigned long)ApolloGQLRouteCommentCount(body[@"json"][@"data"][@"things"])];
+    return body;
+}
+
 void ApolloGQLRouteAnswer(NSString *account, ApolloGQLRequest *request, ApolloGQLRouteCompletion completion) {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         ApolloGQLCallOutcome outcome = ApolloGQLCallFailed;
@@ -211,8 +277,15 @@ void ApolloGQLRouteAnswer(NSString *account, ApolloGQLRequest *request, ApolloGQ
         NSUInteger calls = 0;
         NSArray<NSDictionary *> *things = nil;
         NSString *nextAfter = nil;
+        // The legacy body for the kinds that aren't a Listing of posts.
+        id body = nil;
+        NSString *summary = nil;
 
-        if (request.kind == ApolloGQLRequestKindPostsInfo) {
+        if (request.kind == ApolloGQLRequestKindComments) {
+            body = ApolloGQLRouteCommentsPage(account, request, &calls, &outcome, &detail, &summary);
+        } else if (request.kind == ApolloGQLRequestKindMoreComments) {
+            body = ApolloGQLRouteMoreComments(account, request, &calls, &outcome, &detail, &summary);
+        } else if (request.kind == ApolloGQLRequestKindPostsInfo) {
             things = ApolloGQLRoutePosts(account, request.fullnames, request.rawJSON, &calls, &outcome, &detail);
         } else if (request.kind == ApolloGQLRequestKindSubredditFeed) {
             NSMutableArray<NSString *> *fullnames = [NSMutableArray array];
@@ -251,14 +324,18 @@ void ApolloGQLRouteAnswer(NSString *account, ApolloGQLRequest *request, ApolloGQ
             }
         }
 
-        NSData *json = nil;
         if (things) {
-            json = [NSJSONSerialization dataWithJSONObject:ApolloGQLLegacyListing(things, nextAfter) options:0 error:NULL];
+            body = ApolloGQLLegacyListing(things, nextAfter);
+            summary = [NSString stringWithFormat:@"%lu posts", (unsigned long)things.count];
+        }
+        NSData *json = nil;
+        if (body) {
+            json = [NSJSONSerialization dataWithJSONObject:body options:0 error:NULL];
             if (!json) detail = @"the answer couldn't be written as JSON";
         }
         if (json) {
-            completion(json, NO, [NSString stringWithFormat:@"%lu posts in %lu GraphQL call%@",
-                                  (unsigned long)things.count, (unsigned long)calls, calls == 1 ? @"" : @"s"]);
+            completion(json, NO, [NSString stringWithFormat:@"%@ in %lu GraphQL call%@",
+                                  summary, (unsigned long)calls, calls == 1 ? @"" : @"s"]);
         } else {
             completion(nil, outcome == ApolloGQLCallRefused, detail ?: @"no answer");
         }

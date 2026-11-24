@@ -3,9 +3,15 @@
 
 NSString *const ApolloGQLOperationPostsByIds = @"PostsByIds";
 NSString *const ApolloGQLOperationSubredditFeed = @"SubredditFeedSdui";
+NSString *const ApolloGQLOperationPostComments = @"PostComments";
 
 // 30 in one call was answered in full (2026-11-24); more wasn't tried.
 const NSUInteger ApolloGQLPostsByIdsBatch = 30;
+
+// PostComments gives at most this many comments when told how many (a `count`
+// of 500 answered the same 200), and its own, larger page when not told (265 on
+// the same thread, 2026-11-24).
+static const NSInteger kApolloGQLCommentsCountMax = 200;
 
 // Operation name -> persisted-query hash. These are the ids Reddit's Android
 // app (2026.42.0) sends; gql-fed.reddit.com ran each of them for the desktop
@@ -19,6 +25,7 @@ static NSDictionary<NSString *, NSString *> *ApolloGQLOperationHashes(void) {
         hashes = @{
             ApolloGQLOperationPostsByIds: @"29a8d4c6e135fffb95fc4cd303c57ad926c6c5ff582f4c4577c8a69b7f322d91",
             ApolloGQLOperationSubredditFeed: @"fcc9854f03d7829810b2b6f607bae27407d2bbb576b09d8ee59869f80b13ca10",
+            ApolloGQLOperationPostComments: @"314f29c2494fd78c7844ef2c6b09acb4bef5b37ab50b4ddc01691d6d5c8433f8",
         };
     });
     return hashes;
@@ -50,6 +57,21 @@ NSDictionary *ApolloGQLSubredditFeedVariables(ApolloGQLRequest *request, NSStrin
     return variables;
 }
 
+NSDictionary *ApolloGQLPostCommentsVariables(ApolloGQLRequest *request) {
+    NSMutableDictionary *variables = [NSMutableDictionary dictionary];
+    variables[@"id"] = request.linkFullname ?: @"";
+    variables[@"sortType"] = request.commentSort ?: @"CONFIDENCE";
+    variables[@"includePremiumAvatarTreatment"] = @NO;
+    variables[@"includeConsistencyToken"] = @NO;
+    if (request.kind == ApolloGQLRequestKindMoreComments) {
+        variables[@"after"] = request.moreCursor ?: @"";
+        variables[@"count"] = @(kApolloGQLCommentsCountMax);
+    } else if (request.limit > 0 && request.limit < kApolloGQLCommentsCountMax) {
+        variables[@"count"] = @(request.limit);
+    }
+    return variables;
+}
+
 #pragma mark - Requests
 
 @interface ApolloGQLRequest ()
@@ -60,6 +82,10 @@ NSDictionary *ApolloGQLSubredditFeedVariables(ApolloGQLRequest *request, NSStrin
 @property (nonatomic, copy, readwrite, nullable) NSString *timeRange;
 @property (nonatomic, copy, readwrite, nullable) NSString *after;
 @property (nonatomic, readwrite) NSInteger limit;
+@property (nonatomic, copy, readwrite, nullable) NSString *linkFullname;
+@property (nonatomic, copy, readwrite, nullable) NSString *commentSort;
+@property (nonatomic, copy, readwrite, nullable) NSString *moreCursor;
+@property (nonatomic, readwrite) NSInteger moreDepth;
 @property (nonatomic, readwrite) BOOL rawJSON;
 @end
 
@@ -132,15 +158,46 @@ static BOOL ApolloGQLSubredditIsPlain(NSString *lowercasedName) {
     return [name firstMatchInString:lowercasedName options:0 range:NSMakeRange(0, lowercasedName.length)] != nil;
 }
 
+// GraphQL's comment sorts by the legacy API's names. The legacy API has more
+// ("hot", "random", "live"); PostComments answers those "Invalid input".
+static NSDictionary<NSString *, NSString *> *ApolloGQLCommentSorts(void) {
+    return @{ @"confidence": @"CONFIDENCE", @"best": @"CONFIDENCE", @"top": @"TOP", @"new": @"NEW", @"old": @"OLD",
+              @"controversial": @"CONTROVERSIAL", @"qa": @"QA" };
+}
+
+// A post's id as the legacy API writes it in a path: base 36, no "t3_".
+static BOOL ApolloGQLIsID36(NSString *text) {
+    if (text.length == 0 || text.length > 13) return NO;
+    NSCharacterSet *other = [[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdefghijklmnopqrstuvwxyz"] invertedSet];
+    return [text rangeOfCharacterFromSet:other].location == NSNotFound;
+}
+
+// The post id of a thread's path, "comments/<id>" or "r/<sub>/comments/<id>",
+// each with an optional slug after it. nil for anything else, a thread opened
+// at one comment ("comments/<id>/<slug>/<comment id>") included: PostComments
+// has no way to ask for a comment and its context.
+static NSString *ApolloGQLThreadID(NSArray<NSString *> *segments) {
+    NSUInteger start = segments.count >= 2 && [segments[0] isEqualToString:@"r"] ? 2 : 0;
+    if (segments.count < start + 2 || segments.count > start + 3) return nil;
+    if (![segments[start] isEqualToString:@"comments"] || !ApolloGQLIsID36(segments[start + 1])) return nil;
+    return segments[start + 1];
+}
+
 // The kind of request a method and path are, or 0.
 static ApolloGQLRequestKind ApolloGQLKindForPath(NSString *method, NSString *path, NSArray<NSString *> **segmentsOut,
                                                  NSArray<NSString *> **originalOut) {
     if (![method isKindOfClass:[NSString class]] || ![path isKindOfClass:[NSString class]]) return 0;
-    if (![method.uppercaseString isEqualToString:@"GET"]) return 0;
     NSArray<NSString *> *original = nil;
     NSArray<NSString *> *segments = ApolloGQLPathSegments(path, &original);
     if (segmentsOut) *segmentsOut = segments;
     if (originalOut) *originalOut = original;
+    BOOL get = [method.uppercaseString isEqualToString:@"GET"];
+    // RedditKit asks for "load more" replies with a POST; it only reads.
+    if (segments.count == 2 && [segments[0] isEqualToString:@"api"] && [segments[1] isEqualToString:@"morechildren"]) {
+        return get || [method.uppercaseString isEqualToString:@"POST"] ? ApolloGQLRequestKindMoreComments : 0;
+    }
+    if (!get) return 0;
+    if (ApolloGQLThreadID(segments)) return ApolloGQLRequestKindComments;
     if (segments.count == 2 && [segments[0] isEqualToString:@"api"] && [segments[1] isEqualToString:@"info"]) {
         return ApolloGQLRequestKindPostsInfo;
     }
@@ -176,6 +233,33 @@ ApolloGQLRequest *ApolloGQLRequestForLegacy(NSString *method, NSString *path, id
         }
         if (fullnames.count == 0 || fullnames.count > 100) return nil;
         request.fullnames = fullnames;
+        return request;
+    }
+
+    if (kind == ApolloGQLRequestKindComments) {
+        // A thread opened at one comment (?comment=, ?context=) is the legacy
+        // API's to answer, and so is a sort GraphQL doesn't have.
+        if (query[@"comment"].length > 0 || query[@"context"].length > 0) return nil;
+        NSString *sort = query[@"sort"].length > 0 ? ApolloGQLCommentSorts()[query[@"sort"].lowercaseString] : @"CONFIDENCE";
+        if (!sort) return nil;
+        request.linkFullname = [@"t3_" stringByAppendingString:ApolloGQLThreadID(segments)];
+        request.commentSort = sort;
+        request.limit = MAX(0, query[@"limit"].integerValue);
+        return request;
+    }
+
+    if (kind == ApolloGQLRequestKindMoreComments) {
+        // Only a row this route made: its one child id carries the cursor. A
+        // thread the legacy API sent has real comment ids there.
+        NSInteger depth = 0;
+        NSString *cursor = ApolloGQLMoreTokenCursor(query[@"children"], &depth);
+        NSString *link = query[@"link_id"];
+        NSString *sort = query[@"sort"].length > 0 ? ApolloGQLCommentSorts()[query[@"sort"].lowercaseString] : @"CONFIDENCE";
+        if (!cursor || !sort || ![link hasPrefix:@"t3_"] || !ApolloGQLIsID36([link substringFromIndex:3])) return nil;
+        request.linkFullname = link;
+        request.commentSort = sort;
+        request.moreCursor = cursor;
+        request.moreDepth = depth;
         return request;
     }
 

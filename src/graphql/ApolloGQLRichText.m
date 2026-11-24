@@ -95,8 +95,17 @@ static NSString *ApolloGQLRTFormattedText(NSString *text, id formats) {
     return out;
 }
 
+// The page of a Giphy embed ("giphy|<id>", sometimes "giphy|<id>|<variant>"), or
+// nil for any other media id. The legacy API links the embed to this page, and
+// the page is what Apollo recognises as an inline Giphy.
+static NSString *ApolloGQLRTGiphyPage(NSString *mediaID) {
+    if (![mediaID hasPrefix:@"giphy|"]) return nil;
+    NSArray<NSString *> *parts = [mediaID componentsSeparatedByString:@"|"];
+    return parts.count >= 2 && parts[1].length > 0 ? [@"https://giphy.com/gifs/" stringByAppendingString:parts[1]] : nil;
+}
+
 // The address of an embedded image, GIF or video: the asset's own URL when the
-// answer lists it, a Giphy page for "giphy|<id>" ids, else nil.
+// answer lists it, else nil.
 static NSString *ApolloGQLRTMediaURL(NSString *mediaID, NSArray *media) {
     if (mediaID.length == 0) return nil;
     for (id asset in media) {
@@ -105,10 +114,6 @@ static NSString *ApolloGQLRTMediaURL(NSString *mediaID, NSArray *media) {
         NSString *url = ApolloGQLRTString(asset[@"url"]);
         if (url.length == 0) url = ApolloGQLRTString(asset[@"dashUrl"]);
         if (url.length > 0) return url;
-    }
-    if ([mediaID hasPrefix:@"giphy|"]) {
-        NSArray<NSString *> *parts = [mediaID componentsSeparatedByString:@"|"];
-        if (parts.count >= 2 && parts[1].length > 0) return [@"https://giphy.com/gifs/" stringByAppendingString:parts[1]];
     }
     return nil;
 }
@@ -136,7 +141,13 @@ static NSString *ApolloGQLRTInline(NSDictionary *element, NSArray *media, NSUInt
                 ApolloGQLRTInlines(ApolloGQLRTArray(element[@"c"]), media, depth + 1)];
     }
     if ([kind isEqualToString:@"img"] || [kind isEqualToString:@"gif"] || [kind isEqualToString:@"video"]) {
-        NSString *url = ApolloGQLRTMediaURL(ApolloGQLRTString(element[@"id"]), media);
+        NSString *mediaID = ApolloGQLRTString(element[@"id"]);
+        NSString *giphy = ApolloGQLRTGiphyPage(mediaID);
+        if (giphy) {
+            NSString *escaped = ApolloGQLRTEscape(giphy);
+            return [NSString stringWithFormat:@"<a href=\"%@\" target=\"_blank\">%@</a>", escaped, escaped];
+        }
+        NSString *url = ApolloGQLRTMediaURL(mediaID, media);
         if (url.length == 0) return @"";
         NSString *escaped = ApolloGQLRTEscape(url);
         return [NSString stringWithFormat:@"<a href=\"%@\">%@</a>", escaped, escaped];

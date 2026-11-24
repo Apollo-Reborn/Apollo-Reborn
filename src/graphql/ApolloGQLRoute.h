@@ -26,8 +26,9 @@ extern "C" {
 BOOL ApolloGQLRouteAvailable(NSString *account);
 
 // Answers `request` for `account`. `completion` runs on a background queue with
-// the body the legacy endpoint would have sent (a Listing), or nil when the
-// request should go by its other routes. `refused` says Reddit turned the route
+// the body the legacy endpoint would have sent (a Listing of posts, a thread's
+// two Listings, /api/morechildren's things), or nil when the request should go
+// by its other routes. `refused` says Reddit turned the route
 // down (a block page, a token it won't take, a query it no longer knows), which
 // counts toward the route's cooldown; a network error or a rate limit doesn't.
 // `summary` is for the log.

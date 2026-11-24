@@ -792,8 +792,8 @@ static void TestGraphQLRoute(void) {
     CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", feed, 0, 23) == graphql, @"a success brings it back");
     ApolloWebJSONRouteHealthReset();
 
-    // keyless-routes.json: an entry is the whole order. It can put graphql
-    // later, or leave it out to keep an endpoint off GraphQL.
+    // keyless-routes.json: an entry can put graphql later. One that doesn't
+    // name it orders the routes after it.
     NSDictionary *later = ParseJSON(@"{\"version\":1,\"endpoints\":{\"GET /api/info\":{\"routes\":[\"oauth\",\"graphql\"]}}}", NULL);
     CHECK([later[@"GET /api/info"] isEqualToArray:R2(ApolloWebJSONRouteOAuth, graphql)], @"graphql parses as a route name");
     ApolloWebJSONRouteSetRemoteTable(later);
@@ -802,7 +802,8 @@ static void TestGraphQLRoute(void) {
     CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", info, 1u << ApolloWebJSONRouteOAuth, 30) == graphql, @"graphql as the fallback");
     CHECK(ApolloWebJSONRouteChooseForTransport(@"alice", @"GET", info, 1u << ApolloWebJSONRouteOAuth, 30) == -1, @"not for the transport");
     ApolloWebJSONRouteSetRemoteTable(ParseJSON(@"{\"version\":1,\"endpoints\":{\"GET /api/info\":{\"routes\":[\"oauth\"]}}}", NULL));
-    CHECK([ApolloWebJSONRoutesForRequest(@"GET", info) isEqualToArray:R(ApolloWebJSONRouteOAuth)], @"left out by the file");
+    CHECK([ApolloWebJSONRoutesForRequest(@"GET", info) isEqualToArray:R2(graphql, ApolloWebJSONRouteOAuth)],
+          @"graphql ahead of a file entry that doesn't name it");
     CHECK([ApolloWebJSONRoutesForRequest(@"GET", feed) isEqualToArray:(@[ @(graphql), @(ApolloWebJSONRouteWww) ])], @"other endpoints unaffected");
 
     ApolloWebJSONRouteSetRemoteTable(nil);

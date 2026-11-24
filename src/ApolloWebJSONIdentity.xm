@@ -1280,7 +1280,12 @@ static NSURLSessionDataTask *ApolloWebJSONAnswerByGraphQL(RDKClient *client, NSS
             ? [parameters mutableCopy] : [NSMutableDictionary dictionary];
         sentAs[@"raw_json"] = @1;
         graphQLRequest = ApolloGQLRequestForLegacy(requestMethod, requestPath, sentAs);
-        if (!graphQLRequest) routesTried |= graphQLBit;
+        if (!graphQLRequest) {
+            routesTried |= graphQLBit;
+            os_log_debug(ApolloFixLog(), "[ApolloFix] [GraphQL] %{public}@ %{public}@ isn't one GraphQL answers (parameters: %{public}@)",
+                         requestMethod, ApolloWebJSONRouteHealthGroup(requestMethod, requestPath),
+                         [[sentAs.allKeys sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@","]);
+        }
     }
     void (^wrapped)(NSHTTPURLResponse *, id, NSError *) = ^(NSHTTPURLResponse *response, id object, NSError *error) {
         // API-key accounts (#1608, #1615): oauth.reddit.com answers some keys'

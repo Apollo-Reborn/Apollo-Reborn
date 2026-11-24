@@ -244,6 +244,33 @@ static void ApolloGQLAddLegacyFlair(NSMutableDictionary *data, NSString *prefix,
     data[key(@"css_class")] = [NSNull null];
 }
 
+// One entry of a legacy media_metadata dictionary, for a GraphQL image asset
+// ({id, url, width, height, mimetype, small…xxxlarge}): what a gallery item and
+// an image embedded in a comment both have.
+static NSDictionary *ApolloGQLLegacyMediaMetadata(NSDictionary *media) {
+    NSString *mediaID = ApolloGQLString(media, @"id") ?: @"";
+    NSMutableArray<NSDictionary *> *previews = [NSMutableArray array];
+    for (NSString *size in ApolloGQLImageSizes()) {
+        NSDictionary *image = ApolloGQLLegacyImage(ApolloGQLDict(media, size));
+        if (image) [previews addObject:@{ @"x": image[@"width"], @"y": image[@"height"], @"u": image[@"url"] }];
+    }
+    NSString *mimetype = ApolloGQLString(media, @"mimetype") ?: @"image/jpeg";
+    NSString *url = ApolloGQLString(media, @"url") ?: @"";
+    NSNumber *width = ApolloGQLNumber(media, @"width") ?: @0, *height = ApolloGQLNumber(media, @"height") ?: @0;
+    BOOL animated = [mimetype isEqualToString:@"image/gif"] || [ApolloGQLString(media, @"__typename") hasPrefix:@"Animated"];
+    NSMutableDictionary *source = [@{ @"x": width, @"y": height } mutableCopy];
+    if (animated) {
+        source[@"gif"] = url;
+        NSString *mp4 = ApolloGQLString(ApolloGQLDict(media, @"mp4_source"), @"url") ?: ApolloGQLString(media, @"mp4Url");
+        if (mp4.length > 0) source[@"mp4"] = mp4;
+    } else {
+        source[@"u"] = url;
+    }
+    NSString *status = ApolloGQLString(media, @"status").lowercaseString ?: @"valid";
+    return @{ @"status": status, @"e": animated ? @"AnimatedImage" : @"Image", @"m": mimetype,
+              @"p": previews, @"s": source, @"id": mediaID };
+}
+
 // Adds is_gallery, gallery_data and media_metadata for a gallery post.
 static void ApolloGQLAddLegacyGallery(NSMutableDictionary *data, NSDictionary *gallery) {
     NSArray *items = ApolloGQLArray(gallery, @"items");
@@ -265,26 +292,7 @@ static void ApolloGQLAddLegacyGallery(NSMutableDictionary *data, NSDictionary *g
         galleryItem[@"is_deleted"] = @NO;
         [galleryItems addObject:galleryItem];
 
-        NSMutableArray<NSDictionary *> *previews = [NSMutableArray array];
-        for (NSString *size in ApolloGQLImageSizes()) {
-            NSDictionary *image = ApolloGQLLegacyImage(ApolloGQLDict(media, size));
-            if (image) [previews addObject:@{ @"x": image[@"width"], @"y": image[@"height"], @"u": image[@"url"] }];
-        }
-        NSString *mimetype = ApolloGQLString(media, @"mimetype") ?: @"image/jpeg";
-        NSString *url = ApolloGQLString(media, @"url") ?: @"";
-        NSNumber *width = ApolloGQLNumber(media, @"width") ?: @0, *height = ApolloGQLNumber(media, @"height") ?: @0;
-        BOOL animated = [mimetype isEqualToString:@"image/gif"] || [ApolloGQLString(media, @"__typename") hasPrefix:@"Animated"];
-        NSMutableDictionary *source = [@{ @"x": width, @"y": height } mutableCopy];
-        if (animated) {
-            source[@"gif"] = url;
-            NSString *mp4 = ApolloGQLString(ApolloGQLDict(media, @"mp4_source"), @"url") ?: ApolloGQLString(media, @"mp4Url");
-            if (mp4.length > 0) source[@"mp4"] = mp4;
-        } else {
-            source[@"u"] = url;
-        }
-        NSString *status = ApolloGQLString(media, @"status").lowercaseString ?: @"valid";
-        metadata[mediaID] = @{ @"status": status, @"e": animated ? @"AnimatedImage" : @"Image", @"m": mimetype,
-                               @"p": previews, @"s": source, @"id": mediaID };
+        metadata[mediaID] = ApolloGQLLegacyMediaMetadata(media);
     }
     if (galleryItems.count == 0) return;
     data[@"is_gallery"] = @YES;
@@ -572,6 +580,274 @@ NSArray<NSDictionary *> *ApolloGQLLegacyLinksFromPostsByIds(NSDictionary *answer
         if (data) [things addObject:ApolloGQLLegacyThing(@"t3", data)];
     }
     return things;
+}
+
+#pragma mark - Comments
+
+// A "load more" row's cursor rides in the legacy `more` thing's one child id,
+// which Apollo sends back untouched as /api/morechildren's `children`. The id
+// is made of the characters a real comment id has (0-9, a-z), so nothing that
+// handles it as one can trip on it: this prefix, then the hex of
+// "<depth>:<cursor>".
+static NSString *const kApolloGQLMoreTokenPrefix = @"gqlmore";
+
+NSString *ApolloGQLMoreToken(NSString *cursor, NSInteger depth) {
+    NSData *bytes = [[NSString stringWithFormat:@"%ld:%@", (long)depth, cursor] dataUsingEncoding:NSUTF8StringEncoding];
+    NSMutableString *token = [kApolloGQLMoreTokenPrefix mutableCopy];
+    const uint8_t *raw = bytes.bytes;
+    for (NSUInteger i = 0; i < bytes.length; i++) [token appendFormat:@"%02x", raw[i]];
+    return token;
+}
+
+static int ApolloGQLHexValue(unichar character) {
+    if (character >= '0' && character <= '9') return character - '0';
+    if (character >= 'a' && character <= 'f') return character - 'a' + 10;
+    return -1;
+}
+
+NSString *ApolloGQLMoreTokenCursor(NSString *token, NSInteger *depth) {
+    if (![token isKindOfClass:[NSString class]] || ![token hasPrefix:kApolloGQLMoreTokenPrefix]) return nil;
+    NSString *hex = [token substringFromIndex:kApolloGQLMoreTokenPrefix.length];
+    if (hex.length == 0 || hex.length % 2 != 0) return nil;
+    NSMutableData *bytes = [NSMutableData dataWithCapacity:hex.length / 2];
+    for (NSUInteger i = 0; i < hex.length; i += 2) {
+        int high = ApolloGQLHexValue([hex characterAtIndex:i]), low = ApolloGQLHexValue([hex characterAtIndex:i + 1]);
+        if (high < 0 || low < 0) return nil;
+        uint8_t byte = (uint8_t)(high << 4 | low);
+        [bytes appendBytes:&byte length:1];
+    }
+    NSString *text = [[NSString alloc] initWithData:bytes encoding:NSUTF8StringEncoding];
+    NSRange colon = [text rangeOfString:@":"];
+    if (!text || colon.location == NSNotFound || colon.location == 0 || colon.location + 1 >= text.length) return nil;
+    if (depth) *depth = MAX(0, [[text substringToIndex:colon.location] integerValue]);
+    return [text substringFromIndex:colon.location + 1];
+}
+
+// A comment's Markdown the way the legacy API sends it: an image the comment
+// embeds ("![img](<media id>)") is its URL. A Giphy embed stays as typed.
+static NSString *ApolloGQLLegacyCommentBody(NSString *markdown, NSArray *media) {
+    if ([markdown rangeOfString:@"]("].location == NSNotFound) return markdown;
+    NSMutableString *body = [markdown mutableCopy];
+    for (id asset in media) {
+        NSString *mediaID = ApolloGQLString(asset, @"id"), *url = ApolloGQLString(asset, @"url");
+        if (mediaID.length == 0 || url.length == 0 || [mediaID hasPrefix:@"giphy|"]) continue;
+        for (NSString *kind in @[ @"img", @"gif", @"video" ]) {
+            [body replaceOccurrencesOfString:[NSString stringWithFormat:@"![%@](%@)", kind, mediaID] withString:url
+                                     options:NSLiteralSearch range:NSMakeRange(0, body.length)];
+        }
+    }
+    return body;
+}
+
+// The unescaped `data` of a t1 thing, without its replies. `fullname` is the
+// comment's (a deleted comment's node doesn't say), `post` the answer's
+// postInfoById (the thread's id and subreddit).
+static NSMutableDictionary<NSString *, id> *ApolloGQLLegacyCommentData(NSDictionary *node, NSString *fullname, NSString *parentFullname,
+                                                                       NSInteger depth, NSDictionary *post, NSString *subredditType,
+                                                                       NSString *threadPermalink) {
+    if (![fullname hasPrefix:@"t1_"] || fullname.length <= 3) return nil;
+    NSDictionary *subreddit = ApolloGQLDict(post, @"subreddit");
+    NSDictionary *author = ApolloGQLDict(node, @"authorInfo");
+    NSDictionary *content = ApolloGQLDict(node, @"content");
+    NSMutableDictionary<NSString *, id> *data = [NSMutableDictionary dictionary];
+
+    // Identity and where it sits.
+    data[@"id"] = [fullname substringFromIndex:3];
+    data[@"name"] = fullname;
+    data[@"parent_id"] = parentFullname;
+    data[@"link_id"] = ApolloGQLString(post, @"id") ?: @"";
+    data[@"depth"] = @(depth);
+    // A deleted comment's node has no permalink; it is the thread's plus the id.
+    data[@"permalink"] = ApolloGQLString(node, @"permalink")
+        ?: (threadPermalink.length > 0 ? [NSString stringWithFormat:@"%@%@/", threadPermalink, data[@"id"]] : @"");
+    NSString *subredditName = ApolloGQLString(subreddit, @"name") ?: @"";
+    data[@"subreddit"] = subredditName;
+    data[@"subreddit_id"] = ApolloGQLString(subreddit, @"id") ?: @"";
+    data[@"subreddit_name_prefixed"] = ApolloGQLString(subreddit, @"prefixedName") ?: [@"r/" stringByAppendingString:subredditName];
+    data[@"subreddit_type"] = subredditType;
+
+    // Author. A deleted or removed comment, and one from a deleted account,
+    // have no authorInfo. Apollo reads a deleted comment as author "[deleted]"
+    // with the body "[deleted]", and a moderator's removal as "[removed]"
+    // (-[RDKComment isDeleted], -isModeratorRemoved).
+    NSString *authorName = ApolloGQLString(author, @"name");
+    data[@"author"] = authorName.length > 0 ? authorName : @"[deleted]";
+    NSString *authorID = ApolloGQLString(author, @"id");
+    if (authorID.length > 0) data[@"author_fullname"] = authorID;
+    data[@"author_is_blocked"] = @(ApolloGQLBool(author, @"isBlocked"));
+    if (ApolloGQLBool(author, @"isCakeDayNow")) data[@"author_cakeday"] = @YES;
+    data[@"author_premium"] = @NO;
+    data[@"author_patreon_flair"] = @NO;
+    data[@"is_submitter"] = @(ApolloGQLBool(node, @"isOP"));
+    ApolloGQLAddLegacyFlair(data, @"author_flair", ApolloGQLDict(node, @"authorFlair"));
+
+    // Text. Apollo draws the comment from the HTML; the Markdown is what it
+    // edits, quotes and copies.
+    NSArray *media = ApolloGQLArray(content, @"richtextMedia");
+    NSString *markdown = ApolloGQLString(content, @"markdown");
+    NSString *html = nil;
+    if (markdown.length > 0) {
+        html = ApolloGQLRichTextHTML(ApolloGQLString(content, @"richtext"), media, NO);
+    } else {
+        NSString *removedBy = ApolloGQLString(node, @"removedByCategory");
+        BOOL removed = ApolloGQLBool(node, @"isRemoved") || (removedBy.length > 0 && ![removedBy isEqualToString:@"DELETED"]);
+        markdown = removed ? @"[removed]" : (authorName.length > 0 ? @"" : @"[deleted]");
+    }
+    data[@"body"] = ApolloGQLLegacyCommentBody(markdown, media);
+    data[@"body_html"] = html ?: ApolloGQLPlainTextHTML(markdown, NO) ?: @"<div class=\"md\"></div>";
+    if (media.count > 0) {
+        NSMutableDictionary<NSString *, NSDictionary *> *metadata = [NSMutableDictionary dictionary];
+        for (id asset in media) {
+            NSString *mediaID = ApolloGQLString(asset, @"id");
+            if (mediaID.length > 0) metadata[mediaID] = ApolloGQLLegacyMediaMetadata(asset);
+        }
+        if (metadata.count > 0) data[@"media_metadata"] = metadata;
+    }
+
+    // Times, score and the account's own state.
+    NSNumber *created = ApolloGQLEpoch(ApolloGQLString(node, @"createdAt")) ?: @0;
+    data[@"created"] = created;
+    data[@"created_utc"] = created;
+    data[@"edited"] = ApolloGQLEpoch(ApolloGQLString(node, @"editedAt")) ?: (id)@NO;
+    BOOL scoreHidden = ApolloGQLBool(node, @"isScoreHidden");
+    long long score = ApolloGQLNumber(node, @"score") ? [ApolloGQLNumber(node, @"score") longLongValue] : 1;
+    data[@"score"] = @(score);
+    data[@"ups"] = @(score);
+    data[@"downs"] = @0;
+    data[@"score_hidden"] = @(scoreHidden);
+    data[@"controversiality"] = @0;
+    NSString *vote = ApolloGQLString(node, @"voteState");
+    data[@"likes"] = [vote isEqualToString:@"UP"] ? (id)@YES : [vote isEqualToString:@"DOWN"] ? (id)@NO : [NSNull null];
+    data[@"saved"] = @(ApolloGQLBool(node, @"isSaved"));
+
+    // Flags.
+    data[@"archived"] = @(ApolloGQLBool(node, @"isArchived"));
+    data[@"locked"] = @(ApolloGQLBool(node, @"isLocked"));
+    data[@"stickied"] = @(ApolloGQLBool(node, @"isStickied"));
+    data[@"distinguished"] = ApolloGQLOrNull(ApolloGQLString(node, @"distinguishedAs").lowercaseString);
+    BOOL collapsed = ApolloGQLBool(node, @"isInitiallyCollapsed");
+    data[@"collapsed"] = @(collapsed);
+    // "DELETED" for a deleted comment, as the legacy API has it.
+    NSString *collapsedReason = ApolloGQLString(node, @"initiallyCollapsedReason")
+        ?: (authorName.length == 0 ? ApolloGQLString(node, @"removedByCategory") : nil);
+    data[@"collapsed_reason"] = [NSNull null];
+    data[@"collapsed_reason_code"] = ApolloGQLOrNull(collapsed ? collapsedReason : nil);
+    data[@"collapsed_because_crowd_control"] = [NSNull null];
+    data[@"can_gild"] = @NO;
+    data[@"can_mod_post"] = @NO;
+    data[@"send_replies"] = @YES;
+    data[@"no_follow"] = @NO;
+
+    // Awards and moderation, as for a post: what an account that isn't a
+    // moderator of the subreddit gets from the legacy API.
+    data[@"all_awardings"] = @[];
+    data[@"awarders"] = @[];
+    data[@"gildings"] = @{};
+    data[@"gilded"] = @0;
+    data[@"total_awards_received"] = @0;
+    data[@"treatment_tags"] = @[];
+    data[@"user_reports"] = @[];
+    data[@"mod_reports"] = @[];
+    for (NSString *key in @[ @"approved_at_utc", @"approved_by", @"banned_at_utc", @"banned_by", @"mod_note", @"mod_reason_by",
+                             @"mod_reason_title", @"num_reports", @"report_reasons", @"removal_reason", @"top_awarded_type",
+                             @"associated_award", @"unrepliable_reason", @"comment_type" ]) {
+        data[key] = [NSNull null];
+    }
+    return data;
+}
+
+// A comment's replies, or the comments under a post: a Listing without a count.
+static NSDictionary *ApolloGQLLegacyCommentListing(NSArray *children) {
+    return @{ @"kind": @"Listing",
+              @"data": @{ @"after": [NSNull null], @"dist": [NSNull null], @"modhash": @"", @"geo_filter": @"",
+                          @"children": children, @"before": [NSNull null] } };
+}
+
+// A deleted comment's fullname. Its node has no id; its replies, which follow it
+// one level down, name it as their parent. nil when it has none in the answer
+// (nothing hangs off it, so the row is left out).
+static NSString *ApolloGQLDeletedCommentFullname(NSArray *rows, NSUInteger index) {
+    NSInteger depth = [ApolloGQLNumber(rows[index], @"depth") integerValue];
+    for (NSUInteger next = index + 1; next < rows.count; next++) {
+        NSInteger nextDepth = [ApolloGQLNumber(rows[next], @"depth") integerValue];
+        if (nextDepth <= depth) return nil;
+        if (nextDepth == depth + 1) return ApolloGQLString(rows[next], @"parentId");
+    }
+    return nil;
+}
+
+// The things of a PostComments answer. GraphQL lists a thread's rows in reading
+// order, each with its depth and its parent's id; a row is a comment or a
+// "load more" marker (a cursor and a count). `nested` puts each comment's
+// replies inside it (/comments/<id>.json); otherwise the list stays flat, every
+// row pointing at its parent (/api/morechildren's `things`).
+static NSArray<NSDictionary *> *ApolloGQLLegacyCommentThings(NSDictionary *answer, NSDictionary *link, NSInteger baseDepth,
+                                                             BOOL nested, BOOL rawJSON) {
+    NSDictionary *post = ApolloGQLDict(ApolloGQLDict(answer, @"data"), @"postInfoById");
+    NSString *linkFullname = ApolloGQLString(post, @"id");
+    NSArray *rows = ApolloGQLArray(ApolloGQLDict(post, @"commentForest"), @"trees");
+    if (![linkFullname hasPrefix:@"t3_"] || !rows) return nil;
+    NSString *subredditType = [link[@"subreddit_type"] isKindOfClass:[NSString class]] ? link[@"subreddit_type"] : @"public";
+    // "/r/<sub>/comments/<id>/<slug>/": the post's permalink, or any comment's
+    // without its own id.
+    NSString *threadPermalink = [link[@"permalink"] isKindOfClass:[NSString class]] ? link[@"permalink"] : nil;
+    for (NSUInteger index = 0; index < rows.count && threadPermalink.length == 0; index++) {
+        NSString *permalink = ApolloGQLString(ApolloGQLDict(rows[index], @"node"), @"permalink");
+        NSArray<NSString *> *parts = [permalink componentsSeparatedByString:@"/"];
+        // "", "r", sub, "comments", id, slug, comment id, "".
+        if (parts.count == 8) threadPermalink = [[[parts subarrayWithRange:NSMakeRange(0, 6)] componentsJoinedByString:@"/"] stringByAppendingString:@"/"];
+    }
+
+    NSMutableArray<NSDictionary *> *top = [NSMutableArray array], *flat = [NSMutableArray array];
+    NSMutableArray<NSMutableDictionary *> *comments = [NSMutableArray array];
+    NSMutableDictionary<NSString *, NSMutableArray *> *repliesOf = [NSMutableDictionary dictionary];
+    for (NSUInteger index = 0; index < rows.count; index++) {
+        id row = rows[index];
+        NSDictionary *node = ApolloGQLDict(row, @"node"), *more = ApolloGQLDict(row, @"more");
+        NSString *parent = ApolloGQLString(row, @"parentId");
+        NSInteger depth = baseDepth + MAX(0, [ApolloGQLNumber(row, @"depth") integerValue]);
+        NSDictionary *thing = nil;
+        if (node) {
+            NSString *fullname = ApolloGQLString(node, @"id") ?: ApolloGQLDeletedCommentFullname(rows, index);
+            NSMutableDictionary *data = ApolloGQLLegacyCommentData(node, fullname, parent ?: linkFullname, depth, post, subredditType,
+                                                                   threadPermalink);
+            if (!data || repliesOf[data[@"name"]]) continue;
+            repliesOf[data[@"name"]] = [NSMutableArray array];
+            [comments addObject:data];
+            thing = ApolloGQLLegacyThing(@"t1", data);
+        } else if (more) {
+            NSString *cursor = ApolloGQLString(more, @"cursor");
+            if (cursor.length == 0) continue;
+            NSString *token = ApolloGQLMoreToken(cursor, depth);
+            // A row whose count Reddit didn't work out still has replies behind it.
+            NSInteger count = MAX(1, [ApolloGQLNumber(more, @"count") integerValue]);
+            thing = ApolloGQLLegacyThing(@"more", @{ @"count": @(count), @"name": [@"t1_" stringByAppendingString:token], @"id": token,
+                                                     @"parent_id": parent ?: linkFullname, @"depth": @(depth), @"children": @[ token ] });
+        } else {
+            continue;
+        }
+        [flat addObject:thing];
+        [(parent ? repliesOf[parent] : nil) ?: top addObject:thing];
+    }
+    for (NSMutableDictionary *data in comments) {
+        NSArray *replies = repliesOf[data[@"name"]];
+        data[@"replies"] = nested && replies.count > 0 ? (id)ApolloGQLLegacyCommentListing(replies) : @"";
+    }
+    NSArray<NSDictionary *> *things = nested ? top : flat;
+    return rawJSON ? things : ApolloGQLEscapeLegacyValue(things);
+}
+
+NSArray *ApolloGQLLegacyCommentsPage(NSDictionary *answer, NSDictionary *linkThing, BOOL rawJSON) {
+    NSDictionary *link = [linkThing[@"data"] isKindOfClass:[NSDictionary class]] ? linkThing[@"data"] : nil;
+    NSArray<NSDictionary *> *comments = ApolloGQLLegacyCommentThings(answer, link, 0, YES, rawJSON);
+    if (!comments || !link) return nil;
+    return @[ ApolloGQLLegacyListing(@[ linkThing ], nil), ApolloGQLLegacyCommentListing(comments) ];
+}
+
+NSDictionary *ApolloGQLLegacyMoreChildren(NSDictionary *answer, NSInteger depth, BOOL rawJSON) {
+    NSArray<NSDictionary *> *things = ApolloGQLLegacyCommentThings(answer, nil, depth, NO, rawJSON);
+    if (!things) return nil;
+    return @{ @"json": @{ @"errors": @[], @"data": @{ @"things": things } } };
 }
 
 #pragma mark - Feeds
