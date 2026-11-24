@@ -3,6 +3,7 @@
 
 NSString *const ApolloGQLOperationPostsByIds = @"PostsByIds";
 NSString *const ApolloGQLOperationSubredditFeed = @"SubredditFeedSdui";
+NSString *const ApolloGQLOperationHomeFeed = @"HomeFeedSdui";
 NSString *const ApolloGQLOperationPostComments = @"PostComments";
 
 // 30 in one call was answered in full (2026-11-24); more wasn't tried.
@@ -14,10 +15,10 @@ const NSUInteger ApolloGQLPostsByIdsBatch = 30;
 static const NSInteger kApolloGQLCommentsCountMax = 200;
 
 // Operation name -> persisted-query hash. These are the ids Reddit's Android
-// app (2026.42.0) sends; gql-fed.reddit.com ran each of them for the desktop
-// web client's token on 2026-11-23 and 2026-11-24. A hash Reddit retires
-// answers "persisted query not found", which sends the request to its other
-// routes (ApolloGQLRoute.m).
+// app (2026.42.0) sends, and for HomeFeedSdui the id the Hydra client lists;
+// gql-fed.reddit.com ran each of them for the desktop web client's token on
+// 2026-11-23 and 2026-11-24. A hash Reddit retires answers "persisted query
+// not found", which sends the request to its other routes (ApolloGQLRoute.m).
 static NSDictionary<NSString *, NSString *> *ApolloGQLOperationHashes(void) {
     static NSDictionary<NSString *, NSString *> *hashes;
     static dispatch_once_t once;
@@ -26,6 +27,7 @@ static NSDictionary<NSString *, NSString *> *ApolloGQLOperationHashes(void) {
             ApolloGQLOperationPostsByIds: @"29a8d4c6e135fffb95fc4cd303c57ad926c6c5ff582f4c4577c8a69b7f322d91",
             ApolloGQLOperationSubredditFeed: @"fcc9854f03d7829810b2b6f607bae27407d2bbb576b09d8ee59869f80b13ca10",
             ApolloGQLOperationPostComments: @"314f29c2494fd78c7844ef2c6b09acb4bef5b37ab50b4ddc01691d6d5c8433f8",
+            ApolloGQLOperationHomeFeed: @"03d0ec0f2674005fe6c9777f952bd063ea2236527794344d4579fec8a669bea0",
         };
     });
     return hashes;
@@ -47,9 +49,13 @@ NSDictionary *ApolloGQLPostsByIdsVariables(NSArray<NSString *> *fullnames) {
     return @{ @"ids": fullnames ?: @[], @"includeExtendedVideoAsset": @YES, @"includePlaybackMp4s": @YES };
 }
 
-NSDictionary *ApolloGQLSubredditFeedVariables(ApolloGQLRequest *request, NSString *after) {
+NSString *ApolloGQLFeedOperation(ApolloGQLRequest *request) {
+    return request.kind == ApolloGQLRequestKindHomeFeed ? ApolloGQLOperationHomeFeed : ApolloGQLOperationSubredditFeed;
+}
+
+NSDictionary *ApolloGQLFeedVariables(ApolloGQLRequest *request, NSString *after) {
     NSMutableDictionary *variables = [NSMutableDictionary dictionary];
-    variables[@"subredditName"] = request.subreddit ?: @"";
+    if (request.kind != ApolloGQLRequestKindHomeFeed) variables[@"subredditName"] = request.subreddit ?: @"";
     variables[@"sort"] = request.sort ?: @"HOT";
     if (request.timeRange.length > 0) variables[@"time"] = request.timeRange;
     NSString *cursor = ApolloGQLFeedCursorForFullname(after);
@@ -183,6 +189,15 @@ static NSString *ApolloGQLThreadID(NSArray<NSString *> *segments) {
     return segments[start + 1];
 }
 
+// Home's sorts, all but "best". GraphQL's Home "Hot" is the legacy /hot post for
+// post (the first 25 matched in order, 2026-11-24), and the other sorts hold
+// only joined subreddits too. Its "Best" is another feed: of 103 rows over five
+// pages, 6 were from joined subreddits and the rest suggestions, and those 6
+// weren't the legacy /best's top posts. So /best keeps its other routes.
+static BOOL ApolloGQLHomeSortIsAnswered(NSString *lowercasedSort) {
+    return ApolloGQLFeedSorts()[lowercasedSort] != nil && ![lowercasedSort isEqualToString:@"best"];
+}
+
 // The kind of request a method and path are, or 0.
 static ApolloGQLRequestKind ApolloGQLKindForPath(NSString *method, NSString *path, NSArray<NSString *> **segmentsOut,
                                                  NSArray<NSString *> **originalOut) {
@@ -204,6 +219,8 @@ static ApolloGQLRequestKind ApolloGQLKindForPath(NSString *method, NSString *pat
     if ((segments.count == 2 || segments.count == 3) && [segments[0] isEqualToString:@"r"] && ApolloGQLSubredditIsPlain(segments[1])) {
         if (segments.count == 2 || ApolloGQLFeedSorts()[segments[2]]) return ApolloGQLRequestKindSubredditFeed;
     }
+    // Home is a sort on its own ("hot.json"); Apollo names one every time.
+    if (segments.count == 1 && ApolloGQLHomeSortIsAnswered(segments[0])) return ApolloGQLRequestKindHomeFeed;
     return 0;
 }
 
@@ -268,8 +285,13 @@ ApolloGQLRequest *ApolloGQLRequestForLegacy(NSString *method, NSString *path, id
     NSString *after = query[@"after"];
     if (after.length > 0 && ![after hasPrefix:@"t3_"]) return nil;
     request.after = after.length > 0 ? after : nil;
-    request.subreddit = original.count > 1 ? original[1] : segments[1];
-    NSString *sort = segments.count == 3 ? ApolloGQLFeedSorts()[segments[2]] : @"HOT";
+    NSString *sort = nil;
+    if (kind == ApolloGQLRequestKindHomeFeed) {
+        sort = ApolloGQLFeedSorts()[segments[0]];
+    } else {
+        request.subreddit = original.count > 1 ? original[1] : segments[1];
+        sort = segments.count == 3 ? ApolloGQLFeedSorts()[segments[2]] : @"HOT";
+    }
     request.sort = sort;
     if ([sort isEqualToString:@"TOP"] || [sort isEqualToString:@"CONTROVERSIAL"]) {
         static NSSet<NSString *> *ranges;

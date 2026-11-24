@@ -10,11 +10,13 @@
 
 static NSString *const kApolloGQLEndpoint = @"https://gql-fed.reddit.com/";
 // A feed page is at most this many id calls. GraphQL pages aren't the size
-// Apollo asks for: a first page gives 6 posts and every later one 24. So a page
-// is done once it has three quarters of what was asked (one call for a later
-// page of 25, two for a first page), rather than paying a whole extra call for
-// the one post a page of 24 is short.
-static const NSUInteger kApolloGQLFeedCallsPerPage = 3;
+// Apollo asks for: a subreddit's first page gives 6 posts and every later one
+// 24 (Home: 7 and 25). So a page is done once it has three quarters of what
+// was asked (one call for a later page of 25, two for a first page), rather
+// than paying a whole extra call for the one post a page of 24 is short. Home
+// can need the rest: the posts Reddit suggests from subreddits the account
+// hasn't joined are left out of each page it gives.
+static const NSUInteger kApolloGQLFeedCallsPerPage = 4;
 static const NSTimeInterval kApolloGQLCallTimeout = 20.0;
 
 typedef NS_ENUM(NSInteger, ApolloGQLCallOutcome) {
@@ -287,21 +289,22 @@ void ApolloGQLRouteAnswer(NSString *account, ApolloGQLRequest *request, ApolloGQ
             body = ApolloGQLRouteMoreComments(account, request, &calls, &outcome, &detail, &summary);
         } else if (request.kind == ApolloGQLRequestKindPostsInfo) {
             things = ApolloGQLRoutePosts(account, request.fullnames, request.rawJSON, &calls, &outcome, &detail);
-        } else if (request.kind == ApolloGQLRequestKindSubredditFeed) {
+        } else if (request.kind == ApolloGQLRequestKindSubredditFeed || request.kind == ApolloGQLRequestKindHomeFeed) {
+            BOOL home = request.kind == ApolloGQLRequestKindHomeFeed;
+            NSString *operation = ApolloGQLFeedOperation(request);
             NSMutableArray<NSString *> *fullnames = [NSMutableArray array];
             NSString *after = request.after;
             BOOL failed = NO;
             for (NSUInteger page = 0; page < kApolloGQLFeedCallsPerPage; page++) {
                 calls++;
-                NSDictionary *answer = ApolloGQLRouteCall(account, ApolloGQLOperationSubredditFeed,
-                                                          ApolloGQLSubredditFeedVariables(request, after), &outcome, &detail);
+                NSDictionary *answer = ApolloGQLRouteCall(account, operation, ApolloGQLFeedVariables(request, after), &outcome, &detail);
                 NSString *next = nil;
-                NSArray<NSString *> *ids = answer ? ApolloGQLFeedPostFullnames(answer, &next) : nil;
+                NSArray<NSString *> *ids = answer ? ApolloGQLFeedPostFullnames(answer, home, &next) : nil;
                 if (!ids) {
                     // No feed in the answer is how GraphQL reports a subreddit
                     // it won't show (private, banned, missing). The legacy
                     // route has the error Apollo knows how to present.
-                    if (answer) { outcome = ApolloGQLCallFailed; detail = @"SubredditFeedSdui answered without a feed"; }
+                    if (answer) { outcome = ApolloGQLCallFailed; detail = [operation stringByAppendingString:@" answered without a feed"]; }
                     failed = YES;
                     break;
                 }
@@ -311,6 +314,13 @@ void ApolloGQLRouteAnswer(NSString *account, ApolloGQLRequest *request, ApolloGQ
                 nextAfter = next;
                 if (!next || (NSInteger)fullnames.count * 4 >= request.limit * 3) break;
                 after = next;
+            }
+            // Pages of nothing but suggested posts, with more behind them: the
+            // legacy Home has the joined subreddits' posts without the search.
+            if (!failed && home && fullnames.count == 0 && nextAfter) {
+                failed = YES;
+                outcome = ApolloGQLCallFailed;
+                detail = [NSString stringWithFormat:@"Home had only suggested posts in %lu pages", (unsigned long)calls];
             }
             if (!failed) {
                 things = fullnames.count > 0

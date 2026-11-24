@@ -19,6 +19,12 @@ typedef NS_ENUM(NSInteger, ApolloGQLRequestKind) {
     // GET /r/<subreddit>[/<sort>]: a subreddit's feed. SubredditFeedSdui gives
     // the page's post ids (6 on a first page, 24 after), PostsByIds the posts.
     ApolloGQLRequestKindSubredditFeed,
+    // GET /hot, /new, /top, /rising, /controversial: the account's Home.
+    // HomeFeedSdui gives the page's post ids (7 on a first page, 25 after),
+    // PostsByIds the posts. Not /best: GraphQL's Home "Best" is mostly posts
+    // Reddit suggests from subreddits the account hasn't joined, in an order
+    // that isn't the legacy one's.
+    ApolloGQLRequestKindHomeFeed,
     // GET /comments/<id>[.json], /r/<subreddit>/comments/<id>[/<slug>]: a post
     // and its comments. PostComments gives the thread, PostsByIds the post.
     ApolloGQLRequestKindComments,
@@ -31,9 +37,9 @@ typedef NS_ENUM(NSInteger, ApolloGQLRequestKind) {
 @property (nonatomic, readonly) ApolloGQLRequestKind kind;
 // PostsInfo: the fullnames asked for, in order.
 @property (nonatomic, copy, readonly, nullable) NSArray<NSString *> *fullnames;
-// SubredditFeed: the subreddit, GraphQL's sort ("HOT") and range ("DAY", nil
-// for sorts without one), the fullname the page starts after, and how many
-// posts the legacy request wanted.
+// SubredditFeed: the subreddit. Both feeds: GraphQL's sort ("HOT") and range
+// ("DAY", nil for sorts without one), the fullname the page starts after, and
+// how many posts the legacy request wanted.
 @property (nonatomic, copy, readonly, nullable) NSString *subreddit;
 @property (nonatomic, copy, readonly, nullable) NSString *sort;
 @property (nonatomic, copy, readonly, nullable) NSString *timeRange;
@@ -67,6 +73,7 @@ ApolloGQLRequest *_Nullable ApolloGQLRequestForLegacy(NSString *method, NSString
 
 extern NSString *const ApolloGQLOperationPostsByIds;
 extern NSString *const ApolloGQLOperationSubredditFeed;
+extern NSString *const ApolloGQLOperationHomeFeed;
 extern NSString *const ApolloGQLOperationPostComments;
 
 // The most post ids one PostsByIds call is given.
@@ -82,9 +89,12 @@ NSData *_Nullable ApolloGQLOperationBody(NSString *name, NSDictionary *variables
 
 NSDictionary *ApolloGQLPostsByIdsVariables(NSArray<NSString *> *fullnames);
 
-// `after` is the fullname the page starts after (the request's own, or the one
-// a previous page of the same request ended on), or nil for the first page.
-NSDictionary *ApolloGQLSubredditFeedVariables(ApolloGQLRequest *request, NSString *_Nullable after);
+// The operation that answers a feed request (SubredditFeed, HomeFeed), and its
+// variables. `after` is the fullname the page starts after (the request's own,
+// or the one a previous page of the same request ended on), or nil for the
+// first page.
+NSString *ApolloGQLFeedOperation(ApolloGQLRequest *request);
+NSDictionary *ApolloGQLFeedVariables(ApolloGQLRequest *request, NSString *_Nullable after);
 
 // A thread's first page (Comments) or the replies behind one of its "load
 // more" rows (MoreComments).

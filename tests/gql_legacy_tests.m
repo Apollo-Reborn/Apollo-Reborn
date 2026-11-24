@@ -418,22 +418,46 @@ static void TestListingAndFeed(void) {
         "{\"node\":{\"__typename\":\"CarouselCommunityRecommendationsFeedUnit\"}}],"
         "\"pageInfo\":{\"endCursor\":\"dDNfdHdv\"}}}}}");
     NSString *after = @"unset";
-    NSArray *ids = ApolloGQLFeedPostFullnames(feed, &after);
+    NSArray *ids = ApolloGQLFeedPostFullnames(feed, NO, &after);
     CHECK([ids isEqualToArray:(@[ @"t3_one", @"t3_two" ])], @"posts only, once each (%@)", ids);
     CHECK([after isEqualToString:@"t3_two"], @"the cursor is the base64 of the last fullname (%@)", after);
     CHECK([ApolloGQLFeedCursorForFullname(@"t3_two") isEqualToString:@"dDNfdHdv"], @"and back");
     CHECK(ApolloGQLFeedCursorForFullname(nil) == nil && ApolloGQLFeedCursorForFullname(@"") == nil, @"no cursor for a first page");
 
     NSDictionary *last = ParseJSON(@"{\"data\":{\"subredditV3\":{\"elements\":{\"edges\":[],\"pageInfo\":{\"endCursor\":null}}}}}");
-    CHECK([ApolloGQLFeedPostFullnames(last, &after) isEqualToArray:@[]] && after == nil, @"an empty last page");
+    CHECK([ApolloGQLFeedPostFullnames(last, NO, &after) isEqualToArray:@[]] && after == nil, @"an empty last page");
     NSDictionary *done = ParseJSON(@"{\"data\":{\"subredditV3\":{\"elements\":{\"edges\":[],\"pageInfo\":{\"endCursor\":\"dDNfdHdv\",\"hasNextPage\":false}}}}}");
-    ApolloGQLFeedPostFullnames(done, &after);
+    ApolloGQLFeedPostFullnames(done, NO, &after);
     CHECK(after == nil, @"hasNextPage false ends the feed");
     NSDictionary *opaque = ParseJSON(@"{\"data\":{\"subredditV3\":{\"elements\":{\"edges\":[],\"pageInfo\":{\"endCursor\":\"bm90IGEgZnVsbG5hbWU=\"}}}}}");
-    ApolloGQLFeedPostFullnames(opaque, &after);
+    ApolloGQLFeedPostFullnames(opaque, NO, &after);
     CHECK(after == nil, @"a cursor that isn't a fullname can't become a legacy `after`");
-    CHECK(ApolloGQLFeedPostFullnames(ParseJSON(@"{\"data\":{\"subredditV3\":null}}"), &after) == nil, @"no feed at all");
-    CHECK(ApolloGQLFeedPostFullnames(@{}, NULL) == nil, @"no data");
+    CHECK(ApolloGQLFeedPostFullnames(ParseJSON(@"{\"data\":{\"subredditV3\":null}}"), NO, &after) == nil, @"no feed at all");
+    CHECK(ApolloGQLFeedPostFullnames(@{}, NO, NULL) == nil, @"no data");
+
+    // Home can mix in posts Reddit suggests from subreddits the account hasn't
+    // joined. A suggested row says why it's there and offers Join; a joined
+    // subreddit's has no context, or a hidden "subscribed…" one.
+    NSDictionary *home = ParseJSON(@"{\"data\":{\"homeV3\":{\"elements\":{\"edges\":["
+        "{\"node\":{\"__typename\":\"CellGroup\",\"groupId\":\"t3_joined\",\"adPayload\":null,\"groupRecommendationContext\":null,"
+            "\"cells\":[{\"__typename\":\"MetadataCell\",\"isJoinButtonShown\":false}]}},"
+        "{\"node\":{\"__typename\":\"CellGroup\",\"groupId\":\"t3_suggested\",\"adPayload\":null,"
+            "\"groupRecommendationContext\":{\"isContextHidden\":false,\"typeIdentifier\":\"generative_recs_user_to_post\"},"
+            "\"cells\":[{\"__typename\":\"RichtextRecommendationContextCell\"},{\"__typename\":\"MetadataCell\",\"isJoinButtonShown\":true}]}},"
+        "{\"node\":{\"__typename\":\"ContentForwardCommunityRecommendationsFeedUnit\",\"id\":\"x\"}},"
+        "{\"node\":{\"__typename\":\"CellGroup\",\"groupId\":\"t3_subscribed\",\"adPayload\":null,"
+            "\"groupRecommendationContext\":{\"isContextHidden\":true,\"typeIdentifier\":\"subscribed_new_sort\"},"
+            "\"cells\":[{\"__typename\":\"RichtextRecommendationContextCell\"},{\"__typename\":\"MetadataCell\",\"isJoinButtonShown\":false}]}},"
+        "{\"node\":{\"__typename\":\"CellGroup\",\"groupId\":\"t3_nocontext\",\"adPayload\":null,\"groupRecommendationContext\":null,"
+            "\"cells\":[{\"__typename\":\"MetadataCell\",\"isJoinButtonShown\":true}]}},"
+        "{\"node\":{\"__typename\":\"CellGroup\",\"groupId\":\"t3_last\",\"adPayload\":null,"
+            "\"groupRecommendationContext\":{\"isContextHidden\":false,\"typeIdentifier\":\"responsivesimilar\"},\"cells\":[]}}"
+        "],\"pageInfo\":{\"endCursor\":\"dDNfbGFzdA==\"}}}}}");
+    NSArray *joined = ApolloGQLFeedPostFullnames(home, YES, &after);
+    CHECK([joined isEqualToArray:(@[ @"t3_joined", @"t3_subscribed" ])], @"only the joined subreddits' posts (%@)", joined);
+    CHECK([after isEqualToString:@"t3_last"], @"the next page still starts after the page's last row, shown or not (%@)", after);
+    NSArray *everything = ApolloGQLFeedPostFullnames(home, NO, &after);
+    CHECK(everything.count == 5, @"a subreddit's feed keeps every post (%@)", everything);
 
     NSDictionary *answer = @{ @"data": @{ @"postsInfoByIds": @[ MinimalPost(@{ @"id": @"t3_b" }), [NSNull null], MinimalPost(@{ @"id": @"t3_a" }) ] } };
     NSArray *things = ApolloGQLLegacyLinksFromPostsByIds(answer, @[ @"t3_a", @"t3_missing", @"t3_b" ], YES);
@@ -543,13 +567,31 @@ static void TestPlan(void) {
     CHECK(ApolloGQLRequestForLegacy(@"GET", @"r/apple/hot", @{ @"before": @"t3_x" }) == nil, @"no backwards paging");
     CHECK(ApolloGQLRequestForLegacy(@"GET", @"r/apple/hot", @{ @"after": @"t1_x" }) == nil, @"only a post can be a feed cursor");
     for (NSString *path in @[ @"r/all/hot", @"r/popular", @"r/mod/new", @"r/friends", @"r/random", @"r/apple+ios/hot", @"r/all-apple/hot",
-                              @"r/u_someone/hot", @"r/apple/about", @"r/apple/comments", @"r/apple/search", @"hot", @"best", @"user/x/submitted",
+                              @"r/u_someone/hot", @"r/apple/about", @"r/apple/comments", @"r/apple/search", @"", @"about", @"best", @"user/x/submitted",
                               @"r/apple/wiki/index", @"r/a/hot" ]) {
-        CHECK(ApolloGQLRequestForLegacy(@"GET", path, nil) == nil, @"%@ isn't a single subreddit's feed", path);
+        CHECK(ApolloGQLRequestForLegacy(@"GET", path, nil) == nil, @"%@ isn't a feed GraphQL answers", path);
         CHECK(!ApolloGQLCanAnswerPath(@"GET", path), @"%@ by path", path);
     }
     CHECK(ApolloGQLCanAnswerPath(@"GET", @"/r/apple/hot.json") && ApolloGQLCanAnswerPath(@"get", @"api/info.json?id=t1_x"), @"by path alone");
     CHECK(!ApolloGQLCanAnswerPath(@"POST", @"/r/apple/hot.json") && !ApolloGQLCanAnswerPath(@"POST", @"comments/abc.json"), @"not these");
+
+    // Home: a sort on its own. Not "best", which GraphQL fills with suggestions.
+    ApolloGQLRequest *homeHot = ApolloGQLRequestForLegacy(@"GET", @"hot.json", @{ @"api_type": @"json", @"limit": @25 });
+    CHECK(homeHot.kind == ApolloGQLRequestKindHomeFeed && [homeHot.sort isEqualToString:@"HOT"] && homeHot.subreddit == nil && homeHot.limit == 25,
+          @"Home, hot (%@)", homeHot.sort);
+    CHECK([ApolloGQLFeedOperation(homeHot) isEqualToString:@"HomeFeedSdui"] && [ApolloGQLFeedVariables(homeHot, nil) isEqualToDictionary:(@{ @"sort": @"HOT" })],
+          @"Home's operation and variables (%@)", ApolloGQLFeedVariables(homeHot, nil));
+    CHECK(ApolloGQLRequestForLegacy(@"GET", @"best.json", @{ @"limit": @25 }) == nil && !ApolloGQLCanAnswerPath(@"GET", @"best.json"), @"Home's best keeps its routes");
+    CHECK([ApolloGQLRequestForLegacy(@"GET", @"r/apple/best", nil).sort isEqualToString:@"BEST"], @"a subreddit's best is still answered");
+    ApolloGQLRequest *homeTop = ApolloGQLRequestForLegacy(@"GET", @"/top/.json", @{ @"t": @"month", @"after": @"t3_last" });
+    CHECK(homeTop.kind == ApolloGQLRequestKindHomeFeed && [ApolloGQLFeedVariables(homeTop, homeTop.after) isEqualToDictionary:
+           (@{ @"sort": @"TOP", @"time": @"MONTH", @"after": @"dDNfbGFzdA==" })], @"Home, top of the month, next page (%@)", ApolloGQLFeedVariables(homeTop, homeTop.after));
+    for (NSString *sort in @[ @"new", @"rising", @"controversial" ]) {
+        CHECK(ApolloGQLRequestForLegacy(@"GET", sort, nil).kind == ApolloGQLRequestKindHomeFeed && ApolloGQLCanAnswerPath(@"GET", [sort stringByAppendingString:@".json"]),
+              @"Home, %@", sort);
+    }
+    CHECK(ApolloGQLRequestForLegacy(@"GET", @"hot", @{ @"before": @"t3_x" }) == nil && !ApolloGQLCanAnswerPath(@"POST", @"hot.json"), @"Home reads forwards only");
+    CHECK(ApolloGQLOperationHash(ApolloGQLOperationHomeFeed).length == 64, @"HomeFeedSdui is a known operation");
 
     // A thread.
     ApolloGQLRequest *thread = ApolloGQLRequestForLegacy(@"GET", @"comments/1y3u73f.json", @{ @"sort": @"top", @"limit": @500, @"raw_json": @1 });
@@ -608,7 +650,8 @@ static void TestPlan(void) {
     NSString *hash = body[@"extensions"][@"persistedQuery"][@"sha256Hash"];
     CHECK(hash.length == 64 && [body[@"extensions"][@"persistedQuery"][@"version"] isEqual:@1] && body[@"query"] == nil, @"a persisted query, no query text");
     CHECK(ApolloGQLOperationBody(@"NotAnOperation", @{}) == nil && ApolloGQLOperationHash(@"NotAnOperation") == nil, @"unknown operation");
-    NSDictionary *first = ApolloGQLSubredditFeedVariables(hot, nil), *next = ApolloGQLSubredditFeedVariables(top, top.after);
+    NSDictionary *first = ApolloGQLFeedVariables(hot, nil), *next = ApolloGQLFeedVariables(top, top.after);
+    CHECK([ApolloGQLFeedOperation(hot) isEqualToString:@"SubredditFeedSdui"], @"a subreddit's feed operation");
     CHECK([first isEqualToDictionary:(@{ @"subredditName": @"Apple", @"sort": @"HOT" })], @"first page variables (%@)", first);
     CHECK([next isEqualToDictionary:(@{ @"subredditName": @"apple", @"sort": @"TOP", @"time": @"WEEK", @"after": @"dDNfbGFzdA==" })], @"next page variables (%@)", next);
     CHECK(ApolloGQLPostsByIdsBatch == 30, @"batch size");

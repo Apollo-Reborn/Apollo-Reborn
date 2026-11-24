@@ -56,12 +56,17 @@ NSDictionary *_Nullable ApolloGQLLegacyMoreChildren(NSDictionary *answer, NSInte
 NSString *ApolloGQLMoreToken(NSString *cursor, NSInteger depth);
 NSString *_Nullable ApolloGQLMoreTokenCursor(NSString *_Nullable token, NSInteger *_Nullable depth);
 
-// The post fullnames of a feed answer (SubredditFeedSdui and the like), in
-// order, without the cells that aren't posts (sort bar, recommendations, ads).
+// The post fullnames of a feed answer (SubredditFeedSdui, HomeFeedSdui), in
+// order, without the cells that aren't posts (sort bar, community suggestions,
+// ads). `joinedOnly` also leaves out the posts Reddit suggests from subreddits
+// the account hasn't joined, which its Home can mix in ("Because you've shown
+// interest in…", "Suggested for you"; the "Best" sort is mostly these). The
+// legacy Home never had them.
 // `nextAfter` gets the fullname the next page starts after (the answer's
-// endCursor, which is the base64 of that fullname), or nil when there's no
-// further page. nil when the answer has no feed in it.
-NSArray<NSString *> *_Nullable ApolloGQLFeedPostFullnames(NSDictionary *answer, NSString *_Nullable *_Nullable nextAfter);
+// endCursor, which is the base64 of that fullname; it may be a post that was
+// left out), or nil when there's no further page. nil when the answer has no
+// feed in it.
+NSArray<NSString *> *_Nullable ApolloGQLFeedPostFullnames(NSDictionary *answer, BOOL joinedOnly, NSString *_Nullable *_Nullable nextAfter);
 
 // A feed query's `after` variable for a legacy `after` fullname.
 NSString *_Nullable ApolloGQLFeedCursorForFullname(NSString *_Nullable fullname);

@@ -853,7 +853,7 @@ NSDictionary *ApolloGQLLegacyMoreChildren(NSDictionary *answer, NSInteger depth,
 #pragma mark - Feeds
 
 // The feed's connection ({edges, pageInfo}) wherever the query put it
-// (data.subredditV3.elements for a subreddit).
+// (data.subredditV3.elements for a subreddit, data.homeV3.elements for Home).
 static NSDictionary *ApolloGQLFeedConnection(id node, NSUInteger depth) {
     if (![node isKindOfClass:[NSDictionary class]] || depth > 4) return nil;
     NSDictionary *dictionary = node;
@@ -865,7 +865,21 @@ static NSDictionary *ApolloGQLFeedConnection(id node, NSUInteger depth) {
     return nil;
 }
 
-NSArray<NSString *> *ApolloGQLFeedPostFullnames(NSDictionary *answer, NSString **nextAfter) {
+// Whether a feed row is a post Reddit suggests from a subreddit the account
+// hasn't joined. Such a row says why it is there (a recommendation context that
+// is shown) and offers a Join button; a joined subreddit's post has no context,
+// or a hidden "subscribed…" one, and no button (37 suggested and 29 joined rows
+// agreed on both, 2026-11-24).
+static BOOL ApolloGQLFeedRowIsSuggested(NSDictionary *node) {
+    NSDictionary *context = ApolloGQLDict(node, @"groupRecommendationContext");
+    if (context && !ApolloGQLBool(context, @"isContextHidden") && ![ApolloGQLString(context, @"typeIdentifier") hasPrefix:@"subscribed"]) return YES;
+    for (id cell in ApolloGQLArray(node, @"cells")) {
+        if ([ApolloGQLString(cell, @"__typename") isEqualToString:@"MetadataCell"]) return ApolloGQLBool(cell, @"isJoinButtonShown");
+    }
+    return NO;
+}
+
+NSArray<NSString *> *ApolloGQLFeedPostFullnames(NSDictionary *answer, BOOL joinedOnly, NSString **nextAfter) {
     if (nextAfter) *nextAfter = nil;
     NSDictionary *connection = ApolloGQLFeedConnection(ApolloGQLDict(answer, @"data"), 0);
     if (!connection) return nil;
@@ -875,6 +889,7 @@ NSArray<NSString *> *ApolloGQLFeedPostFullnames(NSDictionary *answer, NSString *
         NSString *group = ApolloGQLString(node, @"groupId");
         // An ad is a cell group with a post's id and an adPayload.
         if (![group hasPrefix:@"t3_"] || ApolloGQLValue(node, @"adPayload") != nil) continue;
+        if (joinedOnly && ApolloGQLFeedRowIsSuggested(node)) continue;
         if (![fullnames containsObject:group]) [fullnames addObject:group];
     }
     NSDictionary *pageInfo = ApolloGQLDict(connection, @"pageInfo");
