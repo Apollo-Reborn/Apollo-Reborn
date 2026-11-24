@@ -850,6 +850,118 @@ NSDictionary *ApolloGQLLegacyMoreChildren(NSDictionary *answer, NSInteger depth,
     return @{ @"json": @{ @"errors": @[], @"data": @{ @"things": things } } };
 }
 
+#pragma mark - Subreddits
+
+// A lowercased "#rrggbb", or "" (how the legacy API gives an unset colour).
+static NSString *ApolloGQLLegacyColor(NSString *color) {
+    return color.length > 0 ? color.lowercaseString : @"";
+}
+
+NSDictionary<NSString *, id> *ApolloGQLLegacySubredditData(NSDictionary *subreddit, BOOL rawJSON) {
+    NSString *fullname = ApolloGQLString(subreddit, @"id");
+    NSString *name = ApolloGQLString(subreddit, @"name");
+    if (![fullname hasPrefix:@"t5_"] || fullname.length <= 3 || name.length == 0) return nil;
+    NSDictionary *styles = ApolloGQLDict(subreddit, @"styles");
+    NSDictionary *userFlair = ApolloGQLDict(subreddit, @"authorFlairSettings");
+    NSDictionary *description = ApolloGQLDict(subreddit, @"description");
+    NSMutableDictionary<NSString *, id> *data = [NSMutableDictionary dictionary];
+
+    // Identity.
+    data[@"id"] = [fullname substringFromIndex:3];
+    data[@"name"] = fullname;
+    data[@"display_name"] = name;
+    data[@"display_name_prefixed"] = ApolloGQLString(subreddit, @"prefixedName") ?: [@"r/" stringByAppendingString:name];
+    data[@"url"] = ApolloGQLString(subreddit, @"path") ?: [NSString stringWithFormat:@"/r/%@/", name];
+    data[@"title"] = ApolloGQLString(subreddit, @"title") ?: @"";
+    NSNumber *created = ApolloGQLEpoch(ApolloGQLString(subreddit, @"createdAt")) ?: @0;
+    data[@"created"] = created;
+    data[@"created_utc"] = created;
+    data[@"subscribers"] = @([ApolloGQLNumber(subreddit, @"subscribersCount") longLongValue]);
+    data[@"subreddit_type"] = ApolloGQLString(subreddit, @"type").lowercaseString ?: @"public";
+    data[@"over18"] = @(ApolloGQLBool(subreddit, @"isNsfw"));
+    data[@"quarantine"] = @(ApolloGQLBool(subreddit, @"isQuarantined"));
+
+    // Text. The sidebar is Markdown with a rich-text twin, like a post's body;
+    // the short description is plain text.
+    NSString *sidebar = ApolloGQLString(description, @"markdown") ?: @"";
+    data[@"description"] = sidebar;
+    data[@"description_html"] = sidebar.length > 0
+        ? ApolloGQLOrNull(ApolloGQLRichTextHTML(ApolloGQLString(description, @"richtext"), nil, YES) ?: ApolloGQLPlainTextHTML(sidebar, YES))
+        : [NSNull null];
+    NSString *summary = ApolloGQLString(subreddit, @"publicDescriptionText") ?: @"";
+    data[@"public_description"] = summary;
+    data[@"public_description_html"] = ApolloGQLOrNull(ApolloGQLPlainTextHTML(summary, YES));
+    // GraphQL has no submit_text (the note a subreddit shows people about to
+    // post), its labels, the comment-score hiding time or a suggested comment
+    // sort. They're left out rather than sent empty: without a submit text
+    // Apollo's composer shows the sidebar instead (sub_100780a44).
+
+    // Looks. "legacy" is the old-Reddit image the legacy API calls icon_img and
+    // banner_img; community_icon is the new one, "" when there's only the old.
+    NSString *icon = ApolloGQLString(styles, @"icon") ?: @"";
+    NSString *legacyIcon = ApolloGQLString(ApolloGQLDict(styles, @"legacyIcon"), @"url") ?: @"";
+    data[@"icon_img"] = legacyIcon;
+    // GraphQL's community icon is signed for 64 pixels (the legacy API's for
+    // 256), too small for the subreddit's header. The address without its
+    // query is the uploaded image itself; a resize without a signature is
+    // refused (HTTP 403).
+    NSRange iconQuery = [icon rangeOfString:@"?"];
+    if ([icon hasPrefix:@"https://styles.redditmedia.com/"] && iconQuery.location != NSNotFound) icon = [icon substringToIndex:iconQuery.location];
+    data[@"community_icon"] = [icon isEqualToString:legacyIcon] ? @"" : icon;
+    data[@"banner_img"] = ApolloGQLString(styles, @"legacyBannerBackgroundImage") ?: @"";
+    data[@"banner_background_image"] = ApolloGQLString(styles, @"bannerBackgroundImage") ?: @"";
+    data[@"mobile_banner_image"] = ApolloGQLString(styles, @"mobileBannerImage") ?: @"";
+    data[@"key_color"] = ApolloGQLLegacyColor(ApolloGQLString(styles, @"legacyPrimaryColor"));
+    data[@"primary_color"] = ApolloGQLLegacyColor(ApolloGQLString(styles, @"primaryColor"));
+    data[@"header_img"] = [NSNull null];
+    data[@"header_title"] = @"";
+
+    // What may be posted. The legacy API's three kinds: "any", "link" (no text
+    // posts) and "self" (text only).
+    NSArray *postTypes = ApolloGQLArray(subreddit, @"allowedPostTypes") ?: @[];
+    BOOL links = [postTypes containsObject:@"LINK"], text = [postTypes containsObject:@"TEXT"];
+    data[@"submission_type"] = links == text ? @"any" : links ? @"link" : @"self";
+    data[@"allow_images"] = @([postTypes containsObject:@"IMAGE"]);
+    data[@"allow_videogifs"] = @([postTypes containsObject:@"IMAGE"]);
+    data[@"allow_videos"] = @([postTypes containsObject:@"VIDEO"]);
+    data[@"allow_galleries"] = @([postTypes containsObject:@"GALLERY"]);
+    data[@"allow_polls"] = @([postTypes containsObject:@"POLL"]);
+    data[@"spoilers_enabled"] = @(ApolloGQLBool(subreddit, @"isSpoilerAvailable"));
+    data[@"restrict_posting"] = @(ApolloGQLBool(subreddit, @"isPostingRestricted"));
+    data[@"is_crosspostable_subreddit"] = @(ApolloGQLBool(subreddit, @"isCrosspostingAllowed"));
+    NSMutableArray<NSString *> *commentMedia = [NSMutableArray array];
+    for (id kind in ApolloGQLArray(subreddit, @"allowedMediaInComments")) {
+        if ([kind isKindOfClass:[NSString class]]) [commentMedia addObject:[kind lowercaseString]];
+    }
+    data[@"allowed_media_in_comments"] = commentMedia;
+    data[@"wiki_enabled"] = @(ApolloGQLDict(ApolloGQLDict(subreddit, @"wiki"), @"indexPage") != nil);
+
+    // The account in this subreddit.
+    data[@"user_is_subscriber"] = @(ApolloGQLBool(subreddit, @"isSubscribed"));
+    data[@"user_is_banned"] = @(ApolloGQLBool(subreddit, @"isUserBanned"));
+    data[@"user_is_contributor"] = @(ApolloGQLBool(subreddit, @"isContributor"));
+    data[@"user_is_muted"] = @(ApolloGQLBool(subreddit, @"isMuted"));
+    data[@"user_has_favorited"] = @(ApolloGQLBool(subreddit, @"isFavorite"));
+    data[@"user_is_moderator"] = @(ApolloGQLDict(subreddit, @"modPermissions") != nil);
+    data[@"notification_level"] = ApolloGQLOrNull(ApolloGQLString(subreddit, @"notificationLevel").lowercaseString);
+
+    // Flair. The account's own flair here, when it has one.
+    NSDictionary *ownFlair = ApolloGQLDict(subreddit, @"authorFlair");
+    data[@"user_flair_enabled_in_sr"] = @(ApolloGQLBool(userFlair, @"isEnabled"));
+    data[@"can_assign_user_flair"] = @(ApolloGQLBool(userFlair, @"isSelfAssignable"));
+    data[@"user_sr_flair_enabled"] = @(ownFlair == nil || ApolloGQLBool(userFlair, @"isOwnFlairEnabled"));
+    BOOL linkFlair = ApolloGQLBool(ApolloGQLDict(subreddit, @"postFlairSettings"), @"isEnabled");
+    data[@"link_flair_enabled"] = @(linkFlair);
+    data[@"can_assign_link_flair"] = @(linkFlair);
+    ApolloGQLAddLegacyFlair(data, @"user_flair", ownFlair);
+    return rawJSON ? data : ApolloGQLEscapeLegacyValue(data);
+}
+
+NSDictionary *ApolloGQLLegacySubredditAbout(NSDictionary *answer, BOOL rawJSON) {
+    NSDictionary *data = ApolloGQLLegacySubredditData(ApolloGQLDict(ApolloGQLDict(answer, @"data"), @"subredditInfoByName"), rawJSON);
+    return data ? ApolloGQLLegacyThing(@"t5", data) : nil;
+}
+
 #pragma mark - Feeds
 
 // The feed's connection ({edges, pageInfo}) wherever the query put it

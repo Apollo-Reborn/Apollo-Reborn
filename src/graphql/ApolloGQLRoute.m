@@ -283,7 +283,17 @@ void ApolloGQLRouteAnswer(NSString *account, ApolloGQLRequest *request, ApolloGQ
         id body = nil;
         NSString *summary = nil;
 
-        if (request.kind == ApolloGQLRequestKindComments) {
+        if (request.kind == ApolloGQLRequestKindSubredditAbout) {
+            calls++;
+            NSDictionary *answer = ApolloGQLRouteCall(account, ApolloGQLOperationSubredditInfo, ApolloGQLSubredditInfoVariables(request),
+                                                      &outcome, &detail);
+            body = answer ? ApolloGQLLegacySubredditAbout(answer, request.rawJSON) : nil;
+            // No subreddit in the answer is how GraphQL reports one it won't
+            // show (missing, banned, private). The legacy route has the error
+            // Apollo knows how to present.
+            if (answer && !body) { outcome = ApolloGQLCallFailed; detail = @"SubredditInfoByName answered without a subreddit"; }
+            summary = [NSString stringWithFormat:@"r/%@'s details", request.subreddit];
+        } else if (request.kind == ApolloGQLRequestKindComments) {
             body = ApolloGQLRouteCommentsPage(account, request, &calls, &outcome, &detail, &summary);
         } else if (request.kind == ApolloGQLRequestKindMoreComments) {
             body = ApolloGQLRouteMoreComments(account, request, &calls, &outcome, &detail, &summary);

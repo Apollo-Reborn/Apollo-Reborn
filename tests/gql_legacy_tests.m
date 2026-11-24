@@ -15,7 +15,8 @@
 //
 // tests/fixtures/graphql/comments.json holds two threads the same way: rows of
 // what PostComments answered, and the legacy /comments/<id>.json data of the
-// same comments.
+// same comments. tests/fixtures/graphql/subreddits.json holds three subreddits:
+// what SubredditInfoByName answered and the legacy /r/<sub>/about.json keys.
 
 static int sFailures = 0;
 
@@ -325,6 +326,59 @@ static void TestMoreToken(void) {
     }
 }
 
+#pragma mark - Subreddits against the legacy answer
+
+static void TestSubredditsAgainstLegacy(NSString *repoRoot) {
+    NSData *data = [NSData dataWithContentsOfFile:[repoRoot stringByAppendingPathComponent:@"tests/fixtures/graphql/subreddits.json"]];
+    NSDictionary *fixture = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
+    NSArray<NSDictionary *> *subreddits = fixture[@"subreddits"];
+    CHECK(subreddits.count == 3, @"fixture has its three subreddits (%lu)", (unsigned long)subreddits.count);
+    NSMutableDictionary<NSString *, NSDictionary *> *byKind = [NSMutableDictionary dictionary];
+    for (NSDictionary *subreddit in subreddits) {
+        NSString *kind = subreddit[@"kind"];
+        NSDictionary *about = ApolloGQLLegacySubredditAbout(@{ @"data": @{ @"subredditInfoByName": subreddit[@"graphql"] } }, YES);
+        CHECK([about[@"kind"] isEqualToString:@"t5"] && [about[@"data"] isKindOfClass:[NSDictionary class]], @"%@ is a t5 thing", kind);
+        NSDictionary *ours = about[@"data"], *legacy = subreddit[@"legacy"];
+        if (!ours) continue;
+        byKind[kind] = ours;
+        NSMutableArray<NSString *> *differences = [NSMutableArray array];
+        for (NSString *key in [legacy.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+            if (!ours[key]) { [differences addObject:[key stringByAppendingString:@" is missing"]]; continue; }
+            Compare(ours[key], legacy[key], key, kind, differences);
+        }
+        CHECK(differences.count == 0, @"the %@ subreddit differs from the legacy answer:\n  %@", kind, [differences componentsJoinedByString:@"\n  "]);
+    }
+    CHECK([byKind[@"links-and-text"][@"submission_type"] isEqualToString:@"any"] && [byKind[@"links-only"][@"submission_type"] isEqualToString:@"link"] &&
+          [byKind[@"text-only"][@"submission_type"] isEqualToString:@"self"], @"the three kinds of subreddit");
+    // The community icon is the uploaded image itself (GraphQL's is signed for
+    // 64 pixels); a subreddit with only an old-style icon has none.
+    NSString *icon = byKind[@"links-and-text"][@"community_icon"];
+    CHECK([icon hasPrefix:@"https://styles.redditmedia.com/"] && ![icon containsString:@"?"], @"full-size community icon (%@)", icon);
+    CHECK([byKind[@"links-only"][@"community_icon"] isEqualToString:@""] && [byKind[@"links-only"][@"icon_img"] hasPrefix:@"https://"],
+          @"old-style icon only (%@)", byKind[@"links-only"][@"icon_img"]);
+    // GraphQL has no posting note: the keys are absent, so Apollo's composer
+    // shows the sidebar (it reads submitText, then subredditDescription).
+    CHECK(byKind[@"links-and-text"][@"submit_text"] == nil && byKind[@"links-and-text"][@"submit_text_html"] == nil, @"no submit text");
+    CHECK([byKind[@"links-and-text"][@"allowed_media_in_comments"] isEqualToArray:(@[ @"static", @"expression" ])], @"comment media kinds (%@)",
+          byKind[@"links-and-text"][@"allowed_media_in_comments"]);
+
+    // The account's own state and flair in the subreddit.
+    NSMutableDictionary *joined = [subreddits.firstObject[@"graphql"] mutableCopy];
+    joined[@"isSubscribed"] = @YES;
+    joined[@"modPermissions"] = @{ @"isAllAllowed": @YES };
+    joined[@"authorFlair"] = @{ @"text": @"Mine", @"richtext": @"[{\"e\":\"text\",\"t\":\"Mine\"}]", @"textColor": @"DARK", @"template": @{ @"id": @"abc" } };
+    NSDictionary *mine = ApolloGQLLegacySubredditData(joined, YES);
+    CHECK([mine[@"user_is_subscriber"] isEqual:@YES] && [mine[@"user_is_moderator"] isEqual:@YES], @"joined and moderating");
+    CHECK([mine[@"user_flair_text"] isEqualToString:@"Mine"] && [mine[@"user_flair_template_id"] isEqualToString:@"abc"] &&
+          [mine[@"user_flair_type"] isEqualToString:@"richtext"], @"the account's flair (%@)", mine[@"user_flair_text"]);
+    NSDictionary *escaped = ApolloGQLLegacySubredditData(subreddits.firstObject[@"graphql"], NO);
+    CHECK([escaped[@"description"] hasSuffix:@"&amp; &lt;three&gt;."] && [escaped[@"description_html"] hasPrefix:@"&lt;!-- SC_OFF --&gt;"], @"escaped without raw_json");
+
+    // Answers that aren't a subreddit.
+    CHECK(ApolloGQLLegacySubredditAbout(@{ @"data": @{ @"subredditInfoByName": [NSNull null] } }, YES) == nil, @"a subreddit GraphQL won't show");
+    CHECK(ApolloGQLLegacySubredditData(@{ @"id": @"t2_user", @"name": @"x" }, YES) == nil && ApolloGQLLegacySubredditData(nil, YES) == nil, @"not a subreddit");
+}
+
 #pragma mark - Post details
 
 static NSDictionary *MinimalPost(NSDictionary *overrides) {
@@ -513,6 +567,10 @@ static void TestRichText(void) {
               @"<p><strong>abcd</strong><em>e</em><strong>f</strong></p>", @"malformed ranges");
     // Something this list doesn't know: its children, or its text.
     CheckHTML(@"{\"document\":[{\"e\":\"newblock\",\"c\":[{\"e\":\"par\",\"c\":[{\"e\":\"newinline\",\"t\":\"kept\"}]}]}]}", @"<p>kept</p>", @"unknown elements");
+    // Old sidebars: a link with empty text stays empty, one without a text
+    // field shows its address, and a heading mark on its own renders nothing.
+    CheckHTML(@"{\"document\":[{\"e\":\"par\",\"c\":[{\"e\":\"link\",\"t\":\"\",\"u\":\"/topBegin\"},{\"e\":\"link\",\"u\":\"https://a.example/\"}]},{\"e\":\"h\",\"l\":1,\"c\":[]}]}",
+              @"<p><a href=\"/topBegin\"></a><a href=\"https://a.example/\">https://a.example/</a></p>", @"empty links and headings");
 
     NSArray *media = @[ @{ @"id": @"img1", @"url": @"https://i.redd.it/img1.png" } ];
     NSString *image = ApolloGQLRichTextHTML(@"{\"document\":[{\"e\":\"img\",\"id\":\"img1\",\"c\":\"A caption\"},{\"e\":\"gif\",\"id\":\"giphy|XYZ|downsized\"},{\"e\":\"img\",\"id\":\"gone\"}]}", media, NO);
@@ -567,7 +625,7 @@ static void TestPlan(void) {
     CHECK(ApolloGQLRequestForLegacy(@"GET", @"r/apple/hot", @{ @"before": @"t3_x" }) == nil, @"no backwards paging");
     CHECK(ApolloGQLRequestForLegacy(@"GET", @"r/apple/hot", @{ @"after": @"t1_x" }) == nil, @"only a post can be a feed cursor");
     for (NSString *path in @[ @"r/all/hot", @"r/all", @"r/mod/new", @"r/friends", @"r/random", @"r/apple+ios/hot", @"r/all-apple/hot",
-                              @"r/u_someone/hot", @"r/apple/about", @"r/apple/comments", @"r/apple/search", @"", @"about", @"best", @"user/x/submitted",
+                              @"r/u_someone/hot", @"r/all/about", @"r/popular/about", @"r/u_someone/about", @"r/apple+ios/about", @"r/apple/about/rules", @"r/apple/comments", @"r/apple/search", @"", @"about", @"best", @"user/x/submitted",
                               @"r/apple/wiki/index", @"r/a/hot" ]) {
         CHECK(ApolloGQLRequestForLegacy(@"GET", path, nil) == nil, @"%@ isn't a feed GraphQL answers", path);
         CHECK(!ApolloGQLCanAnswerPath(@"GET", path), @"%@ by path", path);
@@ -601,8 +659,15 @@ static void TestPlan(void) {
           @"popular, bare and by path");
     CHECK(ApolloGQLRequestForLegacy(@"GET", @"r/popular/hot", @{ @"geo_filter": @"GLOBAL" }).kind == ApolloGQLRequestKindPopularFeed &&
           ApolloGQLRequestForLegacy(@"GET", @"r/popular/hot", @{ @"geo_filter": @"CA" }) == nil, @"popular for one country keeps its routes");
-    CHECK(ApolloGQLRequestForLegacy(@"GET", @"r/popular/hot", @{ @"before": @"t3_x" }) == nil && !ApolloGQLCanAnswerPath(@"GET", @"r/popular/about"),
-          @"popular: forwards only, feeds only");
+    CHECK(ApolloGQLRequestForLegacy(@"GET", @"r/popular/hot", @{ @"before": @"t3_x" }) == nil, @"popular: forwards only");
+
+    // A subreddit's details.
+    ApolloGQLRequest *about = ApolloGQLRequestForLegacy(@"GET", @"r/Apple/about.json", @{ @"api_type": @"json", @"raw_json": @1 });
+    CHECK(about.kind == ApolloGQLRequestKindSubredditAbout && [about.subreddit isEqualToString:@"Apple"] && about.rawJSON, @"a subreddit's details (%@)", about.subreddit);
+    CHECK([ApolloGQLSubredditInfoVariables(about) isEqualToDictionary:(@{ @"subredditName": @"Apple", @"includeRecapFields": @NO, @"includeDevvitData": @NO })],
+          @"its variables (%@)", ApolloGQLSubredditInfoVariables(about));
+    CHECK(ApolloGQLCanAnswerPath(@"GET", @"/r/apple/about/.json") && !ApolloGQLCanAnswerPath(@"POST", @"r/apple/about.json"), @"details by path, reads only");
+    CHECK(ApolloGQLOperationHash(ApolloGQLOperationSubredditInfo).length == 64, @"SubredditInfoByName is a known operation");
     CHECK(ApolloGQLOperationHash(ApolloGQLOperationPopularFeed).length == 64, @"PopularFeedSdui is a known operation");
 
     // A thread.
@@ -674,6 +739,7 @@ int main(int argc, const char *argv[]) {
         if (argc < 2) { fprintf(stderr, "usage: gql_legacy_tests <repo root>\n"); return 2; }
         TestPostsAgainstLegacy(@(argv[1]));
         TestCommentsAgainstLegacy(@(argv[1]));
+        TestSubredditsAgainstLegacy(@(argv[1]));
         TestCommentThreads(@(argv[1]));
         TestMoreToken();
         TestPostBasics();

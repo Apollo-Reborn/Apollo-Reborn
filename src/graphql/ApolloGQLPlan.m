@@ -5,6 +5,7 @@ NSString *const ApolloGQLOperationPostsByIds = @"PostsByIds";
 NSString *const ApolloGQLOperationSubredditFeed = @"SubredditFeedSdui";
 NSString *const ApolloGQLOperationHomeFeed = @"HomeFeedSdui";
 NSString *const ApolloGQLOperationPopularFeed = @"PopularFeedSdui";
+NSString *const ApolloGQLOperationSubredditInfo = @"SubredditInfoByName";
 NSString *const ApolloGQLOperationPostComments = @"PostComments";
 
 // 60 in one call were answered in full (2026-11-24). 50 covers a feed's first
@@ -31,6 +32,7 @@ static NSDictionary<NSString *, NSString *> *ApolloGQLOperationHashes(void) {
             ApolloGQLOperationPostComments: @"314f29c2494fd78c7844ef2c6b09acb4bef5b37ab50b4ddc01691d6d5c8433f8",
             ApolloGQLOperationHomeFeed: @"03d0ec0f2674005fe6c9777f952bd063ea2236527794344d4579fec8a669bea0",
             ApolloGQLOperationPopularFeed: @"5abe205dd071054dec10310876ca8ca1034f5a09a344659cc7e641ced2e799c2",
+            ApolloGQLOperationSubredditInfo: @"8c1815b07b762aee3c086cc84306f14b3907018e9ee152046c8e4d08ad4c7b88",
         };
     });
     return hashes;
@@ -66,6 +68,10 @@ NSDictionary *ApolloGQLFeedVariables(ApolloGQLRequest *request, NSString *after)
     NSString *cursor = ApolloGQLFeedCursorForFullname(after);
     if (cursor.length > 0) variables[@"after"] = cursor;
     return variables;
+}
+
+NSDictionary *ApolloGQLSubredditInfoVariables(ApolloGQLRequest *request) {
+    return @{ @"subredditName": request.subreddit ?: @"", @"includeRecapFields": @NO, @"includeDevvitData": @NO };
 }
 
 NSDictionary *ApolloGQLPostCommentsVariables(ApolloGQLRequest *request) {
@@ -223,6 +229,7 @@ static ApolloGQLRequestKind ApolloGQLKindForPath(NSString *method, NSString *pat
     }
     if ((segments.count == 2 || segments.count == 3) && [segments[0] isEqualToString:@"r"] && ApolloGQLSubredditIsPlain(segments[1])) {
         if (segments.count == 2 || ApolloGQLFeedSorts()[segments[2]]) return ApolloGQLRequestKindSubredditFeed;
+        if ([segments[2] isEqualToString:@"about"]) return ApolloGQLRequestKindSubredditAbout;
     }
     // Popular has a feed query of its own. Its Hot and Rising gave the legacy
     // /r/popular's posts in the same order (2026-11-24).
@@ -260,6 +267,11 @@ ApolloGQLRequest *ApolloGQLRequestForLegacy(NSString *method, NSString *path, id
         }
         if (fullnames.count == 0 || fullnames.count > 100) return nil;
         request.fullnames = fullnames;
+        return request;
+    }
+
+    if (kind == ApolloGQLRequestKindSubredditAbout) {
+        request.subreddit = original.count > 1 ? original[1] : segments[1];
         return request;
     }
 

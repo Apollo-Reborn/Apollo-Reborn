@@ -128,8 +128,12 @@ static NSString *ApolloGQLRTInline(NSDictionary *element, NSArray *media, NSUInt
     if ([kind isEqualToString:@"br"]) return @"<br/>\n";
     if ([kind isEqualToString:@"link"]) {
         NSString *url = ApolloGQLRTString(element[@"u"]) ?: @"";
+        // A link written without text ("[](/anchor)", old Reddit's CSS hooks in
+        // a sidebar) stays empty, as Reddit renders it; one with no text field
+        // at all shows its address.
+        NSString *label = ApolloGQLRTString(element[@"t"]) ?: url;
         return [NSString stringWithFormat:@"<a href=\"%@\">%@</a>", ApolloGQLRTEscape(url),
-                ApolloGQLRTFormattedText(text.length ? text : url, element[@"f"])];
+                ApolloGQLRTFormattedText(label, element[@"f"])];
     }
     if ([kind isEqualToString:@"r/"] || [kind isEqualToString:@"u/"]) {
         BOOL leadingSlash = [element[@"l"] respondsToSelector:@selector(boolValue)] && [element[@"l"] boolValue];
@@ -241,7 +245,9 @@ static NSString *ApolloGQLRTBlock(NSDictionary *block, NSArray *media, NSUIntege
     if ([kind isEqualToString:@"h"]) {
         NSInteger level = [block[@"l"] respondsToSelector:@selector(integerValue)] ? [block[@"l"] integerValue] : 1;
         level = MAX(1, MIN(6, level));
-        return [NSString stringWithFormat:@"<h%ld>%@</h%ld>", (long)level, ApolloGQLRTInlines(children, media, depth + 1), (long)level];
+        // A heading mark with nothing after it ("#" on its own) renders nothing.
+        NSString *heading = ApolloGQLRTInlines(children, media, depth + 1);
+        return heading.length > 0 ? [NSString stringWithFormat:@"<h%ld>%@</h%ld>", (long)level, heading, (long)level] : @"";
     }
     if ([kind isEqualToString:@"blockquote"]) {
         return [NSString stringWithFormat:@"<blockquote>\n%@\n</blockquote>", ApolloGQLRTBlocks(children, media, depth + 1)];

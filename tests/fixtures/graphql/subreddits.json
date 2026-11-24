@@ -1,0 +1,383 @@
+{
+ "note": "Three subreddits captured through both routes on 2026-11-24 (GraphQL SubredditInfoByName and /r/<sub>/about.json with raw_json=1): one that takes links and text, one links only (and with only an old-style icon), one text only. Titles, descriptions and sidebars are replaced; the member count is pinned to the legacy answer.",
+ "subreddits": [
+  {
+   "graphql": {
+    "__typename": "Subreddit",
+    "allowedMediaInComments": [
+     "STATIC",
+     "EXPRESSION"
+    ],
+    "allowedPostTypes": [
+     "LINK",
+     "TEXT",
+     "SPOILER"
+    ],
+    "authorFlair": null,
+    "authorFlairSettings": {
+     "isEnabled": true,
+     "isOwnFlairEnabled": false,
+     "isSelfAssignable": false
+    },
+    "communityStatus": null,
+    "createdAt": "2008-01-25T03:43:06.921000+0000",
+    "description": {
+     "markdown": "Sidebar paragraph one.\n\nSidebar paragraph **two** & <three>.",
+     "richtext": "{\"document\":[{\"e\":\"par\",\"c\":[{\"e\":\"text\",\"t\":\"Sidebar paragraph one.\"}]},{\"e\":\"par\",\"c\":[{\"e\":\"text\",\"t\":\"Sidebar paragraph two & <three>.\",\"f\":[[1,18,3]]}]}]}"
+    },
+    "id": "t5_2qh1f",
+    "interstitialWarningMessage": null,
+    "isChannelsEnabled": false,
+    "isContributor": false,
+    "isCrosspostingAllowed": false,
+    "isFavorite": false,
+    "isMediaInCommentsSettingShown": true,
+    "isMuted": false,
+    "isNsfw": false,
+    "isPostingRestricted": true,
+    "isQuarantined": false,
+    "isSpoilerAvailable": true,
+    "isSubscribed": false,
+    "isUserBanned": false,
+    "modPermissions": null,
+    "name": "apple",
+    "notificationLevel": null,
+    "path": "/r/apple/",
+    "postFlairSettings": {
+     "isEnabled": true
+    },
+    "prefixedName": "r/apple",
+    "publicDescriptionText": "A short description 1.",
+    "quarantineMessage": null,
+    "styles": {
+     "bannerBackgroundImage": "https://styles.redditmedia.com/t5_2qh1f/styles/bannerBackgroundImage_0acivxyryhjg1.png?frame=1&auto=webp&s=afa6899159f5929cbc25195475d9f53de22abec7",
+     "icon": "https://styles.redditmedia.com/t5_2qh1f/styles/communityIcon_8ujpyzz7thjg1.jpg?width=64&frame=1&auto=webp&s=8f37ae3ba1f430e651491d317a21e7a6a1090939",
+     "legacyBannerBackgroundImage": "https://b.thumbs.redditmedia.com/JHnH8MmmykOYuVOFhb_3SyOSI30QvZ2iaPH6ykjUFYU.png",
+     "legacyIcon": {
+      "url": "https://b.thumbs.redditmedia.com/Mz8ihHn3LXepB8tQzKBhrir00PV8CbQCn9GAO_JEoaQ.png"
+     },
+     "legacyPrimaryColor": "#24A0ED",
+     "mobileBannerImage": "https://styles.redditmedia.com/t5_2qh1f/styles/mobileBannerImage_lrj7yh6zyhjg1.png?frame=1&auto=webp&s=940e2e202846a35b9d551b2a982d99e1a449a01f",
+     "primaryColor": "#646D73"
+    },
+    "subscribersCount": 6506898.0,
+    "title": "Community title 1",
+    "type": "PUBLIC",
+    "whitelistStatus": "ALL_ADS",
+    "wiki": {
+     "indexPage": {
+      "status": "VALID"
+     }
+    }
+   },
+   "kind": "links-and-text",
+   "legacy": {
+    "allow_galleries": false,
+    "allow_images": false,
+    "allow_polls": false,
+    "allow_videogifs": false,
+    "allow_videos": false,
+    "banner_background_image": "https://styles.redditmedia.com/t5_2qh1f/styles/bannerBackgroundImage_0acivxyryhjg1.png?width=4000&s=cace24bb8f4272f9e782956b5e1cc22a89d65437",
+    "banner_img": "https://b.thumbs.redditmedia.com/JHnH8MmmykOYuVOFhb_3SyOSI30QvZ2iaPH6ykjUFYU.png",
+    "can_assign_user_flair": false,
+    "community_icon": "https://styles.redditmedia.com/t5_2qh1f/styles/communityIcon_8ujpyzz7thjg1.jpg?width=256&s=491fe3bad95fabbaee633abaf3e565fd984e8323",
+    "created": 1201232586.0,
+    "created_utc": 1201232586.0,
+    "description": "Sidebar paragraph one.\n\nSidebar paragraph **two** & <three>.",
+    "description_html": "<!-- SC_OFF --><div class=\"md\"><p>Sidebar paragraph one.</p>\n\n<p>Sidebar paragraph <strong>two</strong> &amp; &lt;three&gt;.</p>\n</div><!-- SC_ON -->",
+    "display_name": "apple",
+    "display_name_prefixed": "r/apple",
+    "icon_img": "https://b.thumbs.redditmedia.com/Mz8ihHn3LXepB8tQzKBhrir00PV8CbQCn9GAO_JEoaQ.png",
+    "id": "2qh1f",
+    "key_color": "#24a0ed",
+    "link_flair_enabled": true,
+    "mobile_banner_image": "https://styles.redditmedia.com/t5_2qh1f/styles/mobileBannerImage_lrj7yh6zyhjg1.png",
+    "name": "t5_2qh1f",
+    "notification_level": null,
+    "over18": false,
+    "primary_color": "#646d73",
+    "public_description": "A short description 1.",
+    "public_description_html": "<!-- SC_OFF --><div class=\"md\"><p>A short description 1.</p>\n</div><!-- SC_ON -->",
+    "quarantine": false,
+    "restrict_posting": true,
+    "spoilers_enabled": true,
+    "submission_type": "any",
+    "subreddit_type": "public",
+    "subscribers": 6506898,
+    "title": "Community title 1",
+    "url": "/r/apple/",
+    "user_flair_enabled_in_sr": true,
+    "user_flair_richtext": [],
+    "user_flair_template_id": null,
+    "user_flair_text": null,
+    "user_flair_type": "text",
+    "user_has_favorited": false,
+    "user_is_banned": false,
+    "user_is_contributor": false,
+    "user_is_moderator": false,
+    "user_is_muted": false,
+    "user_is_subscriber": false,
+    "user_sr_flair_enabled": true,
+    "wiki_enabled": true
+   }
+  },
+  {
+   "graphql": {
+    "__typename": "Subreddit",
+    "allowedMediaInComments": [
+     "GIPHY",
+     "STATIC",
+     "EXPRESSION",
+     "VIDEO"
+    ],
+    "allowedPostTypes": [
+     "LINK",
+     "IMAGE",
+     "GALLERY"
+    ],
+    "authorFlair": null,
+    "authorFlairSettings": {
+     "isEnabled": true,
+     "isOwnFlairEnabled": false,
+     "isSelfAssignable": false
+    },
+    "communityStatus": {
+     "__typename": "SubredditCommunityStatus",
+     "description": {
+      "markdown": "📸",
+      "richtext": "{\"document\":[{\"c\":[{\"e\":\"text\",\"t\":\"\\ud83d\\udcf8\"}],\"e\":\"par\"}]}"
+     },
+     "emoji": {
+      "name": "upvote",
+      "url": "https://emoji.redditmedia.com/ad1td4bx9ezz_t5_3nqvj/upvote"
+     }
+    },
+    "createdAt": "2008-01-25T00:31:09.512000+0000",
+    "description": {
+     "markdown": "Sidebar paragraph one.\n\nSidebar paragraph **two** & <three>.",
+     "richtext": "{\"document\":[{\"e\":\"par\",\"c\":[{\"e\":\"text\",\"t\":\"Sidebar paragraph one.\"}]},{\"e\":\"par\",\"c\":[{\"e\":\"text\",\"t\":\"Sidebar paragraph two & <three>.\",\"f\":[[1,18,3]]}]}]}"
+    },
+    "id": "t5_2qh0u",
+    "interstitialWarningMessage": null,
+    "isChannelsEnabled": false,
+    "isContributor": false,
+    "isCrosspostingAllowed": true,
+    "isFavorite": false,
+    "isMediaInCommentsSettingShown": true,
+    "isMuted": false,
+    "isNsfw": false,
+    "isPostingRestricted": true,
+    "isQuarantined": false,
+    "isSpoilerAvailable": false,
+    "isSubscribed": false,
+    "isUserBanned": false,
+    "modPermissions": null,
+    "name": "pics",
+    "notificationLevel": null,
+    "path": "/r/pics/",
+    "postFlairSettings": {
+     "isEnabled": true
+    },
+    "prefixedName": "r/pics",
+    "publicDescriptionText": "A short description 2.",
+    "quarantineMessage": null,
+    "styles": {
+     "bannerBackgroundImage": "https://styles.redditmedia.com/t5_2qh0u/styles/bannerBackgroundImage_if1cbgj4mc7b1.jpg?frame=1&auto=webp&format=pjpg&s=0e538062b7411be26edacd34e6c124e2e8b4527a",
+     "icon": "https://b.thumbs.redditmedia.com/VZX_KQLnI1DPhlEZ07bIcLzwR1Win808RIt7zm49VIQ.png",
+     "legacyBannerBackgroundImage": null,
+     "legacyIcon": {
+      "url": "https://b.thumbs.redditmedia.com/VZX_KQLnI1DPhlEZ07bIcLzwR1Win808RIt7zm49VIQ.png"
+     },
+     "legacyPrimaryColor": "#24A0ED",
+     "mobileBannerImage": "https://styles.redditmedia.com/t5_2qh0u/styles/mobileBannerImage_b4mne1y5mc7b1.jpg?frame=1&auto=webp&format=pjpg&s=29c4dd4ffa5577473f43e876fa0c2aed84022651",
+     "primaryColor": "#553200"
+    },
+    "subscribersCount": 33590200.0,
+    "title": "Community title 2",
+    "type": "PUBLIC",
+    "whitelistStatus": "SOME_ADS",
+    "wiki": {
+     "indexPage": {
+      "status": "VALID"
+     }
+    }
+   },
+   "kind": "links-only",
+   "legacy": {
+    "allow_galleries": true,
+    "allow_images": true,
+    "allow_polls": false,
+    "allow_videogifs": true,
+    "allow_videos": false,
+    "banner_background_image": "https://styles.redditmedia.com/t5_2qh0u/styles/bannerBackgroundImage_if1cbgj4mc7b1.jpg?width=4000&s=f6831859646d3127e64749644e05d129279aa2aa",
+    "banner_img": "",
+    "can_assign_user_flair": false,
+    "community_icon": "",
+    "created": 1201221069.0,
+    "created_utc": 1201221069.0,
+    "description": "Sidebar paragraph one.\n\nSidebar paragraph **two** & <three>.",
+    "description_html": "<!-- SC_OFF --><div class=\"md\"><p>Sidebar paragraph one.</p>\n\n<p>Sidebar paragraph <strong>two</strong> &amp; &lt;three&gt;.</p>\n</div><!-- SC_ON -->",
+    "display_name": "pics",
+    "display_name_prefixed": "r/pics",
+    "icon_img": "https://b.thumbs.redditmedia.com/VZX_KQLnI1DPhlEZ07bIcLzwR1Win808RIt7zm49VIQ.png",
+    "id": "2qh0u",
+    "key_color": "#24a0ed",
+    "link_flair_enabled": true,
+    "mobile_banner_image": "https://styles.redditmedia.com/t5_2qh0u/styles/mobileBannerImage_b4mne1y5mc7b1.jpg",
+    "name": "t5_2qh0u",
+    "notification_level": null,
+    "over18": false,
+    "primary_color": "#553200",
+    "public_description": "A short description 2.",
+    "public_description_html": "<!-- SC_OFF --><div class=\"md\"><p>A short description 2.</p>\n</div><!-- SC_ON -->",
+    "quarantine": false,
+    "restrict_posting": true,
+    "spoilers_enabled": false,
+    "submission_type": "link",
+    "subreddit_type": "public",
+    "subscribers": 33590200,
+    "title": "Community title 2",
+    "url": "/r/pics/",
+    "user_flair_enabled_in_sr": true,
+    "user_flair_richtext": [],
+    "user_flair_template_id": null,
+    "user_flair_text": null,
+    "user_flair_type": "text",
+    "user_has_favorited": false,
+    "user_is_banned": false,
+    "user_is_contributor": false,
+    "user_is_moderator": false,
+    "user_is_muted": false,
+    "user_is_subscriber": false,
+    "user_sr_flair_enabled": true,
+    "wiki_enabled": true
+   }
+  },
+  {
+   "graphql": {
+    "__typename": "Subreddit",
+    "allowedMediaInComments": null,
+    "allowedPostTypes": [
+     "TEXT",
+     "SPOILER"
+    ],
+    "authorFlair": null,
+    "authorFlairSettings": {
+     "isEnabled": false,
+     "isOwnFlairEnabled": false,
+     "isSelfAssignable": false
+    },
+    "communityStatus": {
+     "__typename": "SubredditCommunityStatus",
+     "description": {
+      "markdown": "​Credit",
+      "richtext": "{\"document\":[{\"c\":[{\"e\":\"text\",\"t\":\"\\u200bCredit\"}],\"e\":\"par\"}]}"
+     },
+     "emoji": {
+      "name": "donkey_right",
+      "url": "https://emoji.redditmedia.com/5atpv9pyenjf1_t5_2qh1i/donkey_right"
+     }
+    },
+    "createdAt": "2008-01-25T03:52:15.108000+0000",
+    "description": {
+     "markdown": "Sidebar paragraph one.\n\nSidebar paragraph **two** & <three>.",
+     "richtext": "{\"document\":[{\"e\":\"par\",\"c\":[{\"e\":\"text\",\"t\":\"Sidebar paragraph one.\"}]},{\"e\":\"par\",\"c\":[{\"e\":\"text\",\"t\":\"Sidebar paragraph two & <three>.\",\"f\":[[1,18,3]]}]}]}"
+    },
+    "id": "t5_2qh1i",
+    "interstitialWarningMessage": null,
+    "isChannelsEnabled": true,
+    "isContributor": false,
+    "isCrosspostingAllowed": false,
+    "isFavorite": false,
+    "isMediaInCommentsSettingShown": true,
+    "isMuted": false,
+    "isNsfw": false,
+    "isPostingRestricted": true,
+    "isQuarantined": false,
+    "isSpoilerAvailable": true,
+    "isSubscribed": false,
+    "isUserBanned": false,
+    "modPermissions": null,
+    "name": "AskReddit",
+    "notificationLevel": null,
+    "path": "/r/AskReddit/",
+    "postFlairSettings": {
+     "isEnabled": true
+    },
+    "prefixedName": "r/AskReddit",
+    "publicDescriptionText": "A short description 3.",
+    "quarantineMessage": null,
+    "styles": {
+     "bannerBackgroundImage": "https://styles.redditmedia.com/t5_2qh1i/styles/bannerBackgroundImage_fs33xogq946f1.png?frame=1&auto=webp&s=9170912bc2b0276e17131afc71ba890709183f10",
+     "icon": "https://styles.redditmedia.com/t5_2qh1i/styles/communityIcon_p6kb2m6b185b1.png?width=64&frame=1&auto=webp&s=8e8d7fabcc18322bde1c5a388488f19477ed60ed",
+     "legacyBannerBackgroundImage": "https://b.thumbs.redditmedia.com/RdyIGEa9Ghu94wr5v3oQQ_zvE1C1cntehzZJChVFkcw.png",
+     "legacyIcon": {
+      "url": "https://b.thumbs.redditmedia.com/LSHrisQApf1H5F8nWShTx3_KjTOMc3R_ss3kx3XAyXQ.png"
+     },
+     "legacyPrimaryColor": "#222222",
+     "mobileBannerImage": null,
+     "primaryColor": "#D4EAFF"
+    },
+    "subscribersCount": 60231411.0,
+    "title": "Community title 3",
+    "type": "PUBLIC",
+    "whitelistStatus": "ALL_ADS",
+    "wiki": {
+     "indexPage": {
+      "status": "VALID"
+     }
+    }
+   },
+   "kind": "text-only",
+   "legacy": {
+    "allow_galleries": false,
+    "allow_images": false,
+    "allow_polls": false,
+    "allow_videogifs": false,
+    "allow_videos": false,
+    "banner_background_image": "https://styles.redditmedia.com/t5_2qh1i/styles/bannerBackgroundImage_fs33xogq946f1.png?width=4000&s=460f7387ea96fb4707fad8acaa81643df40f19a9",
+    "banner_img": "https://b.thumbs.redditmedia.com/RdyIGEa9Ghu94wr5v3oQQ_zvE1C1cntehzZJChVFkcw.png",
+    "can_assign_user_flair": false,
+    "community_icon": "https://styles.redditmedia.com/t5_2qh1i/styles/communityIcon_p6kb2m6b185b1.png?width=256&s=c28b9f038c305e139b62739f2133d7b776582696",
+    "created": 1201233135.0,
+    "created_utc": 1201233135.0,
+    "description": "Sidebar paragraph one.\n\nSidebar paragraph **two** & <three>.",
+    "description_html": "<!-- SC_OFF --><div class=\"md\"><p>Sidebar paragraph one.</p>\n\n<p>Sidebar paragraph <strong>two</strong> &amp; &lt;three&gt;.</p>\n</div><!-- SC_ON -->",
+    "display_name": "AskReddit",
+    "display_name_prefixed": "r/AskReddit",
+    "icon_img": "https://b.thumbs.redditmedia.com/LSHrisQApf1H5F8nWShTx3_KjTOMc3R_ss3kx3XAyXQ.png",
+    "id": "2qh1i",
+    "key_color": "#222222",
+    "link_flair_enabled": true,
+    "mobile_banner_image": "",
+    "name": "t5_2qh1i",
+    "notification_level": null,
+    "over18": false,
+    "primary_color": "#d4eaff",
+    "public_description": "A short description 3.",
+    "public_description_html": "<!-- SC_OFF --><div class=\"md\"><p>A short description 3.</p>\n</div><!-- SC_ON -->",
+    "quarantine": false,
+    "restrict_posting": true,
+    "spoilers_enabled": true,
+    "submission_type": "self",
+    "subreddit_type": "public",
+    "subscribers": 60231411,
+    "title": "Community title 3",
+    "url": "/r/AskReddit/",
+    "user_flair_enabled_in_sr": false,
+    "user_flair_richtext": [],
+    "user_flair_template_id": null,
+    "user_flair_text": null,
+    "user_flair_type": "text",
+    "user_has_favorited": false,
+    "user_is_banned": false,
+    "user_is_contributor": false,
+    "user_is_moderator": false,
+    "user_is_muted": false,
+    "user_is_subscriber": false,
+    "user_sr_flair_enabled": true,
+    "wiki_enabled": true
+   }
+  }
+ ]
+}

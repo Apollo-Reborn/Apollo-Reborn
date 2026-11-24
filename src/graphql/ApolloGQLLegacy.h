@@ -56,6 +56,14 @@ NSDictionary *_Nullable ApolloGQLLegacyMoreChildren(NSDictionary *answer, NSInte
 NSString *ApolloGQLMoreToken(NSString *cursor, NSInteger depth);
 NSString *_Nullable ApolloGQLMoreTokenCursor(NSString *_Nullable token, NSInteger *_Nullable depth);
 
+// A subreddit from a GraphQL answer (SubredditInfoByName's
+// data.subredditInfoByName) as the `data` of a legacy t5 thing, and the body of
+// /r/<sub>/about.json for the whole answer. nil when the answer has no
+// subreddit (missing, banned, private to this account). GraphQL has no
+// submit_text, so that key is absent; Apollo's composer then shows the sidebar.
+NSDictionary<NSString *, id> *_Nullable ApolloGQLLegacySubredditData(NSDictionary *_Nullable subreddit, BOOL rawJSON);
+NSDictionary *_Nullable ApolloGQLLegacySubredditAbout(NSDictionary *answer, BOOL rawJSON);
+
 // The post fullnames of a feed answer (SubredditFeedSdui, HomeFeedSdui), in
 // order, without the cells that aren't posts (sort bar, community suggestions,
 // ads). `joinedOnly` also leaves out the posts Reddit suggests from subreddits

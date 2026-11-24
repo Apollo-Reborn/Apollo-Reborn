@@ -29,6 +29,9 @@ typedef NS_ENUM(NSInteger, ApolloGQLRequestKind) {
     // page's post ids (7, then 25), PostsByIds the posts. (r/all has no query
     // here: SubredditFeedSdui answers it "Resource not found".)
     ApolloGQLRequestKindPopularFeed,
+    // GET /r/<subreddit>/about: a subreddit's details. One SubredditInfoByName
+    // call.
+    ApolloGQLRequestKindSubredditAbout,
     // GET /comments/<id>[.json], /r/<subreddit>/comments/<id>[/<slug>]: a post
     // and its comments. PostComments gives the thread, PostsByIds the post.
     ApolloGQLRequestKindComments,
@@ -41,7 +44,7 @@ typedef NS_ENUM(NSInteger, ApolloGQLRequestKind) {
 @property (nonatomic, readonly) ApolloGQLRequestKind kind;
 // PostsInfo: the fullnames asked for, in order.
 @property (nonatomic, copy, readonly, nullable) NSArray<NSString *> *fullnames;
-// SubredditFeed: the subreddit. Every feed: GraphQL's sort ("HOT") and range
+// SubredditFeed and SubredditAbout: the subreddit. Every feed: GraphQL's sort ("HOT") and range
 // ("DAY", nil for sorts without one), the fullname the page starts after, and
 // how many posts the legacy request wanted.
 @property (nonatomic, copy, readonly, nullable) NSString *subreddit;
@@ -79,6 +82,7 @@ extern NSString *const ApolloGQLOperationPostsByIds;
 extern NSString *const ApolloGQLOperationSubredditFeed;
 extern NSString *const ApolloGQLOperationHomeFeed;
 extern NSString *const ApolloGQLOperationPopularFeed;
+extern NSString *const ApolloGQLOperationSubredditInfo;
 extern NSString *const ApolloGQLOperationPostComments;
 
 // The most post ids one PostsByIds call is given.
@@ -101,6 +105,8 @@ NSDictionary *ApolloGQLPostsByIdsVariables(NSArray<NSString *> *fullnames);
 // first page.
 NSString *ApolloGQLFeedOperation(ApolloGQLRequest *request);
 NSDictionary *ApolloGQLFeedVariables(ApolloGQLRequest *request, NSString *_Nullable after);
+
+NSDictionary *ApolloGQLSubredditInfoVariables(ApolloGQLRequest *request);
 
 // A thread's first page (Comments) or the replies behind one of its "load
 // more" rows (MoreComments).
