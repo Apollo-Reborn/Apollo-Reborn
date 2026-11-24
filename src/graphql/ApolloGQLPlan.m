@@ -4,10 +4,12 @@
 NSString *const ApolloGQLOperationPostsByIds = @"PostsByIds";
 NSString *const ApolloGQLOperationSubredditFeed = @"SubredditFeedSdui";
 NSString *const ApolloGQLOperationHomeFeed = @"HomeFeedSdui";
+NSString *const ApolloGQLOperationPopularFeed = @"PopularFeedSdui";
 NSString *const ApolloGQLOperationPostComments = @"PostComments";
 
-// 30 in one call was answered in full (2026-11-24); more wasn't tried.
-const NSUInteger ApolloGQLPostsByIdsBatch = 30;
+// 60 in one call were answered in full (2026-11-24). 50 covers a feed's first
+// page (7 + 25 posts) and two later ones in a single call.
+const NSUInteger ApolloGQLPostsByIdsBatch = 50;
 
 // PostComments gives at most this many comments when told how many (a `count`
 // of 500 answered the same 200), and its own, larger page when not told (265 on
@@ -28,6 +30,7 @@ static NSDictionary<NSString *, NSString *> *ApolloGQLOperationHashes(void) {
             ApolloGQLOperationSubredditFeed: @"fcc9854f03d7829810b2b6f607bae27407d2bbb576b09d8ee59869f80b13ca10",
             ApolloGQLOperationPostComments: @"314f29c2494fd78c7844ef2c6b09acb4bef5b37ab50b4ddc01691d6d5c8433f8",
             ApolloGQLOperationHomeFeed: @"03d0ec0f2674005fe6c9777f952bd063ea2236527794344d4579fec8a669bea0",
+            ApolloGQLOperationPopularFeed: @"5abe205dd071054dec10310876ca8ca1034f5a09a344659cc7e641ced2e799c2",
         };
     });
     return hashes;
@@ -50,12 +53,14 @@ NSDictionary *ApolloGQLPostsByIdsVariables(NSArray<NSString *> *fullnames) {
 }
 
 NSString *ApolloGQLFeedOperation(ApolloGQLRequest *request) {
-    return request.kind == ApolloGQLRequestKindHomeFeed ? ApolloGQLOperationHomeFeed : ApolloGQLOperationSubredditFeed;
+    if (request.kind == ApolloGQLRequestKindHomeFeed) return ApolloGQLOperationHomeFeed;
+    if (request.kind == ApolloGQLRequestKindPopularFeed) return ApolloGQLOperationPopularFeed;
+    return ApolloGQLOperationSubredditFeed;
 }
 
 NSDictionary *ApolloGQLFeedVariables(ApolloGQLRequest *request, NSString *after) {
     NSMutableDictionary *variables = [NSMutableDictionary dictionary];
-    if (request.kind != ApolloGQLRequestKindHomeFeed) variables[@"subredditName"] = request.subreddit ?: @"";
+    if (request.kind == ApolloGQLRequestKindSubredditFeed) variables[@"subredditName"] = request.subreddit ?: @"";
     variables[@"sort"] = request.sort ?: @"HOT";
     if (request.timeRange.length > 0) variables[@"time"] = request.timeRange;
     NSString *cursor = ApolloGQLFeedCursorForFullname(after);
@@ -219,6 +224,11 @@ static ApolloGQLRequestKind ApolloGQLKindForPath(NSString *method, NSString *pat
     if ((segments.count == 2 || segments.count == 3) && [segments[0] isEqualToString:@"r"] && ApolloGQLSubredditIsPlain(segments[1])) {
         if (segments.count == 2 || ApolloGQLFeedSorts()[segments[2]]) return ApolloGQLRequestKindSubredditFeed;
     }
+    // Popular has a feed query of its own. Its Hot and Rising gave the legacy
+    // /r/popular's posts in the same order (2026-11-24).
+    if ((segments.count == 2 || segments.count == 3) && [segments[0] isEqualToString:@"r"] && [segments[1] isEqualToString:@"popular"]) {
+        if (segments.count == 2 || ApolloGQLFeedSorts()[segments[2]]) return ApolloGQLRequestKindPopularFeed;
+    }
     // Home is a sort on its own ("hot.json"); Apollo names one every time.
     if (segments.count == 1 && ApolloGQLHomeSortIsAnswered(segments[0])) return ApolloGQLRequestKindHomeFeed;
     return 0;
@@ -288,6 +298,11 @@ ApolloGQLRequest *ApolloGQLRequestForLegacy(NSString *method, NSString *path, id
     NSString *sort = nil;
     if (kind == ApolloGQLRequestKindHomeFeed) {
         sort = ApolloGQLFeedSorts()[segments[0]];
+    } else if (kind == ApolloGQLRequestKindPopularFeed) {
+        // Popular for one country is the legacy API's to answer.
+        NSString *region = query[@"geo_filter"].uppercaseString;
+        if (region.length > 0 && ![region isEqualToString:@"GLOBAL"]) return nil;
+        sort = segments.count == 3 ? ApolloGQLFeedSorts()[segments[2]] : @"HOT";
     } else {
         request.subreddit = original.count > 1 ? original[1] : segments[1];
         sort = segments.count == 3 ? ApolloGQLFeedSorts()[segments[2]] : @"HOT";

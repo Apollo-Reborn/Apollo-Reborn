@@ -566,7 +566,7 @@ static void TestPlan(void) {
           [ApolloGQLRequestForLegacy(@"GET", @"r/apple/best", nil).sort isEqualToString:@"BEST"], @"the other sorts");
     CHECK(ApolloGQLRequestForLegacy(@"GET", @"r/apple/hot", @{ @"before": @"t3_x" }) == nil, @"no backwards paging");
     CHECK(ApolloGQLRequestForLegacy(@"GET", @"r/apple/hot", @{ @"after": @"t1_x" }) == nil, @"only a post can be a feed cursor");
-    for (NSString *path in @[ @"r/all/hot", @"r/popular", @"r/mod/new", @"r/friends", @"r/random", @"r/apple+ios/hot", @"r/all-apple/hot",
+    for (NSString *path in @[ @"r/all/hot", @"r/all", @"r/mod/new", @"r/friends", @"r/random", @"r/apple+ios/hot", @"r/all-apple/hot",
                               @"r/u_someone/hot", @"r/apple/about", @"r/apple/comments", @"r/apple/search", @"", @"about", @"best", @"user/x/submitted",
                               @"r/apple/wiki/index", @"r/a/hot" ]) {
         CHECK(ApolloGQLRequestForLegacy(@"GET", path, nil) == nil, @"%@ isn't a feed GraphQL answers", path);
@@ -592,6 +592,18 @@ static void TestPlan(void) {
     }
     CHECK(ApolloGQLRequestForLegacy(@"GET", @"hot", @{ @"before": @"t3_x" }) == nil && !ApolloGQLCanAnswerPath(@"POST", @"hot.json"), @"Home reads forwards only");
     CHECK(ApolloGQLOperationHash(ApolloGQLOperationHomeFeed).length == 64, @"HomeFeedSdui is a known operation");
+
+    // Popular: a feed query of its own, without a subreddit.
+    ApolloGQLRequest *popular = ApolloGQLRequestForLegacy(@"GET", @"r/popular/top.json", @{ @"t": @"week", @"limit": @25 });
+    CHECK(popular.kind == ApolloGQLRequestKindPopularFeed && [ApolloGQLFeedOperation(popular) isEqualToString:@"PopularFeedSdui"] &&
+          [ApolloGQLFeedVariables(popular, nil) isEqualToDictionary:(@{ @"sort": @"TOP", @"time": @"WEEK" })], @"popular, top of the week (%@)", ApolloGQLFeedVariables(popular, nil));
+    CHECK([ApolloGQLRequestForLegacy(@"GET", @"/r/Popular/.json", nil).sort isEqualToString:@"HOT"] && ApolloGQLCanAnswerPath(@"GET", @"r/popular/rising.json"),
+          @"popular, bare and by path");
+    CHECK(ApolloGQLRequestForLegacy(@"GET", @"r/popular/hot", @{ @"geo_filter": @"GLOBAL" }).kind == ApolloGQLRequestKindPopularFeed &&
+          ApolloGQLRequestForLegacy(@"GET", @"r/popular/hot", @{ @"geo_filter": @"CA" }) == nil, @"popular for one country keeps its routes");
+    CHECK(ApolloGQLRequestForLegacy(@"GET", @"r/popular/hot", @{ @"before": @"t3_x" }) == nil && !ApolloGQLCanAnswerPath(@"GET", @"r/popular/about"),
+          @"popular: forwards only, feeds only");
+    CHECK(ApolloGQLOperationHash(ApolloGQLOperationPopularFeed).length == 64, @"PopularFeedSdui is a known operation");
 
     // A thread.
     ApolloGQLRequest *thread = ApolloGQLRequestForLegacy(@"GET", @"comments/1y3u73f.json", @{ @"sort": @"top", @"limit": @500, @"raw_json": @1 });
@@ -654,7 +666,7 @@ static void TestPlan(void) {
     CHECK([ApolloGQLFeedOperation(hot) isEqualToString:@"SubredditFeedSdui"], @"a subreddit's feed operation");
     CHECK([first isEqualToDictionary:(@{ @"subredditName": @"Apple", @"sort": @"HOT" })], @"first page variables (%@)", first);
     CHECK([next isEqualToDictionary:(@{ @"subredditName": @"apple", @"sort": @"TOP", @"time": @"WEEK", @"after": @"dDNfbGFzdA==" })], @"next page variables (%@)", next);
-    CHECK(ApolloGQLPostsByIdsBatch == 30, @"batch size");
+    CHECK(ApolloGQLPostsByIdsBatch == 50, @"batch size");
 }
 
 int main(int argc, const char *argv[]) {

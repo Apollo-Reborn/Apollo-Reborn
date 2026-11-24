@@ -289,7 +289,8 @@ void ApolloGQLRouteAnswer(NSString *account, ApolloGQLRequest *request, ApolloGQ
             body = ApolloGQLRouteMoreComments(account, request, &calls, &outcome, &detail, &summary);
         } else if (request.kind == ApolloGQLRequestKindPostsInfo) {
             things = ApolloGQLRoutePosts(account, request.fullnames, request.rawJSON, &calls, &outcome, &detail);
-        } else if (request.kind == ApolloGQLRequestKindSubredditFeed || request.kind == ApolloGQLRequestKindHomeFeed) {
+        } else if (request.kind == ApolloGQLRequestKindSubredditFeed || request.kind == ApolloGQLRequestKindHomeFeed ||
+                   request.kind == ApolloGQLRequestKindPopularFeed) {
             BOOL home = request.kind == ApolloGQLRequestKindHomeFeed;
             NSString *operation = ApolloGQLFeedOperation(request);
             NSMutableArray<NSString *> *fullnames = [NSMutableArray array];
