@@ -856,14 +856,22 @@ NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
     if (isWrite && session.modhash.length > 0) {
         [mutable setValue:session.modhash forHTTPHeaderField:@"X-Modhash"];
     }
+    NSString *origin = [@"https://" stringByAppendingString:rewrittenURL.host ?: @"www.reddit.com"];
+    // Every cookie request carries a same-origin Referer, as a browser's would.
+    // www.reddit.com/api/me.json answers the 403 HTML block page without one
+    // (the same request with only the Referer added returns 200); other reads
+    // don't need it yet.
+    if (routeBearer.length == 0) {
+        [mutable setValue:[origin stringByAppendingString:@"/"] forHTTPHeaderField:@"Referer"];
+    }
     // Shape cookie-authed writes like the browser requests Reddit's anti-bot
     // expects: a same-origin fetch from www.reddit.com carries these on every
     // real browser write, and a bare non-browser-shaped POST is the likely
     // trigger for the "breaks right after I change a setting / edit my
-    // subscriptions" block-page reports. Reads pass without them today, so
-    // they're added on the write path only (smallest change that can help).
+    // subscriptions" block-page reports. Reads pass without Origin and the
+    // Sec-Fetch headers today, so those go on the write path only (smallest
+    // change that can help).
     if (isWrite) {
-        NSString *origin = [@"https://" stringByAppendingString:rewrittenURL.host ?: @"www.reddit.com"];
         [mutable setValue:origin forHTTPHeaderField:@"Origin"];
         [mutable setValue:[origin stringByAppendingString:@"/"] forHTTPHeaderField:@"Referer"];
         [mutable setValue:@"same-origin" forHTTPHeaderField:@"Sec-Fetch-Site"];
@@ -1000,6 +1008,9 @@ static void ApolloWebJSONVerifySessionThenAnnounce(NSString *username) {
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:probeURL];
     [req setValue:cookie forHTTPHeaderField:@"Cookie"];
     [req setValue:ApolloWebJSONBrowserUserAgent() forHTTPHeaderField:@"User-Agent"];
+    // Without a Referer, /api/me.json returns the 403 HTML block page, which
+    // ApolloWebJSONIdentityVerdict reads as a dead session even when it's fine.
+    [req setValue:@"https://www.reddit.com/" forHTTPHeaderField:@"Referer"];
     req.HTTPShouldHandleCookies = NO;
     req.timeoutInterval = 15.0;
 
