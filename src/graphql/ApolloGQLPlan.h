@@ -29,6 +29,17 @@ typedef NS_ENUM(NSInteger, ApolloGQLRequestKind) {
     // page's post ids (7, then 25), PostsByIds the posts. (r/all has no query
     // here: SubredditFeedSdui answers it "Resource not found".)
     ApolloGQLRequestKindPopularFeed,
+    // GET /user/<name>/submitted: the posts on someone's profile.
+    // SubmittedPostsFeedSdui gives the page's post ids (26), PostsByIds the
+    // posts. (The profile's summary and its mixed overview stay on their
+    // routes: GraphQL's summary has one karma total where Apollo shows post
+    // and comment karma, and it has no list of posts and comments together.)
+    ApolloGQLRequestKindUserPosts,
+    // GET /search and /r/<subreddit>/search, for posts: one SearchPosts call a
+    // page, whole posts in the answer. The same 25 posts in the same order as
+    // the legacy search for relevance, top of the week and one subreddit's
+    // newest (2026-11-24).
+    ApolloGQLRequestKindSearchPosts,
     // GET /r/<subreddit>/about: a subreddit's details. One SubredditInfoByName
     // call.
     ApolloGQLRequestKindSubredditAbout,
@@ -44,14 +55,25 @@ typedef NS_ENUM(NSInteger, ApolloGQLRequestKind) {
 @property (nonatomic, readonly) ApolloGQLRequestKind kind;
 // PostsInfo: the fullnames asked for, in order.
 @property (nonatomic, copy, readonly, nullable) NSArray<NSString *> *fullnames;
-// SubredditFeed and SubredditAbout: the subreddit. Every feed: GraphQL's sort ("HOT") and range
+// SubredditFeed and SubredditAbout: the subreddit. UserPosts: the account.
+// Every feed: GraphQL's sort ("HOT") and range
 // ("DAY", nil for sorts without one), the fullname the page starts after, and
 // how many posts the legacy request wanted.
 @property (nonatomic, copy, readonly, nullable) NSString *subreddit;
+@property (nonatomic, copy, readonly, nullable) NSString *username;
 @property (nonatomic, copy, readonly, nullable) NSString *sort;
 @property (nonatomic, copy, readonly, nullable) NSString *timeRange;
 @property (nonatomic, copy, readonly, nullable) NSString *after;
 @property (nonatomic, readonly) NSInteger limit;
+// SearchPosts: the search text (with "subreddit:<name>" added for a search of
+// one subreddit), GraphQL's sort ("RELEVANCE"), the range as the legacy API
+// names it ("week", nil for all time), whether NSFW results were asked for, and
+// the cursor of the page before (nil for the first).
+@property (nonatomic, copy, readonly, nullable) NSString *searchQuery;
+@property (nonatomic, copy, readonly, nullable) NSString *searchSort;
+@property (nonatomic, copy, readonly, nullable) NSString *searchRange;
+@property (nonatomic, readonly) BOOL searchIncludesNSFW;
+@property (nonatomic, copy, readonly, nullable) NSString *searchCursor;
 // Comments and MoreComments: the post, and GraphQL's comment sort
 // ("CONFIDENCE"). `limit` is how many comments a Comments request wanted, 0 for
 // Reddit's own page size.
@@ -82,6 +104,8 @@ extern NSString *const ApolloGQLOperationPostsByIds;
 extern NSString *const ApolloGQLOperationSubredditFeed;
 extern NSString *const ApolloGQLOperationHomeFeed;
 extern NSString *const ApolloGQLOperationPopularFeed;
+extern NSString *const ApolloGQLOperationUserPosts;
+extern NSString *const ApolloGQLOperationSearchPosts;
 extern NSString *const ApolloGQLOperationSubredditInfo;
 extern NSString *const ApolloGQLOperationPostComments;
 
@@ -99,7 +123,7 @@ NSData *_Nullable ApolloGQLOperationBody(NSString *name, NSDictionary *variables
 NSDictionary *ApolloGQLPostsByIdsVariables(NSArray<NSString *> *fullnames);
 
 // The operation that answers a feed request (SubredditFeed, HomeFeed,
-// PopularFeed), and its
+// PopularFeed, UserPosts), and its
 // variables. `after` is the fullname the page starts after (the request's own,
 // or the one a previous page of the same request ended on), or nil for the
 // first page.
@@ -107,6 +131,8 @@ NSString *ApolloGQLFeedOperation(ApolloGQLRequest *request);
 NSDictionary *ApolloGQLFeedVariables(ApolloGQLRequest *request, NSString *_Nullable after);
 
 NSDictionary *ApolloGQLSubredditInfoVariables(ApolloGQLRequest *request);
+
+NSDictionary *ApolloGQLSearchPostsVariables(ApolloGQLRequest *request);
 
 // A thread's first page (Comments) or the replies behind one of its "load
 // more" rows (MoreComments).

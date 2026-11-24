@@ -5,6 +5,8 @@ NSString *const ApolloGQLOperationPostsByIds = @"PostsByIds";
 NSString *const ApolloGQLOperationSubredditFeed = @"SubredditFeedSdui";
 NSString *const ApolloGQLOperationHomeFeed = @"HomeFeedSdui";
 NSString *const ApolloGQLOperationPopularFeed = @"PopularFeedSdui";
+NSString *const ApolloGQLOperationUserPosts = @"SubmittedPostsFeedSdui";
+NSString *const ApolloGQLOperationSearchPosts = @"SearchPosts";
 NSString *const ApolloGQLOperationSubredditInfo = @"SubredditInfoByName";
 NSString *const ApolloGQLOperationPostComments = @"PostComments";
 
@@ -32,6 +34,8 @@ static NSDictionary<NSString *, NSString *> *ApolloGQLOperationHashes(void) {
             ApolloGQLOperationPostComments: @"314f29c2494fd78c7844ef2c6b09acb4bef5b37ab50b4ddc01691d6d5c8433f8",
             ApolloGQLOperationHomeFeed: @"03d0ec0f2674005fe6c9777f952bd063ea2236527794344d4579fec8a669bea0",
             ApolloGQLOperationPopularFeed: @"5abe205dd071054dec10310876ca8ca1034f5a09a344659cc7e641ced2e799c2",
+            ApolloGQLOperationUserPosts: @"8bcd9296341ba003625abe814251e57437c42f0272d88b166c499f8bebc4cadb",
+            ApolloGQLOperationSearchPosts: @"08c50e2f9868ea1b8c4411cca57cd58353c729b4fa714cef66448600f76b0922",
             ApolloGQLOperationSubredditInfo: @"8c1815b07b762aee3c086cc84306f14b3907018e9ee152046c8e4d08ad4c7b88",
         };
     });
@@ -57,12 +61,14 @@ NSDictionary *ApolloGQLPostsByIdsVariables(NSArray<NSString *> *fullnames) {
 NSString *ApolloGQLFeedOperation(ApolloGQLRequest *request) {
     if (request.kind == ApolloGQLRequestKindHomeFeed) return ApolloGQLOperationHomeFeed;
     if (request.kind == ApolloGQLRequestKindPopularFeed) return ApolloGQLOperationPopularFeed;
+    if (request.kind == ApolloGQLRequestKindUserPosts) return ApolloGQLOperationUserPosts;
     return ApolloGQLOperationSubredditFeed;
 }
 
 NSDictionary *ApolloGQLFeedVariables(ApolloGQLRequest *request, NSString *after) {
     NSMutableDictionary *variables = [NSMutableDictionary dictionary];
     if (request.kind == ApolloGQLRequestKindSubredditFeed) variables[@"subredditName"] = request.subreddit ?: @"";
+    if (request.kind == ApolloGQLRequestKindUserPosts) variables[@"username"] = request.username ?: @"";
     variables[@"sort"] = request.sort ?: @"HOT";
     if (request.timeRange.length > 0) variables[@"time"] = request.timeRange;
     NSString *cursor = ApolloGQLFeedCursorForFullname(after);
@@ -72,6 +78,19 @@ NSDictionary *ApolloGQLFeedVariables(ApolloGQLRequest *request, NSString *after)
 
 NSDictionary *ApolloGQLSubredditInfoVariables(ApolloGQLRequest *request) {
     return @{ @"subredditName": request.subreddit ?: @"", @"includeRecapFields": @NO, @"includeDevvitData": @NO };
+}
+
+NSDictionary *ApolloGQLSearchPostsVariables(ApolloGQLRequest *request) {
+    NSMutableDictionary *variables = [NSMutableDictionary dictionary];
+    variables[@"query"] = request.searchQuery ?: @"";
+    variables[@"productSurface"] = @"SEARCH";
+    variables[@"sort"] = request.searchSort ?: @"RELEVANCE";
+    NSMutableArray<NSDictionary *> *filters = [NSMutableArray array];
+    if (request.searchIncludesNSFW) [filters addObject:@{ @"key": @"nsfw", @"value": @"1" }];
+    if (request.searchRange.length > 0) [filters addObject:@{ @"key": @"time_range", @"value": request.searchRange }];
+    variables[@"filters"] = filters;
+    if (request.searchCursor.length > 0) variables[@"afterCursor"] = request.searchCursor;
+    return variables;
 }
 
 NSDictionary *ApolloGQLPostCommentsVariables(ApolloGQLRequest *request) {
@@ -95,6 +114,12 @@ NSDictionary *ApolloGQLPostCommentsVariables(ApolloGQLRequest *request) {
 @property (nonatomic, readwrite) ApolloGQLRequestKind kind;
 @property (nonatomic, copy, readwrite, nullable) NSArray<NSString *> *fullnames;
 @property (nonatomic, copy, readwrite, nullable) NSString *subreddit;
+@property (nonatomic, copy, readwrite, nullable) NSString *username;
+@property (nonatomic, copy, readwrite, nullable) NSString *searchQuery;
+@property (nonatomic, copy, readwrite, nullable) NSString *searchSort;
+@property (nonatomic, copy, readwrite, nullable) NSString *searchRange;
+@property (nonatomic, readwrite) BOOL searchIncludesNSFW;
+@property (nonatomic, copy, readwrite, nullable) NSString *searchCursor;
 @property (nonatomic, copy, readwrite, nullable) NSString *sort;
 @property (nonatomic, copy, readwrite, nullable) NSString *timeRange;
 @property (nonatomic, copy, readwrite, nullable) NSString *after;
@@ -236,6 +261,19 @@ static ApolloGQLRequestKind ApolloGQLKindForPath(NSString *method, NSString *pat
     if ((segments.count == 2 || segments.count == 3) && [segments[0] isEqualToString:@"r"] && [segments[1] isEqualToString:@"popular"]) {
         if (segments.count == 2 || ApolloGQLFeedSorts()[segments[2]]) return ApolloGQLRequestKindPopularFeed;
     }
+    // A search for posts, everywhere or in one subreddit.
+    if (segments.count == 1 && [segments[0] isEqualToString:@"search"]) return ApolloGQLRequestKindSearchPosts;
+    if (segments.count == 3 && [segments[0] isEqualToString:@"r"] && [segments[2] isEqualToString:@"search"] && ApolloGQLSubredditIsPlain(segments[1])) {
+        return ApolloGQLRequestKindSearchPosts;
+    }
+    // The Posts list of a profile. A username is 3 to 20 letters, digits, "_"
+    // or "-"; the sort is a parameter here, not part of the path.
+    if (segments.count == 3 && [segments[0] isEqualToString:@"user"] && [segments[2] isEqualToString:@"submitted"]) {
+        NSCharacterSet *other = [[NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyz0123456789_-"] invertedSet];
+        if (segments[1].length >= 3 && segments[1].length <= 20 && [segments[1] rangeOfCharacterFromSet:other].location == NSNotFound) {
+            return ApolloGQLRequestKindUserPosts;
+        }
+    }
     // Home is a sort on its own ("hot.json"); Apollo names one every time.
     if (segments.count == 1 && ApolloGQLHomeSortIsAnswered(segments[0])) return ApolloGQLRequestKindHomeFeed;
     return 0;
@@ -267,6 +305,41 @@ ApolloGQLRequest *ApolloGQLRequestForLegacy(NSString *method, NSString *path, id
         }
         if (fullnames.count == 0 || fullnames.count > 100) return nil;
         request.fullnames = fullnames;
+        return request;
+    }
+
+    if (kind == ApolloGQLRequestKindSearchPosts) {
+        static NSDictionary<NSString *, NSString *> *sorts;
+        static NSSet<NSString *> *ranges, *yes;
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{
+            sorts = @{ @"relevance": @"RELEVANCE", @"hot": @"HOT", @"top": @"TOP", @"new": @"NEW", @"comments": @"COMMENTS" };
+            ranges = [NSSet setWithArray:@[ @"hour", @"day", @"week", @"month", @"year" ]];
+            yes = [NSSet setWithArray:@[ @"1", @"true", @"on", @"yes" ]];
+        });
+        // Posts only: the legacy search also finds subreddits and people
+        // (type=sr, type=user), which are other queries.
+        NSString *type = query[@"type"].lowercaseString;
+        if (type.length > 0 && ![type isEqualToString:@"link"]) return nil;
+        NSString *text = [query[@"q"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        NSString *sort = query[@"sort"].length > 0 ? sorts[query[@"sort"].lowercaseString] : @"RELEVANCE";
+        if (text.length == 0 || !sort || query[@"before"].length > 0) return nil;
+        // A later page is ours only when the page before it was: its `after`
+        // is then the cursor GraphQL gave, not a post's fullname.
+        NSString *after = query[@"after"];
+        NSString *cursor = after.length > 0 ? ApolloGQLSearchAfterCursor(after) : nil;
+        if (after.length > 0 && !cursor) return nil;
+        // /r/<sub>/search looks through that subreddit when restrict_sr says
+        // so; without it, it's a search of everything started from there.
+        if (segments.count == 3 && [yes containsObject:query[@"restrict_sr"].lowercaseString ?: @""]) {
+            text = [text stringByAppendingFormat:@" subreddit:%@", original.count > 1 ? original[1] : segments[1]];
+        }
+        NSString *range = query[@"t"].lowercaseString;
+        request.searchQuery = text;
+        request.searchSort = sort;
+        request.searchRange = [ranges containsObject:range] ? range : nil;
+        request.searchIncludesNSFW = [yes containsObject:query[@"include_over_18"].lowercaseString ?: @""];
+        request.searchCursor = cursor;
         return request;
     }
 
@@ -308,7 +381,18 @@ ApolloGQLRequest *ApolloGQLRequestForLegacy(NSString *method, NSString *path, id
     if (after.length > 0 && ![after hasPrefix:@"t3_"]) return nil;
     request.after = after.length > 0 ? after : nil;
     NSString *sort = nil;
-    if (kind == ApolloGQLRequestKindHomeFeed) {
+    if (kind == ApolloGQLRequestKindUserPosts) {
+        // Reddit's default for a profile is newest first. A profile has no
+        // "best" or "rising".
+        static NSDictionary<NSString *, NSString *> *sorts;
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{
+            sorts = @{ @"new": @"NEW", @"hot": @"HOT", @"top": @"TOP", @"controversial": @"CONTROVERSIAL" };
+        });
+        sort = query[@"sort"].length > 0 ? sorts[query[@"sort"].lowercaseString] : @"NEW";
+        if (!sort) return nil;
+        request.username = original.count > 1 ? original[1] : segments[1];
+    } else if (kind == ApolloGQLRequestKindHomeFeed) {
         sort = ApolloGQLFeedSorts()[segments[0]];
     } else if (kind == ApolloGQLRequestKindPopularFeed) {
         // Popular for one country is the legacy API's to answer.
@@ -327,8 +411,10 @@ ApolloGQLRequest *ApolloGQLRequestForLegacy(NSString *method, NSString *path, id
             ranges = [NSSet setWithArray:@[ @"hour", @"day", @"week", @"month", @"year", @"all" ]];
         });
         NSString *range = query[@"t"].lowercaseString;
-        // Reddit's own default for these sorts is the last day.
-        request.timeRange = [ranges containsObject:range] ? range.uppercaseString : @"DAY";
+        // Reddit's own default for these sorts is the last day, and all time
+        // on a profile.
+        NSString *fallback = kind == ApolloGQLRequestKindUserPosts ? @"ALL" : @"DAY";
+        request.timeRange = [ranges containsObject:range] ? range.uppercaseString : fallback;
     }
     NSInteger limit = query[@"limit"].integerValue;
     request.limit = limit > 0 ? MIN(limit, 100) : 25;

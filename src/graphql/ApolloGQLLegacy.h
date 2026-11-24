@@ -64,6 +64,17 @@ NSString *_Nullable ApolloGQLMoreTokenCursor(NSString *_Nullable token, NSIntege
 NSDictionary<NSString *, id> *_Nullable ApolloGQLLegacySubredditData(NSDictionary *_Nullable subreddit, BOOL rawJSON);
 NSDictionary *_Nullable ApolloGQLLegacySubredditAbout(NSDictionary *answer, BOOL rawJSON);
 
+// The Listing of posts /search.json sends, for a SearchPosts answer (its whole
+// JSON body; its posts are whole, as PostsByIds' are). The Listing's `after` is
+// ApolloGQLSearchAfterToken of the answer's cursor, or null on the last page.
+// nil when the answer has no results list.
+NSDictionary *_Nullable ApolloGQLLegacySearchListing(NSDictionary *answer, BOOL rawJSON);
+
+// The `after` a search page is given, and the cursor back out of one. nil for
+// an `after` that isn't one of these (a real fullname).
+NSString *ApolloGQLSearchAfterToken(NSString *cursor);
+NSString *_Nullable ApolloGQLSearchAfterCursor(NSString *_Nullable token);
+
 // The post fullnames of a feed answer (SubredditFeedSdui, HomeFeedSdui), in
 // order, without the cells that aren't posts (sort bar, community suggestions,
 // ads). `joinedOnly` also leaves out the posts Reddit suggests from subreddits

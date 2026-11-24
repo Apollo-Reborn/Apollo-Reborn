@@ -283,7 +283,14 @@ void ApolloGQLRouteAnswer(NSString *account, ApolloGQLRequest *request, ApolloGQ
         id body = nil;
         NSString *summary = nil;
 
-        if (request.kind == ApolloGQLRequestKindSubredditAbout) {
+        if (request.kind == ApolloGQLRequestKindSearchPosts) {
+            calls++;
+            NSDictionary *answer = ApolloGQLRouteCall(account, ApolloGQLOperationSearchPosts, ApolloGQLSearchPostsVariables(request),
+                                                      &outcome, &detail);
+            body = answer ? ApolloGQLLegacySearchListing(answer, request.rawJSON) : nil;
+            if (answer && !body) { outcome = ApolloGQLCallFailed; detail = @"SearchPosts answered without results"; }
+            summary = [NSString stringWithFormat:@"%lu search results", (unsigned long)[body[@"data"][@"children"] count]];
+        } else if (request.kind == ApolloGQLRequestKindSubredditAbout) {
             calls++;
             NSDictionary *answer = ApolloGQLRouteCall(account, ApolloGQLOperationSubredditInfo, ApolloGQLSubredditInfoVariables(request),
                                                       &outcome, &detail);
@@ -300,7 +307,7 @@ void ApolloGQLRouteAnswer(NSString *account, ApolloGQLRequest *request, ApolloGQ
         } else if (request.kind == ApolloGQLRequestKindPostsInfo) {
             things = ApolloGQLRoutePosts(account, request.fullnames, request.rawJSON, &calls, &outcome, &detail);
         } else if (request.kind == ApolloGQLRequestKindSubredditFeed || request.kind == ApolloGQLRequestKindHomeFeed ||
-                   request.kind == ApolloGQLRequestKindPopularFeed) {
+                   request.kind == ApolloGQLRequestKindPopularFeed || request.kind == ApolloGQLRequestKindUserPosts) {
             BOOL home = request.kind == ApolloGQLRequestKindHomeFeed;
             NSString *operation = ApolloGQLFeedOperation(request);
             NSMutableArray<NSString *> *fullnames = [NSMutableArray array];

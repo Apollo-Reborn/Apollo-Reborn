@@ -591,9 +591,10 @@ NSArray<NSDictionary *> *ApolloGQLLegacyLinksFromPostsByIds(NSDictionary *answer
 // "<depth>:<cursor>".
 static NSString *const kApolloGQLMoreTokenPrefix = @"gqlmore";
 
-NSString *ApolloGQLMoreToken(NSString *cursor, NSInteger depth) {
-    NSData *bytes = [[NSString stringWithFormat:@"%ld:%@", (long)depth, cursor] dataUsingEncoding:NSUTF8StringEncoding];
-    NSMutableString *token = [kApolloGQLMoreTokenPrefix mutableCopy];
+// `text` as a token: `prefix`, then the hex of its UTF-8.
+static NSString *ApolloGQLHexToken(NSString *prefix, NSString *text) {
+    NSData *bytes = [text dataUsingEncoding:NSUTF8StringEncoding];
+    NSMutableString *token = [prefix mutableCopy];
     const uint8_t *raw = bytes.bytes;
     for (NSUInteger i = 0; i < bytes.length; i++) [token appendFormat:@"%02x", raw[i]];
     return token;
@@ -605,9 +606,10 @@ static int ApolloGQLHexValue(unichar character) {
     return -1;
 }
 
-NSString *ApolloGQLMoreTokenCursor(NSString *token, NSInteger *depth) {
-    if (![token isKindOfClass:[NSString class]] || ![token hasPrefix:kApolloGQLMoreTokenPrefix]) return nil;
-    NSString *hex = [token substringFromIndex:kApolloGQLMoreTokenPrefix.length];
+// The text a token of `prefix` carries, or nil when it isn't one.
+static NSString *ApolloGQLHexTokenText(NSString *prefix, NSString *token) {
+    if (![token isKindOfClass:[NSString class]] || ![token hasPrefix:prefix]) return nil;
+    NSString *hex = [token substringFromIndex:prefix.length];
     if (hex.length == 0 || hex.length % 2 != 0) return nil;
     NSMutableData *bytes = [NSMutableData dataWithCapacity:hex.length / 2];
     for (NSUInteger i = 0; i < hex.length; i += 2) {
@@ -616,7 +618,15 @@ NSString *ApolloGQLMoreTokenCursor(NSString *token, NSInteger *depth) {
         uint8_t byte = (uint8_t)(high << 4 | low);
         [bytes appendBytes:&byte length:1];
     }
-    NSString *text = [[NSString alloc] initWithData:bytes encoding:NSUTF8StringEncoding];
+    return [[NSString alloc] initWithData:bytes encoding:NSUTF8StringEncoding];
+}
+
+NSString *ApolloGQLMoreToken(NSString *cursor, NSInteger depth) {
+    return ApolloGQLHexToken(kApolloGQLMoreTokenPrefix, [NSString stringWithFormat:@"%ld:%@", (long)depth, cursor]);
+}
+
+NSString *ApolloGQLMoreTokenCursor(NSString *token, NSInteger *depth) {
+    NSString *text = ApolloGQLHexTokenText(kApolloGQLMoreTokenPrefix, token);
     NSRange colon = [text rangeOfString:@":"];
     if (!text || colon.location == NSNotFound || colon.location == 0 || colon.location + 1 >= text.length) return nil;
     if (depth) *depth = MAX(0, [[text substringToIndex:colon.location] integerValue]);
@@ -960,6 +970,37 @@ NSDictionary<NSString *, id> *ApolloGQLLegacySubredditData(NSDictionary *subredd
 NSDictionary *ApolloGQLLegacySubredditAbout(NSDictionary *answer, BOOL rawJSON) {
     NSDictionary *data = ApolloGQLLegacySubredditData(ApolloGQLDict(ApolloGQLDict(answer, @"data"), @"subredditInfoByName"), rawJSON);
     return data ? ApolloGQLLegacyThing(@"t5", data) : nil;
+}
+
+#pragma mark - Search
+
+// A search answer pages by an opaque cursor (a count, in base64), where the
+// legacy API pages by the last post's fullname. The cursor rides in the
+// Listing's `after`, which Apollo sends back untouched for the next page.
+static NSString *const kApolloGQLSearchAfterPrefix = @"gqlafter";
+
+NSString *ApolloGQLSearchAfterToken(NSString *cursor) {
+    return ApolloGQLHexToken(kApolloGQLSearchAfterPrefix, cursor);
+}
+
+NSString *ApolloGQLSearchAfterCursor(NSString *token) {
+    NSString *cursor = ApolloGQLHexTokenText(kApolloGQLSearchAfterPrefix, token);
+    return cursor.length > 0 ? cursor : nil;
+}
+
+NSDictionary *ApolloGQLLegacySearchListing(NSDictionary *answer, BOOL rawJSON) {
+    NSDictionary *posts = ApolloGQLDict(ApolloGQLDict(ApolloGQLDict(ApolloGQLDict(answer, @"data"), @"search"), @"general"), @"posts");
+    NSArray *edges = ApolloGQLArray(posts, @"edges");
+    if (!edges) return nil;
+    NSMutableArray<NSDictionary *> *things = [NSMutableArray array];
+    for (id edge in edges) {
+        NSDictionary *data = ApolloGQLLegacyLinkData(ApolloGQLDict(edge, @"node") ?: @{}, rawJSON);
+        // A post on someone's profile has no subreddit to show it under.
+        if (data && [data[@"subreddit"] length] > 0) [things addObject:ApolloGQLLegacyThing(@"t3", data)];
+    }
+    NSDictionary *pageInfo = ApolloGQLDict(posts, @"pageInfo");
+    NSString *cursor = ApolloGQLBool(pageInfo, @"hasNextPage") ? ApolloGQLString(pageInfo, @"endCursor") : nil;
+    return ApolloGQLLegacyListing(things, cursor.length > 0 ? ApolloGQLSearchAfterToken(cursor) : nil);
 }
 
 #pragma mark - Feeds

@@ -312,6 +312,31 @@ static void TestCommentThreads(NSString *repoRoot) {
     CHECK([empty[1][@"data"][@"children"] isEqualToArray:@[]], @"a thread without comments");
 }
 
+static NSDictionary *MinimalPost(NSDictionary *overrides);
+
+static void TestSearchListing(void) {
+    // A search answer's posts are whole, like PostsByIds'; its cursor rides in
+    // the Listing's `after`.
+    NSDictionary *profilePost = MinimalPost(@{ @"id": @"t3_onprofile", @"subreddit": [NSNull null] });
+    NSDictionary *answer = @{ @"data": @{ @"search": @{ @"general": @{ @"posts": @{
+        @"edges": @[ @{ @"node": MinimalPost(@{ @"id": @"t3_one" }) }, @{ @"node": profilePost }, @{ @"node": [NSNull null] }, @{ @"node": MinimalPost(@{ @"id": @"t3_two" }) } ],
+        @"pageInfo": @{ @"endCursor": @"MjQ=", @"hasNextPage": @YES } } } } } };
+    NSDictionary *listing = ApolloGQLLegacySearchListing(answer, YES);
+    NSArray *children = listing[@"data"][@"children"];
+    CHECK([listing[@"kind"] isEqualToString:@"Listing"] && children.count == 2 && [children[0][@"kind"] isEqualToString:@"t3"] &&
+          [children[0][@"data"][@"name"] isEqualToString:@"t3_one"] && [children[1][@"data"][@"name"] isEqualToString:@"t3_two"], @"the posts, in order (%@)", [children valueForKeyPath:@"data.name"]);
+    NSString *after = listing[@"data"][@"after"];
+    CHECK([ApolloGQLSearchAfterCursor(after) isEqualToString:@"MjQ="] && ![after hasPrefix:@"t3_"], @"the cursor as the next page's after (%@)", after);
+    NSMutableDictionary *last = [answer mutableCopy];
+    last[@"data"] = @{ @"search": @{ @"general": @{ @"posts": @{ @"edges": @[], @"pageInfo": @{ @"endCursor": @"MjQ=", @"hasNextPage": @NO } } } } };
+    NSDictionary *lastListing = ApolloGQLLegacySearchListing(last, YES);
+    CHECK([lastListing[@"data"][@"children"] isEqualToArray:@[]] && lastListing[@"data"][@"after"] == [NSNull null], @"no results, no next page");
+    CHECK(ApolloGQLLegacySearchListing(@{ @"data": @{ @"search": [NSNull null] } }, YES) == nil && ApolloGQLLegacySearchListing(@{}, YES) == nil, @"not a search answer");
+    for (id notToken in @[ @"t3_abc", @"gqlafter", @"gqlafterzz", @"", [NSNull null] ]) {
+        CHECK(ApolloGQLSearchAfterCursor(notToken) == nil, @"%@ isn't a search cursor", notToken);
+    }
+}
+
 static void TestMoreToken(void) {
     for (NSString *cursor in @[ @"commenttree:8530017d,::3:d1:t1_19t3ia29toizk", @"a:b,c|d\"e'f\\g h\n", @"ünïcödé ✓", @":" ]) {
         NSInteger depth = -1;
@@ -625,7 +650,7 @@ static void TestPlan(void) {
     CHECK(ApolloGQLRequestForLegacy(@"GET", @"r/apple/hot", @{ @"before": @"t3_x" }) == nil, @"no backwards paging");
     CHECK(ApolloGQLRequestForLegacy(@"GET", @"r/apple/hot", @{ @"after": @"t1_x" }) == nil, @"only a post can be a feed cursor");
     for (NSString *path in @[ @"r/all/hot", @"r/all", @"r/mod/new", @"r/friends", @"r/random", @"r/apple+ios/hot", @"r/all-apple/hot",
-                              @"r/u_someone/hot", @"r/all/about", @"r/popular/about", @"r/u_someone/about", @"r/apple+ios/about", @"r/apple/about/rules", @"r/apple/comments", @"r/apple/search", @"", @"about", @"best", @"user/x/submitted",
+                              @"r/u_someone/hot", @"r/all/about", @"r/popular/about", @"r/u_someone/about", @"r/apple+ios/about", @"r/apple/about/rules", @"r/apple/comments", @"r/apple/wiki", @"", @"about", @"best", @"user/x/submitted",
                               @"r/apple/wiki/index", @"r/a/hot" ]) {
         CHECK(ApolloGQLRequestForLegacy(@"GET", path, nil) == nil, @"%@ isn't a feed GraphQL answers", path);
         CHECK(!ApolloGQLCanAnswerPath(@"GET", path), @"%@ by path", path);
@@ -660,6 +685,48 @@ static void TestPlan(void) {
     CHECK(ApolloGQLRequestForLegacy(@"GET", @"r/popular/hot", @{ @"geo_filter": @"GLOBAL" }).kind == ApolloGQLRequestKindPopularFeed &&
           ApolloGQLRequestForLegacy(@"GET", @"r/popular/hot", @{ @"geo_filter": @"CA" }) == nil, @"popular for one country keeps its routes");
     CHECK(ApolloGQLRequestForLegacy(@"GET", @"r/popular/hot", @{ @"before": @"t3_x" }) == nil, @"popular: forwards only");
+
+    // A search for posts.
+    ApolloGQLRequest *search = ApolloGQLRequestForLegacy(@"GET", @"search.json", @{ @"q": @" iphone battery ", @"sort": @"top", @"t": @"week", @"restrict_sr": @"false",
+                                                                                  @"limit": @25, @"include_over_18": @"on" });
+    CHECK(search.kind == ApolloGQLRequestKindSearchPosts && [search.searchQuery isEqualToString:@"iphone battery"] && [search.searchSort isEqualToString:@"TOP"],
+          @"a search (%@ %@)", search.searchQuery, search.searchSort);
+    NSDictionary *searchVariables = ApolloGQLSearchPostsVariables(search);
+    CHECK([searchVariables isEqualToDictionary:(@{ @"query": @"iphone battery", @"productSurface": @"SEARCH", @"sort": @"TOP",
+                                                   @"filters": @[ @{ @"key": @"nsfw", @"value": @"1" }, @{ @"key": @"time_range", @"value": @"week" } ] })],
+          @"search variables (%@)", searchVariables);
+    ApolloGQLRequest *inSubreddit = ApolloGQLRequestForLegacy(@"GET", @"r/Apple/search.json", @{ @"q": @"battery", @"restrict_sr": @"true", @"t": @"all" });
+    CHECK([inSubreddit.searchQuery isEqualToString:@"battery subreddit:Apple"] && [inSubreddit.searchSort isEqualToString:@"RELEVANCE"] && inSubreddit.searchRange == nil,
+          @"a search of one subreddit, by relevance, all time (%@)", inSubreddit.searchQuery);
+    CHECK([ApolloGQLSearchPostsVariables(inSubreddit)[@"filters"] isEqualToArray:@[]] && ApolloGQLSearchPostsVariables(inSubreddit)[@"afterCursor"] == nil, @"no filters, first page");
+    CHECK([ApolloGQLRequestForLegacy(@"GET", @"r/apple/search", @{ @"q": @"battery" }).searchQuery isEqualToString:@"battery"], @"without restrict_sr it searches everything");
+    NSString *nextPage = ApolloGQLSearchAfterToken(@"MjQ=");
+    ApolloGQLRequest *page2 = ApolloGQLRequestForLegacy(@"GET", @"search", @{ @"q": @"battery", @"after": nextPage });
+    CHECK([page2.searchCursor isEqualToString:@"MjQ="] && [ApolloGQLSearchPostsVariables(page2)[@"afterCursor"] isEqualToString:@"MjQ="], @"the next page by the cursor (%@)", page2.searchCursor);
+    CHECK(ApolloGQLRequestForLegacy(@"GET", @"search", @{ @"q": @"battery", @"after": @"t3_abc" }) == nil, @"a page after one the legacy API sent keeps its routes");
+    CHECK(ApolloGQLRequestForLegacy(@"GET", @"search", @{ @"q": @"  " }) == nil && ApolloGQLRequestForLegacy(@"GET", @"search", @{ @"q": @"x", @"type": @"sr" }) == nil &&
+          ApolloGQLRequestForLegacy(@"GET", @"search", @{ @"q": @"x", @"type": @"user" }) == nil && ApolloGQLRequestForLegacy(@"GET", @"search", @{ @"q": @"x", @"sort": @"best" }) == nil,
+          @"nothing to search, other kinds of result, unknown sort");
+    CHECK(ApolloGQLRequestForLegacy(@"GET", @"search", @{ @"q": @"x", @"type": @"link" }).kind == ApolloGQLRequestKindSearchPosts, @"type=link is a post search");
+    for (NSString *path in @[ @"subreddits/search", @"users/search", @"r/apple+ios/search", @"r/all/search", @"api/search_subreddits", @"search/extra" ]) {
+        CHECK(!ApolloGQLCanAnswerPath(@"GET", path), @"%@ isn't a post search GraphQL answers", path);
+    }
+    CHECK(!ApolloGQLCanAnswerPath(@"POST", @"search.json") && ApolloGQLOperationHash(ApolloGQLOperationSearchPosts).length == 64, @"reads only; a known operation");
+
+    // The Posts list of a profile.
+    ApolloGQLRequest *userPosts = ApolloGQLRequestForLegacy(@"GET", @"user/Some-One_1/submitted.json", @{ @"api_type": @"json", @"limit": @25 });
+    CHECK(userPosts.kind == ApolloGQLRequestKindUserPosts && [userPosts.username isEqualToString:@"Some-One_1"] && [ApolloGQLFeedOperation(userPosts) isEqualToString:@"SubmittedPostsFeedSdui"],
+          @"a profile's posts (%@)", userPosts.username);
+    CHECK([ApolloGQLFeedVariables(userPosts, nil) isEqualToDictionary:(@{ @"username": @"Some-One_1", @"sort": @"NEW" })], @"newest first by default (%@)", ApolloGQLFeedVariables(userPosts, nil));
+    ApolloGQLRequest *userTop = ApolloGQLRequestForLegacy(@"GET", @"/user/someone/submitted/", @{ @"sort": @"top", @"after": @"t3_last" });
+    CHECK([ApolloGQLFeedVariables(userTop, userTop.after) isEqualToDictionary:(@{ @"username": @"someone", @"sort": @"TOP", @"time": @"ALL", @"after": @"dDNfbGFzdA==" })],
+          @"top of all time, next page (%@)", ApolloGQLFeedVariables(userTop, userTop.after));
+    CHECK(ApolloGQLRequestForLegacy(@"GET", @"user/someone/submitted", @{ @"sort": @"rising" }) == nil &&
+          ApolloGQLRequestForLegacy(@"GET", @"user/someone/submitted", @{ @"before": @"t3_x" }) == nil, @"no such sort, no backwards paging");
+    for (NSString *path in @[ @"user/someone/overview", @"user/someone/comments", @"user/someone/about", @"user/someone/saved", @"user/ab/submitted",
+                              @"user/some.one/submitted", @"user/someone/submitted/extra", @"u/someone/submitted" ]) {
+        CHECK(!ApolloGQLCanAnswerPath(@"GET", path), @"%@ isn't a profile's posts", path);
+    }
 
     // A subreddit's details.
     ApolloGQLRequest *about = ApolloGQLRequestForLegacy(@"GET", @"r/Apple/about.json", @{ @"api_type": @"json", @"raw_json": @1 });
@@ -742,6 +809,7 @@ int main(int argc, const char *argv[]) {
         TestSubredditsAgainstLegacy(@(argv[1]));
         TestCommentThreads(@(argv[1]));
         TestMoreToken();
+        TestSearchListing();
         TestPostBasics();
         TestVideoFallback();
         TestListingAndFeed();
