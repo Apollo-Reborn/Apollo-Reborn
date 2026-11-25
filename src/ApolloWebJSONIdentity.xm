@@ -69,6 +69,7 @@
 
 #import "ApolloWebJSON.h"
 #import "ApolloWebJSONRoutes.h"
+#import "ApolloWebJSONFriends.h"
 #import "ApolloToast.h"
 #import "ApolloWebJSONRouteUpdates.h"
 #import "ApolloState.h"
@@ -938,6 +939,116 @@ static NSString *ApolloWebJSONWebSessionUsernameForClient(RDKClient *client) {
     return ApolloWebJSONWebSessionUsernameForBearer(ApolloWebJSONCredentialTokenString(credential));
 }
 
+#pragma mark - Add / Remove Friend (API-Key-Free, issue #1787)
+
+// Apollo's profile menu calls -addFriendWithUsername:completion: (0x100041330)
+// and -removeFriendWithUsername:completion: (0x1000418d0), which RedditKit
+// sends as PUT / DELETE /api/v1/me/friends/<name>. For a cookie account the
+// transport sends those to www.reddit.com, which answers its 403 block page;
+// RedditKit passes that on with no error and Apollo's check is only
+// `error == nil` (0x1001098e8), so the profile said "Added friend!", the menu
+// turned to Remove Friend, and the friend was gone after a relaunch. Sends the
+// web's own POST /api/friend or /api/unfriend instead (ApolloWebJSONFriends.h)
+// through -postPath:, which the cookie transport routes like any other /api/
+// write. Apollo's block is RedditKit's (response, object, error), the same one
+// -postPath: and -getPath: take, so it's passed on wrapped, not adapted.
+// An API-key account keeps RedditKit's own request (its PUT and DELETE work on
+// oauth.reddit.com). Main thread (Apollo's menu action); RedditKit calls the
+// completions on the main queue.
+
+typedef void (^ApolloWebJSONFriendCompletion)(NSHTTPURLResponse *, id, NSError *);
+
+// RedditKit's GET and POST. Both hand their block straight to
+// -taskWithMethod:... (0x100008fcc, 0x100008fe4), like -putPath: and
+// -deletePath: do.
+@interface RDKClient (ApolloWebJSONFriendWrites)
+- (id)getPath:(NSString *)path parameters:(id)parameters completion:(ApolloWebJSONFriendCompletion)completion;
+- (id)postPath:(NSString *)path parameters:(id)parameters completion:(ApolloWebJSONFriendCompletion)completion;
+@end
+
+// Lowercased web-session username -> that account's t2_ fullname, learned from
+// /api/me.json the first time the account adds or removes a friend in a launch
+// (its currentUser reads "t2_(null)": www's /api/v1/me has no id). An
+// account's id never changes, so an entry never goes stale; one per account.
+static NSMutableDictionary<NSString *, NSString *> *ApolloWebJSONFriendContainers(void) {
+    static NSMutableDictionary<NSString *, NSString *> *containers;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ containers = [NSMutableDictionary dictionary]; });
+    return containers;
+}
+
+static NSError *ApolloWebJSONFriendError(NSInteger status, NSString *message) {
+    return [NSError errorWithDomain:@"ApolloWebJSONFriends"
+                               code:(status >= 400 ? status : 1)
+                           userInfo:@{NSLocalizedDescriptionKey: message}];
+}
+
+static id ApolloWebJSONPostFriendWrite(RDKClient *client, NSString *sessionUsername, NSString *name,
+                                       NSString *container, BOOL add, ApolloWebJSONFriendCompletion original) {
+    NSString *verb = add ? @"Add" : @"Remove";
+    NSString *path = add ? ApolloWebJSONFriendAddPath : ApolloWebJSONFriendRemovePath;
+    NSDictionary *parameters = ApolloWebJSONFriendWriteParameters(name, container);
+    ApolloWebJSONFriendCompletion wrapped = ^(NSHTTPURLResponse *response, id object, NSError *error) {
+        NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]] ? response.statusCode : 0;
+        NSString *failure = error ? nil : ApolloWebJSONFriendWriteFailureMessage(status, object);
+        ApolloLog(@"[WebJSON] %@ Friend for u/%@ via POST /%@: HTTP %ld, %@", verb, sessionUsername, path,
+                  (long)status, error ? [NSString stringWithFormat:@"error %ld", (long)error.code]
+                                      : (failure ?: @"applied"));
+        // A refusal must not reach Apollo as success (it would say "Added
+        // friend!" again); with an error Apollo shows its own error banner.
+        if (original) original(response, object, failure ? ApolloWebJSONFriendError(status, failure) : error);
+    };
+    ApolloLog(@"[WebJSON] %@ Friend for u/%@: sending POST /%@ (www refuses /api/v1/me/friends for the cookie)",
+              verb, sessionUsername, path);
+    return [client postPath:path parameters:parameters completion:wrapped];
+}
+
+// YES when the write was taken over (*outTask is what Apollo gets back: the
+// /api/me.json lookup's task when the id isn't known yet. Both Apollo callers,
+// 0x1007b4b04 and 0x1007b4e34, discard it). NO leaves RedditKit's own request
+// in place: an API-key account, or no username to send.
+static BOOL ApolloWebJSONSendFriendWrite(RDKClient *client, id username, BOOL add, id completion, id *outTask) {
+    NSString *sessionUsername = ApolloWebJSONWebSessionUsernameForClient(client);
+    if (sessionUsername.length == 0) return NO;
+    NSString *name = [username isKindOfClass:[NSString class]] ? username : nil;
+    if (name.length == 0) return NO;
+    NSString *accountKey = sessionUsername.lowercaseString;
+    ApolloWebJSONFriendCompletion original = completion;
+
+    // The client's own account, never the active one: Apollo hands the call to
+    // the client of the account whose menu was used.
+    NSString *container = ApolloWebJSONThingProperty([client currentUser], @selector(fullName));
+    if (!ApolloWebJSONFriendWriteParameters(name, container)) {
+        @synchronized (ApolloWebJSONFriendContainers()) { container = ApolloWebJSONFriendContainers()[accountKey]; }
+    }
+    if (container) {
+        id task = ApolloWebJSONPostFriendWrite(client, sessionUsername, name, container, add, original);
+        if (outTask) *outTask = task;
+        return YES;
+    }
+
+    NSString *verb = add ? @"Add" : @"Remove";
+    ApolloLog(@"[WebJSON] %@ Friend for u/%@: looking up the account id first (/api/me.json)", verb, sessionUsername);
+    id task = [client getPath:@"api/me.json" parameters:nil
+                   completion:^(NSHTTPURLResponse *response, id object, NSError *error) {
+        NSString *fullName = error ? nil : ApolloWebJSONFriendAccountFullNameFromMe(object, sessionUsername);
+        if (fullName) {
+            @synchronized (ApolloWebJSONFriendContainers()) { ApolloWebJSONFriendContainers()[accountKey] = fullName; }
+            ApolloWebJSONPostFriendWrite(client, sessionUsername, name, fullName, add, original);
+            return;
+        }
+        NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]] ? response.statusCode : 0;
+        ApolloLog(@"[WebJSON] %@ Friend for u/%@: no account id from /api/me.json (HTTP %ld%@), not sent",
+                  verb, sessionUsername, (long)status,
+                  error ? [NSString stringWithFormat:@", error %ld", (long)error.code] : @"");
+        // Without the id Reddit would accept the form and friend nobody, so
+        // nothing is sent and Apollo hears it failed.
+        if (original) original(response, object, error ?: ApolloWebJSONFriendError(status, @"Couldn't read your account id"));
+    }];
+    if (outTask) *outTask = task;
+    return YES;
+}
+
 // Set on the main thread while a request is re-sent after its web-bearer mint,
 // so that pass never defers again: one mint attempt per request, whatever it
 // returns.
@@ -1258,6 +1369,21 @@ static void ApolloSubscriptionWalkDeliver(NSString *walkUsername, NSHTTPURLRespo
     if (tried == 0) return %orig;
     sApolloWebJSONRoutesTriedToStamp = 0;
     return %orig(ApolloWebJSONRequestMarkingTriedRoutes(request, tried), completionHandler);
+}
+
+// Add / Remove Friend for an API-Key-Free account: see ApolloWebJSONSendFriendWrite.
+// Apollo calls these two directly (-addFriend:/-removeFriend:completion: only
+// forward to them), so hooking them covers every entry point.
+- (id)addFriendWithUsername:(id)username completion:(id)completion {
+    id task = nil;
+    if (ApolloWebJSONSendFriendWrite(self, username, YES, completion, &task)) return task;
+    return %orig;
+}
+
+- (id)removeFriendWithUsername:(id)username completion:(id)completion {
+    id task = nil;
+    if (ApolloWebJSONSendFriendWrite(self, username, NO, completion, &task)) return task;
+    return %orig;
 }
 %end
 
