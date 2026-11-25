@@ -73,17 +73,12 @@ static RDKPagination *ApolloEmptyFeedPagination(UIViewController *feed) {
     return [pagination respondsToSelector:@selector(after)] ? pagination : nil;
 }
 
-%group ApolloEmptyFeedNextPageHooks
-
-%hook _TtC6Apollo11ListAdapter
-
-- (BOOL)shouldBatchFetchForTableNode:(id)tableNode {
-    BOOL shouldFetch = %orig;
-    // ASDK asks on main; Apollo's Swift state is only read there.
-    if (shouldFetch || ![NSThread isMainThread]) return shouldFetch;
+// Whether Apollo's NO for this list is the empty-feed case above: a feed with
+// no posts left and a next page to load. Main thread.
+static BOOL ApolloEmptyFeedHasNextPage(id adapter) {
     // The delegate is the controller that just answered: the forwarder weak-loads
     // `delegate` and calls its shouldBatchFetch(for:) witness.
-    UIViewController *feed = ApolloReadSwiftWeakObjectIvar(self, "delegate");
+    UIViewController *feed = ApolloReadSwiftWeakObjectIvar(adapter, "delegate");
     if (![feed isKindOfClass:ApolloClassPostsViewController]) return NO;
     // Posts left (or `links` unreadable) or searching: Apollo's answer stands.
     if (ApolloEmptyFeedLinkCount(feed) != 0 || ApolloReadBoolIvar(feed, "isSearching", YES)) return NO;
@@ -100,6 +95,25 @@ static RDKPagination *ApolloEmptyFeedPagination(UIViewController *feed) {
     return YES;
 }
 
+// Defined in ApolloListEmptyState.xm: while Reddit's rate limit holds the
+// active account, a next page waits for the reset instead of being requested
+// and refused on every scroll.
+extern "C" BOOL ApolloListNextPageWaitsForRateLimit(id tableNode);
+
+%group ApolloEmptyFeedNextPageHooks
+
+%hook _TtC6Apollo11ListAdapter
+
+- (BOOL)shouldBatchFetchForTableNode:(id)tableNode {
+    BOOL shouldFetch = %orig;
+    // ASDK asks on main; Apollo's Swift state is only read there.
+    if (![NSThread isMainThread]) return shouldFetch;
+    if (!shouldFetch) shouldFetch = ApolloEmptyFeedHasNextPage(self);
+    // Every list's next page, whichever of the two said yes.
+    if (shouldFetch && ApolloListNextPageWaitsForRateLimit(tableNode)) return NO;
+    return shouldFetch;
+}
+
 %end
 
 %end
@@ -112,9 +126,9 @@ static RDKPagination *ApolloEmptyFeedPagination(UIViewController *feed) {
         !class_getInstanceVariable(feedClass, "links") ||
         !class_getInstanceVariable(feedClass, "$__lazy_storage_$_pagination") ||
         !class_getInstanceVariable(feedClass, "isSearching")) {
-        ApolloLog(@"[EmptyFeedNextPage] ListAdapter or PostsViewController changed shape; hook NOT installed");
+        ApolloLog(@"[EmptyFeedNextPage] ListAdapter or PostsViewController changed shape; hook NOT installed (next pages won't wait for a rate limit either)");
         return;
     }
     %init(ApolloEmptyFeedNextPageHooks);
-    ApolloLog(@"[EmptyFeedNextPage] hook installed (a feed with no posts left loads its next page)");
+    ApolloLog(@"[EmptyFeedNextPage] hook installed (a feed with no posts left loads its next page; next pages wait for a rate limit)");
 }
