@@ -18,7 +18,9 @@ extern "C" {
 // Reddit's own apps read through, and its budget is counted apart from the
 // cookie's (750 per ten minutes on the same accounts, measured 2026-11-23).
 //
-// Off unless UDKeyWebJSONGraphQLEnabled is set (sWebJSONGraphQLEnabled).
+// On by default (UDKeyWebJSONGraphQLEnabled, sWebJSONGraphQLEnabled; the switch
+// is on the Routes screen). keyless-routes.json can switch it off for every
+// install (ApolloWebJSONRouteSetRemoteGraphQLOff).
 
 // YES while the route may answer requests for `account`: the switch is on, the
 // account has a web session, and Reddit hasn't just rate-limited its GraphQL
@@ -34,6 +36,16 @@ BOOL ApolloGQLRouteAvailable(NSString *account);
 // `summary` is for the log.
 typedef void (^ApolloGQLRouteCompletion)(NSData *_Nullable legacyJSON, BOOL refused, NSString *summary);
 void ApolloGQLRouteAnswer(NSString *account, ApolloGQLRequest *request, ApolloGQLRouteCompletion completion);
+
+// The Routes screen's switch. Takes effect with the next request: nothing of
+// the route outlives a request but the token ApolloWebJSON caches. Main thread.
+void ApolloGQLRouteSetEnabled(BOOL enabled);
+
+// For the Routes screen and its summary: "state" (NSString, one line: on, off,
+// switched off by the file, paused after a rate limit) and "lines" (NSArray of
+// NSString, one per kind of request the route answered or was refused for
+// `account` since launch).
+NSDictionary<NSString *, id> *ApolloGQLRouteStatus(NSString *_Nullable account);
 
 #if APOLLO_SIM_BUILD
 // Sim debug bridge ("gqlblock on|off"): send every call with a hash Reddit

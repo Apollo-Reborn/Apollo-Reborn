@@ -234,14 +234,27 @@ static BOOL ApolloGQLHomeSortIsAnswered(NSString *lowercasedSort) {
     return ApolloGQLFeedSorts()[lowercasedSort] != nil && ![lowercasedSort isEqualToString:@"best"];
 }
 
-// The kind of request a method and path are, or 0.
-static ApolloGQLRequestKind ApolloGQLKindForPath(NSString *method, NSString *path, NSArray<NSString *> **segmentsOut,
+// The kind of request a method and path are, or 0. `patterns` also takes the
+// route table's endpoint patterns, where "*" stands for one subreddit, post or
+// account ("/r/*/hot", "/comments/*"): the Routes screen lists each endpoint's
+// routes by its pattern. A request never has one.
+static ApolloGQLRequestKind ApolloGQLKindForPath(NSString *method, NSString *path, BOOL patterns, NSArray<NSString *> **segmentsOut,
                                                  NSArray<NSString *> **originalOut) {
     if (![method isKindOfClass:[NSString class]] || ![path isKindOfClass:[NSString class]]) return 0;
     NSArray<NSString *> *original = nil;
     NSArray<NSString *> *segments = ApolloGQLPathSegments(path, &original);
     if (segmentsOut) *segmentsOut = segments;
     if (originalOut) *originalOut = original;
+    if ([segments containsObject:@"*"]) {
+        if (!patterns) return 0;
+        // The pattern as a request for a subreddit, post and account that
+        // would pass the checks below.
+        NSMutableArray<NSString *> *sample = [segments mutableCopy];
+        for (NSUInteger i = 0; i < sample.count; i++) {
+            if ([sample[i] isEqualToString:@"*"]) sample[i] = i > 0 && [sample[i - 1] isEqualToString:@"comments"] ? @"abc123" : @"example";
+        }
+        segments = sample;
+    }
     BOOL get = [method.uppercaseString isEqualToString:@"GET"];
     // RedditKit asks for "load more" replies with a POST; it only reads.
     if (segments.count == 2 && [segments[0] isEqualToString:@"api"] && [segments[1] isEqualToString:@"morechildren"]) {
@@ -280,12 +293,12 @@ static ApolloGQLRequestKind ApolloGQLKindForPath(NSString *method, NSString *pat
 }
 
 BOOL ApolloGQLCanAnswerPath(NSString *method, NSString *path) {
-    return ApolloGQLKindForPath(method, path, NULL, NULL) != 0;
+    return ApolloGQLKindForPath(method, path, YES, NULL, NULL) != 0;
 }
 
 ApolloGQLRequest *ApolloGQLRequestForLegacy(NSString *method, NSString *path, id parameters) {
     NSArray<NSString *> *segments = nil, *original = nil;
-    ApolloGQLRequestKind kind = ApolloGQLKindForPath(method, path, &segments, &original);
+    ApolloGQLRequestKind kind = ApolloGQLKindForPath(method, path, NO, &segments, &original);
     if (kind == 0) return nil;
     NSDictionary<NSString *, NSString *> *query = ApolloGQLRequestParameters(path, parameters);
     ApolloGQLRequest *request = [ApolloGQLRequest new];

@@ -1874,7 +1874,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     reduceRateLimiting.visible = ^BOOL { return sWebJSONEnabled; };
 
     // Which routes API-key-free reads are taking, what Reddit has blocked
-    // since launch, and the Use Route Updates switch
+    // since launch, and the Use GraphQL and Use Route Updates switches
     // (ApolloKeylessRouteStatusViewController).
     ApolloSettingsRow *routeStatus =
         [ApolloSettingsRow disclosureRowWithID:@"api.routeStatus"

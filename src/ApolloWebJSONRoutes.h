@@ -180,6 +180,18 @@ void ApolloWebJSONRouteSetRemoteTable(NSDictionary<NSString *, NSArray<NSNumber 
 // One line per override in effect with the built-in order it replaces, for logs.
 NSString *ApolloWebJSONRouteRemoteTableDescription(void);
 
+// keyless-routes.json can switch the GraphQL route off for every install with a
+// top-level "graphql": false, for the day Reddit changes that API in a way the
+// fallback to the other routes doesn't cover. Whether `data` (a file
+// ApolloWebJSONRouteTableParse accepted) says so; versions without the route
+// ignore the key.
+BOOL ApolloWebJSONRouteTableTurnsGraphQLOff(NSData *_Nullable data);
+
+// The file's switch in effect: while it's set, no request lists the GraphQL
+// route. Cleared along with the remote table (no file, Route Updates off).
+void ApolloWebJSONRouteSetRemoteGraphQLOff(BOOL off);
+BOOL ApolloWebJSONRouteRemoteGraphQLOff(void);
+
 #pragma mark - Route health
 
 // Per account, group (ApolloWebJSONRouteHealthGroup) and route, in memory for

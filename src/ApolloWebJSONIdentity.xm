@@ -1157,7 +1157,11 @@ static NSURLSessionDataTask *ApolloWebJSONAnswerByGraphQL(RDKClient *client, NSS
         dispatch_async(dispatch_get_main_queue(), ^{
             // Apollo cancels a read it no longer wants (a sort changed
             // mid-load); a sent request then finishes with this error.
-            if (placeholder.state == NSURLSessionTaskStateCanceling || placeholder.state == NSURLSessionTaskStateCompleted) {
+            BOOL cancelled = placeholder.state == NSURLSessionTaskStateCanceling || placeholder.state == NSURLSessionTaskStateCompleted;
+            // The placeholder is never resumed, and a session keeps a task
+            // until it finishes: cancelling it now is what lets it go.
+            [placeholder cancel];
+            if (cancelled) {
                 completion(nil, nil, [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCancelled userInfo:nil]);
                 return;
             }

@@ -5,6 +5,7 @@
 #import "UserDefaultConstants.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloWebJSON.h"
+#import "graphql/ApolloGQLRoute.h"
 #import <UIKit/UIKit.h>
 
 static NSString *const kApolloRouteUpdatesURL =
@@ -51,6 +52,7 @@ static BOOL ApolloRouteUpdatesApply(NSData *data, NSString *source) {
     }
     NSString *before = ApolloWebJSONRouteRemoteTableDescription();
     ApolloWebJSONRouteSetRemoteTable(table);
+    ApolloWebJSONRouteSetRemoteGraphQLOff(ApolloWebJSONRouteTableTurnsGraphQLOff(data));
     NSString *after = ApolloWebJSONRouteRemoteTableDescription();
     if (![before isEqualToString:after]) ApolloLog(@"[WebJSON] Route updates (%@):\n%@", source, after);
     // A table that now lists a bearer route gets its bearer ready ahead of
@@ -179,6 +181,7 @@ static void ApolloRouteUpdatesFetch(void) {
                 // Deleting the file is how maintainers undo every override.
                 ApolloLog(@"[WebJSON] Route updates: keyless-routes.json isn't there, using the built-in routes");
                 ApolloWebJSONRouteSetRemoteTable(nil);
+                ApolloWebJSONRouteSetRemoteGraphQLOff(NO);
                 ApolloRouteUpdatesRemoveCache();
                 sLastResult = @"No file, using built-in routes";
                 ApolloRouteUpdatesFinish(YES);
@@ -247,6 +250,7 @@ void ApolloWebJSONRouteUpdatesSetEnabled(BOOL enabled) {
     if (!enabled) {
         ApolloRouteUpdatesCancelTimer();
         ApolloWebJSONRouteSetRemoteTable(nil);
+        ApolloWebJSONRouteSetRemoteGraphQLOff(NO);
         sLoadedCache = NO;
         ApolloLog(@"[WebJSON] Route updates off: using the built-in routes");
         return;
@@ -328,6 +332,9 @@ NSArray<NSDictionary<NSString *, id> *> *ApolloWebJSONRouteStatusBlockedPaths(vo
     NSMutableArray<NSDictionary *> *rows = [NSMutableArray array];
     for (NSDictionary *row in ApolloWebJSONRouteHealthSnapshot(ApolloActiveWebSessionUsername(), now)) {
         if ([row[@"blocked"] unsignedIntegerValue] == 0 || [fallbackPatterns containsObject:row[@"pattern"]]) continue;
+        // A read GraphQL refused went on by its other routes; it has its own
+        // section (ApolloGQLRouteStatus).
+        if ([row[@"route"] integerValue] == ApolloWebJSONRouteGraphQL) continue;
         [rows addObject:row];
     }
     [rows sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) { return [b[@"blocked"] compare:a[@"blocked"]]; }];
@@ -353,6 +360,9 @@ NSString *ApolloWebJSONRouteStatusSummary(void) {
     NSString *account = ApolloActiveWebSessionUsername();
     NSMutableArray<NSString *> *lines = [NSMutableArray array];
     [lines addObject:[NSString stringWithFormat:@"Route status for u/%@ (since launch)", account.length ? account : @"(none)"]];
+    NSDictionary *graphQL = ApolloGQLRouteStatus(account);
+    [lines addObject:[@"GraphQL: " stringByAppendingString:graphQL[@"state"]]];
+    for (NSString *line in graphQL[@"lines"]) [lines addObject:[@"  " stringByAppendingString:line]];
     for (NSDictionary *endpoint in ApolloRouteUpdatesEndpointStatus(account, now)) {
         NSInteger using = [endpoint[@"using"] integerValue];
         [lines addObject:[NSString stringWithFormat:@"%@: using %@%@%@", endpoint[@"key"],

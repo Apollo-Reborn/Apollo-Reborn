@@ -656,6 +656,15 @@ static void TestPlan(void) {
         CHECK(!ApolloGQLCanAnswerPath(@"GET", path), @"%@ by path", path);
     }
     CHECK(ApolloGQLCanAnswerPath(@"GET", @"/r/apple/hot.json") && ApolloGQLCanAnswerPath(@"get", @"api/info.json?id=t1_x"), @"by path alone");
+    // The route table's endpoint patterns ("*" is one subreddit, post or
+    // account) count by path, for the Routes screen; no request is planned
+    // from one.
+    for (NSString *pattern in @[ @"/r/*/hot", @"/r/*", @"/r/*/about", @"/r/*/search", @"/comments/*", @"/r/*/comments/*", @"/user/*/submitted" ]) {
+        CHECK(ApolloGQLCanAnswerPath(@"GET", pattern), @"%@ is an endpoint GraphQL answers", pattern);
+        CHECK(ApolloGQLRequestForLegacy(@"GET", pattern, @{ @"q": @"x" }) == nil, @"but %@ isn't a request", pattern);
+    }
+    CHECK(!ApolloGQLCanAnswerPath(@"GET", @"/r/+/hot") && !ApolloGQLCanAnswerPath(@"GET", @"/r/all/*") && !ApolloGQLCanAnswerPath(@"GET", @"/user/*/overview") &&
+          !ApolloGQLCanAnswerPath(@"GET", @"/*"), @"patterns of endpoints it doesn't answer");
     CHECK(!ApolloGQLCanAnswerPath(@"POST", @"/r/apple/hot.json") && !ApolloGQLCanAnswerPath(@"POST", @"comments/abc.json"), @"not these");
 
     // Home: a sort on its own. Not "best", which GraphQL fills with suggestions.

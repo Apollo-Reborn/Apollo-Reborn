@@ -309,6 +309,7 @@ void ApolloWebJSONRouteSetGraphQLHandler(BOOL (^handler)(NSString *account, NSSt
 
 static BOOL ApolloWebJSONRouteGraphQLAnswers(NSString *account, NSString *method, NSString *path) {
     if (![method isKindOfClass:[NSString class]] || ![path isKindOfClass:[NSString class]]) return NO;
+    if (ApolloWebJSONRouteRemoteGraphQLOff()) return NO;
     BOOL (^handler)(NSString *, NSString *, NSString *);
     @synchronized (ApolloWebJSONGraphQLHandlerLock()) {
         handler = sApolloWebJSONGraphQLHandler;
@@ -420,6 +421,29 @@ BOOL ApolloWebJSONRouteTableUsesBearerAuth(void) {
 static NSUInteger const kApolloWebJSONRouteTableMaxBytes = 16 * 1024;
 static NSUInteger const kApolloWebJSONRouteTableMaxEndpoints = 32;
 static NSUInteger const kApolloWebJSONRouteTableMaxRoutes = 5;
+
+// Guarded by ApolloWebJSONRemoteTableLock.
+static BOOL sApolloWebJSONRemoteGraphQLOff;
+
+BOOL ApolloWebJSONRouteTableTurnsGraphQLOff(NSData *data) {
+    if (![data isKindOfClass:[NSData class]] || data.length == 0) return NO;
+    id root = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+    id value = [root isKindOfClass:[NSDictionary class]] ? root[@"graphql"] : nil;
+    // Only a plain false: anything else (absent, true, a typo) leaves it on.
+    return [value isKindOfClass:[NSNumber class]] && ![value boolValue];
+}
+
+void ApolloWebJSONRouteSetRemoteGraphQLOff(BOOL off) {
+    @synchronized (ApolloWebJSONRemoteTableLock()) {
+        sApolloWebJSONRemoteGraphQLOff = off;
+    }
+}
+
+BOOL ApolloWebJSONRouteRemoteGraphQLOff(void) {
+    @synchronized (ApolloWebJSONRemoteTableLock()) {
+        return sApolloWebJSONRemoteGraphQLOff;
+    }
+}
 
 void ApolloWebJSONRouteSetRemoteTable(NSDictionary<NSString *, NSArray<NSNumber *> *> *overrides) {
     NSMutableArray<NSDictionary *> *entries = [NSMutableArray array];
@@ -560,11 +584,14 @@ NSDictionary<NSString *, NSArray<NSNumber *> *> *ApolloWebJSONRouteTableParse(NS
 
 NSString *ApolloWebJSONRouteRemoteTableDescription(void) {
     NSDictionary<NSString *, NSArray<NSNumber *> *> *table;
+    BOOL graphQLOff;
     @synchronized (ApolloWebJSONRemoteTableLock()) {
         table = sApolloWebJSONRemoteTable;
+        graphQLOff = sApolloWebJSONRemoteGraphQLOff;
     }
-    if (table.count == 0) return @"(built-in routes only)";
+    if (table.count == 0 && !graphQLOff) return @"(built-in routes only)";
     NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    if (graphQLOff) [lines addObject:@"graphql: switched off"];
     for (NSString *key in [table.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
         NSArray<NSString *> *parts = [key componentsSeparatedByString:@" "];
         NSArray<NSNumber *> *builtIn = ApolloWebJSONRouteBuiltInMatch(parts.firstObject, parts.lastObject)[@"routes"];

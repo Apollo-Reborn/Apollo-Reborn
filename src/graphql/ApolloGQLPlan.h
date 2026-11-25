@@ -87,7 +87,8 @@ typedef NS_ENUM(NSInteger, ApolloGQLRequestKind) {
 @end
 
 // YES when a request to `path` is one of the kinds above, going by the method
-// and path alone. The request itself may still not be answerable (an /api/info
+// and path alone. `path` may also be one of the route table's endpoint patterns
+// ("/r/*/hot"). The request itself may still not be answerable (an /api/info
 // for comments, a feed page asked for by `before`, a thread opened at one
 // comment, a "load more" row of a thread the legacy API sent).
 BOOL ApolloGQLCanAnswerPath(NSString *method, NSString *path);

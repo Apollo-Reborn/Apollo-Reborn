@@ -806,6 +806,25 @@ static void TestGraphQLRoute(void) {
           @"graphql ahead of a file entry that doesn't name it");
     CHECK([ApolloWebJSONRoutesForRequest(@"GET", feed) isEqualToArray:(@[ @(graphql), @(ApolloWebJSONRouteWww) ])], @"other endpoints unaffected");
 
+    // keyless-routes.json can switch the route off for every install with a
+    // top-level "graphql": false; nothing else there does.
+    NSData *(^file)(NSString *) = ^NSData *(NSString *json) { return [json dataUsingEncoding:NSUTF8StringEncoding]; };
+    CHECK(ApolloWebJSONRouteTableTurnsGraphQLOff(file(@"{\"version\":1,\"graphql\":false,\"endpoints\":{}}")), @"graphql: false switches it off");
+    for (NSString *json in @[ @"{\"version\":1,\"endpoints\":{}}", @"{\"version\":1,\"graphql\":true}", @"{\"version\":1,\"graphql\":\"off\"}",
+                              @"{\"version\":1,\"graphql\":null}", @"{\"version\":1,\"endpoints\":{\"graphql\":false}}", @"[false]", @"not json", @"" ]) {
+        CHECK(!ApolloWebJSONRouteTableTurnsGraphQLOff(file(json)), @"%@ leaves it on", json);
+    }
+    CHECK(!ApolloWebJSONRouteTableTurnsGraphQLOff(nil), @"no file leaves it on");
+    CHECK(ParseJSON(@"{\"version\":1,\"graphql\":false,\"endpoints\":{}}", NULL) != nil, @"a file with the switch still parses");
+    ApolloWebJSONRouteSetRemoteTable(nil);
+    ApolloWebJSONRouteSetRemoteGraphQLOff(YES);
+    CHECK([ApolloWebJSONRoutesForRequest(@"GET", feed) isEqualToArray:R(ApolloWebJSONRouteWww)], @"switched off by the file: not listed");
+    CHECK(ApolloWebJSONRouteChoose(@"alice", @"GET", feed, 0, 40) == ApolloWebJSONRouteWww, @"and not chosen");
+    CHECK([ApolloWebJSONRouteRemoteTableDescription() containsString:@"graphql: switched off"], @"the description says so (%@)", ApolloWebJSONRouteRemoteTableDescription());
+    ApolloWebJSONRouteSetRemoteGraphQLOff(NO);
+    CHECK([ApolloWebJSONRoutesForRequest(@"GET", feed) isEqualToArray:(@[ @(graphql), @(ApolloWebJSONRouteWww) ])], @"back on when the file's switch is gone");
+    CHECK([ApolloWebJSONRouteRemoteTableDescription() isEqualToString:@"(built-in routes only)"], @"nothing overridden");
+
     ApolloWebJSONRouteSetRemoteTable(nil);
     ApolloWebJSONRouteSetGraphQLHandler(nil);
     ApolloWebJSONRouteHealthReset();

@@ -6,6 +6,7 @@
 #import "ApolloWebJSON.h"
 #import "ApolloWebJSONRoutes.h"
 #import "ApolloWebSessionStore.h"
+#import "UserDefaultConstants.h"
 #import <stdatomic.h>
 
 static NSString *const kApolloGQLEndpoint = @"https://gql-fed.reddit.com/";
@@ -62,6 +63,42 @@ static BOOL ApolloGQLAccountHeld(NSString *account) {
     @synchronized (ApolloGQLHoldLock()) {
         return [sApolloGQLHeldUntil[key] doubleValue] > [NSDate timeIntervalSinceReferenceDate];
     }
+}
+
+// Seconds until `account` is back on GraphQL after a 429, or 0.
+static NSTimeInterval ApolloGQLAccountHoldRemaining(NSString *account) {
+    NSString *key = account.lowercaseString;
+    @synchronized (ApolloGQLHoldLock()) {
+        return MAX(0, [sApolloGQLHeldUntil[key] doubleValue] - [NSDate timeIntervalSinceReferenceDate]);
+    }
+}
+
+void ApolloGQLRouteSetEnabled(BOOL enabled) {
+    sWebJSONGraphQLEnabled = enabled;
+    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:UDKeyWebJSONGraphQLEnabled];
+    ApolloLog(@"[GraphQL] Route turned %@ in Settings", enabled ? @"on" : @"off");
+}
+
+NSDictionary<NSString *, id> *ApolloGQLRouteStatus(NSString *account) {
+    NSString *state = @"On";
+    NSTimeInterval held = account.length > 0 ? ApolloGQLAccountHoldRemaining(account) : 0;
+    if (!sWebJSONGraphQLEnabled) {
+        state = @"Off";
+    } else if (ApolloWebJSONRouteRemoteGraphQLOff()) {
+        state = @"Switched off by keyless-routes.json";
+    } else if (held > 0) {
+        state = [NSString stringWithFormat:@"Paused for %.0f more min (Reddit's rate limit)", ceil(held / 60.0)];
+    }
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    if (account.length > 0) {
+        for (NSDictionary *row in ApolloWebJSONRouteHealthSnapshot(account, [NSDate timeIntervalSinceReferenceDate])) {
+            if ([row[@"route"] integerValue] != ApolloWebJSONRouteGraphQL) continue;
+            NSTimeInterval cooling = [row[@"cooldownRemaining"] doubleValue];
+            [lines addObject:[NSString stringWithFormat:@"%@: %@ ok, %@ refused%@", row[@"pattern"], row[@"ok"], row[@"blocked"],
+                              cooling > 0 ? [NSString stringWithFormat:@", skipped for %.0f more min", ceil(cooling / 60.0)] : @""]];
+        }
+    }
+    return @{ @"state": state, @"lines": lines };
 }
 
 BOOL ApolloGQLRouteAvailable(NSString *account) {

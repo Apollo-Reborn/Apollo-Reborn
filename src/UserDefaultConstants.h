@@ -655,7 +655,8 @@ static NSString *const UDKeyWebJSONEnabled = @"WebJSONEnabled";
 // The GraphQL route for API-Key-Free accounts (src/graphql/ApolloGQLRoute.h):
 // read what it can answer through gql-fed.reddit.com, the API Reddit's own apps
 // use, ahead of the cookie's .json routes, which stay as the fallback. No
-// effect on API-key accounts. Default NO while endpoints are being proven.
+// effect on API-key accounts. Default YES; the switch is "Use GraphQL" on the
+// Routes screen.
 static NSString *const UDKeyWebJSONGraphQLEnabled = @"WebJSONGraphQLEnabled";
 // Reduce Rate Limiting (ApolloReduceRateLimiting.m). Reddit gives an
 // API-key-free (web session) account a much smaller request budget than an API
