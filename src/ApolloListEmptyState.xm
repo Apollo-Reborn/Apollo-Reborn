@@ -49,6 +49,18 @@
 // in the foreground after that. Each list waits on its own request's account,
 // and switching to another account ends the wait. Like the outcome, the wait
 // follows whichever first page Apollo shows: the one that arrives last.
+//
+// Next pages wait too. Apollo asks for a list's next page whenever it's
+// scrolled near its end (ASDK batch fetching), and during a limit every one of
+// those requests is refused and answered with a "Loading next page failed"
+// banner: scrolling at the end of Home sent 20 refused requests and dropped 20
+// banners in half a minute (report of 2026-11-22). While Reddit holds the
+// active account a list isn't asked for its next page, a line under its last
+// row says why, and when the hold ends the list is asked again, so the page
+// loads without another scroll. Apollo's own banner for the request that
+// started the limit ("Loading next page failed", "Error loading posts") is
+// dropped as well: the rate-limit notice goes up at that same moment and says
+// more. See "Next pages wait for the rate limit" below.
 
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
@@ -397,6 +409,161 @@ static NSString *ApolloListActiveAccount(void) {
     return persisted;
 }
 
+#pragma mark - Next pages wait for the rate limit
+
+// Tables whose next page was held back, so they can be asked again when the
+// hold ends. Weak: a list that goes away just drops out.
+static NSHashTable<UITableView *> *sListNextPageTables;
+// On a held table: the lowercased account its next page waits on, and the line
+// installed under its last row.
+static char kApolloListNextPageAccountKey;
+static char kApolloListNextPageFooterKey;
+
+// "More will load when it resets", as the table's footer: the place the reader
+// is looking when a list stops growing. Worded for any list (posts, comments,
+// messages). A table that already has a footer keeps it.
+static void ApolloListShowNextPageFooter(UITableView *table) {
+    if (objc_getAssociatedObject(table, &kApolloListNextPageFooterKey) || table.tableFooterView) return;
+    // Styled like the first page's message above (Apollo's EmptyStateLabel).
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(0.0, 0.0, CGRectGetWidth(table.bounds), 76.0)];
+    label.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    label.numberOfLines = 2;
+    label.textAlignment = NSTextAlignmentCenter;
+    label.font = ApolloThemeRuntimeFont([UIFont systemFontOfSize:15.0]);
+    label.textColor = ApolloThemeSubredditListSecondaryTextColor() ?: UIColor.secondaryLabelColor;
+    label.text = @"Reddit's rate limit was reached.\nMore will load when it resets.";
+    objc_setAssociatedObject(table, &kApolloListNextPageFooterKey, label, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    table.tableFooterView = label;
+}
+
+static void ApolloListRemoveNextPageFooter(UITableView *table) {
+    UIView *label = objc_getAssociatedObject(table, &kApolloListNextPageFooterKey);
+    if (!label) return;
+    objc_setAssociatedObject(table, &kApolloListNextPageFooterKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (table.tableFooterView == label) table.tableFooterView = nil;
+}
+
+// The active account, lowercased, while Reddit is refusing it, with the seconds
+// left in `outHold`; nil when no limit is running. API-Key-Free accounts only
+// (the primary web-session index, as in ApolloReduceRateLimitingActive): an
+// API-key account's lists ride its key, and a limit on the web session it
+// keeps for Chat and polls says nothing about them. The index is only read
+// once a hold is found, so the usual answer costs a cached username and one
+// lookup.
+static NSString *ApolloListRateLimitedActiveAccount(NSTimeInterval *outHold) {
+    NSString *account = ApolloActiveWebSessionUsername().lowercaseString;
+    NSTimeInterval hold = account.length > 0 ? ApolloWebJSONOptionalReadBackoff(account) : 0;
+    if (hold <= 0 || ![ApolloWebSessionUsernames() containsObject:account]) return nil;
+    if (outHold) *outHold = hold;
+    return account;
+}
+
+// What a held table lists, for the log: its ListAdapter's controller.
+static NSString *ApolloListNextPageName(UITableView *table) {
+    id adapter = ApolloListAdapterForTableView(table);
+    id controller = adapter && class_getInstanceVariable(object_getClass(adapter), "viewController")
+        ? ApolloReadSwiftWeakObjectIvar(adapter, "viewController") : nil;
+    return controller ? NSStringFromClass([controller class]) : @"a list";
+}
+
+// Starts a table's wait on `account`'s hold: remembered so it can be asked
+// again, a line under its last row, and a pass for when the hold ends.
+static void ApolloListHoldNextPage(UITableView *table, NSString *account, NSTimeInterval hold) {
+    objc_setAssociatedObject(table, &kApolloListNextPageAccountKey, account, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    if (!sListNextPageTables) sListNextPageTables = [NSHashTable weakObjectsHashTable];
+    [sListNextPageTables addObject:table];
+    ApolloLog(@"[ListEmptyState] Reddit's rate limit holds u/%@ for %.0fs; the next page of %@ waits for the reset (nothing sent)",
+              account, hold, ApolloListNextPageName(table));
+    // ASDK asks from inside the table's scroll and layout callbacks; the footer
+    // changes the content size, so it goes in after this one has returned.
+    __weak UITableView *weakTable = table;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UITableView *strongTable = weakTable;
+        if (strongTable && objc_getAssociatedObject(strongTable, &kApolloListNextPageAccountKey)) ApolloListShowNextPageFooter(strongTable);
+    });
+    ApolloListScheduleRateLimitRetry(hold + kApolloListRateLimitRetryMargin);
+}
+
+// How long after a table is asked again a refusal of that request is looked
+// for (see below).
+static NSTimeInterval const kApolloListNextPageRecheck = 3.0;
+
+// Ends a table's wait. `askAgain`: have ASDK check now whether a next page is
+// due, as it does after a scroll, so a list left sitting at its end loads the
+// page by itself. It asks ListAdapter again on the way, so nothing is fetched
+// that Apollo wouldn't fetch. Should Reddit refuse that request too (its
+// window ending a little after this device thinks it does), the account is
+// held again and nothing would ask until the next scroll, so the table goes
+// back to waiting.
+static void ApolloListReleaseNextPage(UITableView *table, BOOL askAgain) {
+    NSString *account = objc_getAssociatedObject(table, &kApolloListNextPageAccountKey);
+    objc_setAssociatedObject(table, &kApolloListNextPageAccountKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    [sListNextPageTables removeObject:table];
+    ApolloListRemoveNextPageFooter(table);
+    if (!askAgain || !table.window) return;
+    SEL check = NSSelectorFromString(@"_checkForBatchFetching"); // ASTableView
+    if (![table respondsToSelector:check]) return;
+    ApolloLog(@"[ListEmptyState] Reddit's rate limit on u/%@ has reset; asking %@ for its next page again", account,
+              ApolloListNextPageName(table));
+    ((void (*)(id, SEL))objc_msgSend)(table, check);
+    __weak UITableView *weakTable = table;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kApolloListNextPageRecheck * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UITableView *strongTable = weakTable;
+        if (!strongTable || objc_getAssociatedObject(strongTable, &kApolloListNextPageAccountKey)) return;
+        NSTimeInterval hold = 0;
+        NSString *held = ApolloListRateLimitedActiveAccount(&hold);
+        if (held && [held isEqualToString:account]) ApolloListHoldNextPage(strongTable, held, hold);
+    });
+}
+
+// Whether `tableNode`'s next page waits for Reddit's limit on the active
+// account. Called from -[ListAdapter shouldBatchFetchForTableNode:]
+// (ApolloEmptyFeedNextPage.xm) once Apollo has decided to fetch; YES turns that
+// into "not now". ASDK asks on every scroll near the end of a list. Main
+// thread.
+extern "C" BOOL ApolloListNextPageWaitsForRateLimit(id tableNode) {
+    if (![NSThread isMainThread]) return NO;
+    UITableView *table = [tableNode respondsToSelector:@selector(view)] ? ((id (*)(id, SEL))objc_msgSend)(tableNode, @selector(view)) : nil;
+    if (![table isKindOfClass:UITableView.class]) table = nil;
+    // The next page is the active account's request.
+    NSTimeInterval hold = 0;
+    NSString *account = ApolloListRateLimitedActiveAccount(&hold);
+    if (!account) {
+        // The pass below usually gets here first; a scroll in the seconds
+        // between the reset and that pass ends the wait just the same.
+        if (table && objc_getAssociatedObject(table, &kApolloListNextPageAccountKey)) ApolloListReleaseNextPage(table, NO);
+        return NO;
+    }
+    if (!table) return YES;
+    NSString *waitingOn = objc_getAssociatedObject(table, &kApolloListNextPageAccountKey);
+    if (![waitingOn isEqualToString:account]) ApolloListHoldNextPage(table, account, hold);
+    return YES;
+}
+
+// Part of each pass (ApolloListRetryRateLimitedLists): a table whose account's
+// hold has ended is asked for its next page again once the app is active, one
+// whose hold still runs waits for the next pass, and after an account switch
+// the wait just ends (Apollo reloads its lists for the new account).
+static void ApolloListReleaseHeldNextPages(void) {
+    if (sListNextPageTables.count == 0) return;
+    NSString *activeAccount = ApolloListActiveAccount();
+    BOOL appActive = UIApplication.sharedApplication.applicationState == UIApplicationStateActive;
+    NSTimeInterval next = -1;
+    for (UITableView *table in sListNextPageTables.allObjects) {
+        NSString *account = objc_getAssociatedObject(table, &kApolloListNextPageAccountKey);
+        BOOL sameAccount = account.length > 0 && [account isEqualToString:activeAccount ?: @""];
+        NSTimeInterval hold = sameAccount ? ApolloWebJSONOptionalReadBackoff(account) : 0;
+        if (hold > 0) {
+            NSTimeInterval due = hold + kApolloListRateLimitRetryMargin;
+            if (next < 0 || due < next) next = due;
+            continue;
+        }
+        if (sameAccount && !appActive) continue; // when the app is back
+        ApolloListReleaseNextPage(table, sameAccount);
+    }
+    if (next >= 0) ApolloListScheduleRateLimitRetry(next);
+}
+
 // Runs on each scheduled pass, on UIApplicationDidBecomeActiveNotification and
 // after an account switch. Every waiting list is judged by its own account's
 // hold (ApolloListPlanRetry): it reloads once that hold has ended and the app
@@ -406,6 +573,7 @@ static NSString *ApolloListActiveAccount(void) {
 // alternative is the user finding it still failed when they go back to it.
 // Main thread.
 static void ApolloListRetryRateLimitedLists(void) {
+    ApolloListReleaseHeldNextPages();
     NSMutableArray<ApolloListLoadState *> *states = [NSMutableArray array];
     for (UIViewController *controller in sListControllers.allObjects) {
         for (NSUInteger i = 0; i < sListSlotCount; i++) {
@@ -705,6 +873,35 @@ static void ApolloListRegisterController(UIViewController *controller) {
 %end
 
 %end
+
+// How long after a limit starts Apollo's list-failed banner belongs to the
+// request that started it (the refusal, Apollo's completion and its banner are
+// one hop of the main queue apart; this allows for a busy one).
+static NSTimeInterval const kApolloListFailedBannerWindow = 5.0;
+
+// Apollo's drop-down banner (Holla) as it attaches, from the one hook on its
+// status view (-[HollaStatusView didMoveToSuperview], ApolloSaveAllMedia.xm).
+// The request that starts a limit is usually a list's page, and Apollo answers
+// its failure with "Loading next page failed" or "Error loading posts" just as
+// the rate-limit notice goes up, over the same spot. Both lists already say
+// why on the page (the line under the last row, the first page's message
+// above), so that one banner says nothing new and isn't shown. Only that one:
+// minutes into a limit the same banner is the answer to something the user
+// did (a pull to refresh, the "load page" row with Infinite Scrolling off),
+// and stays. Holla attaches a new status view per banner with its text
+// already set, and runs the banner's usual life on the hidden one; later
+// banners are untouched. Main thread.
+extern "C" void ApolloListFailedBannerAttached(UIView *banner) {
+    if (!banner.superview) return;
+    UILabel *label = ApolloObjectIvar(banner, "textLabel");
+    NSString *text = [label isKindOfClass:UILabel.class] ? label.text : nil;
+    if (![text isEqualToString:@"Loading next page failed"] && ![text isEqualToString:@"Error loading posts"]) return;
+    NSString *account = ApolloListRateLimitedActiveAccount(NULL);
+    NSTimeInterval age = account ? ApolloWebJSONRateLimitAge(account) : -1;
+    if (age < 0 || age > kApolloListFailedBannerWindow) return;
+    banner.hidden = YES;
+    ApolloLog(@"[ListEmptyState] Reddit's rate limit on u/%@ started %.1fs ago; Apollo's \"%@\" banner not shown", account, age, text);
+}
 
 // `refreshName` is the list's pull to refresh action; a binary without it
 // keeps the empty states, just not the reload after a rate limit.

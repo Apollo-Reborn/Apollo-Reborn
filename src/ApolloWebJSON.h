@@ -340,6 +340,12 @@ void ApolloWebJSONSimSetGatedRoutes(NSUInteger routeMask);
 // chokepoint (Tweak.xm) through ApolloWebJSONSimBlockOAuthRead.
 void ApolloWebJSONSimSetOAuthBlockedReads(BOOL on);
 void ApolloWebJSONSimBlockOAuthRead(NSMutableURLRequest *request);
+// Debug bridge ("ratelimit <seconds>" / "ratelimit off"): holds `username` as a
+// refused request (HTTP 429) does, for `seconds`, and announces it the same
+// way; 0 ends the hold now. Nothing is sent or refused for real, so this shows
+// what the tweak does during a limit (notices, held lookups, lists waiting for
+// the reset), not Apollo's own handling of a failed request.
+void ApolloWebJSONSimSetRateLimit(NSString *username, NSTimeInterval seconds);
 #endif
 
 // Seconds the tweak's optional reads (author avatars, subreddit header info)
@@ -353,6 +359,12 @@ void ApolloWebJSONSimBlockOAuthRead(NSMutableURLRequest *request);
 // API-key accounts, when Web JSON is off, or when no 429 has been seen. Any
 // thread.
 NSTimeInterval ApolloWebJSONOptionalReadBackoff(NSString *username);
+
+// Seconds since Reddit's current rate limit of `username`'s web session began
+// (the refusal that started the hold above; later refusals only move its end),
+// or -1 when it isn't limited. Lets a caller tell the moment a limit starts,
+// when its notice goes up, from the minutes that follow.
+NSTimeInterval ApolloWebJSONRateLimitAge(NSString *username);
 
 // Duplicate account reads for API-Key-Free accounts. Apollo asks for the same
 // account data twice in quick succession (at launch its account refresh repeats

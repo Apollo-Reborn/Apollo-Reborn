@@ -1237,6 +1237,9 @@ static void ApolloWebJSONMergeSetCookiesFromResponse(NSString *username, NSHTTPU
 // on. Lowercased username -> epoch seconds the hold lasts until, guarded by the
 // expiry lock like the rest of the per-account state.
 static NSMutableDictionary<NSString *, NSNumber *> *sRateLimitedUntilByUser;
+// Lowercased username -> epoch seconds its current hold began at (the refusal
+// that started it; later refusals only move the end). Same lock.
+static NSMutableDictionary<NSString *, NSNumber *> *sRateLimitedSinceByUser;
 
 // Seconds from a header Reddit sends as a decimal string ("412", "412.0").
 // NAN when absent or not a number (an HTTP-date Retry-After, say).
@@ -1268,6 +1271,10 @@ static void ApolloWebJSONRecordRateLimit(NSString *username, NSURLRequest *reque
         NSTimeInterval until = sRateLimitedUntilByUser[key].doubleValue;
         newlyLimited = until <= now;
         sRateLimitedUntilByUser[key] = @(MAX(until, now + wait));
+        if (newlyLimited) {
+            if (!sRateLimitedSinceByUser) sRateLimitedSinceByUser = [NSMutableDictionary dictionary];
+            sRateLimitedSinceByUser[key] = @(now);
+        }
     }
     if (!newlyLimited) return;
     ApolloLog(@"[WebJSON] Reddit rate-limited u/%@ (HTTP 429 on %@ %@); pausing optional lookups for %.0fs",
@@ -1292,6 +1299,46 @@ NSTimeInterval ApolloWebJSONOptionalReadBackoff(NSString *username) {
     }
     return MAX(0.0, until - [[NSDate date] timeIntervalSince1970]);
 }
+
+NSTimeInterval ApolloWebJSONRateLimitAge(NSString *username) {
+    if (!sWebJSONEnabled) return -1;
+    NSString *key = username.lowercaseString;
+    if (key.length == 0) return -1;
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    NSTimeInterval until, since;
+    @synchronized (ApolloWebJSONExpiryLock()) {
+        until = sRateLimitedUntilByUser[key].doubleValue;
+        since = sRateLimitedSinceByUser[key].doubleValue;
+    }
+    return (until > now && since > 0) ? MAX(0.0, now - since) : -1;
+}
+
+#if APOLLO_SIM_BUILD
+void ApolloWebJSONSimSetRateLimit(NSString *username, NSTimeInterval seconds) {
+    NSString *key = username.lowercaseString;
+    if (key.length == 0) return;
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    BOOL newlyLimited;
+    @synchronized (ApolloWebJSONExpiryLock()) {
+        if (!sRateLimitedUntilByUser) sRateLimitedUntilByUser = [NSMutableDictionary dictionary];
+        newlyLimited = seconds > 0 && sRateLimitedUntilByUser[key].doubleValue <= now;
+        if (seconds > 0) sRateLimitedUntilByUser[key] = @(now + seconds);
+        else [sRateLimitedUntilByUser removeObjectForKey:key];
+        if (newlyLimited) {
+            if (!sRateLimitedSinceByUser) sRateLimitedSinceByUser = [NSMutableDictionary dictionary];
+            sRateLimitedSinceByUser[key] = @(now);
+        }
+    }
+    if (!newlyLimited) return;
+    // As ApolloWebJSONRecordRateLimit announces a real one.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (![ApolloActiveWebSessionUsername().lowercaseString isEqualToString:key]) return;
+        [[NSNotificationCenter defaultCenter] postNotificationName:ApolloWebJSONSessionRateLimitedNotification
+                                                            object:nil
+                                                          userInfo:@{@"username": key, @"seconds": @(seconds)}];
+    });
+}
+#endif
 
 #pragma mark - Duplicate account reads
 

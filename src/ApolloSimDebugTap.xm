@@ -2675,6 +2675,19 @@ static BOOL ApolloSimDebugHandleIntegratedMainCommand(NSString *contents) {
         ApolloLog(@"[SimDebugTap] route health:\n%@", ApolloWebJSONRouteHealthDescription([NSDate timeIntervalSinceReferenceDate]));
         return YES;
     }
+    // "ratelimit <seconds>" holds the active account as a refused request does
+    // (default 300 s) and "ratelimit off" ends the hold: the notice, the held
+    // lookups and the lists waiting for the reset, with nothing really refused.
+    if ([contents hasPrefix:@"ratelimit"]) {
+        NSString *argument = [[contents substringFromIndex:9]
+            stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        NSString *username = ApolloActiveWebSessionUsername();
+        NSTimeInterval seconds = [argument isEqualToString:@"off"] ? 0 : (argument.length > 0 ? argument.doubleValue : 300);
+        ApolloWebJSONSimSetRateLimit(username, seconds);
+        ApolloLog(@"[SimDebugTap] rate limit on u/%@: %@", username,
+                  seconds > 0 ? [NSString stringWithFormat:@"held for %.0fs", seconds] : @"lifted");
+        return YES;
+    }
     if ([contents hasPrefix:@"lpm "]) {
         NSString *payload = [[contents substringFromIndex:4]
             stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
