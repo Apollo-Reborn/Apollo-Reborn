@@ -19,10 +19,9 @@ const NSUInteger ApolloGQLPostsByIdsBatch = 50;
 // the same thread, 2026-11-24).
 static const NSInteger kApolloGQLCommentsCountMax = 200;
 
-// Operation name -> persisted-query hash. These are the ids Reddit's Android
-// app (2026.42.0) sends, and for HomeFeedSdui the id the Hydra client lists;
-// gql-fed.reddit.com ran each of them for the desktop web client's token on
-// 2026-11-23 and 2026-11-24. A hash Reddit retires answers "persisted query
+// Operation name -> persisted-query hash. These are ids Reddit's own apps send
+// (most are its Android app's, 2026.42.0); gql-fed.reddit.com ran each of them
+// for the desktop web client's token on 2026-11-23 and 2026-11-24. A hash Reddit retires answers "persisted query
 // not found", which sends the request to its other routes (ApolloGQLRoute.m).
 static NSDictionary<NSString *, NSString *> *ApolloGQLOperationHashes(void) {
     static NSDictionary<NSString *, NSString *> *hashes;
