@@ -664,6 +664,11 @@ static NSString *const UDKeyReduceRateLimiting = @"ReduceRateLimiting";
 // API-key-free sign-in, or at the first rate limit for accounts that signed in
 // before the prompt existed), so it never asks twice. Not user-facing.
 static NSString *const UDKeyReduceRateLimitingOffered = @"ReduceRateLimitingOffered";
+// Accounts Reddit reports as suspended (ApolloAccountSuspension.m): lowercased
+// username -> epoch seconds the suspension ends, 0 for no end date. Written
+// from Reddit's own answers, kept so the red banner can say why before the
+// first one arrives. Not user-facing.
+static NSString *const UDKeyAccountSuspensions = @"AccountSuspensions";
 // Use Route Updates (ApolloWebJSONRouteUpdates.m). While API-Key-Free Mode is
 // on, fetch keyless-routes.json from the repository so maintainers can change
 // which reddit.com routes blocked API-key-free reads take without a release.

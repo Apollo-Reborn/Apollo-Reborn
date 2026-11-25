@@ -1,4 +1,5 @@
 #import "ApolloWebJSON.h"
+#import "ApolloAccountSuspension.h"
 #import "ApolloCommon.h"
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
@@ -1050,6 +1051,12 @@ static void ApolloWebJSONVerifySessionThenAnnounce(NSString *username) {
                 [sMalformedAccountResponseUsers removeObject:username];
                 [sProbeBackoffAttemptsByUser removeObjectForKey:username];
             }
+            // The answer that proves the session is this account's also says
+            // whether Reddit has suspended it (ApolloAccountSuspension.h), so
+            // that check costs no request of its own.
+            id probed = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+            id probedUser = [probed isKindOfClass:[NSDictionary class]] ? probed[@"data"] : nil;
+            if ([probedUser isKindOfClass:[NSDictionary class]]) ApolloAccountSuspensionNoteUserData(username, probedUser);
             // Persist rotations only after verifying the account identity.
             ApolloWebJSONMergeSetCookiesFromResponse(username, http);
             ApolloLog(@"[WebJSON] Session probe for u/%@ still authenticates — suppressing false expiry prompt", username);

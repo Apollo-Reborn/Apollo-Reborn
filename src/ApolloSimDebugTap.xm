@@ -16,6 +16,7 @@
 #if APOLLO_SIM_BUILD
 
 #import "ApolloAccountCredentials.h"
+#import "ApolloAccountSuspension.h"
 #import "ApolloAutoHideTabBar.h"
 #import "ApolloAsyncDisplayGuard.h"
 #import "ApolloTiledText.h"
@@ -2667,6 +2668,33 @@ static BOOL ApolloSimDebugHandleIntegratedMainCommand(NSString *contents) {
         BOOL on = [[contents substringFromIndex:11] hasPrefix:@"on"];
         if (!on) ApolloOAuthReadReset();
         ApolloWebJSONSimSetOAuthBlockedReads(on);
+        return YES;
+    }
+    // "suspension <days>|noend|off": Reddit's answer about the ACTIVE account,
+    // for testing without a suspended one: suspended with that long left
+    // (fractions work: 0.2 is under five hours), suspended with no end date, or
+    // not suspended. It goes through the call Reddit's own answers do
+    // (ApolloAccountSuspensionNoteUserData), so the red banner follows. The
+    // account's next real answer from Reddit replaces it.
+    if ([contents hasPrefix:@"suspension "]) {
+        NSString *argument = [[contents substringFromIndex:11]
+            stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        NSString *username = ApolloActiveAccountUsername();
+        if (username.length == 0) {
+            ApolloLog(@"[SimDebugTap] suspension: no active account");
+            return YES;
+        }
+        NSMutableDictionary *user = [@{ @"name": username } mutableCopy];
+        if ([argument isEqualToString:@"off"]) {
+            user[@"is_suspended"] = @NO;
+        } else {
+            user[@"is_suspended"] = @YES;
+            if (argument.doubleValue > 0) {
+                user[@"suspension_expiration_utc"] = @(floor([[NSDate date] timeIntervalSince1970] + argument.doubleValue * 86400.0));
+            }
+        }
+        BOOL changed = ApolloAccountSuspensionNoteUserData(username, user);
+        ApolloLog(@"[SimDebugTap] suspension %@ for u/%@ -> %@", argument, username, changed ? @"changed" : @"no change");
         return YES;
     }
     // "routehealth" logs the API-Key-Free route health; "routehealth reset" clears it.

@@ -49,6 +49,7 @@
 #import "ApolloWebJSONRoutes.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloReduceRateLimiting.h"
+#import "ApolloSuspensionBanner.h"
 #import "ApolloWebSessionLoginViewController.h"
 #import "ApolloMessageDraftStore.h"
 #import "ApolloAccountCredentials.h"
@@ -4194,9 +4195,9 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
 
 // Reddit refusing the active API-Key-Free session (#1163, #1225): say so, rather
 // than leave a feed that won't load spinning with no explanation. Shown when the
-// limit starts (ApolloWebJSONSessionRateLimitedNotification) and again when the
-// app comes back while it still holds. At most once every 30s, so the launch-time
-// notice and the didBecomeActive right after it don't both show. Main thread.
+// limit starts (ApolloWebJSONSessionRateLimitedNotification) and once more on
+// coming back to the app after a while away while it still holds (see %ctor).
+// At most once every 30s. Main thread.
 static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     static NSTimeInterval sLastShownAt = 0;
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
@@ -4829,26 +4830,48 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
         [ApolloWebSessionLoginViewController presentExpiredSessionPromptForUsername:username];
     }];
     // ...and a rate-limited one (HTTP 429 on every request until Reddit's
-    // window resets) as a toast, the moment it starts and on each return to
-    // the app while it lasts. Only web-session accounts ever record a limit,
-    // so API-key accounts never see this.
+    // window resets) as a notice: once when it starts, and once more on coming
+    // back to the app after a minute or more in the background while it still
+    // lasts. Only web-session accounts ever record a limit, so API-key
+    // accounts never see this.
     [[NSNotificationCenter defaultCenter] addObserverForName:ApolloWebJSONSessionRateLimitedNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(NSNotification *note) {
         NSTimeInterval seconds = [note.userInfo[@"seconds"] doubleValue];
+        // A suspended account is limited because it's suspended (Reddit gives
+        // it a fraction of the usual budget), so its banner says that instead,
+        // ahead of the offer below, which is about a setting that can't help.
+        if (ApolloSuspensionBannerShowForRateLimit(NO)) return;
         // An account that signed in before the Reduce Rate Limiting offer
         // existed gets it here, once, in place of the toast.
         if (ApolloReduceRateLimitingOfferAtRateLimit(seconds)) return;
         ApolloShowRedditRateLimitToast(seconds);
     }];
+    // The reminder is for someone who left and came back, not for every time
+    // the app becomes active again: Control Center, the notification shade,
+    // the app switcher and a system prompt all do that without the app ever
+    // leaving the screen, and each one brought the same notice down again.
+    static NSTimeInterval sRateLimitNoticeBackgroundedAt = 0;
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidEnterBackgroundNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(__unused NSNotification *note) {
+        sRateLimitNoticeBackgroundedAt = [[NSDate date] timeIntervalSince1970];
+    }];
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(__unused NSNotification *note) {
+        NSTimeInterval backgroundedAt = sRateLimitNoticeBackgroundedAt;
+        sRateLimitNoticeBackgroundedAt = 0;
+        // Wall-clock time: the app doesn't run while it's in the background.
+        if (backgroundedAt <= 0 || [[NSDate date] timeIntervalSince1970] - backgroundedAt < 60.0) return;
         NSTimeInterval wait = ApolloWebJSONOptionalReadBackoff(ApolloActiveWebSessionUsername());
-        if (wait > 0) ApolloShowRedditRateLimitToast(wait);
+        if (wait > 0 && !ApolloSuspensionBannerShowForRateLimit(YES)) ApolloShowRedditRateLimitToast(wait);
     }];
+    // Reddit's own red bar for a suspended account, which Apollo never showed.
+    ApolloSuspensionBannerInstall();
     // Picture-in-Picture hydration.
     sPiPEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyPictureInPictureEnabled];
     sPiPActivationMode = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyPictureInPictureActivation];
