@@ -167,6 +167,10 @@ static UIImage *ApolloFeedShortcutGlyph(NSInteger index) {
         imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
 }
 
+UIImage *ApolloFeedShortcutTemplateGlyph(NSInteger index) {
+    return index >= 0 && index < 4 ? ApolloFeedShortcutGlyph(index) : nil;
+}
+
 static CGFloat ApolloFeedShortcutOpaqueMaxDimension(UIImage *image) {
     CGImageRef imageRef = image.CGImage;
     if (!imageRef) return MAX(image.size.width, image.size.height);

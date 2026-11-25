@@ -1,0 +1,44 @@
+#import <UIKit/UIKit.h>
+
+NS_ASSUME_NONNULL_BEGIN
+
+// Duo, flat, landscape: the leading column beside the Posts feed. A
+// full-height panel (rounded glass inset from the display edges, or filled:
+// solid and square across the whole column) on a plain backdrop that ends in
+// a divider where the feed begins: the feed shortcuts
+// the subreddit list shows (Home, Popular, All, Moderator, in its icon style)
+// and Subreddits, which opens the drawer beside it, at the top, then the
+// account's favorite subreddits and followed users. The host sizes the view to
+// the column's reserved width and shows it.
+@interface ApolloDuoFeedRail : UIView
+/// Width the feed reserves for the column, in either style: the buttons and
+/// a 4pt inset from the display edge and before the feed.
+@property(class, nonatomic, readonly) CGFloat reservedWidth;
+/// Where the panel ends: at the divider filled, 4pt before it rounded.
++ (CGFloat)panelMaxXFilled:(BOOL)filled;
+/// The panel fills the column from the display edge to the divider, square
+/// and solid, instead of a rounded glass panel inset from the edges.
+@property(nonatomic) BOOL filled;
+/// 0 Home, 1 Popular, 2 All, 3 Moderator; -1 when the feed is none of them.
+@property(nonatomic) NSInteger selectedFeed;
+/// Whether Moderator is among the shortcuts: Settings shows it and the
+/// subreddit list has its row (the account moderates). Set before
+/// -reloadShortcuts.
+@property(nonatomic) BOOL showsModerator;
+/// What it lists under Subreddits (ApolloDuoFeedSidebarContent): favorites,
+/// the account's multireddits, or both in the Subreddits list's order.
+@property(nonatomic) NSInteger content;
+/// The subreddit the feed shows (a multireddit's "/user/<owner>/m/<name>"
+/// path), matched against the listed entries; nil for none.
+@property(nonatomic, copy, nullable) NSString *selectedSubreddit;
+@property(nonatomic) BOOL subredditsSelected;
+@property(nonatomic, copy, nullable) void (^selectFeed)(NSInteger feed);
+@property(nonatomic, copy, nullable) void (^selectSubreddit)(NSString *subreddit);
+@property(nonatomic, copy, nullable) void (^toggleSubreddits)(void);
+/// Rebuilds the buttons when the shortcuts (Popular and All can be hidden in
+/// Settings) or the favorites changed.
+- (void)reloadShortcuts;
+- (void)refreshColors;
+@end
+
+NS_ASSUME_NONNULL_END

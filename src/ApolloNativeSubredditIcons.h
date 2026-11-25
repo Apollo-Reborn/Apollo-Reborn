@@ -12,6 +12,10 @@ NS_ASSUME_NONNULL_BEGIN
 // missing or unreadable blob.
 FOUNDATION_EXPORT NSArray<NSString *> *ApolloNativeSubredditIconNames(NSData *_Nullable blob);
 
+// Lowercased subreddit name -> icon URL, from the tracker blob. Empty for a
+// missing or unreadable blob.
+FOUNDATION_EXPORT NSDictionary<NSString *, NSURL *> *ApolloNativeSubredditIconURLs(NSData *_Nullable blob);
+
 // Lowercased display name -> current icon URL string, parsed from an
 // /api/info.json?sr_name=... listing. Prefers community_icon over the legacy
 // icon_img; subreddits with neither are left out.

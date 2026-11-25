@@ -12,7 +12,8 @@ int main(void) {
     // Routing: earlier rows win.
     check(ApolloDuoBackRouteFor(false, true, true, true) == ApolloDuoBackRouteNone, "no Back, no drag");
     check(ApolloDuoBackRouteFor(true, true, true, true) == ApolloDuoBackRouteNative, "a real page pop is Apollo's own Back");
-    check(ApolloDuoBackRouteFor(true, false, true, true) == ApolloDuoBackRouteDrawer, "feed root pulls in the list");
+    check(ApolloDuoBackRouteFor(true, false, true, false) == ApolloDuoBackRouteDrawer, "feed root pulls in the list");
+    check(ApolloDuoBackRouteFor(true, false, true, true) == ApolloDuoBackRouteCloseThread, "feed root beside a paired thread closes it");
     check(ApolloDuoBackRouteFor(true, false, false, true) == ApolloDuoBackRouteCloseThread, "thread above backstop closes by drag");
     check(ApolloDuoBackRouteFor(true, false, false, false) == ApolloDuoBackRoutePop, "anything else runs the split's own Back");
 

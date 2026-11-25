@@ -10,6 +10,7 @@
 #import "ApolloDuoRail.h"
 #import "ApolloDuoSplitView.h"
 #import "ApolloMetaFeedRowRecovery.h"
+#import "ApolloMultiredditEdit.h"
 #import "ApolloFeedShortcutsAppearance.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
@@ -102,6 +103,7 @@ static NSString * const ApolloSubredditIndexFavoriteSubredditsKey = @"FavoriteSu
 static void (*orig_ApolloRedditListWillDisplayHeader)(id self, SEL _cmd, UITableView *tableView, UIView *view, NSInteger section) = NULL;
 static void (*orig_ApolloRedditListWillDisplayCell)(id self, SEL _cmd, UITableView *tableView, UITableViewCell *cell, NSIndexPath *indexPath) = NULL;
 static CGFloat (*orig_ApolloRedditListHeightForRow)(id self, SEL _cmd, UITableView *tableView, NSIndexPath *indexPath) = NULL;
+static CGFloat (*orig_ApolloRedditListHeightForHeader)(id self, SEL _cmd, UITableView *tableView, NSInteger section) = NULL;
 static void (*orig_ApolloSubredditHeaderLayoutSubviews)(id self, SEL _cmd) = NULL;
 static void (*orig_ApolloSubredditHeaderSetFrame)(id self, SEL _cmd, CGRect frame) = NULL;
 
@@ -2873,10 +2875,128 @@ static void ApolloSubredditIndexHeaderLayoutSubviewsHook(id self, SEL _cmd) {
     ApolloSubredditIndexStyleHeaderView(header, tableView);
 }
 
+// --- The drawer beside the Duo's feed rail --------------------------------
+// It opens beside the Duo's feed rail, which already holds the feed shortcuts
+// and the favorites (ApolloDuoSplitListOmitsRailRows). Those rows and the
+// Favorites header collapse there; the rest of the list is unchanged.
+static char kApolloSubredditRailSectionsKey;
+static char kApolloSubredditHiddenOnRailKey;
+static char kApolloSubredditRailEditingKey;
+
+// Edit brings the favorites back, to reorder or remove them. The list's own
+// editing, which a swipe to delete doesn't set.
+static BOOL ApolloSubredditIndexListIsEditing(UITableView *tableView) {
+    id list = tableView.delegate;
+    return [list isKindOfClass:UIViewController.class] && [(UIViewController *)list isEditing];
+}
+
+// Whether `section` is one the rail lists: Favorites, Multireddits or both,
+// as Show in Sidebar picks. The sections are found by Apollo's index glyphs
+// (★ favorites, ○ multireddits; read from the binary's title table) and kept
+// until the sections change in number or the list reloads (the reloadData
+// hook drops them). Multireddits count only while the rail has some: it lists
+// the ones the last working fetch captured, but Apollo fills this section from
+// the account, so after a failed fetch (offline, a 429, or at launch before it
+// lands) they stay here. A capture that changes that reloads the list (%ctor).
+static BOOL ApolloSubredditIndexSectionIsOnRail(UITableView *tableView, NSInteger section) {
+    id<UITableViewDataSource> dataSource = tableView.dataSource;
+    NSInteger sections = [dataSource respondsToSelector:@selector(numberOfSectionsInTableView:)]
+        ? [dataSource numberOfSectionsInTableView:tableView] : 1;
+    NSArray<NSNumber *> *cached = objc_getAssociatedObject(tableView, &kApolloSubredditRailSectionsKey);
+    if (cached.count != 4 || cached[0].integerValue != sections) {
+        cached = @[@(sections), @(ApolloSubredditIndexSectionForIndexTitle(tableView, @"★")),
+                   @(ApolloSubredditIndexSectionForIndexTitle(tableView, @"○")),
+                   @(ApolloActiveAccountMultiredditCount() > 0)];
+        objc_setAssociatedObject(tableView, &kApolloSubredditRailSectionsKey, cached, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    NSInteger favorites = cached[1].integerValue, multireddits = cached[2].integerValue;
+    BOOL showsFavorites = sDuoFeedSidebarContent != ApolloDuoFeedSidebarContentMultireddits;
+    BOOL showsMultireddits = sDuoFeedSidebarContent != ApolloDuoFeedSidebarContentFavorites && cached[3].boolValue;
+    return (showsFavorites && section == favorites) || (showsMultireddits && section == multireddits);
+}
+
+static BOOL ApolloSubredditIndexRowIsOnDuoRail(UITableView *tableView, NSIndexPath *indexPath) {
+    if (!ApolloDuoSplitListOmitsRailRows(tableView)) return NO;
+    if (indexPath.section == 0) {
+        // Every feed shortcut the list shows is on the rail (Moderator too,
+        // when the list has its row), so all of them collapse, tiles included;
+        // only once the native rows matched the feeds they should be.
+        NSArray<NSNumber *> *visible = ApolloSubredditIndexVisibleMetaFeedIndexes(tableView);
+        return ApolloSubredditIndexIsMetaFeedRow(indexPath, visible.count) &&
+               ApolloSubredditIndexMetaFeedRowsValidated(tableView, visible);
+    }
+    if (ApolloSubredditIndexListIsEditing(tableView)) return NO;
+    return ApolloSubredditIndexSectionIsOnRail(tableView, indexPath.section);
+}
+
+static BOOL ApolloSubredditIndexHeaderIsOnDuoRail(UITableView *tableView, NSInteger section) {
+    if (!ApolloDuoSplitListOmitsRailRows(tableView) || ApolloSubredditIndexListIsEditing(tableView)) return NO;
+    return ApolloSubredditIndexSectionIsOnRail(tableView, section);
+}
+
+// Hides (or shows again) a view the drawer leaves out, showing only views it
+// hid. The table unhides a cell it dequeues, so hiding is applied every time.
+static void ApolloSubredditIndexSetHiddenOnRail(UIView *view, BOOL hide) {
+    BOOL ours = [objc_getAssociatedObject(view, &kApolloSubredditHiddenOnRailKey) boolValue];
+    if (hide) {
+        if (!view.hidden) view.hidden = YES;
+        if (!ours) objc_setAssociatedObject(view, &kApolloSubredditHiddenOnRailKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    } else if (ours) {
+        view.hidden = NO;
+        objc_setAssociatedObject(view, &kApolloSubredditHiddenOnRailKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
+// Edit and Done open and close the rail's sections in place, once per change.
+static void ApolloSubredditIndexRefreshRailFavorites(UITableView *tableView, BOOL animated) {
+    BOOL editing = ApolloSubredditIndexListIsEditing(tableView);
+    if ([objc_getAssociatedObject(tableView, &kApolloSubredditRailEditingKey) boolValue] == editing) return;
+    objc_setAssociatedObject(tableView, &kApolloSubredditRailEditingKey, editing ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!ApolloDuoSplitListOmitsRailRows(tableView)) return;
+    NSMutableArray<UIView *> *views = [NSMutableArray array];
+    for (UITableViewCell *cell in tableView.visibleCells) {
+        NSIndexPath *indexPath = [tableView indexPathForCell:cell];
+        if (indexPath && ApolloSubredditIndexSectionIsOnRail(tableView, indexPath.section)) [views addObject:cell];
+    }
+    // Apollo's headers are plain views, which headerViewForSection: doesn't
+    // return; the display hook stamps each with its section.
+    NSHashTable<UIView *> *headers = objc_getAssociatedObject(tableView, &kApolloSubredditVisibleHeadersKey);
+    for (UIView *header in headers) {
+        NSNumber *section = objc_getAssociatedObject(header, &kApolloSubredditHeaderSectionKey);
+        if (header.superview == tableView && section && ApolloSubredditIndexSectionIsOnRail(tableView, section.integerValue)) {
+            [views addObject:header];
+        }
+    }
+    // Rows that open fade in as they grow, so their content never overlaps.
+    for (UIView *view in views) {
+        if (editing) view.alpha = 0;
+        ApolloSubredditIndexSetHiddenOnRail(view, !editing);
+    }
+    void (^update)(void) = ^{ [tableView performBatchUpdates:nil completion:nil]; };
+    if (!animated) {
+        [UIView performWithoutAnimation:update];
+        for (UIView *view in views) view.alpha = 1;
+        return;
+    }
+    update();
+    [UIView animateWithDuration:0.25 delay:0.08 options:UIViewAnimationOptionBeginFromCurrentState animations:^{
+        for (UIView *view in views) view.alpha = 1;
+    } completion:nil];
+}
+
+static CGFloat ApolloSubredditIndexHeightForHeaderHook(id self, SEL _cmd, UITableView *tableView, NSInteger section) {
+    // Under a custom section order the remap may call in here with Apollo's
+    // native section; the rail sections are visible ones.
+    if (ApolloSubredditIndexHeaderIsOnDuoRail(tableView, ApolloFollowingVisibleSectionForCallout(tableView, section))) return 0.01;
+    if (orig_ApolloRedditListHeightForHeader) return orig_ApolloRedditListHeightForHeader(self, _cmd, tableView, section);
+    return tableView.sectionHeaderHeight;
+}
+
 static void ApolloSubredditIndexWillDisplayHeaderHook(id self, SEL _cmd, UITableView *tableView, UIView *view, NSInteger section) {
     if (orig_ApolloRedditListWillDisplayHeader) {
         orig_ApolloRedditListWillDisplayHeader(self, _cmd, tableView, view, section);
     }
+    ApolloSubredditIndexSetHiddenOnRail(view, ApolloSubredditIndexHeaderIsOnDuoRail(tableView, section));
     // Stamp the section (headers are reused) and drop the cached pinned verdict so the
     // setFrame: hook re-evaluates for the new slot.
     ApolloSubredditIndexTrackHeader(view, tableView);
@@ -2891,9 +3011,11 @@ static void ApolloSubredditIndexWillDisplayCellHook(id self, SEL _cmd, UITableVi
     }
     ApolloSubredditIndexPrepareCellForDisplay(tableView, cell, indexPath);
     ApolloDuoSplitPrepareOverlaySurface(cell);
+    ApolloSubredditIndexSetHiddenOnRail(cell, ApolloSubredditIndexRowIsOnDuoRail(tableView, indexPath));
 }
 
 static CGFloat ApolloSubredditIndexHeightForRowHook(id self, SEL _cmd, UITableView *tableView, NSIndexPath *indexPath) {
+    if (ApolloSubredditIndexRowIsOnDuoRail(tableView, indexPath)) return 0.01;
     if (indexPath.section == 0 && indexPath.row < 4) {
         NSArray<NSNumber *> *visibleIndexes = ApolloSubredditIndexVisibleMetaFeedIndexes(tableView);
         if (ApolloSubredditIndexIsMetaFeedRow(indexPath, visibleIndexes.count) &&
@@ -2978,6 +3100,21 @@ static void ApolloSubredditIndexInstallRowHeightHook(void) {
         ApolloSetMethodImplementation(cls, inheritedOrOwnMethod, (IMP)ApolloSubredditIndexHeightForRowHook);
     }
     ApolloLog(@"[SubredditIndex] meta-feed shortcut row-height hook installed added=%d", added);
+}
+
+static void ApolloSubredditIndexInstallHeaderHeightHook(void) {
+    Class cls = ApolloClassRedditListViewController;
+    if (!cls) {
+        ApolloLog(@"[SubredditIndex] header height hook skipped: RedditListViewController missing");
+        return;
+    }
+    SEL selector = @selector(tableView:heightForHeaderInSection:);
+    Method method = class_getInstanceMethod(cls, selector);
+    if (method) orig_ApolloRedditListHeightForHeader = (CGFloat (*)(id, SEL, UITableView *, NSInteger))method_getImplementation(method);
+    const char *types = method ? method_getTypeEncoding(method) : "d@:@q";
+    BOOL added = class_addMethod(cls, selector, (IMP)ApolloSubredditIndexHeightForHeaderHook, types);
+    if (!added && method) ApolloSetMethodImplementation(cls, method, (IMP)ApolloSubredditIndexHeightForHeaderHook);
+    ApolloLog(@"[SubredditIndex] header height hook installed added=%d", added);
 }
 
 static void ApolloSubredditIndexInstallHeaderLayoutHook(void) {
@@ -3255,6 +3392,7 @@ static BOOL ApolloNativeIndexHooksAreCompatible(Class indexClass) {
 - (void)setEditing:(BOOL)editing animated:(BOOL)animated {
     %orig;
     if (![sApolloSubredditKnownTables containsObject:(UITableView *)self]) return;
+    ApolloSubredditIndexRefreshRailFavorites((UITableView *)self, animated);
     UITableViewCell *firstCell = [(UITableView *)self cellForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
     ApolloMetaFeedShortcutsView *shortcutsView = objc_getAssociatedObject(firstCell, &kApolloMetaFeedShortcutsViewKey);
     [shortcutsView apollo_updateEditingStateAnimated:animated];
@@ -3281,6 +3419,10 @@ static BOOL ApolloNativeIndexHooksAreCompatible(Class indexClass) {
         // Refresh the actual Apollo headers; UIKit's headerViewForSection:
         // does not return its plain RecreatedTableSectionHeaderView instances.
         for (UIView *header in ApolloSubredditIndexHeadersForTable(table)) {
+            // A hidden header shows nothing; it is styled again when displayed.
+            // Beside the Duo's feed rail the list keeps UIKit's own spare
+            // headers around hidden, and UIKit asserts when their color is set.
+            if (header.hidden) continue;
             if (objc_getAssociatedObject(header, &kApolloSubredditHeaderSectionKey)) {
                 ApolloSubredditIndexApplyHeaderSurfaceForPinnedState(header, table,
                     ApolloSubredditIndexHeaderIsPinned(header, table));
@@ -3290,9 +3432,16 @@ static BOOL ApolloNativeIndexHooksAreCompatible(Class indexClass) {
 }
 
 - (void)reloadData {
+    // Sections may have changed without changing in number.
+    if (objc_getAssociatedObject(self, &kApolloSubredditRailSectionsKey)) {
+        objc_setAssociatedObject(self, &kApolloSubredditRailSectionsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     %orig;
     ApolloSubredditIndexInstallOrUpdate((UITableView *)self);
     ApolloSubredditIndexApplyNativeIndexAccent((UITableView *)self);
+    if ([sApolloSubredditKnownTables containsObject:(UITableView *)self]) {
+        ApolloDuoSplitSubredditListDidReload((UITableView *)self);
+    }
 }
 
 - (void)deleteRowsAtIndexPaths:(NSArray<NSIndexPath *> *)indexPaths withRowAnimation:(UITableViewRowAnimation)animation {
@@ -3482,6 +3631,9 @@ static BOOL ApolloSubredditIndexRecordMetaFeedCell(UITableView *tableView,
 static void ApolloSubredditIndexRestoreMetaFeedCell(UITableViewCell *cell) {
     if (!cell) return;
     cell.hidden = NO;
+    // Every hide is applied again from here (the docks below, the Duo drawer
+    // on display), so an earlier drawer mark must not unhide a docked row.
+    objc_setAssociatedObject(cell, &kApolloSubredditHiddenOnRailKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     ApolloMetaFeedShortcutsView *shortcutsView = objc_getAssociatedObject(cell, &kApolloMetaFeedShortcutsViewKey);
     [shortcutsView removeFromSuperview];
@@ -4111,6 +4263,7 @@ void ApolloSubredditIndexDebugDescribeTables(void) {
     ApolloSubredditIndexInstallHeaderHook();
     ApolloSubredditIndexInstallCellDisplayHook();
     ApolloSubredditIndexInstallRowHeightHook();
+    ApolloSubredditIndexInstallHeaderHeightHook();
     ApolloSubredditIndexInstallHeaderLayoutHook();
     ApolloSubredditIndexInstallHeaderSetFrameHook();
     [[NSNotificationCenter defaultCenter] addObserverForName:ApolloModernSubredditDividersChangedNotification
@@ -4122,6 +4275,18 @@ void ApolloSubredditIndexDebugDescribeTables(void) {
                   ApolloSubredditEnhancementsEnabled(),
                   sModernSubredditDividers,
                   (unsigned long)sApolloSubredditKnownTables.allObjects.count);
+    }];
+    // The rail's multireddits arrived or went: the drawer beside it shows its
+    // Multireddits section again, or hides it (ApolloSubredditIndexSectionIsOnRail).
+    [[NSNotificationCenter defaultCenter] addObserverForName:ApolloMultiredditsCapturedNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(__unused NSNotification *notification) {
+        BOOL listed = ApolloActiveAccountMultiredditCount() > 0;
+        for (UITableView *tableView in sApolloSubredditKnownTables.allObjects) {
+            NSArray<NSNumber *> *cached = objc_getAssociatedObject(tableView, &kApolloSubredditRailSectionsKey);
+            if (cached.count == 4 && cached[3].boolValue != listed) [tableView reloadData];
+        }
     }];
     [[NSNotificationCenter defaultCenter] addObserverForName:ApolloHideSubredditListDescriptionsChangedNotification
                                                       object:nil

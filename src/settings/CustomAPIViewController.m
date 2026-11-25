@@ -3114,17 +3114,75 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 
 // Features → iPhone Duo: Duo settings that have no control of their own on
 // screen. Split View, the feed layout and the divider stay on the feed.
-- (ApolloSettingsSection *)buildDuoOpenSection {
+// This section is the landscape feed sidebar; the next is the subreddit panel.
+- (ApolloSettingsSection *)buildDuoSidebarSection {
+    __weak typeof(self) weakSelf = self;
+    ApolloSettingsRow *feedSidebar =
+        [ApolloSettingsRow switchRowWithID:@"duo.feedSidebar"
+                                     title:@"Feed Sidebar"
+                                      isOn:^BOOL { return sDuoFeedSidebarEnabled; }
+                                  onToggle:^(UISwitch *sender) {
+            sDuoFeedSidebarEnabled = sender.isOn;
+            [NSUserDefaults.standardUserDefaults setBool:sender.isOn forKey:UDKeyDuoFeedSidebarEnabled];
+            ApolloDuoSplitFeedSidebarChanged();
+            [weakSelf visibilityDidChange];
+        }];
+    ApolloSettingsRow *feedSidebarStyle =
+        [ApolloSettingsRow valueRowWithID:@"duo.feedSidebarStyle"
+                                   title:@"Sidebar Style"
+                                  detail:^NSString * {
+            return sDuoFeedSidebarStyle == ApolloDuoFeedSidebarStyleStandard ? @"Standard" : @"Liquid Glass";
+        }
+                                onSelect:^{
+            ApolloSettingsPresentPicker(weakSelf, [weakSelf cellForRowID:@"duo.feedSidebarStyle"],
+                // Listed like Panel Style's options.
+                @"Sidebar Style", @[ @"Standard", @"Liquid Glass" ],
+                sDuoFeedSidebarStyle == ApolloDuoFeedSidebarStyleStandard ? 0 : 1, ^(NSInteger picked) {
+                    NSInteger style = picked == 0 ? ApolloDuoFeedSidebarStyleStandard : ApolloDuoFeedSidebarStyleLiquidGlass;
+                    if (sDuoFeedSidebarStyle == style) return;
+                    sDuoFeedSidebarStyle = style;
+                    [NSUserDefaults.standardUserDefaults setInteger:style forKey:UDKeyDuoFeedSidebarStyle];
+                    [weakSelf reloadRowWithID:@"duo.feedSidebarStyle"];
+                    ApolloDuoSplitFeedSidebarChanged();
+                });
+        }];
+    feedSidebarStyle.visible = ^BOOL { return sDuoFeedSidebarEnabled; };
+    NSArray<NSString *> *sidebarContents = @[ @"Favorites", @"Multireddits", @"Both" ];
+    ApolloSettingsRow *feedSidebarContent =
+        [ApolloSettingsRow valueRowWithID:@"duo.feedSidebarContent"
+                                   title:@"Show in Sidebar"
+                                  detail:^NSString * {
+            NSInteger content = sDuoFeedSidebarContent;
+            return content >= 0 && content < (NSInteger)sidebarContents.count ? sidebarContents[content] : sidebarContents[0];
+        }
+                                onSelect:^{
+            ApolloSettingsPresentPicker(weakSelf, [weakSelf cellForRowID:@"duo.feedSidebarContent"],
+                @"Show in Sidebar", sidebarContents, sDuoFeedSidebarContent, ^(NSInteger picked) {
+                    if (sDuoFeedSidebarContent == picked) return;
+                    sDuoFeedSidebarContent = picked;
+                    [NSUserDefaults.standardUserDefaults setInteger:picked forKey:UDKeyDuoFeedSidebarContent];
+                    [weakSelf reloadRowWithID:@"duo.feedSidebarContent"];
+                    ApolloDuoSplitFeedSidebarChanged();
+                });
+        }];
+    feedSidebarContent.visible = feedSidebarStyle.visible;
+
+    return [ApolloSettingsSection sectionWithTitle:@"Sidebar"
+                                            footer:@"When the Duo is open in landscape, the sidebar lists your feeds in place of the List button."
+                                              rows:@[ feedSidebar, feedSidebarStyle, feedSidebarContent ]];
+}
+
+- (ApolloSettingsSection *)buildDuoSubredditPanelSection {
     __weak typeof(self) weakSelf = self;
     ApolloSettingsRow *panelStyle =
         [ApolloSettingsRow valueRowWithID:@"duo.panelStyle"
-                                   title:@"Subreddit Panel Style"
+                                   title:@"Panel Style"
                                   detail:^NSString * {
             return sDuoSubredditPanelGlassEnabled ? @"Liquid Glass" : @"Standard";
         }
                                 onSelect:^{
             ApolloSettingsPresentPicker(weakSelf, [weakSelf cellForRowID:@"duo.panelStyle"],
-                @"Subreddit Panel Style", @[ @"Standard", @"Liquid Glass" ],
+                @"Panel Style", @[ @"Standard", @"Liquid Glass" ],
                 sDuoSubredditPanelGlassEnabled ? 1 : 0, ^(NSInteger picked) {
                     BOOL glassEnabled = picked == 1;
                     if (sDuoSubredditPanelGlassEnabled == glassEnabled) return;
@@ -3136,8 +3194,8 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                 });
         }];
 
-    return [ApolloSettingsSection sectionWithTitle:@"Open"
-                                            footer:@"The subreddit panel slides in beside the feed when the Duo is open."
+    return [ApolloSettingsSection sectionWithTitle:@"Subreddit Panel"
+                                            footer:@"When the Duo is open, your subreddit list slides in beside the feed from the List button or the sidebar's Subreddits."
                                               rows:@[ panelStyle ]];
 }
 
@@ -6141,7 +6199,7 @@ static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
 @implementation ApolloDuoSettingsViewController
 - (NSString *)apollo_screenTitle { return @"iPhone Duo"; }
 - (NSArray<ApolloSettingsSection *> *)buildForm {
-    return @[ [self buildDuoOpenSection] ];
+    return @[ [self buildDuoSidebarSection], [self buildDuoSubredditPanelSection] ];
 }
 @end
 

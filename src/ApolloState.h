@@ -213,6 +213,22 @@ extern BOOL sHideTopBarOnScroll;
 extern NSInteger sDuoUnfoldedFeedLayout;
 // Standard (default NO) or Liquid Glass for the open Duo subreddit panel.
 extern BOOL sDuoSubredditPanelGlassEnabled;
+// The feed sidebar beside Posts on the open Duo in landscape (default NO).
+extern BOOL sDuoFeedSidebarEnabled;
+typedef NS_ENUM(NSInteger, ApolloDuoFeedSidebarStyle) {
+    ApolloDuoFeedSidebarStyleLiquidGlass = 0,
+    ApolloDuoFeedSidebarStyleStandard = 1,
+};
+// Standard (default; a solid column) or Liquid Glass (a rounded glass panel)
+// for the feed sidebar.
+extern NSInteger sDuoFeedSidebarStyle;
+typedef NS_ENUM(NSInteger, ApolloDuoFeedSidebarContent) {
+    ApolloDuoFeedSidebarContentFavorites = 0,
+    ApolloDuoFeedSidebarContentMultireddits = 1,
+    ApolloDuoFeedSidebarContentBoth = 2,
+};
+// What the feed sidebar lists under Subreddits (default Favorites).
+extern NSInteger sDuoFeedSidebarContent;
 // Modern sheet or Apollo's Classic popup for the subreddit quick-switcher.
 extern BOOL sSubredditSwitcherSheetEnabled;
 BOOL ApolloSupportsNativeTabBarScrollBehavior(void);

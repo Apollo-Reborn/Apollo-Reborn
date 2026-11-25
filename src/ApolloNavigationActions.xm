@@ -1261,6 +1261,8 @@ static NSString *const kActionsDuoRailOverflowIdentifier = @"BottomOverflowBarBu
 @property (nonatomic, weak) UIButton *button;
 @property (nonatomic, strong) UIDeferredMenuElement *provider;
 @property (nonatomic, strong) UIDeferredMenuElement *previous;
+// Hidden with the feed's other actions while a thread is paired beside it.
+@property (nonatomic) BOOL hidden;
 @end
 @implementation ApolloDuoSystemOverflow
 @end
@@ -1276,11 +1278,28 @@ static void ApolloActionsRemoveSystemOverflow(UINavigationItem *item) {
     objc_setAssociatedObject(item, &kActionsDuoSystemOverflowKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
+// The Duo hides a feed's actions while a thread is paired beside it
+// (ApolloActionsPresentedItems). UIKit draws the overflow apart from those
+// items, so More hides too, and comes back with them.
+static void ApolloActionsShowSystemOverflow(UINavigationItem *item, BOOL shown) {
+    ApolloDuoSystemOverflow *state = objc_getAssociatedObject(item, &kActionsDuoSystemOverflowKey);
+    if (!state || state.hidden == !shown) return;
+    if (@available(iOS 16.0, *)) {
+        if (!shown && item.additionalOverflowItems == state.provider) {
+            item.additionalOverflowItems = state.previous;
+            state.hidden = YES;
+        } else if (shown) {
+            if (item.additionalOverflowItems == state.previous) item.additionalOverflowItems = state.provider;
+            state.hidden = NO;
+        }
+    }
+}
+
 static BOOL ApolloActionsInstallSystemOverflow(UINavigationItem *item, UIButton *more) {
     if (@available(iOS 27.0, *)) {
         if (!ApolloDeviceIsDuo()) return NO;
         ApolloDuoSystemOverflow *state = objc_getAssociatedObject(item, &kActionsDuoSystemOverflowKey);
-        if (state && state.button == more && item.additionalOverflowItems == state.provider) return YES;
+        if (state && state.button == more && (item.additionalOverflowItems == state.provider || state.hidden)) return YES;
         ApolloActionsRemoveSystemOverflow(item);
         sApolloDuoMoreGlyph = ApolloActionsTemplateImage([UIImage imageNamed:@"option-more"]
             ?: [more imageForState:UIControlStateNormal] ?: more.currentImage);
@@ -1450,7 +1469,8 @@ static NSArray<UIBarButtonItem *> *ApolloActionsDuoNativeItems(UINavigationItem 
         for (UIBarButtonItem *candidate in items) {
             if (objc_getAssociatedObject(candidate, &kActionsDuoSourceButtonKey)) hasMirror = YES;
         }
-        if (!hasMirror) ApolloActionsRemoveSystemOverflow(item);
+        // A paired thread empties the feed's items; its overflow only hides.
+        if (!hasMirror && !ApolloDuoSplitSuppressesFeedActions(box.controller)) ApolloActionsRemoveSystemOverflow(item);
         return items;
     }
 
@@ -2160,7 +2180,9 @@ static void ApolloActionsResetBeforeNavigation(UIViewController *controller) {
 
 static NSArray<UIBarButtonItem *> *ApolloActionsPresentedItems(UINavigationItem *item, NSArray<UIBarButtonItem *> *items) {
     ApolloNavigationActionsControllerBox *feedBox = objc_getAssociatedObject(item, &kActionsControllerKey);
-    if (ApolloDuoSplitSuppressesFeedActions(feedBox.controller)) {
+    BOOL suppressed = ApolloDuoSplitSuppressesFeedActions(feedBox.controller);
+    ApolloActionsShowSystemOverflow(item, !suppressed);
+    if (suppressed) {
         // Duo hides Apollo's feed actions while comments share the display,
         // while keeping the host's independent feed controls available.
         NSMutableArray<UIBarButtonItem *> *searchItems = [NSMutableArray array];

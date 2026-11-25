@@ -96,6 +96,9 @@ int main(void) { @autoreleasepool {
     isDuo = YES; Check(ApolloActionsInstallSystemOverflow(item, button));
     provider = item.additionalOverflowItems;
     Check(ApolloActionsInstallSystemOverflow(item, button)); Check(provider == item.additionalOverflowItems);
+    ApolloActionsShowSystemOverflow(item, NO); Check(item.additionalOverflowItems == previous); // A paired thread hides More.
+    Check(ApolloActionsInstallSystemOverflow(item, button)); Check(item.additionalOverflowItems == previous); // Reinstall keeps it hidden.
+    ApolloActionsShowSystemOverflow(item, YES); Check(item.additionalOverflowItems == provider); // Back brings it back.
     button.menu = [UIMenu new]; button.showsMenuAsPrimaryAction = YES;
     button.menu.children = @[[UIMenuElement new]];
     provider.provider(^(NSArray *elements) { Check(elements.count == 2); Check(elements.lastObject == previous); });

@@ -46,6 +46,12 @@ NSString *ApolloFollowingCanonicalTitleForNativeSection(UITableView *tableView, 
 // "MULTIREDDITS" / "MODERATOR" / "FOLLOWING", or @"" for any other section.
 NSString *ApolloFollowingCanonicalTitleForVisibleSection(UITableView *tableView, NSInteger visibleSection);
 
+// The remap measures a header by handing Apollo the native section; a hook
+// inside that call (one installed before this module's) sees the native
+// number. Returns the visible section it stands for while that call is under
+// way for this table, otherwise `section` unchanged.
+NSInteger ApolloFollowingVisibleSectionForCallout(UITableView *tableView, NSInteger section);
+
 // YES while the list is in a row's swipe-to-delete rather than Edit mode. A
 // swipe makes UIKit report -isEditing for the whole table (only the swiped row
 // is set up for editing), and Apollo's tableView:willBeginEditingRowAtIndexPath:
