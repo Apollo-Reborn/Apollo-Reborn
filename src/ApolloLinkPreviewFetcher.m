@@ -11,6 +11,7 @@
 #import "ApolloWebTextDecoding.h"
 #import "ApolloWebJSON.h"              // ApolloWebJSONOptionalReadBackoff
 #import "ApolloWebSessionStore.h"      // ApolloActiveWebSessionUsername
+#import "graphql/ApolloGQLRoute.h"     // ApolloGQLRouteSendRead
 
 static const NSUInteger ApolloLinkPreviewMaxHTMLBytes = 2 * 1024 * 1024;
 
@@ -1231,16 +1232,20 @@ static BOOL ApolloBlueskyStatusMeansGone(NSError *error, NSInteger status) {
         return;
     }
 
+    // The card shows the post alone, so the thread is asked for with one
+    // comment rather than a page of them (a few hundred on a busy post).
     NSString *token = ApolloActiveAccountRedditBearerToken();
     NSString *urlString = token.length > 0
-        ? [NSString stringWithFormat:@"https://oauth.reddit.com/comments/%@/.json?raw_json=1", postID]
-        : [NSString stringWithFormat:@"https://www.reddit.com/comments/%@.json?raw_json=1", postID];
+        ? [NSString stringWithFormat:@"https://oauth.reddit.com/comments/%@/.json?raw_json=1&limit=1", postID]
+        : [NSString stringWithFormat:@"https://www.reddit.com/comments/%@.json?raw_json=1&limit=1", postID];
     NSMutableURLRequest *request = ApolloLinkPreviewRequest([NSURL URLWithString:urlString], 10.0);
     if (token.length > 0) {
         [request setValue:[@"Bearer " stringByAppendingString:token] forHTTPHeaderField:@"Authorization"];
     }
 
-    [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+    // An API-Key-Free account's post lookup goes through the GraphQL route
+    // first, off the cookie's request budget (ApolloGQLRoute.h).
+    ApolloGQLRouteSendRead(request, [NSURLSession sharedSession], ^(NSData *data, NSURLResponse *response, NSError *error) {
         if (error || !data) {
             ApolloLogError(@"[LinkPreviews] Reddit JSON failed %@ err=%@", url.absoluteString, error.localizedDescription);
             completion(nil);
@@ -1269,7 +1274,7 @@ static BOOL ApolloBlueskyStatusMeansGone(NSError *error, NSInteger status) {
         preview.imageURL = ApolloLinkPreviewURLFromString(ApolloRedditPreviewImageStringFromPost(post), url);
         preview.fetchedAt = [NSDate date];
         completion(preview);
-    }] resume];
+    });
 }
 
 + (void)fetchGitHubPreviewForURL:(NSURL *)url completion:(ApolloLinkPreviewCompletion)completion {

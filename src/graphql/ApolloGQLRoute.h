@@ -37,6 +37,27 @@ BOOL ApolloGQLRouteAvailable(NSString *account);
 typedef void (^ApolloGQLRouteCompletion)(NSData *_Nullable legacyJSON, BOOL refused, NSString *summary);
 void ApolloGQLRouteAnswer(NSString *account, ApolloGQLRequest *request, ApolloGQLRouteCompletion completion);
 
+// The tweak's own reads (Community Highlights, a subreddit's header) are plain
+// NSURLSession requests to oauth.reddit.com or www.reddit.com, so the RedditKit
+// hook never sees them, and for an API-Key-Free account they went out on the
+// cookie's budget whatever Apollo's own requests did. These two put GraphQL in
+// front of them as well.
+//
+// YES when `request` is an API-Key-Free account's read that GraphQL would
+// answer right now. A caller that stands down while Reddit rate-limits the
+// cookie (ApolloWebJSONOptionalReadBackoff) can keep going when this says so.
+// Any thread.
+BOOL ApolloGQLRouteAnswersRequest(NSURLRequest *request);
+
+// Sends `request`: through GraphQL when ApolloGQLRouteAnswersRequest says so,
+// and with `session` as it is otherwise, or when GraphQL has no answer.
+// `completion` is NSURLSession's and runs on a background queue; a GraphQL
+// answer arrives as the body the legacy endpoint would have sent, with an HTTP
+// 200 response for the request's URL. When GraphQL has no answer while the
+// cookie is rate-limited, nothing more is sent and `completion` gets an error.
+void ApolloGQLRouteSendRead(NSURLRequest *request, NSURLSession *session,
+                            void (^completion)(NSData *_Nullable data, NSURLResponse *_Nullable response, NSError *_Nullable error));
+
 // The Routes screen's switch. Takes effect with the next request: nothing of
 // the route outlives a request but the token ApolloWebJSON caches. Main thread.
 void ApolloGQLRouteSetEnabled(BOOL enabled);

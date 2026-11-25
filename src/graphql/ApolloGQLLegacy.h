@@ -94,6 +94,24 @@ NSString *_Nullable ApolloGQLFeedCursorForFullname(NSString *_Nullable fullname)
 // nil when it has no `errors`.
 NSString *_Nullable ApolloGQLAnswerErrorMessage(id _Nullable answer);
 
+// The authors a GraphQL answer names, in the shape of the legacy
+// /api/user_data_by_account_ids answer: t2_ fullname -> {"name",
+// "profile_img"}. Every post and comment GraphQL sends comes with its author's
+// account id, name and picture, so the avatar cache can take them from the
+// answer (ApolloUserProfileCache's -ingestGraphQLAuthorRecords:) and a feed or
+// thread this route loaded asks Reddit for no avatars afterwards. Deleted
+// authors are left out. Empty when the answer names nobody.
+NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *ApolloGQLLegacyAuthorRecords(id _Nullable answer);
+
+// Where to load an author's picture from, given the one GraphQL names
+// (authorInfo.iconSmall.url, signed for 50 pixels; inline avatars draw up to
+// 84). A snoo Reddit drew is a 256-pixel square at the same address without
+// its query, which is what the legacy API's profile_img shows. A picture the
+// person uploaded isn't: that address is the upload itself, uncropped and as
+// large as 4000 pixels (2026-11-25), so it keeps the 50-pixel address. nil for
+// no address.
+NSString *_Nullable ApolloGQLLegacyAuthorIconURL(NSString *_Nullable iconSmallURL);
+
 #ifdef __cplusplus
 }
 #endif

@@ -1066,3 +1066,54 @@ NSString *ApolloGQLAnswerErrorMessage(id answer) {
     if (errors.count == 0) return nil;
     return ApolloGQLString(errors.firstObject, @"message") ?: @"unknown error";
 }
+
+#pragma mark - Authors
+
+NSString *ApolloGQLLegacyAuthorIconURL(NSString *iconSmallURL) {
+    if (![iconSmallURL isKindOfClass:[NSString class]] || iconSmallURL.length == 0) return nil;
+    NSURLComponents *components = [NSURLComponents componentsWithString:iconSmallURL];
+    NSString *host = components.host.lowercaseString;
+    NSString *path = components.percentEncodedPath ?: @"";
+    NSString *file = path.lastPathComponent;
+    // A snoo from Reddit's avatar builder: preview.redd.it resizes what
+    // i.redd.it has whole, a 256-pixel headshot.
+    if ([host isEqualToString:@"preview.redd.it"] && [path hasPrefix:@"/snoovatar/avatars/"] && [file containsString:@"-headshot"]) {
+        return [@"https://i.redd.it" stringByAppendingString:path];
+    }
+    // The same headshot kept with the profile ("profileIcon_snoo<id>-headshot.png",
+    // collectible ones included). Any other profileIcon is an upload.
+    if ([host isEqualToString:@"styles.redditmedia.com"] && [file hasPrefix:@"profileIcon_snoo"]) {
+        return [@"https://styles.redditmedia.com" stringByAppendingString:path];
+    }
+    return iconSmallURL;
+}
+
+// Posts carry their author under authorInfo, comments too, and a crosspost's
+// original post sits inside the post that shares it, so this looks everywhere.
+static void ApolloGQLCollectAuthorRecords(id node, NSMutableDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *records,
+                                          NSUInteger depth) {
+    if (depth > 32) return;
+    if ([node isKindOfClass:[NSArray class]]) {
+        for (id item in (NSArray *)node) ApolloGQLCollectAuthorRecords(item, records, depth + 1);
+        return;
+    }
+    if (![node isKindOfClass:[NSDictionary class]]) return;
+    NSDictionary *author = ApolloGQLDict(node, @"authorInfo");
+    NSString *fullname = ApolloGQLString(author, @"id");
+    NSString *name = ApolloGQLString(author, @"name");
+    if ([fullname hasPrefix:@"t2_"] && fullname.length > 3 && name.length > 0 && !records[fullname]) {
+        NSString *icon = ApolloGQLLegacyAuthorIconURL(ApolloGQLString(ApolloGQLDict(author, @"iconSmall"), @"url"));
+        if (icon.length > 0) records[fullname] = @{ @"name": name, @"profile_img": icon };
+    }
+    for (id value in [(NSDictionary *)node allValues]) {
+        if ([value isKindOfClass:[NSDictionary class]] || [value isKindOfClass:[NSArray class]]) {
+            ApolloGQLCollectAuthorRecords(value, records, depth + 1);
+        }
+    }
+}
+
+NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *ApolloGQLLegacyAuthorRecords(id answer) {
+    NSMutableDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *records = [NSMutableDictionary dictionary];
+    ApolloGQLCollectAuthorRecords(ApolloGQLValue(answer, @"data"), records, 0);
+    return records;
+}

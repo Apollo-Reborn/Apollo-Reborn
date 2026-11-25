@@ -810,6 +810,72 @@ static void TestPlan(void) {
     CHECK(ApolloGQLPostsByIdsBatch == 50, @"batch size");
 }
 
+#pragma mark - Authors
+
+static void TestAuthorRecords(void) {
+    // The picture GraphQL names is signed for 50 pixels. A snoo Reddit drew is
+    // a 256-pixel square at the address without its query; an upload isn't.
+    CHECK([ApolloGQLLegacyAuthorIconURL(@"https://preview.redd.it/snoovatar/avatars/11111111-2222-3333-4444-555555555555-headshot.png?width=50&height=50&auto=webp&s=abc")
+           isEqualToString:@"https://i.redd.it/snoovatar/avatars/11111111-2222-3333-4444-555555555555-headshot.png"], @"builder snoo");
+    CHECK([ApolloGQLLegacyAuthorIconURL(@"https://styles.redditmedia.com/t5_abc/styles/profileIcon_snoo11111111-2222-3333-4444-555555555555-headshot-f.png?width=50&height=50&frame=1&auto=webp&crop=50%3A50%2Csmart&s=abc")
+           isEqualToString:@"https://styles.redditmedia.com/t5_abc/styles/profileIcon_snoo11111111-2222-3333-4444-555555555555-headshot-f.png"], @"profile snoo");
+    NSString *collectible = @"https://styles.redditmedia.com/t5_abc/styles/profileIcon_snoo-nftv2_bmZ0_rare_11111111-2222-3333-4444-555555555555-headshot.png";
+    CHECK([ApolloGQLLegacyAuthorIconURL([collectible stringByAppendingString:@"?width=50&height=50&frame=1&s=abc"]) isEqualToString:collectible],
+          @"a collectible keeps the name its frame is read from");
+    NSString *upload = @"https://styles.redditmedia.com/t5_abc/styles/profileIcon_abc123.jpg?width=50&height=50&frame=1&auto=webp&crop=50%3A50%2Csmart&s=abc";
+    CHECK([ApolloGQLLegacyAuthorIconURL(upload) isEqualToString:upload], @"an upload keeps the signed small picture");
+    NSString *plain = @"https://www.redditstatic.com/avatars/defaults/v2/avatar_default_6.png";
+    CHECK([ApolloGQLLegacyAuthorIconURL(plain) isEqualToString:plain], @"default avatar");
+    CHECK(ApolloGQLLegacyAuthorIconURL(nil) == nil && ApolloGQLLegacyAuthorIconURL(@"") == nil, @"no address");
+
+    // A post, the post it crossposts, and a thread's comments: every author
+    // once, in the shape /api/user_data_by_account_ids answers with.
+    NSDictionary *answer = ParseJSON([NSString stringWithFormat:@"{\"data\":{\"postsInfoByIds\":[{\"id\":\"t3_a\","
+        "\"authorInfo\":{\"__typename\":\"Redditor\",\"id\":\"t2_one\",\"name\":\"PostAuthor\",\"iconSmall\":{\"url\":\"%@\"}},"
+        "\"crosspostRoot\":{\"post\":{\"id\":\"t3_b\",\"authorInfo\":{\"__typename\":\"Redditor\",\"id\":\"t2_two\",\"name\":\"RootAuthor\","
+        "\"iconSmall\":{\"url\":\"%@\"}}}}},"
+        "{\"id\":\"t3_c\",\"authorInfo\":{\"__typename\":\"DeletedRedditor\",\"id\":null,\"name\":\"[deleted]\"}},"
+        "{\"id\":\"t3_d\",\"authorInfo\":null}],"
+        "\"postInfoById\":{\"commentForest\":{\"trees\":["
+        "{\"node\":{\"id\":\"t1_x\",\"authorInfo\":{\"__typename\":\"Redditor\",\"id\":\"t2_three\",\"name\":\"Commenter\",\"iconSmall\":{\"url\":\"%@\"}}}},"
+        "{\"node\":{\"id\":\"t1_y\",\"authorInfo\":{\"__typename\":\"Redditor\",\"id\":\"t2_one\",\"name\":\"PostAuthor\",\"iconSmall\":{\"url\":\"%@\"}}}},"
+        "{\"node\":{\"id\":\"t1_z\",\"authorInfo\":{\"__typename\":\"Redditor\",\"id\":\"t2_four\",\"name\":\"NoPicture\",\"iconSmall\":null}}}]}}}}",
+        upload, plain, [collectible stringByAppendingString:@"?width=50&height=50&s=abc"], upload]);
+    NSDictionary *records = ApolloGQLLegacyAuthorRecords(answer);
+    CHECK(records.count == 3, @"three authors with a picture (%@)", records.allKeys);
+    CHECK([records[@"t2_one"] isEqualToDictionary:(@{ @"name": @"PostAuthor", @"profile_img": upload })], @"post author (%@)", records[@"t2_one"]);
+    CHECK([records[@"t2_two"] isEqualToDictionary:(@{ @"name": @"RootAuthor", @"profile_img": plain })], @"crosspost root author");
+    CHECK([records[@"t2_three"] isEqualToDictionary:(@{ @"name": @"Commenter", @"profile_img": collectible })], @"comment author");
+    CHECK(records[@"t2_four"] == nil, @"no picture, no record");
+    CHECK(ApolloGQLLegacyAuthorRecords(nil).count == 0 && ApolloGQLLegacyAuthorRecords(@{ @"errors": @[] }).count == 0, @"nothing to read");
+    CHECK([NSJSONSerialization isValidJSONObject:records], @"serializes");
+}
+
+// The tweak's own reads (Community Highlights, a subreddit's header) are whole
+// URLs: a ".json" path with its parameters in the query.
+static void TestPlanForOwnReads(void) {
+    ApolloGQLRequest *hot = ApolloGQLRequestForLegacy(@"GET", @"/r/apple/hot.json?limit=15&raw_json=1", nil);
+    CHECK(hot.kind == ApolloGQLRequestKindSubredditFeed && [hot.subreddit isEqualToString:@"apple"] && [hot.sort isEqualToString:@"HOT"] &&
+          hot.limit == 15 && hot.rawJSON, @"Highlights' feed read (%ld %@ %@ %ld)", (long)hot.kind, hot.subreddit, hot.sort, (long)hot.limit);
+    ApolloGQLRequest *hotOAuth = ApolloGQLRequestForLegacy(@"GET", @"/r/apple/hot?limit=15&raw_json=1", nil);
+    CHECK(hotOAuth.kind == ApolloGQLRequestKindSubredditFeed && hotOAuth.limit == 15, @"the same read as oauth.reddit.com spells it");
+    ApolloGQLRequest *info = ApolloGQLRequestForLegacy(@"GET", @"/api/info.json?id=t3_a,t3_b&raw_json=1", nil);
+    CHECK(info.kind == ApolloGQLRequestKindPostsInfo && [info.fullnames isEqualToArray:(@[ @"t3_a", @"t3_b" ])] && info.rawJSON,
+          @"Highlights' post lookup (%@)", info.fullnames);
+    ApolloGQLRequest *about = ApolloGQLRequestForLegacy(@"GET", @"/r/apple/about.json?raw_json=1", nil);
+    CHECK(about.kind == ApolloGQLRequestKindSubredditAbout && [about.subreddit isEqualToString:@"apple"] && about.rawJSON, @"a header's details");
+    ApolloGQLRequest *linked = ApolloGQLRequestForLegacy(@"GET", @"/comments/abc123.json?raw_json=1&limit=1", nil);
+    CHECK(linked.kind == ApolloGQLRequestKindComments && [linked.linkFullname isEqualToString:@"t3_abc123"] && linked.rawJSON,
+          @"a link preview's post (%@)", linked.linkFullname);
+    CHECK([ApolloGQLPostCommentsVariables(linked)[@"count"] isEqual:@1], @"with one comment, not a page (%@)", ApolloGQLPostCommentsVariables(linked));
+    CHECK(ApolloGQLRequestForLegacy(@"GET", @"/comments/abc123/.json?raw_json=1&limit=1", nil).kind == ApolloGQLRequestKindComments,
+          @"the same lookup as oauth.reddit.com spells it");
+    // Lookups GraphQL has no single query for keep their routes.
+    CHECK(ApolloGQLRequestForLegacy(@"GET", @"/api/info.json?raw_json=1&sr_name=apple,pics", nil) == nil, @"subreddits by name");
+    CHECK(ApolloGQLRequestForLegacy(@"GET", @"/user/someone/about.json?raw_json=1", nil) == nil, @"a profile's summary");
+    CHECK(ApolloGQLRequestForLegacy(@"GET", @"/api/user_data_by_account_ids.json?ids=t2_a&raw_json=1", nil) == nil, @"account lookups");
+}
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         if (argc < 2) { fprintf(stderr, "usage: gql_legacy_tests <repo root>\n"); return 2; }
@@ -824,6 +890,8 @@ int main(int argc, const char *argv[]) {
         TestListingAndFeed();
         TestRichText();
         TestPlan();
+        TestAuthorRecords();
+        TestPlanForOwnReads();
     }
     if (sFailures) {
         fprintf(stderr, "%d failure(s)\n", sFailures);

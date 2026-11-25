@@ -42,6 +42,7 @@
 #import "ApolloReduceRateLimiting.h"
 #import "ApolloWebJSON.h"
 #import "ApolloWebSessionStore.h"
+#import "graphql/ApolloGQLRoute.h"
 #import "ApolloClasses.h"
 #import "ApolloDuoRail.h"
 #import "ApolloDuoNavigationGestures.h"
@@ -1177,6 +1178,13 @@ static BOOL ApolloHLRateLimitHoldActive(void) {
     return ApolloWebJSONOptionalReadBackoff(ApolloActiveWebSessionUsername()) > 0;
 }
 
+// Both of the module's listing reads go through the GraphQL route for an
+// API-Key-Free account (ApolloGQLRouteSendRead), which has a budget of its
+// own: a hold on the cookie only stops the ones GraphQL wouldn't answer.
+static BOOL ApolloHLRequestIsHeld(NSURLRequest *request) {
+    return ApolloHLRateLimitHoldActive() && !ApolloGQLRouteAnswersRequest(request);
+}
+
 static void ApolloHLFetchHighlights(NSString *subredditName, BOOL force, void (^completion)(NSArray<ApolloHLItem *> *items)) {
     NSString *key = subredditName.lowercaseString;
     if (key.length == 0) { if (completion) completion(@[]); return; }
@@ -1188,9 +1196,6 @@ static void ApolloHLFetchHighlights(NSString *subredditName, BOOL force, void (^
         if (cached) { if (completion) completion(cached); return; }
     }
     if ([ApolloHLInFlight() containsObject:key]) { if (completion) completion(nil); return; }
-    // nil = "nothing to apply, try later", the same answer a failed request gives.
-    if (ApolloHLRateLimitHoldActive()) { if (completion) completion(nil); return; }
-    [ApolloHLInFlight() addObject:key];
 
     NSMutableCharacterSet *allowed = [[NSCharacterSet alphanumericCharacterSet] mutableCopy];
     [allowed addCharactersInString:@"_-"];
@@ -1204,8 +1209,11 @@ static void ApolloHLFetchHighlights(NSString *subredditName, BOOL force, void (^
     request.timeoutInterval = 15.0;
     if (token.length > 0) [request setValue:[@"Bearer " stringByAppendingString:token] forHTTPHeaderField:@"Authorization"];
     [request setValue:(sUserAgent.length > 0 ? sUserAgent : @"ApolloHighlights/1.0") forHTTPHeaderField:@"User-Agent"];
+    // nil = "nothing to apply, try later", the same answer a failed request gives.
+    if (ApolloHLRequestIsHeld(request)) { if (completion) completion(nil); return; }
+    [ApolloHLInFlight() addObject:key];
 
-    [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+    ApolloGQLRouteSendRead(request, [NSURLSession sharedSession], ^(NSData *data, NSURLResponse *response, NSError *error) {
         NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]] ? ((NSHTTPURLResponse *)response).statusCode : -1;
         id json = data.length > 0 ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
         BOOL validListing = status == 200 && !error && ApolloHLListingChildren(json) != nil;
@@ -1263,7 +1271,7 @@ static void ApolloHLFetchHighlights(NSString *subredditName, BOOL force, void (^
             if (!validListing && completionItems.count == 0) completionItems = nil;
             if (completion) completion(completionItems);
         });
-    }] resume];
+    });
 }
 
 #pragma mark - Thumbnail image loader
@@ -2929,9 +2937,6 @@ static void ApolloHLEnrichViaInfo(NSString *sub, NSUInteger refreshGeneration,
     };
 
     if (fullnames.count == 0) { finish(@{}); return; }
-    // During a rate limit, behave like a failed request: the cards keep the
-    // metadata they already have.
-    if (ApolloHLRateLimitHoldActive()) { finish(@{}); return; }
     NSMutableDictionary<NSString *, ApolloHLItem *> *reused = [NSMutableDictionary dictionary];
     for (NSString *fullname in fullnames) {
         ApolloHLItem *item = ApolloHLInfoReuse()[fullname];
@@ -2953,7 +2958,10 @@ static void ApolloHLEnrichViaInfo(NSString *sub, NSUInteger refreshGeneration,
     request.timeoutInterval = 15.0;
     if (token.length > 0) [request setValue:[@"Bearer " stringByAppendingString:token] forHTTPHeaderField:@"Authorization"];
     [request setValue:(sUserAgent.length > 0 ? sUserAgent : @"ApolloHighlights/1.0") forHTTPHeaderField:@"User-Agent"];
-    [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+    // During a rate limit, behave like a failed request: the cards keep the
+    // metadata they already have.
+    if (ApolloHLRequestIsHeld(request)) { finish(@{}); return; }
+    ApolloGQLRouteSendRead(request, [NSURLSession sharedSession], ^(NSData *data, NSURLResponse *response, NSError *error) {
         NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]] ? ((NSHTTPURLResponse *)response).statusCode : -1;
         id json = data.length > 0 ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
         BOOL validListing = status == 200 && !error && ApolloHLListingChildren(json) != nil;
@@ -2981,7 +2989,7 @@ static void ApolloHLEnrichViaInfo(NSString *sub, NSUInteger refreshGeneration,
             });
         }
         finish(infoMap);
-    }] resume];
+    });
 }
 
 // If enabled, kick a one-time hidden-WebView fetch of the FULL highlights for the

@@ -3,6 +3,7 @@
 #import "ApolloCommon.h"
 #import "ApolloState.h"
 #import "Defaults.h"
+#import "ApolloUserProfileCache.h"
 #import "ApolloWebJSON.h"
 #import "ApolloWebJSONRoutes.h"
 #import "ApolloWebSessionStore.h"
@@ -118,6 +119,17 @@ __attribute__((constructor)) static void ApolloGQLRouteRegister(void) {
 
 #pragma mark - One call
 
+// Every post and comment in an answer comes with its author's picture. Handing
+// those to the avatar cache here means a feed or thread this route loaded asks
+// Reddit for no avatars afterwards. Those lookups (one request per 100 comment
+// authors, and one per feed author without Reduce Rate Limiting) go out on the
+// cookie's budget, the one this route exists to stay off.
+static void ApolloGQLRouteNoteAuthors(NSDictionary *answer) {
+    if (!sShowUserAvatars) return;
+    NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *authors = ApolloGQLLegacyAuthorRecords(answer);
+    if (authors.count > 0) [[ApolloUserProfileCache sharedCache] ingestGraphQLAuthorRecords:authors];
+}
+
 // Sends one operation and waits for its answer. Background queues only.
 static NSDictionary *ApolloGQLRouteCall(NSString *account, NSString *operation, NSDictionary *variables,
                                         ApolloGQLCallOutcome *outcome, NSString **detail) {
@@ -216,6 +228,7 @@ static NSDictionary *ApolloGQLRouteCall(NSString *account, NSString *operation, 
             return nil;
         }
         *outcome = ApolloGQLCallAnswered;
+        ApolloGQLRouteNoteAuthors(answer);
         return answer;
     }
     return nil;
@@ -404,5 +417,81 @@ void ApolloGQLRouteAnswer(NSString *account, ApolloGQLRequest *request, ApolloGQ
         } else {
             completion(nil, outcome == ApolloGQLCallRefused, detail ?: @"no answer");
         }
+    });
+}
+
+#pragma mark - The tweak's own reads
+
+// The GraphQL request that answers `request`, and the account it's for; nil
+// when the request goes the usual way.
+static ApolloGQLRequest *ApolloGQLRoutePlanForRequest(NSURLRequest *request, NSString **accountOut) {
+    if (!sWebJSONEnabled || !sWebJSONGraphQLEnabled) return nil;
+    NSURL *url = request.URL;
+    NSString *host = url.host.lowercaseString;
+    if (![host isEqualToString:@"oauth.reddit.com"] && ![host isEqualToString:@"www.reddit.com"]) return nil;
+    if (request.HTTPMethod.length > 0 && ![request.HTTPMethod.uppercaseString isEqualToString:@"GET"]) return nil;
+    // Whose read it is, by the rule the request rewrite goes by
+    // (ApolloWebJSONWebSessionUsernameForBearer): an API key's token keeps the
+    // read on oauth.reddit.com with that key.
+    NSString *authorization = [request valueForHTTPHeaderField:@"Authorization"];
+    NSString *bearer = nil;
+    NSRange prefix = authorization ? [authorization rangeOfString:@"Bearer " options:NSCaseInsensitiveSearch | NSAnchoredSearch]
+                                   : NSMakeRange(NSNotFound, 0);
+    if (prefix.location != NSNotFound) {
+        bearer = [[authorization substringFromIndex:NSMaxRange(prefix)]
+                  stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    }
+    NSString *account = ApolloWebJSONWebSessionUsernameForBearer(bearer);
+    if (account.length == 0) return nil;
+    NSString *path = url.path.length > 0 ? url.path : @"/";
+    // The route table decides, as it does for Apollo's requests: GraphQL is
+    // passed by while it's on cooldown for this kind of read, held after a
+    // rate limit, or switched off by keyless-routes.json.
+    if (ApolloWebJSONRouteChoose(account, @"GET", path, 0, [NSDate timeIntervalSinceReferenceDate]) != ApolloWebJSONRouteGraphQL) return nil;
+    NSString *query = url.query;
+    ApolloGQLRequest *planned = ApolloGQLRequestForLegacy(@"GET", query.length > 0 ? [NSString stringWithFormat:@"%@?%@", path, query] : path, nil);
+    if (planned && accountOut) *accountOut = account;
+    return planned;
+}
+
+BOOL ApolloGQLRouteAnswersRequest(NSURLRequest *request) {
+    return ApolloGQLRoutePlanForRequest(request, NULL) != nil;
+}
+
+void ApolloGQLRouteSendRead(NSURLRequest *request, NSURLSession *session,
+                            void (^completion)(NSData *data, NSURLResponse *response, NSError *error)) {
+    NSString *account = nil;
+    ApolloGQLRequest *planned = ApolloGQLRoutePlanForRequest(request, &account);
+    if (!planned) {
+        [[session dataTaskWithRequest:request completionHandler:completion] resume];
+        return;
+    }
+    NSString *path = request.URL.path.length > 0 ? request.URL.path : @"/";
+    NSDate *started = [NSDate date];
+    ApolloGQLRouteAnswer(account, planned, ^(NSData *legacyJSON, BOOL refused, NSString *summary) {
+        NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+        if (legacyJSON) {
+            ApolloWebJSONRouteHealthNoteSuccess(account, @"GET", path, ApolloWebJSONRouteGraphQL, now);
+            os_log_debug(ApolloFixLog(), "[ApolloFix] [GraphQL] The tweak's GET %{public}@ answered by GraphQL: %{public}@, %.0f ms",
+                         path, summary, -[started timeIntervalSinceNow] * 1000.0);
+            completion(legacyJSON,
+                       [[NSHTTPURLResponse alloc] initWithURL:request.URL statusCode:200 HTTPVersion:@"HTTP/1.1"
+                                                 headerFields:@{ @"Content-Type": @"application/json; charset=UTF-8" }],
+                       nil);
+            return;
+        }
+        if (refused && ApolloWebJSONRouteHealthNoteBlockPage(account, @"GET", path, ApolloWebJSONRouteGraphQL, now)) {
+            ApolloLog(@"[GraphQL] Route graphql is on cooldown for GET %@", ApolloWebJSONRouteHealthGroup(@"GET", path));
+        }
+        // The usual way is the cookie's, and while Reddit is refusing the
+        // account there (HTTP 429 until its window resets) one more request
+        // only gets one more refusal.
+        if (ApolloWebJSONOptionalReadBackoff(account) > 0) {
+            completion(nil, nil, [NSError errorWithDomain:@"ApolloGQLRoute" code:429 userInfo:@{
+                NSLocalizedDescriptionKey: @"GraphQL had no answer and Reddit is rate-limiting the account's other routes" }]);
+            return;
+        }
+        ApolloLog(@"[GraphQL] The tweak's GET %@ goes by its other routes: %@", ApolloWebJSONRouteHealthGroup(@"GET", path), summary);
+        [[session dataTaskWithRequest:request completionHandler:completion] resume];
     });
 }

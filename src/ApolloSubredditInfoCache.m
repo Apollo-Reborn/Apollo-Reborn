@@ -6,6 +6,7 @@
 #import "ApolloState.h"
 #import "ApolloWebJSON.h"              // ApolloWebJSONOptionalReadBackoff, ApolloWebJSONHasUsableSession
 #import "ApolloWebSessionStore.h"      // ApolloActiveWebSessionUsername
+#import "graphql/ApolloGQLRoute.h"     // ApolloGQLRouteSendRead, ApolloGQLRouteAnswersRequest
 
 NSString * const ApolloSubredditInfoUpdatedNotification = @"ApolloSubredditInfoUpdatedNotification";
 NSString * const ApolloSubredditNameKey = @"subredditName";
@@ -567,10 +568,12 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
     // With no bearer (an API-Key-Free account) the chokepoint signs this in
     // with the web session cookie. While Reddit has that session rate-limited,
     // fall back to the cached entry (or nothing) instead of adding to it; the
-    // subreddit's own posts are waiting on the same window to reset.
+    // subreddit's own posts are waiting on the same window to reset. GraphQL
+    // has a budget of its own, so a fetch it would answer goes ahead
+    // (ApolloGQLRouteSendRead below).
     NSString *webSessionUsername = [self webSessionUsernameForRequest:request];
     NSTimeInterval budgetWait = ApolloWebJSONOptionalReadBackoff(webSessionUsername);
-    if (budgetWait > 0) {
+    if (budgetWait > 0 && !ApolloGQLRouteAnswersRequest(request)) {
         ApolloLog(@"[SubredditHeaders] Info fetch r/%@ held for %.0fs while Reddit rate-limits u/%@",
                   key, budgetWait, webSessionUsername);
         [self finishRequestForKey:key info:cached];
@@ -593,8 +596,7 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
         }
     };
 
-    NSURLSessionDataTask *task = [self.session dataTaskWithRequest:request
-                                                 completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+    ApolloGQLRouteSendRead(request, self.session, ^(NSData *data, NSURLResponse *response, NSError *error) {
         typeof(self) strongSelf = weakSelf;
         if (!strongSelf) return;
         if (error) {
@@ -633,8 +635,7 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
             dispatch_async(strongSelf.queue, ^{ strongSelf.notFoundDates[key] = [NSDate date]; });
         }
         [strongSelf finishRequestForKey:key info:(info ?: cached)];
-    }];
-    [task resume];
+    });
 }
 
 - (void)enqueueRequestForSubreddit:(NSString *)subredditName forceRefresh:(BOOL)forceRefresh completion:(void (^)(ApolloSubredditInfo *info))completion {
