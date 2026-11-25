@@ -18,9 +18,21 @@
 //
 //   • The EXISTING bottom progress strip (RichMediaNode.videoGIFProgressView,
 //     a 5pt UIVisualEffectView pinned across the video's bottom) IS the
-//     scrubber. An invisible touch strip covers the bottom kStripHeight points
-//     of the video picture and drives the player; Apollo's own progress
-//     updates move the visible strip, so what you grab is what moves.
+//     scrubber. An invisible touch strip sits right on top of it, reaching
+//     kStripHeight points up from its bottom edge, and drives the player;
+//     Apollo's own progress updates move the visible strip, so what you grab
+//     is what moves.
+//   • The native bar follows the VIDEO NODE, not the picture:
+//     -[RichMediaNode layout] pins it to (videoNode.frame.minX,
+//     videoNode.frame.maxY - 5, videoNode.bounds.width, 5) (Ghidra,
+//     FUN_10058a0a8). When a clip's real shape differs from the preview size
+//     Reddit reported (common for r/soccer's externally hosted clips), the
+//     node keeps the preview's shape and AVPlayerLayer letterboxes the picture
+//     inside it, so the bar sits under a grey band, well below the picture.
+//     The touch strip therefore copies the bar's own frame, and it is re-placed
+//     after every RichMediaNode layout pass, because the node can be resized
+//     (for example the comments header settling from the preview's shape to
+//     the video's) without any cell visibility event to re-position it.
 //   • Touch the strip and slide — no hold required: a UIGestureRecognizer
 //     subclass observes the touch the instant it lands (the scroll view's
 //     touch delay only holds back VIEW delivery, never recognizers) and the
@@ -52,6 +64,7 @@
 // rides in ApolloVideoUnmute.xm (separate %hooks in separate files; they
 // chain). It lives as a subview of the RichMediaNode's view, so it dies with
 // the cell, and it is retained by the node through an associated object.
+// From then on -[RichMediaNode layout] keeps it glued to the native bar.
 
 #import "ApolloCommon.h"
 #import "ApolloSwiftRuntime.h"
@@ -71,9 +84,9 @@ extern AVPlayer *ApolloVideoUnmute_GetPlayerFromVideoNode(id videoNode);
 // Videos shorter than this aren't worth scrubbing.
 static const NSTimeInterval kMinimumScrubbableDuration = 1.0;
 
-// Height of the invisible touch strip, anchored to the bottom of the video
-// picture. Tall enough to grab with a thumb, short enough that the video's
-// tap-to-open area stays essentially intact.
+// Height of the invisible touch strip, anchored to the bottom edge of the
+// native progress bar. Tall enough to grab with a thumb, short enough that the
+// video's tap-to-open area stays essentially intact.
 static const CGFloat kStripHeight = 32.0;
 
 // The bottom-right corner of the video belongs to the mute button (and the
@@ -186,38 +199,34 @@ static void RestoreCompetingGestures(NSArray<UIGestureRecognizer *> *disabled) {
     for (UIGestureRecognizer *g in disabled) g.enabled = YES;
 }
 
-// The AVPlayerLayer showing this video, so the strip can be sized to the
-// picture itself rather than to the node that hosts it.
-static AVPlayerLayer *PlayerLayerInLayer(CALayer *layer) {
-    if (!layer) return nil;
-    if ([layer isKindOfClass:[AVPlayerLayer class]]) return (AVPlayerLayer *)layer;
-    for (CALayer *sub in layer.sublayers) {
-        AVPlayerLayer *found = PlayerLayerInLayer(sub);
-        if (found) return found;
+// Where the touch strip belongs, in `host` (the RichMediaNode's view)
+// coordinates: the native bar's own horizontal extent, reaching kStripHeight
+// up from its bottom edge. Matching the bar exactly is what makes the finger
+// and the fill agree. The finger's fraction of the strip's width is the fill's
+// fraction of the bar's width, and the bar is where people actually grab.
+//
+// Never the picture's rect (AVPlayerLayer.videoRect). The bar follows the
+// video NODE, so on a letterboxed clip the picture's bottom edge can sit
+// ~35pt above the bar (and a pillarboxed picture is narrower than it).
+//
+// Before Apollo has created its bar (it only does for clips longer than 4s,
+// once the duration is known), use the video node's frame, which is exactly
+// where -[RichMediaNode layout] will put the bar. pointInside refuses touches
+// until the bar exists anyway.
+static CGRect ScrubStripFrameInHost(id richMediaNode, UIView *videoView, UIView *host) {
+    CGRect anchor = CGRectNull;
+    UIView *nativeStrip = ApolloObjectIvar(richMediaNode, "videoGIFProgressView");
+    if ([nativeStrip isKindOfClass:[UIView class]] && nativeStrip.superview) {
+        anchor = [nativeStrip convertRect:nativeStrip.bounds toView:host];
     }
-    return nil;
-}
-
-// The rect the video actually occupies, in `host` coordinates. A 16:9 clip in
-// a taller node is letterboxed, so the node's frame is wider (or taller) than
-// the picture — the native progress strip hugs the picture, and the touch
-// strip must hug the same edge. AVPlayerLayer.videoRect is the picture's real
-// rect once the layer is ready; fall back to the node's own bounds before then
-// (and for non-shareable players, whose layer fills the node anyway).
-static CGRect VideoContentRectInHost(UIView *videoView, UIView *host) {
-    CGRect fallback = [videoView convertRect:videoView.bounds toView:host];
-    AVPlayerLayer *playerLayer = PlayerLayerInLayer(videoView.layer);
-    if (!playerLayer) return fallback;
-
-    CGRect videoRect = playerLayer.videoRect;
-    if (CGRectIsEmpty(videoRect) || videoRect.size.width < 1 || videoRect.size.height < 1) {
-        return fallback;
+    if (CGRectIsNull(anchor) || CGRectIsEmpty(anchor)) {
+        anchor = [videoView convertRect:videoView.bounds toView:host];
     }
-    CGRect inVideoView = [videoView.layer convertRect:videoRect fromLayer:playerLayer];
-    CGRect inHost = [videoView convertRect:inVideoView toView:host];
-    // Guard against a stale/oversized videoRect during a resize: never grow
-    // beyond the node itself.
-    return CGRectIsEmpty(inHost) ? fallback : CGRectIntersection(inHost, fallback);
+    if (CGRectIsNull(anchor) || CGRectIsEmpty(anchor)) return CGRectNull;
+    return CGRectMake(CGRectGetMinX(anchor),
+                      CGRectGetMaxY(anchor) - kStripHeight,
+                      CGRectGetWidth(anchor),
+                      kStripHeight);
 }
 
 // Total duration in seconds, or 0 when the item is missing, still loading, or
@@ -234,9 +243,9 @@ static NSTimeInterval ScrubbableDuration(AVPlayer *player) {
 
 #pragma mark - Touch strip
 
-// One invisible UIControl per feed RichMediaNode, covering the bottom strip of
-// the video picture. Everything it needs (player, duration, the native strip's
-// presence) is resolved per-touch, never cached across touches — feed players
+// One invisible UIControl per feed RichMediaNode, laid over the native
+// progress bar at the bottom of the video node. Everything it needs (player,
+// duration, the native strip's presence) is resolved per-touch, never cached across touches — feed players
 // are created and torn down constantly as cells scroll.
 //
 // Two touch paths share it:
@@ -710,9 +719,38 @@ static char kFeedScrubStripKey;
 
 #pragma mark - Installation
 
-// Give a feed RichMediaNode its touch strip and keep the strip glued to the
-// bottom of the video picture. Called from the cell's visibility events, so
-// it re-asserts geometry as cells scroll, resize, and re-lay out.
+// Lay an installed strip over the native bar and keep it above it. Shared by
+// the visibility events (install time) and -[RichMediaNode layout] (every
+// resize), so a node that changes shape after install carries its strip
+// along. Without that, a header that settled from Reddit's preview shape to
+// the video's real one left the strip at its old y, outside the now-shorter
+// node, where the cell's clipping made it untouchable.
+static void PositionScrubStrip(ApolloFeedScrubStrip *strip, UIView *host, UIView *videoView) {
+    if (!strip || !host || !videoView || strip.superview != host) return;
+
+    // Never move the strip under the user's finger mid-scrub. (.tracking
+    // covers the tap path; .scrubbing the gesture path — the gesture cancels
+    // view tracking when it begins, so .tracking alone would miss it.)
+    if (strip.tracking || strip.scrubbing) return;
+
+    CGRect stripFrame = ScrubStripFrameInHost(strip.richMediaNode, videoView, host);
+    if (CGRectIsNull(stripFrame) || CGRectIsEmpty(stripFrame)) return;
+    if (!CGRectEqualToRect(strip.frame, stripFrame)) {
+        ApolloLog(@"[FeedScrubber] strip on %p placed over the bar: %@ -> %@",
+                  (__bridge void *)strip.richMediaNode,
+                  NSStringFromCGRect(strip.frame), NSStringFromCGRect(stripFrame));
+        strip.frame = stripFrame;
+    }
+    // Apollo adds its bar to the same view lazily (once the duration is
+    // known), which puts it in FRONT of a strip installed earlier, and the
+    // bar's own view would then swallow touches on its 5pt. Only reorder
+    // when needed, so a steady-state layout pass touches nothing.
+    if (host.subviews.lastObject != strip) [host bringSubviewToFront:strip];
+}
+
+// Give a feed RichMediaNode its touch strip and place it over the native bar.
+// Called from the cell's visibility events; -[RichMediaNode layout] (below)
+// keeps it placed from then on.
 static void EnsureScrubStrip(id richMediaNode, BOOL becameVisible) {
     if (!richMediaNode) return;
 
@@ -738,19 +776,7 @@ static void EnsureScrubStrip(id richMediaNode, BOOL becameVisible) {
     if (needsAttach) [host addSubview:strip];
     if (needsAttach || becameVisible) [strip wireFailureRequirementsForReason:@"visible"];
 
-    // Never move the strip under the user's finger mid-scrub. (.tracking
-    // covers the tap path; .scrubbing the gesture path — the gesture cancels
-    // view tracking when it begins, so .tracking alone would miss it.)
-    if (strip.tracking || strip.scrubbing) return;
-
-    CGRect videoFrame = VideoContentRectInHost(videoView, host);
-    if (CGRectIsEmpty(videoFrame)) return;
-    CGRect stripFrame = CGRectMake(videoFrame.origin.x,
-                                   CGRectGetMaxY(videoFrame) - kStripHeight,
-                                   videoFrame.size.width,
-                                   kStripHeight);
-    strip.frame = stripFrame;
-    [host bringSubviewToFront:strip];
+    PositionScrubStrip(strip, host, videoView);
 }
 
 // ---------------------------------------------------------------------------
@@ -819,6 +845,37 @@ static void EnsureScrubStrip(id richMediaNode, BOOL becameVisible) {
 
 %end
 
+// ---------------------------------------------------------------------------
+// RichMediaNode layout: Apollo's own override re-pins the native bar to the
+// video node here (FUN_10058a0a8), so this is the one moment the bar can
+// move. Re-place an already-installed strip right after it. Only nodes that
+// were given a strip do any work; everything else (images, galleries, link
+// cards, the feature switched off) returns after a flag check and one
+// associated-object read. ApolloFeedGalleryCarousel.xm hooks the same
+// selector for its own subview; Logos chains the two.
+// ---------------------------------------------------------------------------
+%group ScrubStripLayout
+
+%hook ScrubRichMediaNode
+
+- (void)layout {
+    %orig;
+    // Texture runs -layout on the main thread; the guard only keeps the UIKit
+    // work below honest if that ever changes.
+    if (!sFeedVideoScrubber || ![NSThread isMainThread]) return;
+    ApolloFeedScrubStrip *strip = objc_getAssociatedObject(self, &kFeedScrubStripKey);
+    if (!strip) return;
+    // Writing the strip's frame here is the same thing Apollo's own override
+    // just did for its bar: a leaf subview placed during its superview's
+    // layout pass, which never re-dirties that superview. PositionScrubStrip
+    // writes only when the frame actually changed, so steady passes are no-ops.
+    PositionScrubStrip(strip, ViewForNode(self), ViewForNode(ApolloObjectIvar(self, "videoNode")));
+}
+
+%end
+
+%end
+
 %ctor {
     Class largePostCellClass = objc_getClass("_TtC6Apollo17LargePostCellNode");
     if (!largePostCellClass) {
@@ -837,6 +894,14 @@ static void EnsureScrubStrip(id richMediaNode, BOOL becameVisible) {
     if (commentsHeaderCellClass) {
         %init(ScrubStripCommentsHeader2, CommentsHeaderCellNode = commentsHeaderCellClass);
     }
-    ApolloLog(@"[FeedScrubber] module loaded (hold a video's progress bar to scrub; comments header %@)",
-              (headerCellClass || commentsHeaderCellClass) ? @"covered" : @"unavailable");
+    Class richMediaNodeClass = objc_getClass("_TtC6Apollo13RichMediaNode");
+    if (richMediaNodeClass) {
+        %init(ScrubStripLayout, ScrubRichMediaNode = richMediaNodeClass);
+    } else {
+        ApolloLog(@"[FeedScrubber] ctor: RichMediaNode missing - strips only re-place on visibility events");
+    }
+    ApolloLog(@"[FeedScrubber] module loaded (hold a video's progress bar to scrub; comments header %@; "
+              @"strip follows RichMediaNode layout: %@)",
+              (headerCellClass || commentsHeaderCellClass) ? @"covered" : @"unavailable",
+              richMediaNodeClass ? @"hook installed" : @"NOT installed");
 }
