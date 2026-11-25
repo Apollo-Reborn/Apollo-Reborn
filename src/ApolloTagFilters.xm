@@ -391,6 +391,8 @@ static void ApolloTagKickKeylessPrefFetch(NSString *username) {
                                                        timeoutInterval:10.0];
     [request setValue:session.cookieHeader forHTTPHeaderField:@"Cookie"];
     [request setValue:([sUserAgent length] > 0 ? sUserAgent : defaultUserAgent) forHTTPHeaderField:@"User-Agent"];
+    // /api/me.json answers the 403 HTML block page without a Referer.
+    [request setValue:@"https://www.reddit.com/" forHTTPHeaderField:@"Referer"];
     request.HTTPShouldHandleCookies = NO;
 
     NSURLSession *urlSession = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration ephemeralSessionConfiguration]];
