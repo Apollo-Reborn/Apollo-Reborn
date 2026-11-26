@@ -461,6 +461,13 @@ static NSString *const UDKeyPerPostCommentSortMapping = @"PerPostCommentSortMapp
 // off, and launch/restore normalize a stale both-on to per-post. This toggle key is
 // the ONLY native default the feature ever writes. See ApolloPerPostCommentSort.xm.
 static NSString *const UDKeyApolloRememberSubredditCommentsSort = @"RememberRedditCommentsSort";
+// "Mark Stickied Posts Read" in General > Mark Read / Hiding Posts (issue #1790).
+// Apollo's own Mark Read on Scroll skips stickied posts on purpose; ON lets it mark
+// them read too. Default NO keeps Apollo's behaviour. See ApolloStickiedMarkRead.xm.
+static NSString *const UDKeyMarkStickiedPostsReadOnScroll = @"MarkStickiedPostsReadOnScroll";
+// APOLLO'S OWN key (not ours) for the native "Mark Read on Scroll" toggle. Read
+// only: the Mark Stickied Posts Read row greys out while it is off.
+static NSString *const UDKeyApolloMarkReadOnScroll = @"MarkReadOnScroll";
 // Navigation actions collapse and between-buttons title centering are opt-in (default off).
 static NSString *const UDKeyCollapseNavigationActions = @"CollapseNavigationActions";
 // Show the return button (and the navigation-bar tap) after a status bar tap

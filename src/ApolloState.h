@@ -291,6 +291,9 @@ extern NSInteger sCommentNavigationMode; // 0 = parent threads; 1 = new comments
 // sort last picked inside it; other posts keep Apollo's native sort chain. Opt-in;
 // default OFF via registerDefaults. See ApolloPerPostCommentSort.xm.
 extern BOOL sPerPostCommentSort;
+// Mark Read on Scroll includes stickied posts (issue #1790). Opt-in; default OFF via
+// registerDefaults. See ApolloStickiedMarkRead.xm.
+extern BOOL sMarkStickiedPostsReadOnScroll;
 
 // "Header Style" (user-facing name): override for the TOP scroll edge effect on
 // iOS 26+ Liquid Glass. iOS 26 defaults to Soft; iOS 27 betas default to Hard,

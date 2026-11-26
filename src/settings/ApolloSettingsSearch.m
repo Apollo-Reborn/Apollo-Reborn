@@ -296,6 +296,14 @@ static NSArray<ApolloSettingsSearchEntry *> *ApolloSettingsSearchBuildIndex(UITr
     commentNavigator.rowTitle = @"Jump Button Navigation";
     [entries addObject:commentNavigator];
 
+    // Appended to Apollo's native Mark Read / Hiding Posts screen (ApolloStickiedMarkRead.xm).
+    ApolloSettingsSearchEntry *stickiedMarkRead = [[ApolloSettingsSearchEntry alloc] init];
+    stickiedMarkRead.title = @"Mark Stickied Posts Read";
+    stickiedMarkRead.breadcrumb = @"General → Mark Read / Hiding Posts";
+    stickiedMarkRead.nativePath = @[ @"General", @"Mark Read / Hiding Posts" ];
+    stickiedMarkRead.rowTitle = @"Mark Stickied Posts Read";
+    [entries addObject:stickiedMarkRead];
+
     // Resolve a leading icon for every result so the list is visually uniform:
     //   own row icon (captured above) → the parent screen/section's icon (by
     //   breadcrumb) → a neutral generic. Parent lookup consults both the live

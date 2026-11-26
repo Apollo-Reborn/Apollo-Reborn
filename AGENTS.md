@@ -141,7 +141,7 @@ screens. See `docs/settings-form-refactor-plan.md`.
 | `src/settings/CustomAPIViewController.{h,m}` | Root "Apollo Reborn" settings screen (API keys, General, Media, Subreddits, About, ...) — a form subclass |
 | `src/settings/ApolloBackupRestore.{h,m}` | Backup/restore engine (zip build, plist replay, Valet keychain capture/replay); the VC keeps only the UI |
 | `src/settings/ApolloContributors.{h,m}` + `ApolloThanksTo`/`ApolloBuyUsACoffee` VCs | contributors.json fetch/parse + the two About screens (dynamic lists, hand-rolled) |
-| `src/settings/ApolloSettingsGeneralTable.{h,xm}` | Single owner of Apollo's NATIVE Settings > General table geometry (row hide/inject registry + NSProxy remapper) — for the table we don't own |
+| `src/settings/ApolloSettingsGeneralTable.{h,xm}` | Single owner of Apollo's NATIVE Settings > General table geometry, and of its Mark Read / Hiding Posts sub-screen (row hide/inject registry + NSProxy remapper) — for the tables we don't own |
 | `src/settings/SavedCategoriesViewController.{h,m}` | Saved post categories CRUD (add/rename/delete, stored in group NSUserDefaults; not a form — dynamic list) |
 | `src/settings/ApolloActionMenuSettingsViewController.{h,m}` + `src/ApolloActionMenuLayout.{h,m}` | Interface → Action Menus: per-menu (feed / post / post-in-comments / comment) ••• item order + hidden set, with a pinned live mock of the menu. The model (contexts, item catalogue keyed by Apollo's Action kinds, saved layouts) uses Foundation and UIKit; `ApolloActionMenu.xm` applies it by permuting the sheet's Swift `actions` buffer in place and filtering/ranking the registered specs |
 

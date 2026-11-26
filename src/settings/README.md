@@ -5,7 +5,7 @@ Everything settings-related lives here. Two distinct layers — pick the right o
 | You're changing… | Use | Never |
 |---|---|---|
 | A **tweak-owned** screen (Apollo Reborn root, Deleted Comments, Translation, …) | `ApolloSettingsForm` — declare rows in `-buildForm` | Hand-roll `numberOfRows`/`cellForRow` switches or index arithmetic |
-| Apollo's **native** Settings > General screen (a Eureka form we don't own) | `ApolloSettingsGeneralTable` — register a hide matcher or row injection in your `%ctor` | `%hook` that screen's table delegate/dataSource methods (two remappers desync index spaces — the PR #570 bug class) |
+| Apollo's **native** Settings > General screen, or its General > Mark Read / Hiding Posts sub-screen (Eureka forms we don't own) | `ApolloSettingsGeneralTable` — register a hide matcher or row injection in your `%ctor`; Mark Read / Hiding Posts hides rows at runtime, so it only takes an appended row (`ApolloNativeSettingsAppendRow`) | `%hook` that screen's table delegate/dataSource methods (two remappers desync index spaces — the PR #570 bug class) |
 
 The ••• menus' item order/visibility (Interface → Action Menus) is modelled in `src/ApolloActionMenuLayout.{h,m}` and applied by that same action-menu owner — a new tweak row only needs a catalogue entry there (keyed by its spec identifier) to become reorderable/hideable; a native row is catalogued by its Action kind.
 
