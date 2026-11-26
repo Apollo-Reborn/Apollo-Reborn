@@ -166,6 +166,17 @@ NSString *ApolloWebJSONReadyRouteBearer(NSString *username);
 // hand. Returns at once; any thread.
 void ApolloWebJSONPrepareRouteBearer(NSString *username);
 
+// The bearer for the GraphQL route (ApolloWebJSONRouteGraphQL): the desktop web
+// client's token, which is what the website itself reads with. The session's
+// token_v2 while it's fresh, else one minted for that client from the session
+// cookie. nil without a web session or when the mint fails. Synchronous,
+// bounded by the mint's timeout: background queues only.
+NSString *ApolloWebJSONDesktopWebBearer(NSString *username);
+
+// Report a bearer from ApolloWebJSONDesktopWebBearer that gql-fed.reddit.com
+// refused (401/403), so the next call returns another one.
+void ApolloWebJSONInvalidateDesktopWebBearer(NSString *username, NSString *bearer);
+
 // YES when a web-session account has no web bearer on hand and a mint is worth
 // trying now (none held off, no recent mint failure). The RedditKit request
 // hook mints before sending an ApolloWebJSONPathNeedsWebBearer request then.
