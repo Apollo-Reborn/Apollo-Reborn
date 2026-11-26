@@ -49,6 +49,7 @@
 #import <objc/message.h>
 #import "ApolloCommon.h"
 #import "ApolloWebJSON.h"
+#import "ApolloWebJSONRoutes.h"
 #import "ApolloWebSessionStore.h"
 
 // RedditKit's request completion (postPath: → taskWithMethod:path:parameters:completion:), which
@@ -187,7 +188,9 @@ static void ApolloPostSubmitFailureSendWithWebToken(id client, NSString *usernam
             ApolloPostSubmitFailureTaskCompletion taskCompletion = ^(NSHTTPURLResponse *response, id responseObject, NSError *error) {
                 dispatch_block_t deliver = ^{
                     NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]] ? response.statusCode : 0;
-                    if (status == 401 || status == 403) {
+                    // A 401 or Reddit's 403 block page. A 403 with a JSON body is its answer to
+                    // the post (a suspended account, say), and goes to Apollo below.
+                    if (status == 401 || ApolloWebJSONRouteResponseIsBlockPage(response)) {
                         // Reddit refused the token itself; nothing was posted. The next bearer is another one.
                         ApolloWebJSONInvalidateDesktopWebBearer(username, bearer);
                         if (sendsLeft > 1) {

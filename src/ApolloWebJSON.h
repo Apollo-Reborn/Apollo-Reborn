@@ -123,8 +123,10 @@ NSArray *ApolloWebJSONRescueFlairList(NSHTTPURLResponse *response);
 BOOL ApolloWebJSONRequestIsInternal(NSURL *url);
 
 // A token_v2-derived OAuth bearer for `username` (or the active web-session
-// account when nil/empty), minting a fresh token when the stored one is stale
-// (see ApolloWebJSONRescueFlairList above for why token_v2 works there).
+// account when nil/empty), minting a fresh token when the stored one is stale.
+// The mint is for the MOBILE web client, which oauth.reddit.com answers with
+// its block page where it takes token_v2, so nothing in the tweak calls this
+// any more: ApolloWebJSONDesktopWebBearer below is its replacement.
 // Returns nil when the account has no stored web session — i.e. for API-key
 // accounts, which authenticate with Apollo's own bearer instead. Synchronous,
 // bounded by short timeouts — background queues only. Callers must mark their
@@ -152,8 +154,9 @@ BOOL ApolloWebJSONPathNeedsWebBearer(NSString *path);
 NSString *ApolloWebJSONWebSessionUsernameForBearer(NSString *bearer);
 
 // The account's web bearer if one is on hand without a network round trip
-// (fresh token_v2, or a minted one still cached), else nil — also nil for a
-// minute after oauth.reddit.com refused it with a 401.
+// (fresh token_v2, or one minted for the same desktop web client and still
+// cached: what ApolloWebJSONDesktopWebBearer returns, without its mint), else
+// nil — also nil for a minute after oauth.reddit.com refused it with a 401.
 NSString *ApolloWebJSONReadyWebBearer(NSString *username);
 
 // The bearer for routes with bearer auth (ApolloWebJSONRoutes.h): a bearer

@@ -411,7 +411,7 @@ static void ApolloOwnFlairPrefetch(NSString *username, NSString *subreddit) {
     // blocks for up to 12s. Nothing here is needed before %orig returns.
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         BOOL keyless = ApolloWebJSONHasUsableSession();
-        NSString *bearer = keyless ? ApolloWebJSONKeylessOAuthBearer(username) : sLatestRedditBearerToken;
+        NSString *bearer = keyless ? ApolloWebJSONDesktopWebBearer(username) : sLatestRedditBearerToken;
         if (bearer.length == 0) {
             ApolloLog(@"[OwnFlair] Prefetch for r/%@ skipped: no usable bearer", subreddit);
             done();
