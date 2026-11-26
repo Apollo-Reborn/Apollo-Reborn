@@ -668,6 +668,8 @@ static void TestRichTextMarkdown(void) {
                   @"* one\n\n    1. inner\n* two\n\n> quoted\n>\n> again\n\n    x = 1\n    y = 2", @"lists, a quote, code");
     CheckMarkdown(@"{\"document\":[{\"e\":\"future\",\"c\":[{\"e\":\"text\",\"t\":\"kept\"}]},{\"e\":\"par\",\"c\":[{\"e\":\"text\",\"t\":\"clipped\",\"f\":[[1,3,99],[2,0,\"x\"]]}]}]}",
                   @"kept\n\ncli**pped**", @"an unknown block, malformed ranges");
+    CheckMarkdown(@"{\"document\":[{\"e\":\"par\",\"c\":[{\"e\":\"text\",\"t\":\"If you ask! 🍒🔨 thanks\",\"f\":[[1,7,7]]}]}]}",
+                  @"If you **ask! 🍒🔨** thanks", @"a range that ends on emoji");
     CheckMarkdown(@"{\"document\":[]}", nil, @"an empty document");
     CheckMarkdown(@"not json", nil, @"not a document");
     CHECK(ApolloGQLRichTextMarkdown(nil) == nil && ApolloGQLRichTextMarkdown(@{ @"document": @"x" }) == nil, @"nothing to read");
@@ -704,6 +706,17 @@ static void TestRichText(void) {
     // Ranges that overlap or run past the text are clipped, not thrown on.
     CheckHTML(@"{\"document\":[{\"e\":\"par\",\"c\":[{\"e\":\"text\",\"t\":\"abcdef\",\"f\":[[1,0,4],[2,2,3],[1,4,99],[1,50,2],[\"x\",0,1]]}]}]}",
               @"<p><strong>abcd</strong><em>e</em><strong>f</strong></p>", @"malformed ranges");
+    // Ranges count code points, so an emoji is one: Reddit's own Markdown for
+    // this captured text and range is "- 📍 **Places by address.** Type".
+    CheckHTML(@"{\"document\":[{\"e\":\"par\",\"c\":[{\"e\":\"text\",\"t\":\"- 📍 Places by address. Type\",\"f\":[[1,4,18]]}]}]}",
+              @"<p>- 📍 <strong>Places by address.</strong> Type</p>", @"a range after an emoji");
+    // A range that covers an emoji keeps all of it (a variation selector is a
+    // code point of its own). Half an emoji can't be written as JSON, which
+    // sent a whole r/wallstreetbets feed page back to the legacy route.
+    NSString *emoji = @"{\"document\":[{\"e\":\"par\",\"c\":[{\"e\":\"text\",\"t\":\"📉 down 🚀🚀 up 🛣️ ok\",\"f\":[[1,0,1],[2,7,2],[8,13,2]]}]}]}";
+    CheckHTML(emoji, @"<p><strong>📉</strong> down <em>🚀🚀</em> up <del>🛣️</del> ok</p>", @"ranges over emoji");
+    CHECK([NSJSONSerialization dataWithJSONObject:@[ ApolloGQLRichTextHTML(emoji, nil, NO) ?: @"" ] options:0 error:NULL] != nil,
+          @"ranges over emoji can be written as JSON");
     // Something this list doesn't know: its children, or its text.
     CheckHTML(@"{\"document\":[{\"e\":\"newblock\",\"c\":[{\"e\":\"par\",\"c\":[{\"e\":\"newinline\",\"t\":\"kept\"}]}]}]}", @"<p>kept</p>", @"unknown elements");
     // Old sidebars: a link with empty text stays empty, one without a text

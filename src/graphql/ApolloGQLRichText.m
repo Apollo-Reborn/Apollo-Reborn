@@ -6,8 +6,9 @@
 //                   hr, and img / gif / video (id = an entry of richtextMedia)
 //   inline elements text (t, f), link (t, u, f), r/ and u/ (t = name, l =
 //                   written with a leading slash), spoilertext (c), br, raw (t)
-//   f               format ranges over t: [[mask, start, length], …] in UTF-16
-//                   units, mask bits 1 bold, 2 italic, 4 underline, 8 strike,
+//   f               format ranges over t: [[mask, start, length], …] in Unicode
+//                   code points (an emoji is one; see ApolloGQLRTEachFormat),
+//                   mask bits 1 bold, 2 italic, 4 underline, 8 strike,
 //                   16 subscript, 32 superscript, 64 code
 
 static NSString *ApolloGQLRTEscape(NSString *text) {
@@ -60,14 +61,34 @@ static NSArray<NSString *> *ApolloGQLRTTagsForMask(NSInteger mask) {
     return tags;
 }
 
-// `text` with its format ranges as tags. Ranges that run past the text or
-// overlap an earlier one are clipped, so a malformed list can't throw.
-static NSString *ApolloGQLRTFormattedText(NSString *text, id formats) {
-    NSArray *ranges = ApolloGQLRTArray(formats);
-    if (text.length == 0) return @"";
-    if (ranges.count == 0) return ApolloGQLRTEscape(text);
+// The UTF-16 index in `text` of the code point `count` code points in, or
+// text.length when the text is shorter than that. A lone surrogate counts as
+// one code point.
+static NSUInteger ApolloGQLRTUTF16Index(NSString *text, NSUInteger count) {
+    NSUInteger length = text.length, index = 0;
+    for (; count > 0 && index < length; count--) {
+        unichar unit = [text characterAtIndex:index];
+        BOOL pair = CFStringIsSurrogateHighCharacter(unit) && index + 1 < length &&
+                    CFStringIsSurrogateLowCharacter([text characterAtIndex:index + 1]);
+        index += pair ? 2 : 1;
+    }
+    return index;
+}
+
+// Calls `body` with each of `text`'s format ranges, in order, as an NSString
+// (UTF-16) range. Reddit counts `start` and `length` in code points, so an
+// emoji is one there and usually two in an NSString: its own Markdown for
+// "- 📍 Places by address." with f [[1,4,18]] is "- 📍 **Places by address.**"
+// (captured 2026-11-24). Used as UTF-16 offsets, each emoji before a range
+// moved the range one unit left, and a range that ended on an emoji kept half
+// of it; that lone surrogate can't be written as JSON, so the whole page an
+// answer came in fell back to the legacy route (ApolloGQLRoute.m). A
+// code-point boundary never falls inside a surrogate pair. Ranges that run
+// past the text or overlap an earlier one are clipped, so a malformed list
+// can't throw.
+static void ApolloGQLRTEachFormat(NSString *text, id formats, void (^body)(NSInteger mask, NSRange range)) {
     NSMutableArray<NSArray<NSNumber *> *> *valid = [NSMutableArray array];
-    for (id range in ranges) {
+    for (id range in ApolloGQLRTArray(formats)) {
         NSArray *parts = ApolloGQLRTArray(range);
         if (parts.count < 3) continue;
         if (![parts[0] isKindOfClass:[NSNumber class]] || ![parts[1] isKindOfClass:[NSNumber class]] ||
@@ -77,20 +98,38 @@ static NSString *ApolloGQLRTFormattedText(NSString *text, id formats) {
     [valid sortUsingComparator:^NSComparisonResult(NSArray<NSNumber *> *a, NSArray<NSNumber *> *b) {
         return [a[1] compare:b[1]];
     }];
-    NSMutableString *out = [NSMutableString string];
+    NSUInteger length = text.length;
+    // Text with no surrogate pair counts the same both ways (the common case).
+    BOOL counted = [text lengthOfBytesUsingEncoding:NSUTF32LittleEndianStringEncoding] / 4 != length;
     NSUInteger cursor = 0;
     for (NSArray<NSNumber *> *range in valid) {
-        NSInteger start = range[1].integerValue, length = range[2].integerValue;
-        if (start < (NSInteger)cursor) { length -= (NSInteger)cursor - start; start = (NSInteger)cursor; }
-        if (length <= 0 || start >= (NSInteger)text.length) continue;
-        if (start + length > (NSInteger)text.length) length = (NSInteger)text.length - start;
-        if ((NSUInteger)start > cursor) [out appendString:ApolloGQLRTEscape([text substringWithRange:NSMakeRange(cursor, (NSUInteger)start - cursor)])];
-        NSArray<NSString *> *tags = ApolloGQLRTTagsForMask(range[0].integerValue);
-        for (NSString *tag in tags) [out appendFormat:@"<%@>", tag];
-        [out appendString:ApolloGQLRTEscape([text substringWithRange:NSMakeRange((NSUInteger)start, (NSUInteger)length)])];
-        for (NSString *tag in tags.reverseObjectEnumerator) [out appendFormat:@"</%@>", tag];
-        cursor = (NSUInteger)(start + length);
+        NSInteger start = range[1].integerValue, count = range[2].integerValue;
+        if (start < 0) { count += start; start = 0; }
+        if (count <= 0) continue;
+        NSUInteger end = (NSUInteger)start + (NSUInteger)count;
+        NSUInteger from = counted ? ApolloGQLRTUTF16Index(text, (NSUInteger)start) : MIN((NSUInteger)start, length);
+        NSUInteger to = counted ? ApolloGQLRTUTF16Index(text, end) : MIN(end, length);
+        from = MAX(from, cursor);
+        if (to <= from) continue;
+        body(range[0].integerValue, NSMakeRange(from, to - from));
+        cursor = to;
     }
+}
+
+// `text` with its format ranges as tags.
+static NSString *ApolloGQLRTFormattedText(NSString *text, id formats) {
+    if (text.length == 0) return @"";
+    if (ApolloGQLRTArray(formats).count == 0) return ApolloGQLRTEscape(text);
+    NSMutableString *out = [NSMutableString string];
+    __block NSUInteger cursor = 0;
+    ApolloGQLRTEachFormat(text, formats, ^(NSInteger mask, NSRange range) {
+        if (range.location > cursor) [out appendString:ApolloGQLRTEscape([text substringWithRange:NSMakeRange(cursor, range.location - cursor)])];
+        NSArray<NSString *> *tags = ApolloGQLRTTagsForMask(mask);
+        for (NSString *tag in tags) [out appendFormat:@"<%@>", tag];
+        [out appendString:ApolloGQLRTEscape([text substringWithRange:range])];
+        for (NSString *tag in tags.reverseObjectEnumerator) [out appendFormat:@"</%@>", tag];
+        cursor = NSMaxRange(range);
+    });
     if (cursor < text.length) [out appendString:ApolloGQLRTEscape([text substringFromIndex:cursor])];
     return out;
 }
@@ -334,38 +373,21 @@ NSString *ApolloGQLRichTextHTML(id document, NSArray *media, BOOL selfPost) {
 // `text` with its format ranges as Markdown marks. Underline and subscript
 // have none and stay plain.
 static NSString *ApolloGQLRTMarkedText(NSString *text, id formats) {
-    NSArray *ranges = ApolloGQLRTArray(formats);
     if (text.length == 0) return @"";
-    if (ranges.count == 0) return text;
-    NSMutableArray<NSArray<NSNumber *> *> *valid = [NSMutableArray array];
-    for (id range in ranges) {
-        NSArray *parts = ApolloGQLRTArray(range);
-        if (parts.count < 3) continue;
-        if (![parts[0] isKindOfClass:[NSNumber class]] || ![parts[1] isKindOfClass:[NSNumber class]] ||
-            ![parts[2] isKindOfClass:[NSNumber class]]) continue;
-        [valid addObject:@[ parts[0], parts[1], parts[2] ]];
-    }
-    [valid sortUsingComparator:^NSComparisonResult(NSArray<NSNumber *> *a, NSArray<NSNumber *> *b) {
-        return [a[1] compare:b[1]];
-    }];
+    if (ApolloGQLRTArray(formats).count == 0) return text;
     NSMutableString *out = [NSMutableString string];
-    NSUInteger cursor = 0;
-    for (NSArray<NSNumber *> *range in valid) {
-        NSInteger start = range[1].integerValue, length = range[2].integerValue;
-        if (start < (NSInteger)cursor) { length -= (NSInteger)cursor - start; start = (NSInteger)cursor; }
-        if (length <= 0 || start >= (NSInteger)text.length) continue;
-        if (start + length > (NSInteger)text.length) length = (NSInteger)text.length - start;
-        if ((NSUInteger)start > cursor) [out appendString:[text substringWithRange:NSMakeRange(cursor, (NSUInteger)start - cursor)]];
-        NSInteger mask = range[0].integerValue;
-        NSString *marked = [text substringWithRange:NSMakeRange((NSUInteger)start, (NSUInteger)length)];
+    __block NSUInteger cursor = 0;
+    ApolloGQLRTEachFormat(text, formats, ^(NSInteger mask, NSRange range) {
+        if (range.location > cursor) [out appendString:[text substringWithRange:NSMakeRange(cursor, range.location - cursor)]];
+        NSString *marked = [text substringWithRange:range];
         if (mask & 64) marked = [NSString stringWithFormat:@"`%@`", marked];
         if (mask & 32) marked = [NSString stringWithFormat:@"^(%@)", marked];
         if (mask & 8) marked = [NSString stringWithFormat:@"~~%@~~", marked];
         if (mask & 2) marked = [NSString stringWithFormat:@"*%@*", marked];
         if (mask & 1) marked = [NSString stringWithFormat:@"**%@**", marked];
         [out appendString:marked];
-        cursor = (NSUInteger)(start + length);
-    }
+        cursor = NSMaxRange(range);
+    });
     if (cursor < text.length) [out appendString:[text substringFromIndex:cursor]];
     return out;
 }
