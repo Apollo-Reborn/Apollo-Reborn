@@ -5,6 +5,7 @@
 #import "ApolloGalleryImageLoader.h"
 #import "ApolloCommon.h"
 #import "ApolloDeviceGeometry.h"
+#import "ApolloDuoSplitView.h"
 #import "ApolloGalleryVideoExport.h"
 #import "ApolloGalleryMediaActions.h"
 #import "ApolloNativeActionMenus.h"
@@ -744,6 +745,7 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
     if (@available(iOS 16.0, *)) {
         [self setNeedsUpdateOfSupportedInterfaceOrientations];
     }
+    [self apollo_deviceOrientationChanged:nil];
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
@@ -754,7 +756,9 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
     // so presenting a share sheet over the viewer doesn't unrotate it.
     if (self.isForciblyRotated && (self.isBeingDismissed || self.isDismissing)) {
         self.isForciblyRotated = NO;
-        [self apollo_requestInterfaceOrientation:UIInterfaceOrientationPortrait];
+        if (!ApolloDuoSplitIsUnfolded()) {
+            [self apollo_requestInterfaceOrientation:UIInterfaceOrientationPortrait];
+        }
     }
     // Nothing should keep playing behind or after the viewer.
     for (UICollectionViewCell *cell in self.collectionView.visibleCells) {
@@ -790,6 +794,9 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
+    // Folding need not emit a device-orientation notification (especially
+    // face-up). Suppress immediately, before any page-geometry early return.
+    if (ApolloDuoSplitIsUnfolded()) [self apollo_updateRotationOffer];
     // Page geometry comes from the pager itself (see lastLaidOutPageSize).
     // It has already followed self.view here: autoresizing runs as soon as
     // the view's bounds change, ahead of this layout pass.
@@ -801,6 +808,8 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
                   size.width, size.height, self.view.bounds.size.width, self.view.bounds.size.height);
         self.lastLaidOutPageSize = size;
         [self.layout invalidateLayout];
+        // Re-evaluate after UIKit settles, including folding back to the cover.
+        [self apollo_deviceOrientationChanged:nil];
     }
     [self apollo_layoutChrome];
 
@@ -979,6 +988,15 @@ static UIInterfaceOrientation ApolloGalleryInterfaceOrientationForDevice(UIDevic
 // rotation when the lock is OFF — offering a button mid-turn would flash it
 // on every unlocked rotation too.
 - (void)apollo_deviceOrientationChanged:(NSNotification *)notification {
+    if (!NSThread.isMainThread) {
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf apollo_deviceOrientationChanged:nil]; });
+        return;
+    }
+    if (ApolloDuoSplitIsUnfolded()) {
+        [self apollo_updateRotationOffer];
+        return;
+    }
     NSUInteger generation = ++self.rotateOfferGeneration;
     __weak typeof(self) weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -990,6 +1008,14 @@ static UIInterfaceOrientation ApolloGalleryInterfaceOrientationForDevice(UIDevic
 }
 
 - (void)apollo_updateRotationOffer {
+    // Inner-display motion axes do not describe the canvas. Check before
+    // interpreting the sensor, including unknown/face-up readings.
+    if (ApolloDuoSplitIsUnfolded()) {
+        [self apollo_hideRotationOffer];
+        self.rotateOfferHost.hidden = YES;
+        self.isForciblyRotated = NO;
+        return;
+    }
     if (self.isDismissing || !ApolloGallerySmartRotationLockEnabled()) {
         [self apollo_hideRotationOffer];
         return;
@@ -1013,6 +1039,8 @@ static UIInterfaceOrientation ApolloGalleryInterfaceOrientationForDevice(UIDevic
     NSString *title = rotatingBack ? @"Tap to Rotate Back"
                                    : [NSString stringWithFormat:@"Tap to Rotate %@", noun];
 
+    BOOL revealing = self.rotateOfferHost.hidden || self.rotateOfferTargetOrientation == UIInterfaceOrientationUnknown;
+    ++self.rotateOfferGeneration; // supersede any earlier hide completion
     self.rotateOfferTargetOrientation = wanted;
     [self.rotateOfferButton setTitle:title forState:UIControlStateNormal];
     if (@available(iOS 15.0, *)) {
@@ -1022,7 +1050,7 @@ static UIInterfaceOrientation ApolloGalleryInterfaceOrientationForDevice(UIDevic
             self.rotateOfferButton.configuration = configuration;
         }
     }
-    if (self.rotateOfferHost.hidden) {
+    if (revealing) {
         self.rotateOfferHost.hidden = NO;
         self.rotateOfferHost.alpha = 0.0;
         [UIView animateWithDuration:0.2 animations:^{ self.rotateOfferHost.alpha = 1.0; }];
@@ -1031,16 +1059,27 @@ static UIInterfaceOrientation ApolloGalleryInterfaceOrientationForDevice(UIDevic
 }
 
 - (void)apollo_hideRotationOffer {
+    NSUInteger generation = ++self.rotateOfferGeneration;
+    self.rotateOfferTargetOrientation = UIInterfaceOrientationUnknown;
     if (self.rotateOfferHost.hidden) return;
+    if (self.rotateOfferHost.alpha == 0.0) {
+        self.rotateOfferHost.hidden = YES;
+        return;
+    }
     [UIView animateWithDuration:0.2 animations:^{
         self.rotateOfferHost.alpha = 0.0;
     } completion:^(BOOL finished) {
-        self.rotateOfferHost.hidden = YES;
+        if (self.rotateOfferGeneration == generation) self.rotateOfferHost.hidden = YES;
         (void)finished;
     }];
 }
 
 - (void)apollo_rotateOfferTapped {
+    // A tap may already be queued when unfolding or disabling the setting.
+    if (ApolloDuoSplitIsUnfolded() || self.isDismissing || !ApolloGallerySmartRotationLockEnabled()) {
+        [self apollo_updateRotationOffer];
+        return;
+    }
     UIInterfaceOrientation target = self.rotateOfferTargetOrientation;
     if (target == UIInterfaceOrientationUnknown) return;
     [self apollo_hideRotationOffer];
