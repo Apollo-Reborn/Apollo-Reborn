@@ -504,6 +504,30 @@ void ApolloGQLRouteAnswer(NSString *account, ApolloGQLRequest *request, ApolloGQ
                 if (!next || (NSInteger)fullnames.count * 4 >= request.limit * 3) break;
                 after = next;
             }
+            // A subreddit's feed that ends within its first page is also what
+            // a subreddit Reddit holds back from the account looks like here.
+            // One behind a content warning the account hasn't accepted
+            // answers the few posts Reddit lets through and nothing after
+            // them (r/Drugs 2, r/MorbidReality 6, 2026-11-26), where the
+            // legacy route answers Reddit's warning (HTTP 403, "gated"), and
+            // that is Apollo's to present. The subreddit's details say which
+            // it is, for one more call on a feed that short. No answer to
+            // that call leaves it unknown, and the legacy route has the feed
+            // either way.
+            if (!failed && request.kind == ApolloGQLRequestKindSubredditFeed && request.after.length == 0 && !nextAfter) {
+                calls++;
+                NSDictionary *info = ApolloGQLRouteCall(account, ApolloGQLOperationSubredditInfo, ApolloGQLSubredditInfoVariables(request),
+                                                        &outcome, &detail);
+                NSString *reason = info ? ApolloGQLSubredditUnavailableReason(info) : nil;
+                if (!info) {
+                    failed = YES;
+                } else if (reason) {
+                    failed = YES;
+                    outcome = ApolloGQLCallFailed;
+                    detail = [NSString stringWithFormat:@"r/%@ isn't open to the account (%@); its feed here is only what Reddit lets through",
+                              request.subreddit, reason];
+                }
+            }
             // Pages of nothing but suggested posts, with more behind them: the
             // legacy Home has the joined subreddits' posts without the search.
             if (!failed && home && fullnames.count == 0 && nextAfter) {

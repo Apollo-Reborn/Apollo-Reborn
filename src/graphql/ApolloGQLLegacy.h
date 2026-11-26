@@ -64,6 +64,14 @@ NSString *_Nullable ApolloGQLMoreTokenCursor(NSString *_Nullable token, NSIntege
 NSDictionary<NSString *, id> *_Nullable ApolloGQLLegacySubredditData(NSDictionary *_Nullable subreddit, BOOL rawJSON);
 NSDictionary *_Nullable ApolloGQLLegacySubredditAbout(NSDictionary *answer, BOOL rawJSON);
 
+// Why a SubredditInfoByName answer has no subreddit for the account, or nil
+// when it has one: GraphQL's own word for it ("GATED" for a subreddit behind a
+// content warning the account hasn't accepted, "QUARANTINED", "PRIVATE",
+// "BANNED", …), or "missing" when the answer names no reason. A subreddit
+// held back this way still has a feed in GraphQL, of the few posts Reddit lets
+// through, so its details are what tells it from a small subreddit.
+NSString *_Nullable ApolloGQLSubredditUnavailableReason(NSDictionary *answer);
+
 // The Listing of posts /search.json sends, for a SearchPosts answer (its whole
 // JSON body; its posts are whole, as PostsByIds' are). The Listing's `after` is
 // ApolloGQLSearchAfterToken of the answer's cursor, or null on the last page.

@@ -938,6 +938,23 @@ static void TestOwnPostsAndUserComments(void) {
     CHECK(ApolloGQLUserCommentFullnames(ParseJSON(@"{\"data\":{\"redditorInfoByName\":null}}"), NULL) == nil, @"no such account, no list");
 }
 
+static void TestUnavailableSubreddit(void) {
+    // A subreddit behind a content warning the account hasn't accepted, as
+    // SubredditInfoByName answered for one on 2026-11-26.
+    NSDictionary *gated = ParseJSON(@"{\"data\":{\"subredditInfoByName\":{\"__typename\":\"UnavailableSubreddit\",\"banMessageContent\":null,"
+        "\"banTitle\":null,\"forbiddenReason\":\"GATED\",\"id\":\"t5_2qh7l\",\"interstitialWarningMessage\":{\"markdown\":\"Content Advisory\"},"
+        "\"isEmailRequiredForQuarantineOptin\":false,\"quarantineMessage\":null}}}");
+    CHECK([ApolloGQLSubredditUnavailableReason(gated) isEqualToString:@"GATED"], @"a gated subreddit (%@)", ApolloGQLSubredditUnavailableReason(gated));
+    CHECK(ApolloGQLLegacySubredditAbout(gated, YES) == nil, @"which has no details to hand Apollo either");
+    NSDictionary *open = ParseJSON(@"{\"data\":{\"subredditInfoByName\":{\"__typename\":\"Subreddit\",\"id\":\"t5_2qh1f\",\"name\":\"apple\","
+        "\"prefixedName\":\"r/apple\"}}}");
+    CHECK(ApolloGQLSubredditUnavailableReason(open) == nil, @"a subreddit the account can read");
+    CHECK([ApolloGQLSubredditUnavailableReason(ParseJSON(@"{\"data\":{\"subredditInfoByName\":null}}")) isEqualToString:@"missing"] &&
+          [ApolloGQLSubredditUnavailableReason(ParseJSON(@"{\"data\":{\"subredditInfoByName\":{\"__typename\":\"UnavailableSubreddit\",\"id\":\"t5_x\"}}}"))
+           isEqualToString:@"missing"] && [ApolloGQLSubredditUnavailableReason(@{}) isEqualToString:@"missing"],
+          @"no subreddit and no reason given");
+}
+
 static void TestSavedList(void) {
     // The list names posts and comments together, by id, in its own order.
     NSDictionary *page = ParseJSON(@"{\"data\":{\"savedV3\":{\"elements\":{\"dist\":4,\"edges\":["
@@ -1077,6 +1094,7 @@ int main(int argc, const char *argv[]) {
         TestPlanForOwnReads();
         TestOwnPostsAndUserComments();
         TestSavedList();
+        TestUnavailableSubreddit();
         TestPlanForLists();
     }
     if (sFailures) {

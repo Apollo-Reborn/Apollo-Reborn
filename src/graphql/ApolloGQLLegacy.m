@@ -972,6 +972,14 @@ NSDictionary *ApolloGQLLegacySubredditAbout(NSDictionary *answer, BOOL rawJSON) 
     return data ? ApolloGQLLegacyThing(@"t5", data) : nil;
 }
 
+NSString *ApolloGQLSubredditUnavailableReason(NSDictionary *answer) {
+    NSDictionary *subreddit = ApolloGQLDict(ApolloGQLDict(answer, @"data"), @"subredditInfoByName");
+    // The same test the details go by: a subreddit has its id and its name.
+    if (ApolloGQLLegacySubredditData(subreddit, YES)) return nil;
+    NSString *reason = ApolloGQLString(subreddit, @"forbiddenReason");
+    return reason.length > 0 ? reason : @"missing";
+}
+
 #pragma mark - Search
 
 // A search answer pages by an opaque cursor (a count, in base64), where the
