@@ -57,6 +57,7 @@
 #import <mach-o/dyld.h>
 
 void ApolloSubredditIndexDebugDescribeTables(void); // ApolloSubredditIndexPolish.xm (sim-only)
+extern "C" void ApolloGatedSubredditSimSetNoSession(BOOL noSession); // ApolloListEmptyState.xm (sim-only)
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <mach/mach.h>
@@ -2667,6 +2668,12 @@ static BOOL ApolloSimDebugHandleIntegratedMainCommand(NSString *contents) {
         BOOL on = [[contents substringFromIndex:11] hasPrefix:@"on"];
         if (!on) ApolloOAuthReadReset();
         ApolloWebJSONSimSetOAuthBlockedReads(on);
+        return YES;
+    }
+    // "gatedsession off|on": a gated subreddit's warning as an account with
+    // no web session stored gets it ("Open Reddit" in place of "Continue").
+    if ([contents hasPrefix:@"gatedsession "]) {
+        ApolloGatedSubredditSimSetNoSession([[contents substringFromIndex:13] hasPrefix:@"off"]);
         return YES;
     }
     // "routehealth" logs the API-Key-Free route health; "routehealth reset" clears it.
