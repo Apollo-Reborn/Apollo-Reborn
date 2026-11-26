@@ -951,6 +951,34 @@ static void TestOAuthReads(void) {
     CHECK([ApolloOAuthReadPathToSend(@"GET", @"api/info.json") isEqualToString:@"api/info.json"], @"reset forgets");
 }
 
+// Which refused requests leave somebody waiting, for the rate limit notice.
+static void TestRefusedReadIsBackground(void) {
+    // What Apollo keeps current about the account, and lookups that decorate
+    // a page that has already loaded.
+    for (NSString *path in @[ @"/api/me.json", @"/api/v1/me", @"/api/user_data_by_account_ids.json", @"/api/info.json?id=t3_a",
+                              @"/api/filter/user/someone/f/all.json", @"/api/multi/mine.json", @"/prefs/friends.json",
+                              @"/prefs/blocked.json", @"/message/inbox.json", @"/message/messages.json", @"/subreddits/mine/subscriber.json",
+                              @"/user/Someone/saved.json", @"/user/other/about.json", @"/user/other/trophies.json", @"/r/apple/about.json",
+                              @"r/apple/about" ]) {
+        CHECK(ApolloWebJSONRefusedReadIsBackground(@"GET", path, @"someone"), @"%@ is a background read", path);
+    }
+    CHECK(ApolloWebJSONRefusedReadIsBackground(@"POST", @"/r/apple/api/flairselector", @"someone"), @"a subreddit's flair list");
+    CHECK(ApolloWebJSONRefusedReadIsBackground(@"POST", @"/api/flairselector", nil), @"the flair list");
+    // Somebody's page or action.
+    for (NSString *path in @[ @"/best.json", @"/hot.json", @"/r/all/hot.json", @"/r/apple/hot.json", @"/r/apple.json", @"/comments/abc123.json",
+                              @"/r/apple/comments/abc123/title/def456.json", @"/user/other/overview.json", @"/user/other/submitted.json",
+                              @"/user/other/saved.json", @"/search.json", @"/subreddits/search.json", @"/r/apple/about/moderators.json",
+                              @"/api/morechildren" ]) {
+        CHECK(!ApolloWebJSONRefusedReadIsBackground(@"GET", path, @"someone"), @"%@ is somebody's page", path);
+    }
+    for (NSString *path in @[ @"/api/vote", @"/api/comment", @"/api/submit", @"/api/save", @"/api/subscribe", @"/api/morechildren",
+                              @"/api/read_message" ]) {
+        CHECK(!ApolloWebJSONRefusedReadIsBackground(@"POST", path, @"someone"), @"POST %@ is somebody's action", path);
+    }
+    CHECK(!ApolloWebJSONRefusedReadIsBackground(@"GET", @"/user/someone/saved.json", nil), @"saved posts with no account to compare");
+    CHECK(!ApolloWebJSONRefusedReadIsBackground(@"DELETE", @"/api/v1/me/friends/other", @"someone"), @"a DELETE is an action");
+}
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         TestBuiltInTable();
@@ -977,6 +1005,7 @@ int main(int argc, const char *argv[]) {
         TestRouteParts();
         TestBearerRoutes();
         TestGraphQLRoute();
+        TestRefusedReadIsBackground();
         TestOAuthReads();
     }
     if (sFailures) {

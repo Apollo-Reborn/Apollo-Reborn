@@ -234,7 +234,23 @@ extern NSString *const ApolloWebJSONSessionExpiredNotification;
 // explanation instead of an endless spinner. userInfo[@"username"] is the
 // lowercased account, userInfo[@"seconds"] the expected wait (see
 // ApolloWebJSONOptionalReadBackoff). Tweak.xm shows it as a toast.
+// Once per limit. While the GraphQL route is carrying the account's feeds and
+// threads, it waits for the first refusal that leaves somebody waiting
+// (ApolloWebJSONRefusedReadIsBackground says which don't), so a limit that
+// only ever refuses the inbox poll or an author lookup posts nothing.
 extern NSString *const ApolloWebJSONSessionRateLimitedNotification;
+
+// YES while `username` is rate-limited and that limit has posted no notice
+// (see above): whatever would repeat the notice stays down too. Any thread.
+BOOL ApolloWebJSONRateLimitIsQuiet(NSString *username);
+
+#if APOLLO_SIM_BUILD
+// Debug bridge ("refuse429 <METHOD> <path>" / "refuse429 off"): records an HTTP
+// 429 for `username` on that request as if Reddit had answered it (a 180 s
+// hold), so the limit's notice and what stands down during one can be seen
+// without spending a real account's requests. An empty `path` lifts the hold.
+void ApolloWebJSONSimRefuse(NSString *username, NSString *method, NSString *path);
+#endif
 
 // Sentinel access-token string the identity layer (ApolloWebJSONIdentity.xm)
 // installs as a synthetic OAuth credential so Apollo proceeds to issue requests

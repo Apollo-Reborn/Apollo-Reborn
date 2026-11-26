@@ -4198,6 +4198,9 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
 // app comes back while it still holds. At most once every 30s, so the launch-time
 // notice and the didBecomeActive right after it don't both show. Main thread.
 static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
+    // A limit that has refused nothing anybody was waiting on, while GraphQL
+    // keeps feeds and threads loading, has no notice to repeat.
+    if (ApolloWebJSONRateLimitIsQuiet(ApolloActiveWebSessionUsername())) return;
     static NSTimeInterval sLastShownAt = 0;
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
     if (now - sLastShownAt < 30.0) return;

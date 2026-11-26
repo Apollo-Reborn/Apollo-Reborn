@@ -2679,6 +2679,18 @@ static BOOL ApolloSimDebugHandleIntegratedMainCommand(NSString *contents) {
         });
         return YES;
     }
+    // "refuse429 <METHOD> <path>": the active API-Key-Free account's request is
+    // recorded as refused for the rate limit (nothing is sent), which starts a
+    // 180 s hold; "refuse429 off" lifts it. For the notice: a background read
+    // (GET /message/inbox.json) raises none while GraphQL carries the account,
+    // a page somebody is waiting on (GET /best.json) does.
+    if ([contents hasPrefix:@"refuse429"]) {
+        NSArray<NSString *> *parts = [[[contents substringFromIndex:9]
+            stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] componentsSeparatedByString:@" "];
+        BOOL lift = parts.count < 2;
+        ApolloWebJSONSimRefuse(ApolloActiveWebSessionUsername(), lift ? nil : parts[0], lift ? nil : parts[1]);
+        return YES;
+    }
     // "oauthblock on|off": an API-key account's /api/info and /api/morechildren
     // get oauth.reddit.com's real block page at their usual path, to exercise
     // the /.json retry (ApolloOAuthReadPathAfterResponse).

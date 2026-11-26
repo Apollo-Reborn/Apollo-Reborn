@@ -741,6 +741,34 @@ NSInteger ApolloWebJSONRouteChoose(NSString *account, NSString *method, NSString
     return ApolloWebJSONRouteChooseAmong(account, method, path, triedMask, NO, now);
 }
 
+BOOL ApolloWebJSONRefusedReadIsBackground(NSString *method, NSString *path, NSString *account) {
+    if (![method isKindOfClass:[NSString class]] || ![path isKindOfClass:[NSString class]]) return NO;
+    NSString *bare = [path componentsSeparatedByString:@"?"].firstObject.lowercaseString ?: @"";
+    if ([bare hasSuffix:@".json"]) bare = [bare substringToIndex:bare.length - 5];
+    NSMutableArray<NSString *> *segments = [NSMutableArray array];
+    for (NSString *segment in [bare componentsSeparatedByString:@"/"]) {
+        if (segment.length > 0) [segments addObject:segment];
+    }
+    NSString *verb = method.uppercaseString;
+    // The flair lists are read with a POST: "api/flairselector", or
+    // "r/<subreddit>/api/flairselector".
+    if ([verb isEqualToString:@"POST"] && segments.count >= 2 && [segments.lastObject isEqualToString:@"flairselector"] &&
+        [segments[segments.count - 2] isEqualToString:@"api"]) {
+        return YES;
+    }
+    if (![verb isEqualToString:@"GET"] && ![verb isEqualToString:@"HEAD"]) return NO;
+    NSString *first = segments.firstObject;
+    if ([first isEqualToString:@"api"]) return !(segments.count >= 2 && [segments[1] isEqualToString:@"morechildren"]);
+    if ([first isEqualToString:@"prefs"] || [first isEqualToString:@"message"]) return YES;
+    if ([first isEqualToString:@"subreddits"]) return segments.count >= 2 && [segments[1] isEqualToString:@"mine"];
+    if ([first isEqualToString:@"user"] && segments.count == 3) {
+        if ([segments[2] isEqualToString:@"about"] || [segments[2] isEqualToString:@"trophies"]) return YES;
+        return [segments[2] isEqualToString:@"saved"] && account.length > 0 && [segments[1] isEqualToString:account.lowercaseString];
+    }
+    if ([first isEqualToString:@"r"] && segments.count == 3) return [segments[2] isEqualToString:@"about"];
+    return NO;
+}
+
 NSInteger ApolloWebJSONRouteChooseForTransport(NSString *account, NSString *method, NSString *path, NSUInteger triedMask, NSTimeInterval now) {
     return ApolloWebJSONRouteChooseAmong(account, method, path, triedMask, YES, now);
 }

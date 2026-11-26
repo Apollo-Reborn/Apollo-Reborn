@@ -1259,6 +1259,33 @@ static double ApolloWebJSONHeaderSeconds(NSHTTPURLResponse *http, NSString *name
     return ([scanner scanDouble:&seconds] && scanner.isAtEnd) ? seconds : NAN;
 }
 
+// Accounts whose current rate limit has no notice up: so far it has only
+// refused background reads (ApolloWebJSONRefusedReadIsBackground) while the
+// GraphQL route kept the account's feeds and threads loading. Lowercased
+// username -> the end of the hold it was decided for (epoch seconds), guarded
+// by the expiry lock. A hold that ends later than that is another limit, or
+// one something else started, and isn't covered.
+static NSMutableDictionary<NSString *, NSNumber *> *sRateLimitQuietUntilByUser;
+
+// YES while the GraphQL route is answering `username`'s feeds and threads: the
+// route table would send a subreddit's feed by it right now (the switch is on,
+// keyless-routes.json hasn't turned it off, and the route isn't held after a
+// rate limit of its own or cooling down). A cookie rate limit then stops much
+// less than it used to.
+static BOOL ApolloWebJSONGraphQLCarriesReading(NSString *username) {
+    return ApolloWebJSONRouteChoose(username, @"GET", @"/r/apple/hot", 0,
+                                    [NSDate timeIntervalSinceReferenceDate]) == ApolloWebJSONRouteGraphQL;
+}
+
+BOOL ApolloWebJSONRateLimitIsQuiet(NSString *username) {
+    NSString *key = username.lowercaseString;
+    if (key.length == 0) return NO;
+    @synchronized (ApolloWebJSONExpiryLock()) {
+        NSTimeInterval until = sRateLimitedUntilByUser[key].doubleValue;
+        return until > [[NSDate date] timeIntervalSince1970] && sRateLimitQuietUntilByUser[key].doubleValue >= until;
+    }
+}
+
 static void ApolloWebJSONRecordRateLimit(NSString *username, NSURLRequest *request, NSHTTPURLResponse *http) {
     if (http.statusCode != 429) return;
     NSString *key = username.lowercaseString;
@@ -1280,18 +1307,81 @@ static void ApolloWebJSONRecordRateLimit(NSString *username, NSURLRequest *reque
         newlyLimited = until <= now;
         sRateLimitedUntilByUser[key] = @(MAX(until, now + wait));
     }
-    if (!newlyLimited) return;
-    ApolloLog(@"[WebJSON] Reddit rate-limited u/%@ (HTTP 429 on %@ %@); pausing optional lookups for %.0fs",
-              key, request.HTTPMethod ?: @"GET", request.URL.path ?: @"/", wait);
+    NSString *method = request.HTTPMethod ?: @"GET";
+    NSString *path = request.URL.path ?: @"/";
+    if (newlyLimited) {
+        ApolloLog(@"[WebJSON] Reddit rate-limited u/%@ (HTTP 429 on %@ %@); pausing optional lookups for %.0fs", key, method, path, wait);
+    }
+    // The notice goes up once per limit. It used to go up with the limit's
+    // first refusal, whatever was refused, because a refusal meant the feed
+    // on screen had stopped loading too. With the GraphQL route carrying the
+    // account's feeds and threads that's no longer so: Apollo's inbox poll or
+    // an author lookup being refused leaves everything on screen as it was,
+    // and a notice saying to try again in ten minutes would be wrong. So while
+    // GraphQL carries the reading, the notice waits for the first refusal
+    // that leaves somebody waiting (a page GraphQL doesn't answer, a vote, a
+    // comment), and a limit that never refuses one never shows it.
+    BOOL background = ApolloWebJSONGraphQLCarriesReading(key) && ApolloWebJSONRefusedReadIsBackground(method, path, key);
+    BOOL announce = NO;
+    NSTimeInterval remaining = wait;
+    @synchronized (ApolloWebJSONExpiryLock()) {
+        if (!sRateLimitQuietUntilByUser) sRateLimitQuietUntilByUser = [NSMutableDictionary dictionary];
+        NSTimeInterval until = sRateLimitedUntilByUser[key].doubleValue;
+        // A limit already under way is quiet while its mark is still ahead.
+        BOOL quiet = !newlyLimited && sRateLimitQuietUntilByUser[key].doubleValue > now;
+        if (newlyLimited) {
+            quiet = background;
+            announce = !background;
+        } else if (quiet && !background) {
+            quiet = NO;
+            announce = YES;
+        }
+        if (quiet) sRateLimitQuietUntilByUser[key] = @(until);
+        else [sRateLimitQuietUntilByUser removeObjectForKey:key];
+        remaining = MAX(1.0, until - now);
+    }
+    if (!announce) {
+        if (newlyLimited) {
+            ApolloLog(@"[WebJSON] No rate limit notice for u/%@ yet: %@ %@ is a background read, and GraphQL is carrying its feeds and threads",
+                      key, method, path);
+        }
+        return;
+    }
+    if (!newlyLimited) {
+        ApolloLog(@"[WebJSON] Rate limit notice for u/%@ now: %@ %@ was refused (limited for %.0fs more)", key, method, path, remaining);
+    }
     // Only the active account's limit changes what's on screen; a background
     // account's poll being refused shouldn't interrupt anyone.
     dispatch_async(dispatch_get_main_queue(), ^{
         if (![ApolloActiveWebSessionUsername().lowercaseString isEqualToString:key]) return;
         [[NSNotificationCenter defaultCenter] postNotificationName:ApolloWebJSONSessionRateLimitedNotification
                                                             object:nil
-                                                          userInfo:@{@"username": key, @"seconds": @(wait)}];
+                                                          userInfo:@{@"username": key, @"seconds": @(remaining)}];
     });
 }
+
+#if APOLLO_SIM_BUILD
+void ApolloWebJSONSimRefuse(NSString *username, NSString *method, NSString *path) {
+    NSString *key = username.lowercaseString;
+    if (key.length == 0) return;
+    if (path.length == 0) {
+        @synchronized (ApolloWebJSONExpiryLock()) {
+            [sRateLimitedUntilByUser removeObjectForKey:key];
+            [sRateLimitQuietUntilByUser removeObjectForKey:key];
+        }
+        ApolloLog(@"[WebJSON] (sim) rate limit on u/%@ lifted", key);
+        return;
+    }
+    NSURL *url = [NSURL URLWithString:[@"https://www.reddit.com" stringByAppendingString:path]];
+    if (!url) return;
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+    request.HTTPMethod = method.length > 0 ? method.uppercaseString : @"GET";
+    NSHTTPURLResponse *refusal = [[NSHTTPURLResponse alloc] initWithURL:url statusCode:429 HTTPVersion:@"HTTP/1.1"
+                                                           headerFields:@{ @"x-ratelimit-reset": @"180" }];
+    ApolloLog(@"[WebJSON] (sim) refusing %@ %@ for u/%@ as Reddit's rate limit does", request.HTTPMethod, path, key);
+    ApolloWebJSONRecordRateLimit(key, request, refusal);
+}
+#endif
 
 NSTimeInterval ApolloWebJSONOptionalReadBackoff(NSString *username) {
     if (!sWebJSONEnabled) return 0;

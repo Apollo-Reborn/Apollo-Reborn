@@ -224,6 +224,23 @@ NSInteger ApolloWebJSONRouteChoose(NSString *account, NSString *method, NSString
 // tried counts as not tried yet.
 NSInteger ApolloWebJSONRouteChooseForTransport(NSString *account, NSString *method, NSString *path, NSUInteger triedMask, NSTimeInterval now);
 
+// YES when a request Reddit refused for the rate limit (HTTP 429) is one nobody
+// is waiting on: a read Apollo or the tweak makes on its own, whose failure
+// leaves nothing on screen unexplained. `account` is whose request it was.
+//   - what Apollo keeps current about the account itself: GET /api/… (all but
+//     /api/morechildren, a "load more" tap), /prefs/…, /message/… (the inbox
+//     poll), /subreddits/mine/… and the account's own /user/<account>/saved;
+//   - lookups that decorate a page that has already loaded: /user/<name>/about
+//     and /trophies, /r/<subreddit>/about, and POST …/api/flairselector (a read
+//     despite its method).
+// Everything else is somebody's page or action: a feed, a thread, a profile's
+// lists, a search, and every write.
+// While the GraphQL route is carrying an account's reading, a refusal of one
+// of these doesn't raise the "Reddit Rate Limit Reached" notice: feeds and
+// threads are still loading, so the notice would only be wrong
+// (ApolloWebJSONRateLimitIsQuiet in ApolloWebJSON.h).
+BOOL ApolloWebJSONRefusedReadIsBackground(NSString *method, NSString *path, NSString *_Nullable account);
+
 // `path` with its variable segments (subreddit, user, post and comment ids)
 // replaced by "*", or "+" for names joined with "+", so the counts group by
 // endpoint: "/r/*/comments/*", "/r/+/hot".
