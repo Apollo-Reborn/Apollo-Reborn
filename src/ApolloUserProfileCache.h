@@ -69,6 +69,14 @@ extern NSString * const ApolloUserProfileUsernameKey;
 // our own. Any thread.
 - (void)ingestUserDataByAccountIDsResponse:(NSDictionary *)response;
 
+// The same for an API-Key-Free account's GraphQL answers
+// (ApolloGQLLegacyAuthorRecords: t2_ fullname -> {"name", "profile_img"}).
+// Every post and comment GraphQL sends names its author's picture, so a feed
+// or thread that came that way needs no lookup at all: not the batch above,
+// and not the one about.json per feed author. A collectible avatar's frame is
+// read from the picture's address, as about.json's is. Any thread.
+- (void)ingestGraphQLAuthorRecords:(NSDictionary<NSString *, NSDictionary *> *)records;
+
 // Post authors' t2_ fullnames, read from a feed listing Apollo already loaded
 // (each post carries author + author_fullname), so feed avatars can go through
 // the batch above too: Apollo's post model doesn't keep the fullname. Fed only

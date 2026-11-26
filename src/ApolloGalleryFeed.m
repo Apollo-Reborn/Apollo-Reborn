@@ -9,6 +9,7 @@
 #import "ApolloState.h"
 #import "ApolloWebJSON.h"
 #import "ApolloWebSessionStore.h"
+#import "graphql/ApolloGQLRoute.h"     // ApolloGQLRouteSendRead
 #import <objc/message.h>
 
 // Listing page size asked of Reddit (its hard cap is 100).
@@ -740,9 +741,13 @@ static NSString *ApolloGalleryBearerForClient(id client) {
     // No retain cycle to avoid here (self never holds the task), but staying
     // weak means a torn-down feed's in-flight page can't keep it alive; the
     // completion is still always invoked so callers never hang.
+    // An API-Key-Free account's page is read through GraphQL where GraphQL has
+    // this listing (ApolloGQLRouteSendRead: a subreddit, Home, Popular, a
+    // profile's posts, the saved list), which keeps the gallery's pages off
+    // the cookie's budget of 100 requests. Anything else, and every other
+    // account, is this request sent as it is.
     __weak typeof(self) weakSelf = self;
-    [[[NSURLSession sharedSession] dataTaskWithRequest:request
-                                    completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+    ApolloGQLRouteSendRead(request, [NSURLSession sharedSession], ^(NSData *data, NSURLResponse *response, NSError *error) {
         typeof(self) strongSelf = weakSelf;
         if (!strongSelf) {
             completion(nil, nil);
@@ -802,7 +807,7 @@ static NSString *ApolloGalleryBearerForClient(id client) {
             return;
         }
         completion(listing, nil);
-    }] resume];
+    });
 }
 
 #pragma mark Batch loading

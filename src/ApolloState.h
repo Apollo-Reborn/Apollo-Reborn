@@ -657,6 +657,9 @@ static inline BOOL IsAppleTranslationSupported(void) {
 // authenticated with a WKWebView-harvested session cookie instead of a bearer
 // token. Dormant escape hatch for Reddit API-key revocation waves. Default NO.
 extern BOOL sWebJSONEnabled;
+// The GraphQL route for API-Key-Free accounts (UDKeyWebJSONGraphQLEnabled).
+// Default YES, read at launch.
+extern BOOL sWebJSONGraphQLEnabled;
 // Reduce Rate Limiting (UDKeyReduceRateLimiting). Only takes effect while the
 // active account is API-key-free; read it through
 // ApolloReduceRateLimitingActive() (ApolloReduceRateLimiting.h). Default NO.

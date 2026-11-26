@@ -4,6 +4,8 @@
 
 // Every route, by its ApolloWebJSONRoute value. Bearer auth is only listed
 // for oauth.reddit.com: www, old and api read the cookie and ignore a bearer.
+// The GraphQL route is listed for its host and name only; no request is
+// rewritten to it.
 typedef struct {
     const char *host;
     ApolloWebJSONRoutePathForm path;
@@ -26,6 +28,7 @@ static const ApolloWebJSONRouteParts kApolloWebJSONRouteCatalog[] = {
     [ApolloWebJSONRouteOAuthRAll]           = { "oauth", ApolloWebJSONRoutePathRAll,    ApolloWebJSONRouteAuthCookie },
     [ApolloWebJSONRouteOAuthDotJSONBearer]  = { "oauth", ApolloWebJSONRoutePathDotJSON, ApolloWebJSONRouteAuthBearer },
     [ApolloWebJSONRouteOAuthRAllBearer]     = { "oauth", ApolloWebJSONRoutePathRAll,    ApolloWebJSONRouteAuthBearer },
+    [ApolloWebJSONRouteGraphQL]             = { "gql-fed", ApolloWebJSONRoutePathSame,  ApolloWebJSONRouteAuthWebToken },
 };
 _Static_assert(sizeof(kApolloWebJSONRouteCatalog) / sizeof(kApolloWebJSONRouteCatalog[0]) == ApolloWebJSONRouteLast + 1,
                "every route has its parts");
@@ -41,6 +44,7 @@ static ApolloWebJSONRouteParts ApolloWebJSONRoutePartsFor(ApolloWebJSONRoute rou
 }
 
 NSString *ApolloWebJSONRouteName(ApolloWebJSONRoute route) {
+    if (route == ApolloWebJSONRouteGraphQL) return @"graphql";
     ApolloWebJSONRouteParts parts = ApolloWebJSONRoutePartsFor(route);
     NSMutableString *name = [NSMutableString stringWithUTF8String:parts.host];
     if (parts.path != ApolloWebJSONRoutePathSame) [name appendFormat:@"-%@", ApolloWebJSONRoutePathFormNames()[parts.path]];
@@ -287,8 +291,42 @@ static NSDictionary *ApolloWebJSONRouteBuiltInMatch(NSString *method, NSString *
     return ApolloWebJSONRouteMatchIn(@[ ApolloWebJSONRouteBuiltInTable() ], method, path);
 }
 
+static NSObject *ApolloWebJSONGraphQLHandlerLock(void) {
+    static NSObject *lock;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [NSObject new]; });
+    return lock;
+}
+
+// Guarded by ApolloWebJSONGraphQLHandlerLock.
+static BOOL (^sApolloWebJSONGraphQLHandler)(NSString *account, NSString *method, NSString *path);
+
+void ApolloWebJSONRouteSetGraphQLHandler(BOOL (^handler)(NSString *account, NSString *method, NSString *path)) {
+    @synchronized (ApolloWebJSONGraphQLHandlerLock()) {
+        sApolloWebJSONGraphQLHandler = [handler copy];
+    }
+}
+
+static BOOL ApolloWebJSONRouteGraphQLAnswers(NSString *account, NSString *method, NSString *path) {
+    if (![method isKindOfClass:[NSString class]] || ![path isKindOfClass:[NSString class]]) return NO;
+    if (ApolloWebJSONRouteRemoteGraphQLOff()) return NO;
+    BOOL (^handler)(NSString *, NSString *, NSString *);
+    @synchronized (ApolloWebJSONGraphQLHandlerLock()) {
+        handler = sApolloWebJSONGraphQLHandler;
+    }
+    return handler && handler(account, method, path);
+}
+
 NSArray<NSNumber *> *ApolloWebJSONRoutesForRequest(NSString *method, NSString *path) {
-    return ApolloWebJSONRouteMatch(method, path)[@"routes"] ?: @[ @(ApolloWebJSONRouteWww) ];
+    NSDictionary *entry = ApolloWebJSONRouteMatch(method, path);
+    NSArray<NSNumber *> *routes = entry[@"routes"] ?: @[ @(ApolloWebJSONRouteWww) ];
+    // GraphQL goes first for whatever it can answer. A keyless-routes.json
+    // entry can name it to try it later instead; one that doesn't name it was
+    // written for the routes after it (the entries published before this route
+    // existed, and a "load more" row GraphQL made has no other route at all).
+    if ([routes containsObject:@(ApolloWebJSONRouteGraphQL)]) return routes;
+    if (!ApolloWebJSONRouteGraphQLAnswers(nil, method, path)) return routes;
+    return [@[ @(ApolloWebJSONRouteGraphQL) ] arrayByAddingObjectsFromArray:routes];
 }
 
 NSString *ApolloWebJSONRouteHealthGroup(NSString *method, NSString *path) {
@@ -383,6 +421,29 @@ BOOL ApolloWebJSONRouteTableUsesBearerAuth(void) {
 static NSUInteger const kApolloWebJSONRouteTableMaxBytes = 16 * 1024;
 static NSUInteger const kApolloWebJSONRouteTableMaxEndpoints = 32;
 static NSUInteger const kApolloWebJSONRouteTableMaxRoutes = 5;
+
+// Guarded by ApolloWebJSONRemoteTableLock.
+static BOOL sApolloWebJSONRemoteGraphQLOff;
+
+BOOL ApolloWebJSONRouteTableTurnsGraphQLOff(NSData *data) {
+    if (![data isKindOfClass:[NSData class]] || data.length == 0) return NO;
+    id root = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+    id value = [root isKindOfClass:[NSDictionary class]] ? root[@"graphql"] : nil;
+    // Only a plain false: anything else (absent, true, a typo) leaves it on.
+    return [value isKindOfClass:[NSNumber class]] && ![value boolValue];
+}
+
+void ApolloWebJSONRouteSetRemoteGraphQLOff(BOOL off) {
+    @synchronized (ApolloWebJSONRemoteTableLock()) {
+        sApolloWebJSONRemoteGraphQLOff = off;
+    }
+}
+
+BOOL ApolloWebJSONRouteRemoteGraphQLOff(void) {
+    @synchronized (ApolloWebJSONRemoteTableLock()) {
+        return sApolloWebJSONRemoteGraphQLOff;
+    }
+}
 
 void ApolloWebJSONRouteSetRemoteTable(NSDictionary<NSString *, NSArray<NSNumber *> *> *overrides) {
     NSMutableArray<NSDictionary *> *entries = [NSMutableArray array];
@@ -523,11 +584,14 @@ NSDictionary<NSString *, NSArray<NSNumber *> *> *ApolloWebJSONRouteTableParse(NS
 
 NSString *ApolloWebJSONRouteRemoteTableDescription(void) {
     NSDictionary<NSString *, NSArray<NSNumber *> *> *table;
+    BOOL graphQLOff;
     @synchronized (ApolloWebJSONRemoteTableLock()) {
         table = sApolloWebJSONRemoteTable;
+        graphQLOff = sApolloWebJSONRemoteGraphQLOff;
     }
-    if (table.count == 0) return @"(built-in routes only)";
+    if (table.count == 0 && !graphQLOff) return @"(built-in routes only)";
     NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    if (graphQLOff) [lines addObject:@"graphql: switched off"];
     for (NSString *key in [table.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
         NSArray<NSString *> *parts = [key componentsSeparatedByString:@" "];
         NSArray<NSNumber *> *builtIn = ApolloWebJSONRouteBuiltInMatch(parts.firstObject, parts.lastObject)[@"routes"];
@@ -651,19 +715,62 @@ NSTimeInterval ApolloWebJSONRouteCooldownRemaining(NSString *account, NSString *
     }
 }
 
-NSInteger ApolloWebJSONRouteChoose(NSString *account, NSString *method, NSString *path, NSUInteger triedMask, NSTimeInterval now) {
+static NSInteger ApolloWebJSONRouteChooseAmong(NSString *account, NSString *method, NSString *path, NSUInteger triedMask,
+                                               BOOL transportOnly, NSTimeInterval now) {
     NSArray<NSNumber *> *routes = ApolloWebJSONRoutesForRequest(method, path);
     NSInteger firstUntried = -1;
     for (NSNumber *number in routes) {
         ApolloWebJSONRoute route = (ApolloWebJSONRoute)number.integerValue;
         if (triedMask & (1u << route)) continue;
+        // The GraphQL route is the request hook's to use, and only for an
+        // account and a request it can answer.
+        if (route == ApolloWebJSONRouteGraphQL && (transportOnly || !ApolloWebJSONRouteGraphQLAnswers(account, method, path))) continue;
         // A bearer route without a bearer on hand can't be sent at all; the
         // handler may start a mint for a later request.
         if (ApolloWebJSONRouteGetAuth(route) == ApolloWebJSONRouteAuthBearer && !ApolloWebJSONRouteBearerReady(account)) continue;
         if (firstUntried < 0) firstUntried = route;
         if (ApolloWebJSONRouteCooldownRemaining(account, method, path, route, now) <= 0) return route;
     }
-    return triedMask == 0 ? firstUntried : -1;
+    // A request that only GraphQL has tried hasn't been sent to Reddit's JSON
+    // endpoints at all yet.
+    NSUInteger triedByTransport = triedMask & ~((NSUInteger)1u << ApolloWebJSONRouteGraphQL);
+    return triedByTransport == 0 ? firstUntried : -1;
+}
+
+NSInteger ApolloWebJSONRouteChoose(NSString *account, NSString *method, NSString *path, NSUInteger triedMask, NSTimeInterval now) {
+    return ApolloWebJSONRouteChooseAmong(account, method, path, triedMask, NO, now);
+}
+
+BOOL ApolloWebJSONRefusedReadIsBackground(NSString *method, NSString *path, NSString *account) {
+    if (![method isKindOfClass:[NSString class]] || ![path isKindOfClass:[NSString class]]) return NO;
+    NSString *bare = [path componentsSeparatedByString:@"?"].firstObject.lowercaseString ?: @"";
+    if ([bare hasSuffix:@".json"]) bare = [bare substringToIndex:bare.length - 5];
+    NSMutableArray<NSString *> *segments = [NSMutableArray array];
+    for (NSString *segment in [bare componentsSeparatedByString:@"/"]) {
+        if (segment.length > 0) [segments addObject:segment];
+    }
+    NSString *verb = method.uppercaseString;
+    // The flair lists are read with a POST: "api/flairselector", or
+    // "r/<subreddit>/api/flairselector".
+    if ([verb isEqualToString:@"POST"] && segments.count >= 2 && [segments.lastObject isEqualToString:@"flairselector"] &&
+        [segments[segments.count - 2] isEqualToString:@"api"]) {
+        return YES;
+    }
+    if (![verb isEqualToString:@"GET"] && ![verb isEqualToString:@"HEAD"]) return NO;
+    NSString *first = segments.firstObject;
+    if ([first isEqualToString:@"api"]) return !(segments.count >= 2 && [segments[1] isEqualToString:@"morechildren"]);
+    if ([first isEqualToString:@"prefs"] || [first isEqualToString:@"message"]) return YES;
+    if ([first isEqualToString:@"subreddits"]) return segments.count >= 2 && [segments[1] isEqualToString:@"mine"];
+    if ([first isEqualToString:@"user"] && segments.count == 3) {
+        if ([segments[2] isEqualToString:@"about"] || [segments[2] isEqualToString:@"trophies"]) return YES;
+        return [segments[2] isEqualToString:@"saved"] && account.length > 0 && [segments[1] isEqualToString:account.lowercaseString];
+    }
+    if ([first isEqualToString:@"r"] && segments.count == 3) return [segments[2] isEqualToString:@"about"];
+    return NO;
+}
+
+NSInteger ApolloWebJSONRouteChooseForTransport(NSString *account, NSString *method, NSString *path, NSUInteger triedMask, NSTimeInterval now) {
+    return ApolloWebJSONRouteChooseAmong(account, method, path, triedMask, YES, now);
 }
 
 NSString *ApolloWebJSONRouteHealthDescription(NSTimeInterval now) {

@@ -4198,6 +4198,9 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
 // app comes back while it still holds. At most once every 30s, so the launch-time
 // notice and the didBecomeActive right after it don't both show. Main thread.
 static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
+    // A limit that has refused nothing anybody was waiting on, while GraphQL
+    // keeps feeds and threads loading, has no notice to repeat.
+    if (ApolloWebJSONRateLimitIsQuiet(ApolloActiveWebSessionUsername())) return;
     static NSTimeInterval sLastShownAt = 0;
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
     if (now - sLastShownAt < 30.0) return;
@@ -4394,6 +4397,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyImgurAlbumFallbackProxies: @YES,
                                     UDKeyAutomaticUpdateChecks: @YES,
                                     UDKeyWebJSONEnabled: @NO,
+                                    UDKeyWebJSONGraphQLEnabled: @YES,
                                     UDKeyReduceRateLimiting: @NO,
                                     UDKeyKeylessRouteUpdates: @YES,
                                     UDKeyReduceRateLimitingOffered: @NO,
@@ -4811,6 +4815,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     // installed below — in the simulator the keychain is virtualized by those
     // hooks, so reading before they're in place returns nothing.
     sWebJSONEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyWebJSONEnabled];
+    sWebJSONGraphQLEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyWebJSONGraphQLEnabled];
     sReduceRateLimiting = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyReduceRateLimiting];
     sKeylessRouteUpdates = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyKeylessRouteUpdates];
     sPollsFeatureEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyPollsEnabled];

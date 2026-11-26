@@ -78,6 +78,7 @@
 #import "ApolloReduceRateLimiting.h"
 #import "ApolloAllPlusNSFW.h"
 #import "ApolloSubscriptionRefreshGuard.h"
+#import "graphql/ApolloGQLRoute.h"
 
 // Minimal surface of Apollo's RedditKit classes used here. Real definitions live
 // in Headers/ObjC/{RDKClient,RDKOAuthCredential,RDKAccessToken}.h (not on the
@@ -103,6 +104,14 @@
 // The request chokepoint every get/post/put/deletePath: call funnels into.
 - (id)taskWithMethod:(NSString *)method path:(NSString *)path parameters:(id)parameters
           completion:(void (^)(NSHTTPURLResponse *, id, NSError *))completion;
+// AFHTTPSessionManager's: the RDKResponseSerializer every answer goes through.
+- (id)responseSerializer;
+@end
+
+// AFURLResponseSerialization's one method, which the GraphQL route calls with
+// the answer it built.
+@interface RDKResponseSerializer : NSObject
+- (id)responseObjectForResponse:(NSURLResponse *)response data:(NSData *)data error:(NSError **)error;
 @end
 
 // Headers/ObjC/RDKUser.h — the two properties the subscription-walk guard
@@ -1076,6 +1085,105 @@ static void ApolloSubscriptionWalkDeliver(NSString *walkUsername, NSHTTPURLRespo
     ApolloSubscriptionRefreshDeliverFailedPage(walkUsername, deliver);
 }
 
+#pragma mark - GraphQL route (API-Key-Free)
+
+// The URL RedditKit would have requested `path` by, marked as `username`'s
+// answer by the GraphQL route, so the serializer's fixups and the completion
+// below read the answer as the response to that request.
+static NSURL *ApolloWebJSONGraphQLResponseURL(NSString *username, NSString *path, id parameters) {
+    NSArray<NSString *> *pathAndQuery = [path componentsSeparatedByString:@"?"];
+    NSString *bare = pathAndQuery.firstObject ?: @"";
+    while ([bare hasPrefix:@"/"]) bare = [bare substringFromIndex:1];
+    NSURLComponents *components = [NSURLComponents new];
+    components.scheme = @"https";
+    components.host = @"oauth.reddit.com";
+    components.path = [@"/" stringByAppendingString:bare];
+    NSMutableArray<NSURLQueryItem *> *items = [NSMutableArray array];
+    if (pathAndQuery.count > 1) {
+        NSURLComponents *query = [NSURLComponents new];
+        query.percentEncodedQuery = pathAndQuery[1];
+        [items addObjectsFromArray:query.queryItems ?: @[]];
+    }
+    if ([parameters isKindOfClass:[NSDictionary class]]) {
+        for (id key in [[(NSDictionary *)parameters allKeys] sortedArrayUsingSelector:@selector(compare:)]) {
+            id value = ((NSDictionary *)parameters)[key];
+            if (![key isKindOfClass:[NSString class]]) continue;
+            NSString *text = [value isKindOfClass:[NSString class]] ? value
+                : [value respondsToSelector:@selector(stringValue)] ? [value stringValue] : nil;
+            if (text) [items addObject:[NSURLQueryItem queryItemWithName:key value:text]];
+        }
+    }
+    if (items.count > 0) components.queryItems = items;
+    NSURL *url = components.URL ?: [NSURL URLWithString:@"https://oauth.reddit.com/"];
+    return ApolloWebJSONURLMarkedForRoute(url, username, ApolloWebJSONRouteGraphQL);
+}
+
+// Answers an API-Key-Free read through the GraphQL route. The caller gets a
+// task that stands for the read: nothing is sent by it, and cancelling it makes
+// the read finish as a cancelled request does. The answer goes through the
+// client's own response serializer, so every hook on it sees a legacy response,
+// then to `wrapped`, the same completion a sent request gets. When GraphQL has
+// no answer, the read is sent again through -taskWithMethod:…, marked so the
+// route table moves on to the next route, and that request answers `completion`.
+static NSURLSessionDataTask *ApolloWebJSONAnswerByGraphQL(RDKClient *client, NSString *username, ApolloGQLRequest *graphQLRequest,
+                                                         NSString *method, NSString *path, id parameters, NSUInteger routesTried,
+                                                         void (^completion)(NSHTTPURLResponse *, id, NSError *),
+                                                         void (^wrapped)(NSHTTPURLResponse *, id, NSError *)) {
+    NSURLSessionDataTask *placeholder = ApolloWebJSONSharedReadPlaceholderTask();
+    NSDate *started = [NSDate date];
+    ApolloGQLRouteAnswer(username, graphQLRequest, ^(NSData *legacyJSON, BOOL refused, NSString *summary) {
+        NSHTTPURLResponse *response = nil;
+        id object = nil;
+        NSError *error = nil;
+        if (legacyJSON) {
+            response = [[NSHTTPURLResponse alloc] initWithURL:ApolloWebJSONGraphQLResponseURL(username, path, parameters)
+                                                   statusCode:200 HTTPVersion:@"HTTP/1.1"
+                                                 headerFields:@{ @"Content-Type": @"application/json; charset=UTF-8" }];
+            RDKResponseSerializer *serializer = [client respondsToSelector:@selector(responseSerializer)] ? [client responseSerializer] : nil;
+            @try {
+                object = [serializer responseObjectForResponse:response data:legacyJSON error:&error];
+            } @catch (NSException *exception) {
+                ApolloLog(@"[GraphQL] The serializer threw on %@ %@: %@", method, path, exception);
+                object = nil;
+            }
+        }
+        BOOL answered = object != nil && error == nil;
+        NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+        if (answered) {
+            ApolloWebJSONRouteHealthNoteSuccess(username, method, path, ApolloWebJSONRouteGraphQL, now);
+        } else if (refused && ApolloWebJSONRouteHealthNoteBlockPage(username, method, path, ApolloWebJSONRouteGraphQL, now)) {
+            ApolloLog(@"[GraphQL] Route graphql is on cooldown for %@ %@", method, ApolloWebJSONRouteHealthGroup(method, path));
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // Apollo cancels a read it no longer wants (a sort changed
+            // mid-load); a sent request then finishes with this error.
+            BOOL cancelled = placeholder.state == NSURLSessionTaskStateCanceling || placeholder.state == NSURLSessionTaskStateCompleted;
+            // The placeholder is never resumed, and a session keeps a task
+            // until it finishes: cancelling it now is what lets it go.
+            [placeholder cancel];
+            if (cancelled) {
+                completion(nil, nil, [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCancelled userInfo:nil]);
+                return;
+            }
+            if (answered) {
+                os_log_debug(ApolloFixLog(), "[ApolloFix] [GraphQL] %{public}@ %{public}@ answered by GraphQL: %{public}@, %.0f ms",
+                             method, path, summary, -[started timeIntervalSinceNow] * 1000.0);
+                wrapped(response, object, nil);
+                return;
+            }
+            ApolloLog(@"[GraphQL] %@ %@ goes by its other routes: %@", method, ApolloWebJSONRouteHealthGroup(method, path),
+                      legacyJSON ? @"the answer didn't parse as the legacy response" : summary);
+            sApolloWebJSONRoutesTriedForSend = routesTried | ((NSUInteger)1u << ApolloWebJSONRouteGraphQL);
+            @try {
+                [client taskWithMethod:method path:path parameters:parameters completion:completion];
+            } @finally {
+                sApolloWebJSONRoutesTriedForSend = 0;
+            }
+        });
+    });
+    return placeholder;
+}
+
 %hook RDKUser
 - (void)setSubscribedSubreddits:(NSArray *)list {
     NSArray *current = self.subscribedSubreddits;
@@ -1157,6 +1265,35 @@ static void ApolloSubscriptionWalkDeliver(NSString *walkUsername, NSHTTPURLRespo
     id sentParameters = parameters;
     // Every account's subscriptions walk (#1635), not only API-Key-Free ones.
     NSString *walkUsername = ApolloSubscriptionWalkUsername(self, username, requestMethod, requestPath);
+    // API-Key-Free reads the GraphQL route can answer go to it first
+    // (src/graphql/ApolloGQLRoute.h). The route table picks it like any other
+    // route, so a cooldown or a resend that already tried it passes it by. A
+    // request whose parameters it can't answer (an /api/info for comments, a
+    // page asked for by `before`) counts as tried and keeps its other routes.
+    const NSUInteger graphQLBit = (NSUInteger)1u << ApolloWebJSONRouteGraphQL;
+    ApolloGQLRequest *graphQLRequest = nil;
+    if (username.length > 0 && sWebJSONEnabled && sWebJSONGraphQLEnabled && !(routesTried & graphQLBit) &&
+        ApolloWebJSONRouteChoose(username, requestMethod, requestPath, routesTried,
+                                 [NSDate timeIntervalSinceReferenceDate]) == ApolloWebJSONRouteGraphQL) {
+        // RedditKit adds raw_json=1 to every request's parameters itself, inside
+        // the method this hooks (-[RDKClient taskWithMethod:…] at 0x10000902c
+        // sets api_type and raw_json before it builds the request), so Apollo
+        // expects every answer unescaped. The answer GraphQL stands in for is
+        // that request's, so it's planned with the same parameter.
+        NSMutableDictionary *sentAs = [parameters isKindOfClass:[NSDictionary class]]
+            ? [parameters mutableCopy] : [NSMutableDictionary dictionary];
+        sentAs[@"raw_json"] = @1;
+        graphQLRequest = ApolloGQLRequestForLegacy(requestMethod, requestPath, sentAs);
+        // Another account's upvoted list (Apollo asks for one with every
+        // profile it opens) isn't GraphQL's to answer.
+        if (graphQLRequest && !ApolloGQLRequestIsForAccount(graphQLRequest, username)) graphQLRequest = nil;
+        if (!graphQLRequest) {
+            routesTried |= graphQLBit;
+            os_log_debug(ApolloFixLog(), "[ApolloFix] [GraphQL] %{public}@ %{public}@ isn't one GraphQL answers (parameters: %{public}@)",
+                         requestMethod, ApolloWebJSONRouteHealthGroup(requestMethod, requestPath),
+                         [[sentAs.allKeys sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@","]);
+        }
+    }
     void (^wrapped)(NSHTTPURLResponse *, id, NSError *) = ^(NSHTTPURLResponse *response, id object, NSError *error) {
         // API-key accounts (#1608, #1615): oauth.reddit.com answers some keys'
         // /api/info and /api/morechildren with Reddit's block page, which
@@ -1194,7 +1331,7 @@ static void ApolloSubscriptionWalkDeliver(NSString *walkUsername, NSHTTPURLRespo
             NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
             // The response URL carries the route the rewrite stamped; without it,
             // the route the rewrite would have picked.
-            if (usedRoute < 0) usedRoute = ApolloWebJSONRouteChoose(username, requestMethod, requestPath, routesTried, now);
+            if (usedRoute < 0) usedRoute = ApolloWebJSONRouteChooseForTransport(username, requestMethod, requestPath, routesTried, now);
             NSUInteger tried = routesTried | (usedRoute >= 0 ? (1u << usedRoute) : 0);
             NSInteger next = ApolloWebJSONRouteChoose(username, requestMethod, requestPath, tried, now);
             NSString *blockedName = usedRoute >= 0 ? ApolloWebJSONRouteName((ApolloWebJSONRoute)usedRoute) : @"?";
@@ -1239,11 +1376,17 @@ static void ApolloSubscriptionWalkDeliver(NSString *walkUsername, NSHTTPURLRespo
         });
     };
 
+    if (graphQLRequest) {
+        return ApolloWebJSONAnswerByGraphQL(self, username, graphQLRequest, requestMethod, requestPath, sentParameters,
+                                            routesTried, completion, wrapped);
+    }
+
     // API-Key-Free duplicate account reads: an identical one in flight or just
     // answered is shared instead of sent again (ApolloWebJSONShareAccountRead).
     ApolloWebJSONTaskCompletion send = ApolloWebJSONShareAccountRead(username, requestMethod, requestPath, parameters, wrapped);
     if (!send) return ApolloWebJSONSharedReadPlaceholderTask();
-    if (routesTried == 0) return %orig(method, requestPath, parameters, send);
+    // The rewrite only needs to know about routes it could have picked itself.
+    if ((routesTried & ~graphQLBit) == 0) return %orig(method, requestPath, parameters, send);
     sApolloWebJSONRoutesTriedToStamp = routesTried;
     @try {
         return %orig(method, requestPath, parameters, send);

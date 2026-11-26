@@ -142,6 +142,15 @@ NSURL *ApolloWebJSONProbeURL(NSURL *url) {
     return ApolloWebJSONURLWithFragment(url, kApolloWebJSONProbeMarker);
 }
 
+NSURL *ApolloWebJSONURLMarkedForRoute(NSURL *url, NSString *username, NSInteger route) {
+    NSString *fragment = [kApolloWebJSONAccountMarkerPrefix stringByAppendingString:
+        [username stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLFragmentAllowedCharacterSet]] ?: @""];
+    if (route != ApolloWebJSONRouteWww) {
+        fragment = [fragment stringByAppendingFormat:@"%@%ld", kApolloWebJSONRouteMarkerSeparator, (long)route];
+    }
+    return ApolloWebJSONURLWithFragment(url, fragment);
+}
+
 #pragma mark - Keychain-backed credential storage (item 4)
 
 // The harvested cookie header, modhash, and username are full account
@@ -757,7 +766,9 @@ NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
     // for this account, and a resend after a block page skips the ones tried.
     NSUInteger triedMask = ApolloWebJSONTriedRoutesFromURL(url);
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-    NSInteger chosenRoute = ApolloWebJSONRouteChoose(sessionUsername, method, path, triedMask, now);
+    // (The GraphQL route is never chosen here: the RedditKit request hook
+    // answers by it before a request exists, or leaves it to these routes.)
+    NSInteger chosenRoute = ApolloWebJSONRouteChooseForTransport(sessionUsername, method, path, triedMask, now);
     // A bearer route is only chosen while its bearer is on hand; one that
     // expired since passes to the next route.
     NSString *routeBearer = nil;
@@ -765,7 +776,7 @@ NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
         routeBearer = ApolloWebJSONReadyRouteBearer(sessionUsername);
         if (routeBearer.length > 0) break;
         triedMask |= 1u << chosenRoute;
-        chosenRoute = ApolloWebJSONRouteChoose(sessionUsername, method, path, triedMask, now);
+        chosenRoute = ApolloWebJSONRouteChooseForTransport(sessionUsername, method, path, triedMask, now);
     }
     // Nothing left to choose (only a resend can get here, or a bearer route
     // with no bearer): the first cookie route listed, else www.
@@ -1259,6 +1270,33 @@ static double ApolloWebJSONHeaderSeconds(NSHTTPURLResponse *http, NSString *name
     return ([scanner scanDouble:&seconds] && scanner.isAtEnd) ? seconds : NAN;
 }
 
+// Accounts whose current rate limit has no notice up: so far it has only
+// refused background reads (ApolloWebJSONRefusedReadIsBackground) while the
+// GraphQL route kept the account's feeds and threads loading. Lowercased
+// username -> the end of the hold it was decided for (epoch seconds), guarded
+// by the expiry lock. A hold that ends later than that is another limit, or
+// one something else started, and isn't covered.
+static NSMutableDictionary<NSString *, NSNumber *> *sRateLimitQuietUntilByUser;
+
+// YES while the GraphQL route is answering `username`'s feeds and threads: the
+// route table would send a subreddit's feed by it right now (the switch is on,
+// keyless-routes.json hasn't turned it off, and the route isn't held after a
+// rate limit of its own or cooling down). A cookie rate limit then stops much
+// less than it used to.
+static BOOL ApolloWebJSONGraphQLCarriesReading(NSString *username) {
+    return ApolloWebJSONRouteChoose(username, @"GET", @"/r/apple/hot", 0,
+                                    [NSDate timeIntervalSinceReferenceDate]) == ApolloWebJSONRouteGraphQL;
+}
+
+BOOL ApolloWebJSONRateLimitIsQuiet(NSString *username) {
+    NSString *key = username.lowercaseString;
+    if (key.length == 0) return NO;
+    @synchronized (ApolloWebJSONExpiryLock()) {
+        NSTimeInterval until = sRateLimitedUntilByUser[key].doubleValue;
+        return until > [[NSDate date] timeIntervalSince1970] && sRateLimitQuietUntilByUser[key].doubleValue >= until;
+    }
+}
+
 static void ApolloWebJSONRecordRateLimit(NSString *username, NSURLRequest *request, NSHTTPURLResponse *http) {
     if (http.statusCode != 429) return;
     NSString *key = username.lowercaseString;
@@ -1280,18 +1318,81 @@ static void ApolloWebJSONRecordRateLimit(NSString *username, NSURLRequest *reque
         newlyLimited = until <= now;
         sRateLimitedUntilByUser[key] = @(MAX(until, now + wait));
     }
-    if (!newlyLimited) return;
-    ApolloLog(@"[WebJSON] Reddit rate-limited u/%@ (HTTP 429 on %@ %@); pausing optional lookups for %.0fs",
-              key, request.HTTPMethod ?: @"GET", request.URL.path ?: @"/", wait);
+    NSString *method = request.HTTPMethod ?: @"GET";
+    NSString *path = request.URL.path ?: @"/";
+    if (newlyLimited) {
+        ApolloLog(@"[WebJSON] Reddit rate-limited u/%@ (HTTP 429 on %@ %@); pausing optional lookups for %.0fs", key, method, path, wait);
+    }
+    // The notice goes up once per limit. It used to go up with the limit's
+    // first refusal, whatever was refused, because a refusal meant the feed
+    // on screen had stopped loading too. With the GraphQL route carrying the
+    // account's feeds and threads that's no longer so: Apollo's inbox poll or
+    // an author lookup being refused leaves everything on screen as it was,
+    // and a notice saying to try again in ten minutes would be wrong. So while
+    // GraphQL carries the reading, the notice waits for the first refusal
+    // that leaves somebody waiting (a page GraphQL doesn't answer, a vote, a
+    // comment), and a limit that never refuses one never shows it.
+    BOOL background = ApolloWebJSONGraphQLCarriesReading(key) && ApolloWebJSONRefusedReadIsBackground(method, path, key);
+    BOOL announce = NO;
+    NSTimeInterval remaining = wait;
+    @synchronized (ApolloWebJSONExpiryLock()) {
+        if (!sRateLimitQuietUntilByUser) sRateLimitQuietUntilByUser = [NSMutableDictionary dictionary];
+        NSTimeInterval until = sRateLimitedUntilByUser[key].doubleValue;
+        // A limit already under way is quiet while its mark is still ahead.
+        BOOL quiet = !newlyLimited && sRateLimitQuietUntilByUser[key].doubleValue > now;
+        if (newlyLimited) {
+            quiet = background;
+            announce = !background;
+        } else if (quiet && !background) {
+            quiet = NO;
+            announce = YES;
+        }
+        if (quiet) sRateLimitQuietUntilByUser[key] = @(until);
+        else [sRateLimitQuietUntilByUser removeObjectForKey:key];
+        remaining = MAX(1.0, until - now);
+    }
+    if (!announce) {
+        if (newlyLimited) {
+            ApolloLog(@"[WebJSON] No rate limit notice for u/%@ yet: %@ %@ is a background read, and GraphQL is carrying its feeds and threads",
+                      key, method, path);
+        }
+        return;
+    }
+    if (!newlyLimited) {
+        ApolloLog(@"[WebJSON] Rate limit notice for u/%@ now: %@ %@ was refused (limited for %.0fs more)", key, method, path, remaining);
+    }
     // Only the active account's limit changes what's on screen; a background
     // account's poll being refused shouldn't interrupt anyone.
     dispatch_async(dispatch_get_main_queue(), ^{
         if (![ApolloActiveWebSessionUsername().lowercaseString isEqualToString:key]) return;
         [[NSNotificationCenter defaultCenter] postNotificationName:ApolloWebJSONSessionRateLimitedNotification
                                                             object:nil
-                                                          userInfo:@{@"username": key, @"seconds": @(wait)}];
+                                                          userInfo:@{@"username": key, @"seconds": @(remaining)}];
     });
 }
+
+#if APOLLO_SIM_BUILD
+void ApolloWebJSONSimRefuse(NSString *username, NSString *method, NSString *path) {
+    NSString *key = username.lowercaseString;
+    if (key.length == 0) return;
+    if (path.length == 0) {
+        @synchronized (ApolloWebJSONExpiryLock()) {
+            [sRateLimitedUntilByUser removeObjectForKey:key];
+            [sRateLimitQuietUntilByUser removeObjectForKey:key];
+        }
+        ApolloLog(@"[WebJSON] (sim) rate limit on u/%@ lifted", key);
+        return;
+    }
+    NSURL *url = [NSURL URLWithString:[@"https://www.reddit.com" stringByAppendingString:path]];
+    if (!url) return;
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+    request.HTTPMethod = method.length > 0 ? method.uppercaseString : @"GET";
+    NSHTTPURLResponse *refusal = [[NSHTTPURLResponse alloc] initWithURL:url statusCode:429 HTTPVersion:@"HTTP/1.1"
+                                                           headerFields:@{ @"x-ratelimit-reset": @"180" }];
+    ApolloLog(@"[WebJSON] (sim) refusing %@ %@ for u/%@ as Reddit's rate limit does", request.HTTPMethod, path, key);
+    ApolloWebJSONRecordRateLimit(key, request, refusal);
+}
+#endif
 
 NSTimeInterval ApolloWebJSONOptionalReadBackoff(NSString *username) {
     if (!sWebJSONEnabled) return 0;
@@ -2402,17 +2503,26 @@ static void ApolloWebJSONDropMintedBearerForUser(NSString *username) {
 // Serialized behind a lock; losers of a concurrent race reuse the winner's
 // cached bearer. Synchronous (bounded by the request timeout) — background
 // queues only; the rescue's main-thread bail guarantees that.
-static NSString *ApolloWebJSONMintWebBearerForAccount(NSString *username) {
+//
+// `desktopClient` mints for the desktop web client instead (cid
+// "0R-WAMhuoo-MyQ", the one token_v2 belongs to): the same request with that
+// id. gql-fed.reddit.com takes the desktop client's token and refuses the
+// mobile one's, the reverse of oauth.reddit.com's post search
+// (ApolloWebJSONRoutes.m), so the two are minted and cached apart.
+static NSString *ApolloWebJSONMintWebBearerForAccount(NSString *account, BOOL desktopClient) {
+    // The cache and failure records below key on this.
+    NSString *username = desktopClient ? [account stringByAppendingString:@"|desktop"] : account;
+    NSString *kind = desktopClient ? @"Desktop web-bearer" : @"Web-bearer";
     static NSObject *mintLock;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{ mintLock = [NSObject new]; });
     @synchronized (mintLock) {
-        ApolloWebSessionEntry *session = ApolloWebSessionFor(username);
+        ApolloWebSessionEntry *session = ApolloWebSessionFor(account);
         if (session.cookieHeader.length == 0) return nil;
         NSString *cached = ApolloWebJSONCachedMintedBearerForUser(username);
         if (cached) return cached; // a concurrent rescuer already minted
         if (ApolloWebJSONMintFailedRecentlyForUser(username)) {
-            ApolloLog(@"[WebJSON] Skipping web-bearer mint for u/%@ — a recent attempt failed, backing off", username);
+            ApolloLog(@"[WebJSON] Skipping %@ mint for u/%@ — a recent attempt failed, backing off", kind.lowercaseString, account);
             return nil;
         }
 
@@ -2422,7 +2532,8 @@ static NSString *ApolloWebJSONMintWebBearerForAccount(NSString *username) {
         NSURL *mintURL = ApolloWebJSONProbeURL([NSURL URLWithString:@"https://accounts.reddit.com/api/access_token"]);
         NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:mintURL];
         req.HTTPMethod = @"POST";
-        NSString *basic = [[@"ohXpoqrZYub1kg:" dataUsingEncoding:NSUTF8StringEncoding] base64EncodedStringWithOptions:0];
+        NSString *clientID = desktopClient ? @"0R-WAMhuoo-MyQ:" : @"ohXpoqrZYub1kg:";
+        NSString *basic = [[clientID dataUsingEncoding:NSUTF8StringEncoding] base64EncodedStringWithOptions:0];
         [req setValue:[@"Basic " stringByAppendingString:basic] forHTTPHeaderField:@"Authorization"];
         [req setValue:session.cookieHeader forHTTPHeaderField:@"Cookie"];
         [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
@@ -2445,12 +2556,12 @@ static NSString *ApolloWebJSONMintWebBearerForAccount(NSString *username) {
         }] resume];
         if (dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, 4 * NSEC_PER_SEC)) != 0) {
             ApolloWebJSONRecordMintFailureForUser(username);
-            ApolloLog(@"[WebJSON] Web-bearer mint timed out for u/%@", username);
+            ApolloLog(@"[WebJSON] %@ mint timed out for u/%@", kind, account);
             return nil;
         }
         if (status < 200 || status >= 300 || body.length == 0) {
             ApolloWebJSONRecordMintFailureForUser(username);
-            ApolloLog(@"[WebJSON] Web-bearer mint failed for u/%@ (HTTP %ld)", username, (long)status);
+            ApolloLog(@"[WebJSON] %@ mint failed for u/%@ (HTTP %ld)", kind, account, (long)status);
             return nil;
         }
         NSDictionary *json = [NSJSONSerialization JSONObjectWithData:body options:0 error:NULL];
@@ -2458,7 +2569,7 @@ static NSString *ApolloWebJSONMintWebBearerForAccount(NSString *username) {
         if (![token isKindOfClass:[NSString class]] || token.length == 0 ||
             ApolloWebJSONJWTExpiry(token) <= [[NSDate date] timeIntervalSince1970] + 300) {
             ApolloWebJSONRecordMintFailureForUser(username);
-            ApolloLog(@"[WebJSON] Web-bearer mint for u/%@ produced no usable token", username);
+            ApolloLog(@"[WebJSON] %@ mint for u/%@ produced no usable token", kind, account);
             return nil;
         }
         // A signed-out cookie still gets HTTP 200 here, carrying an anonymous
@@ -2469,11 +2580,11 @@ static NSString *ApolloWebJSONMintWebBearerForAccount(NSString *username) {
         NSString *subject = ApolloWebJSONJWTClaims(token)[@"sub"];
         if ([subject isKindOfClass:[NSString class]] && [subject hasPrefix:@"loid"]) {
             ApolloWebJSONRecordMintFailureForUser(username);
-            ApolloLog(@"[WebJSON] Web-bearer mint for u/%@ returned a signed-out token — not using it", username);
+            ApolloLog(@"[WebJSON] %@ mint for u/%@ returned a signed-out token — not using it", kind, account);
             return nil;
         }
         ApolloWebJSONStoreMintedBearerForUser(username, token);
-        ApolloLog(@"[WebJSON] Web-bearer mint for u/%@ succeeded (validated by the fetch that follows)", username);
+        ApolloLog(@"[WebJSON] %@ mint for u/%@ succeeded (validated by the fetch that follows)", kind, account);
         return token;
     }
 }
@@ -2486,7 +2597,7 @@ NSString *ApolloWebJSONKeylessOAuthBearer(NSString *username) {
     // token_v2 while it's still fresh, else a bearer minted from the accounts
     // token service (ApolloWebJSONMintWebBearerForAccount) — the HTML-page-load
     // rotation this used to rely on is dead upstream (see the mint's note).
-    return ApolloWebJSONUsableTokenV2ForSession(session) ?: ApolloWebJSONMintWebBearerForAccount(user);
+    return ApolloWebJSONUsableTokenV2ForSession(session) ?: ApolloWebJSONMintWebBearerForAccount(user, NO);
 }
 
 // Fetch-outcome feedback for ApolloWebJSONKeylessOAuthBearer callers: a 401/403
@@ -2505,6 +2616,45 @@ void ApolloWebJSONInvalidateOAuthBearerForAccount(NSString *username, NSString *
     ApolloWebJSONDropMintedBearerForUser(user);
     ApolloWebJSONRecordMintFailureForUser(user);
     ApolloLog(@"[WebJSON] Dropped rejected web bearer for u/%@ (fetch outcome 401/403)", user);
+}
+
+#pragma mark - Desktop web bearer for the GraphQL route
+
+// token_v2 values gql-fed.reddit.com refused, so the next request mints instead
+// of offering the same one again (it stays in the stored cookie until it ages
+// out). Mint state lock.
+static NSMutableSet<NSString *> *sRefusedTokenV2;
+
+NSString *ApolloWebJSONDesktopWebBearer(NSString *username) {
+    NSString *user = username.lowercaseString;
+    if (user.length == 0) return nil;
+    ApolloWebSessionEntry *session = ApolloWebSessionFor(user);
+    if (session.cookieHeader.length == 0) return nil;
+    NSString *tokenV2 = ApolloWebJSONUsableTokenV2ForSession(session);
+    if (tokenV2.length > 0) {
+        @synchronized (ApolloWebJSONMintStateLock()) {
+            if ([sRefusedTokenV2 containsObject:tokenV2]) tokenV2 = nil;
+        }
+    }
+    return tokenV2 ?: ApolloWebJSONMintWebBearerForAccount(user, YES);
+}
+
+void ApolloWebJSONInvalidateDesktopWebBearer(NSString *username, NSString *bearer) {
+    NSString *user = username.lowercaseString;
+    if (user.length == 0 || bearer.length == 0) return;
+    NSString *key = [user stringByAppendingString:@"|desktop"];
+    if ([ApolloWebJSONCachedMintedBearerForUser(key) isEqualToString:bearer]) {
+        ApolloWebJSONDropMintedBearerForUser(key);
+        ApolloWebJSONRecordMintFailureForUser(key);
+        ApolloLog(@"[WebJSON] Dropped u/%@'s minted desktop web bearer (refused)", user);
+        return;
+    }
+    @synchronized (ApolloWebJSONMintStateLock()) {
+        if (!sRefusedTokenV2) sRefusedTokenV2 = [NSMutableSet set];
+        if (sRefusedTokenV2.count > 16) [sRefusedTokenV2 removeAllObjects];
+        [sRefusedTokenV2 addObject:bearer];
+    }
+    ApolloLog(@"[WebJSON] u/%@'s token_v2 was refused; minting a desktop web bearer from now on", user);
 }
 
 #pragma mark - Web bearer for OAuth-only moderator endpoints
@@ -2568,7 +2718,7 @@ void ApolloWebJSONPrepareRouteBearer(NSString *username) {
         [sRouteBearerMintsInFlight addObject:key];
     }
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        BOOL minted = ApolloWebJSONMintWebBearerForAccount(key).length > 0;
+        BOOL minted = ApolloWebJSONMintWebBearerForAccount(key, NO).length > 0;
         @synchronized (ApolloWebJSONMintStateLock()) {
             [sRouteBearerMintsInFlight removeObject:key];
         }

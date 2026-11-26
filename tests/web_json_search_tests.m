@@ -81,7 +81,11 @@ int main(void) { @autoreleasepool {
             Check([[original valueForHTTPHeaderField:@"Cookie"] isEqual:@"stale-cookie"], @"original request unchanged");
         }
     }
-    for (NSString *path in @[@"/searching", @"/search/extra", @"/r/ios/hot", @"/r/ios/search/extra", @"/user/Alice/m/dev/search.json",
+    // A subreddit's hot, new and rising left www for oauth on 2026-11-03
+    // (ApolloWebJSONRoutes.m); its other sorts are still www's.
+    NSURLRequest *hot = ApolloWebJSONRewriteRequest(Request(@"/r/ios/hot", ApolloWebJSONSyntheticBearerTokenForUsername(@"alice")));
+    Check([hot.URL.host isEqual:@"oauth.reddit.com"] && ![hot valueForHTTPHeaderField:@"Authorization"], @"a subreddit's hot goes to oauth with the cookie");
+    for (NSString *path in @[@"/searching", @"/search/extra", @"/r/ios/top", @"/r/ios/search/extra", @"/user/Alice/m/dev/search.json",
         @"/user/alice/search", @"/api/search_reddit_names", @"/subreddits/mine/subscriber", @"/comments/abc", @"/"]) {
         Check(!ApolloWebJSONRequestIsSearchRead(@"GET", path), @"nearby reads aren't search");
         NSURLRequest *sent = ApolloWebJSONRewriteRequest(Request(path, ApolloWebJSONSyntheticBearerTokenForUsername(@"alice")));

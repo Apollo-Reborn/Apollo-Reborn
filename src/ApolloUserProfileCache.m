@@ -128,7 +128,8 @@ static NSTimeInterval const ApolloUserProfileImageNotFoundTTL = 15.0 * 60.0;
 @property(nonatomic) NSTimeInterval budgetHoldLogAllowedAt;
 - (void)startInfoFetchForKey:(NSString *)key bypassingCache:(BOOL)bypassingCache attempt:(NSInteger)attempt;
 - (void)startBatchProfileFetchForFullNames:(NSArray<NSString *> *)chunk token:(NSString *)token;
-- (NSUInteger)applyUserDataRecordsLocked:(NSDictionary *)root warmImages:(BOOL)warmImages;
+- (NSUInteger)applyUserDataRecordsLocked:(NSDictionary *)root warmImages:(BOOL)warmImages collectibleFrames:(BOOL)collectibleFrames;
+- (void)ingestAuthorRecords:(NSDictionary *)response fromGraphQL:(BOOL)fromGraphQL;
 - (NSString *)imageCacheDirectory;
 - (NSString *)imageDiskPathForKey:(NSString *)key;
 - (void)persistImageData:(NSData *)data forKey:(NSString *)key;
@@ -1033,18 +1034,28 @@ static NSString *ApolloUserProfileChargedWebSessionUsername(void) {
         NSDictionary *root = (NSDictionary *)json;
 
         dispatch_async(self.queue, ^{
-            NSUInteger applied = [self applyUserDataRecordsLocked:root warmImages:YES];
+            NSUInteger applied = [self applyUserDataRecordsLocked:root warmImages:YES collectibleFrames:NO];
             ApolloLog(@"[UserAvatars] Batch profile fetch: %lu ids -> %lu new avatars cached", (unsigned long)chunk.count, (unsigned long)applied);
         });
     }];
     [task resume];
 }
 
+// YES for the 50-pixel picture a GraphQL answer names for someone who uploaded
+// their own (ApolloGQLLegacyAuthorIconURL keeps that address: the upload itself
+// can be thousands of pixels). The legacy API's profile_img is the same picture
+// at 256.
+static BOOL ApolloUserProfileIconIsGraphQLSmall(NSURL *iconURL) {
+    return [iconURL.query containsString:@"width=50&height=50"];
+}
+
 // Runs on `queue`. Caches a lightweight entry for every user in a
 // user_data_by_account_ids response (t2_ fullname -> record) that doesn't have
 // an avatar yet; returns how many it added. `warmImages` also starts each
 // avatar's download, for batches built from cells that are about to show.
-- (NSUInteger)applyUserDataRecordsLocked:(NSDictionary *)root warmImages:(BOOL)warmImages {
+// `collectibleFrames` also gives a collectible avatar its frame, read from the
+// picture's address.
+- (NSUInteger)applyUserDataRecordsLocked:(NSDictionary *)root warmImages:(BOOL)warmImages collectibleFrames:(BOOL)collectibleFrames {
     NSUInteger applied = 0;
     for (NSString *fullName in root) {
         NSDictionary *record = [root[fullName] isKindOfClass:[NSDictionary class]] ? root[fullName] : nil;
@@ -1056,8 +1067,12 @@ static NSString *ApolloUserProfileChargedWebSessionUsername(void) {
 
         // Never clobber a richer entry: about.json (or a prior batch) already gave
         // this user an icon — keep it (it may carry snoovatar/banner/suspension).
+        // The one exception is a lightweight entry holding GraphQL's 50-pixel
+        // picture, which a full-size one replaces.
         ApolloUserProfileInfo *existing = [self.infoCache objectForKey:key] ?: self.diskInfo[key];
-        if (existing.iconURL) continue;
+        BOOL sharper = existing.iconURL && !existing.suspensionChecked &&
+            ApolloUserProfileIconIsGraphQLSmall(existing.iconURL) && !ApolloUserProfileIconIsGraphQLSmall(iconURL);
+        if (existing.iconURL && !sharper) continue;
 
         // Lightweight entry: account icon only. suspensionChecked stays NO so a
         // later profile-page open still upgrades to full fidelity via about.json.
@@ -1066,6 +1081,7 @@ static NSString *ApolloUserProfileChargedWebSessionUsername(void) {
                                                                            bannerURL:nil
                                                                          defaultSnoo:NO
                                                                            fetchedAt:[NSDate date]];
+        if (collectibleFrames) info.avatarFrameKind = [self avatarFrameKindForIconURL:iconURL snoovatarURL:nil];
         [self.infoCache setObject:info forKey:key];
         self.diskInfo[key] = info;
         applied++;
@@ -1080,9 +1096,18 @@ static NSString *ApolloUserProfileChargedWebSessionUsername(void) {
 }
 
 - (void)ingestUserDataByAccountIDsResponse:(NSDictionary *)response {
+    [self ingestAuthorRecords:response fromGraphQL:NO];
+}
+
+- (void)ingestGraphQLAuthorRecords:(NSDictionary<NSString *, NSDictionary *> *)records {
+    [self ingestAuthorRecords:records fromGraphQL:YES];
+}
+
+- (void)ingestAuthorRecords:(NSDictionary *)response fromGraphQL:(BOOL)fromGraphQL {
     if (![response isKindOfClass:[NSDictionary class]] || response.count == 0) return;
-    // Copy out just the two fields we read, on the caller's thread: the parsed
-    // response belongs to Apollo, which goes on to map it into its own models.
+    // Copy out just the two fields we read, on the caller's thread: Apollo's
+    // parsed response belongs to Apollo, which goes on to map it into its own
+    // models.
     NSMutableDictionary<NSString *, NSDictionary *> *records = [NSMutableDictionary dictionaryWithCapacity:response.count];
     for (id fullName in response) {
         if (![fullName isKindOfClass:[NSString class]] || ![fullName hasPrefix:@"t2_"]) continue;
@@ -1093,16 +1118,25 @@ static NSString *ApolloUserProfileChargedWebSessionUsername(void) {
     }
     if (records.count == 0) return;
     dispatch_async(self.queue, ^{
-        // Apollo just asked Reddit for these authors, so our own batch skips them.
-        // A thread adds up to ~100 at a time, so start the session-long set over
-        // once it's large; the cost of that is one repeat batch at most.
+        // Reddit was just asked for these authors (by Apollo, or by the GraphQL
+        // call whose answer named them), so our own batch skips them. A thread
+        // adds up to ~100 at a time, so start the session-long set over once
+        // it's large; the cost of that is one repeat batch at most.
         if (self.batchRequestedFullNames.count + records.count > 4096) [self.batchRequestedFullNames removeAllObjects];
         [self.batchRequestedFullNames addObjectsFromArray:records.allKeys];
-        // No image warming: Apollo's list covers every loaded comment, most of
-        // which never scroll into view; cells fetch their image as they appear.
-        NSUInteger applied = [self applyUserDataRecordsLocked:records warmImages:NO];
-        ApolloLog(@"[UserAvatars] Apollo's user_data_by_account_ids: %lu ids -> %lu new avatars cached",
-                  (unsigned long)records.count, (unsigned long)applied);
+        // No image warming: these lists cover every loaded comment and post,
+        // most of which never scroll into view; cells fetch their image as
+        // they appear.
+        NSUInteger applied = [self applyUserDataRecordsLocked:records warmImages:NO collectibleFrames:fromGraphQL];
+        if (!fromGraphQL) {
+            ApolloLog(@"[UserAvatars] Apollo's user_data_by_account_ids: %lu ids -> %lu new avatars cached",
+                      (unsigned long)records.count, (unsigned long)applied);
+        } else if (applied > 0) {
+            // Every GraphQL answer comes through here; only the ones that
+            // taught the cache someone new are worth a line.
+            ApolloLog(@"[UserAvatars] GraphQL answer: %lu authors -> %lu new avatars cached, no lookup needed",
+                      (unsigned long)records.count, (unsigned long)applied);
+        }
     });
 }
 

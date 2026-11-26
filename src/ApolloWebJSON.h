@@ -166,6 +166,17 @@ NSString *ApolloWebJSONReadyRouteBearer(NSString *username);
 // hand. Returns at once; any thread.
 void ApolloWebJSONPrepareRouteBearer(NSString *username);
 
+// The bearer for the GraphQL route (ApolloWebJSONRouteGraphQL): the desktop web
+// client's token, which is what the website itself reads with. The session's
+// token_v2 while it's fresh, else one minted for that client from the session
+// cookie. nil without a web session or when the mint fails. Synchronous,
+// bounded by the mint's timeout: background queues only.
+NSString *ApolloWebJSONDesktopWebBearer(NSString *username);
+
+// Report a bearer from ApolloWebJSONDesktopWebBearer that gql-fed.reddit.com
+// refused (401/403), so the next call returns another one.
+void ApolloWebJSONInvalidateDesktopWebBearer(NSString *username, NSString *bearer);
+
 // YES when a web-session account has no web bearer on hand and a mint is worth
 // trying now (none held off, no recent mint failure). The RedditKit request
 // hook mints before sending an ApolloWebJSONPathNeedsWebBearer request then.
@@ -223,7 +234,23 @@ extern NSString *const ApolloWebJSONSessionExpiredNotification;
 // explanation instead of an endless spinner. userInfo[@"username"] is the
 // lowercased account, userInfo[@"seconds"] the expected wait (see
 // ApolloWebJSONOptionalReadBackoff). Tweak.xm shows it as a toast.
+// Once per limit. While the GraphQL route is carrying the account's feeds and
+// threads, it waits for the first refusal that leaves somebody waiting
+// (ApolloWebJSONRefusedReadIsBackground says which don't), so a limit that
+// only ever refuses the inbox poll or an author lookup posts nothing.
 extern NSString *const ApolloWebJSONSessionRateLimitedNotification;
+
+// YES while `username` is rate-limited and that limit has posted no notice
+// (see above): whatever would repeat the notice stays down too. Any thread.
+BOOL ApolloWebJSONRateLimitIsQuiet(NSString *username);
+
+#if APOLLO_SIM_BUILD
+// Debug bridge ("refuse429 <METHOD> <path>" / "refuse429 off"): records an HTTP
+// 429 for `username` on that request as if Reddit had answered it (a 180 s
+// hold), so the limit's notice and what stands down during one can be seen
+// without spending a real account's requests. An empty `path` lifts the hold.
+void ApolloWebJSONSimRefuse(NSString *username, NSString *method, NSString *path);
+#endif
 
 // Sentinel access-token string the identity layer (ApolloWebJSONIdentity.xm)
 // installs as a synthetic OAuth credential so Apollo proceeds to issue requests
@@ -326,6 +353,11 @@ NSURLRequest *ApolloWebJSONRequestMarkingTriedRoutes(NSURLRequest *request, NSUI
 // The ApolloWebJSONRoute a rewritten request or its response URL went by, or -1
 // when `url` wasn't rewritten for a web session.
 NSInteger ApolloWebJSONRouteFromURL(NSURL *url);
+
+// `url` with the account and route markers the rewrite stamps, so the readers
+// above (and the hooks that key on them) see a response as `username`'s by
+// `route`. The GraphQL route marks the response it builds this way.
+NSURL *ApolloWebJSONURLMarkedForRoute(NSURL *url, NSString *username, NSInteger route);
 
 #if APOLLO_SIM_BUILD
 // Sim debug bridge: send these ApolloWebJSONRoutes' requests (a bit per route)

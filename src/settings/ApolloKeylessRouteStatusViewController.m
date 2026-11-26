@@ -6,6 +6,7 @@
 #import "ApolloWebJSONRouteUpdates.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloState.h"
+#import "graphql/ApolloGQLRoute.h"
 
 static NSString *ApolloRouteStatusAgo(NSTimeInterval at) {
     if (at <= 0) return nil;
@@ -76,6 +77,27 @@ static NSString *ApolloRouteStatusAgo(NSTimeInterval at) {
 - (NSArray<ApolloSettingsSection *> *)buildForm {
     NSString *account = ApolloActiveWebSessionUsername();
     NSMutableArray<ApolloSettingsSection *> *sections = [NSMutableArray array];
+    __weak typeof(self) weakSelf = self;
+
+    NSDictionary *graphQL = ApolloGQLRouteStatus(account);
+    ApolloSettingsRow *graphQLState =
+        [ApolloSettingsRow switchRowWithID:@"routes.graphql.state"
+                                     title:@"Use GraphQL"
+                                      isOn:^BOOL { return sWebJSONGraphQLEnabled; }
+                                  onToggle:^(UISwitch *sender) {
+            ApolloGQLRouteSetEnabled(sender.isOn);
+            // The status line and the route each endpoint is using change with it.
+            [weakSelf rebuildForm];
+        }];
+    NSArray<NSString *> *graphQLLines = graphQL[@"lines"];
+    ApolloSettingsRow *graphQLStatus =
+        [self infoRowWithID:@"routes.graphql.status" title:graphQL[@"state"]
+                     detail:graphQLLines.count ? [graphQLLines componentsJoinedByString:@"\n"] : @"Nothing read through it since Apollo opened"];
+    [sections addObject:
+        // No header: the table title-cases them, which would spell "Graphql".
+        [ApolloSettingsSection sectionWithTitle:nil
+                                         footer:@"Feeds, comments, post search and subreddit details are read through the interface Reddit's own apps use. Reddit counts those requests apart from the rest and allows more of them. Anything it can't answer goes by its usual route. Off reads everything by the routes below."
+                                           rows:@[ graphQLState, graphQLStatus ]]];
 
     NSMutableArray<ApolloSettingsRow *> *endpointRows = [NSMutableArray array];
     for (NSDictionary *endpoint in ApolloWebJSONRouteStatusEndpoints()) {
@@ -106,7 +128,6 @@ static NSString *ApolloRouteStatusAgo(NSTimeInterval at) {
                                            rows:blockedRows]];
 
     NSDictionary *updates = ApolloWebJSONRouteUpdatesStatus();
-    __weak typeof(self) weakSelf = self;
     ApolloSettingsRow *updatesState =
         [ApolloSettingsRow switchRowWithID:@"routes.updates.state"
                                      title:@"Use Route Updates"

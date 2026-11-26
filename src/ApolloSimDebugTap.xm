@@ -42,6 +42,7 @@
 #import "ApolloWebTextDecoding.h"
 #import "ApolloWebJSON.h"
 #import "ApolloWebJSONRoutes.h"
+#import "graphql/ApolloGQLRoute.h"
 #import "ApolloState.h"
 #import "ApolloTextureDecls.h"
 #import "ApolloThemeStore.h"
@@ -2658,6 +2659,36 @@ static BOOL ApolloSimDebugHandleIntegratedMainCommand(NSString *contents) {
             }
         }
         ApolloWebJSONSimSetGatedRoutes(mask);
+        return YES;
+    }
+    // "gqlblock on|off": the GraphQL route's calls go out with a hash Reddit
+    // doesn't know, so its real refusal exercises the fallback to the other
+    // routes. "gqltoken drop": report the active account's GraphQL token as
+    // refused, so the next call mints one for the desktop web client.
+    if ([contents hasPrefix:@"gqlblock "]) {
+        ApolloGQLRouteSimSetBlocked([[contents substringFromIndex:9] hasPrefix:@"on"]);
+        ApolloWebJSONRouteHealthReset();
+        return YES;
+    }
+    if ([contents hasPrefix:@"gqltoken drop"]) {
+        NSString *user = ApolloActiveWebSessionUsername();
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            NSString *bearer = ApolloWebJSONDesktopWebBearer(user);
+            ApolloWebJSONInvalidateDesktopWebBearer(user, bearer);
+            ApolloLog(@"[GraphQL] Sim: dropped the GraphQL token for the active account (%@)", bearer.length ? @"had one" : @"had none");
+        });
+        return YES;
+    }
+    // "refuse429 <METHOD> <path>": the active API-Key-Free account's request is
+    // recorded as refused for the rate limit (nothing is sent), which starts a
+    // 180 s hold; "refuse429 off" lifts it. For the notice: a background read
+    // (GET /message/inbox.json) raises none while GraphQL carries the account,
+    // a page somebody is waiting on (GET /best.json) does.
+    if ([contents hasPrefix:@"refuse429"]) {
+        NSArray<NSString *> *parts = [[[contents substringFromIndex:9]
+            stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] componentsSeparatedByString:@" "];
+        BOOL lift = parts.count < 2;
+        ApolloWebJSONSimRefuse(ApolloActiveWebSessionUsername(), lift ? nil : parts[0], lift ? nil : parts[1]);
         return YES;
     }
     // "oauthblock on|off": an API-key account's /api/info and /api/morechildren
