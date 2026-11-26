@@ -26,6 +26,15 @@ extern "C" {
 // when the request didn't ask for raw JSON.
 NSString *_Nullable ApolloGQLRichTextHTML(id _Nullable document, NSArray *_Nullable media, BOOL selfPost);
 
+// The Markdown for an RTJSON document, given the same two ways, or nil when it
+// can't be read or has no content. GraphQL sends the Markdown next to nearly
+// every document; the one that arrives without it is an interactive post's
+// text fallback (ApolloGQLLegacy.m), and the legacy API serves that as
+// Markdown, written the way this writes it: blocks a blank line apart, "## "
+// headings, tables as |a|b| rows under a |:-|:-| rule, "* * *" for a rule.
+// Text is copied as it is, with no Markdown escaping.
+NSString *_Nullable ApolloGQLRichTextMarkdown(id _Nullable document);
+
 // The fallback when an answer has Markdown but no usable rich-text document:
 // one <p> per paragraph with the text escaped and nothing else rendered, so
 // the body is readable (its Markdown marks show as typed).

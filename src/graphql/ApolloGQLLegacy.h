@@ -36,6 +36,15 @@ NSDictionary<NSString *, id> *ApolloGQLLegacyListing(NSArray<NSDictionary *> *ch
 // answer isn't a PostsByIds result at all.
 NSArray<NSDictionary *> *_Nullable ApolloGQLLegacyLinksFromPostsByIds(NSDictionary *answer, NSArray<NSString *> *fullnames, BOOL rawJSON);
 
+// An interactive post (a match thread, a game) gets the body the legacy API
+// sends for one, which is what the rest of the tweak knows it by; see
+// ApolloGQLLegacy.m. That rests on Reddit marking the post (`devvit`) when a
+// query asks with includeDevvitData. For the route's log: how many of a
+// PostsByIds answer's posts are marked, and how many look like one and aren't
+// (an app account's text post whose text is a rich-text document), which
+// would mean the marking has stopped arriving and those posts show as text.
+void ApolloGQLCountInteractivePosts(NSDictionary *answer, NSUInteger *marked, NSUInteger *unmarked);
+
 // The body of /comments/<id>.json for a PostComments answer (its whole JSON
 // body): [the post's Listing, the comments' Listing], each comment's replies
 // nested inside it. `linkThing` is the post as a t3 thing (PostsByIds has it;

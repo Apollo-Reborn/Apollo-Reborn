@@ -173,6 +173,17 @@ static NSString *ApolloGQLRTInlines(NSArray *elements, NSArray *media, NSUIntege
 
 static NSString *ApolloGQLRTBlocks(NSArray *blocks, NSArray *media, NSUInteger depth);
 
+// The kinds that are blocks, for telling what an element this file doesn't
+// know holds.
+static NSSet<NSString *> *ApolloGQLRTBlockKinds(void) {
+    static NSSet<NSString *> *blockKinds;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        blockKinds = [NSSet setWithArray:@[ @"par", @"h", @"blockquote", @"list", @"code", @"table", @"hr" ]];
+    });
+    return blockKinds;
+}
+
 static NSString *ApolloGQLRTCellAlign(id align) {
     NSString *a = ApolloGQLRTString(align).uppercaseString;
     if ([a isEqualToString:@"L"]) return @" align=\"left\"";
@@ -276,12 +287,7 @@ static NSString *ApolloGQLRTBlock(NSDictionary *block, NSArray *media, NSUIntege
     // are rendered as blocks, anything else as one paragraph.
     if (children.count > 0) {
         NSString *first = [children[0] isKindOfClass:[NSDictionary class]] ? ApolloGQLRTString(children[0][@"e"]) : nil;
-        static NSSet<NSString *> *blockKinds;
-        static dispatch_once_t once;
-        dispatch_once(&once, ^{
-            blockKinds = [NSSet setWithArray:@[ @"par", @"h", @"blockquote", @"list", @"code", @"table", @"hr" ]];
-        });
-        if (first && [blockKinds containsObject:first]) return ApolloGQLRTBlocks(children, media, depth + 1);
+        if (first && [ApolloGQLRTBlockKinds() containsObject:first]) return ApolloGQLRTBlocks(children, media, depth + 1);
         return [NSString stringWithFormat:@"<p>%@</p>", ApolloGQLRTInlines(children, media, depth + 1)];
     }
     NSString *text = ApolloGQLRTString(block[@"t"]);
@@ -304,17 +310,218 @@ static NSString *ApolloGQLRTWrap(NSString *inner, BOOL selfPost) {
     return selfPost ? [NSString stringWithFormat:@"<!-- SC_OFF -->%@<!-- SC_ON -->", div] : div;
 }
 
-NSString *ApolloGQLRichTextHTML(id document, NSArray *media, BOOL selfPost) {
+// The blocks of a document given as JSON text or as the parsed dictionary, or
+// nil when it isn't one.
+static NSArray *ApolloGQLRTDocumentBlocks(id document) {
     id parsed = document;
     if ([document isKindOfClass:[NSString class]]) {
         NSData *data = [(NSString *)document dataUsingEncoding:NSUTF8StringEncoding];
         parsed = data.length ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
     }
     if (![parsed isKindOfClass:[NSDictionary class]]) return nil;
-    NSArray *blocks = ApolloGQLRTArray(((NSDictionary *)parsed)[@"document"]);
+    return ApolloGQLRTArray(((NSDictionary *)parsed)[@"document"]);
+}
+
+NSString *ApolloGQLRichTextHTML(id document, NSArray *media, BOOL selfPost) {
+    NSArray *blocks = ApolloGQLRTDocumentBlocks(document);
     if (blocks.count == 0) return nil;
     NSString *inner = ApolloGQLRTBlocks(blocks, [media isKindOfClass:[NSArray class]] ? media : nil, 0);
     return inner.length > 0 ? ApolloGQLRTWrap(inner, selfPost) : nil;
+}
+
+#pragma mark - Markdown
+
+// `text` with its format ranges as Markdown marks. Underline and subscript
+// have none and stay plain.
+static NSString *ApolloGQLRTMarkedText(NSString *text, id formats) {
+    NSArray *ranges = ApolloGQLRTArray(formats);
+    if (text.length == 0) return @"";
+    if (ranges.count == 0) return text;
+    NSMutableArray<NSArray<NSNumber *> *> *valid = [NSMutableArray array];
+    for (id range in ranges) {
+        NSArray *parts = ApolloGQLRTArray(range);
+        if (parts.count < 3) continue;
+        if (![parts[0] isKindOfClass:[NSNumber class]] || ![parts[1] isKindOfClass:[NSNumber class]] ||
+            ![parts[2] isKindOfClass:[NSNumber class]]) continue;
+        [valid addObject:@[ parts[0], parts[1], parts[2] ]];
+    }
+    [valid sortUsingComparator:^NSComparisonResult(NSArray<NSNumber *> *a, NSArray<NSNumber *> *b) {
+        return [a[1] compare:b[1]];
+    }];
+    NSMutableString *out = [NSMutableString string];
+    NSUInteger cursor = 0;
+    for (NSArray<NSNumber *> *range in valid) {
+        NSInteger start = range[1].integerValue, length = range[2].integerValue;
+        if (start < (NSInteger)cursor) { length -= (NSInteger)cursor - start; start = (NSInteger)cursor; }
+        if (length <= 0 || start >= (NSInteger)text.length) continue;
+        if (start + length > (NSInteger)text.length) length = (NSInteger)text.length - start;
+        if ((NSUInteger)start > cursor) [out appendString:[text substringWithRange:NSMakeRange(cursor, (NSUInteger)start - cursor)]];
+        NSInteger mask = range[0].integerValue;
+        NSString *marked = [text substringWithRange:NSMakeRange((NSUInteger)start, (NSUInteger)length)];
+        if (mask & 64) marked = [NSString stringWithFormat:@"`%@`", marked];
+        if (mask & 32) marked = [NSString stringWithFormat:@"^(%@)", marked];
+        if (mask & 8) marked = [NSString stringWithFormat:@"~~%@~~", marked];
+        if (mask & 2) marked = [NSString stringWithFormat:@"*%@*", marked];
+        if (mask & 1) marked = [NSString stringWithFormat:@"**%@**", marked];
+        [out appendString:marked];
+        cursor = (NSUInteger)(start + length);
+    }
+    if (cursor < text.length) [out appendString:[text substringFromIndex:cursor]];
+    return out;
+}
+
+static NSString *ApolloGQLRTMarkdownInlines(NSArray *elements, NSUInteger depth);
+static NSString *ApolloGQLRTMarkdownBlocks(NSArray *blocks, NSUInteger depth);
+
+static NSString *ApolloGQLRTMarkdownInline(NSDictionary *element, NSUInteger depth) {
+    NSString *kind = ApolloGQLRTString(element[@"e"]);
+    NSString *text = ApolloGQLRTString(element[@"t"]) ?: @"";
+    if ([kind isEqualToString:@"text"]) return ApolloGQLRTMarkedText(text, element[@"f"]);
+    if ([kind isEqualToString:@"raw"]) return text;
+    if ([kind isEqualToString:@"br"]) return @"  \n";
+    if ([kind isEqualToString:@"link"]) {
+        NSString *url = ApolloGQLRTString(element[@"u"]) ?: @"";
+        NSString *label = ApolloGQLRTString(element[@"t"]) ?: url;
+        // A bare address is a link as it stands.
+        if ([label isEqualToString:url]) return url;
+        return [NSString stringWithFormat:@"[%@](%@)", ApolloGQLRTMarkedText(label, element[@"f"]), url];
+    }
+    if ([kind isEqualToString:@"r/"] || [kind isEqualToString:@"u/"]) {
+        BOOL leadingSlash = [element[@"l"] respondsToSelector:@selector(boolValue)] && [element[@"l"] boolValue];
+        return [NSString stringWithFormat:@"%@%@%@", leadingSlash ? @"/" : @"", kind, text];
+    }
+    if ([kind isEqualToString:@"spoilertext"]) {
+        return [NSString stringWithFormat:@">!%@!<", ApolloGQLRTMarkdownInlines(ApolloGQLRTArray(element[@"c"]), depth + 1)];
+    }
+    if ([kind isEqualToString:@"img"] || [kind isEqualToString:@"gif"] || [kind isEqualToString:@"video"]) {
+        // A fallback has no media list to look an embed up in; a Giphy embed's
+        // page is in its id.
+        return ApolloGQLRTGiphyPage(ApolloGQLRTString(element[@"id"])) ?: @"";
+    }
+    NSArray *children = ApolloGQLRTArray(element[@"c"]);
+    if (children.count > 0) return ApolloGQLRTMarkdownInlines(children, depth + 1);
+    return text;
+}
+
+static NSString *ApolloGQLRTMarkdownInlines(NSArray *elements, NSUInteger depth) {
+    if (depth > 32) return @"";
+    NSMutableString *out = [NSMutableString string];
+    for (id element in elements) {
+        if ([element isKindOfClass:[NSDictionary class]]) [out appendString:ApolloGQLRTMarkdownInline(element, depth)];
+    }
+    return out;
+}
+
+// Every line of `text` after `first`, with later lines after `rest` (a quote's
+// "> ", a list item's mark and the indent under it).
+static NSString *ApolloGQLRTMarkdownPrefixed(NSString *text, NSString *first, NSString *rest) {
+    NSArray<NSString *> *lines = [text componentsSeparatedByString:@"\n"];
+    NSMutableArray<NSString *> *out = [NSMutableArray arrayWithCapacity:lines.count];
+    for (NSUInteger i = 0; i < lines.count; i++) {
+        NSString *prefix = i == 0 ? first : rest;
+        // No trailing spaces on a blank line between two blocks.
+        [out addObject:lines[i].length > 0 ? [prefix stringByAppendingString:lines[i]]
+                                           : [prefix stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]];
+    }
+    return [out componentsJoinedByString:@"\n"];
+}
+
+static NSString *ApolloGQLRTMarkdownRow(NSArray *cells, NSUInteger depth) {
+    NSMutableString *row = [NSMutableString stringWithString:@"|"];
+    for (id cell in cells) {
+        NSDictionary *c = [cell isKindOfClass:[NSDictionary class]] ? cell : @{};
+        // A cell is one line, and a "|" in it would end it.
+        NSString *text = ApolloGQLRTMarkdownInlines(ApolloGQLRTArray(c[@"c"]), depth + 1);
+        text = [text stringByReplacingOccurrencesOfString:@"  \n" withString:@" "];
+        text = [text stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
+        [row appendFormat:@"%@|", [text stringByReplacingOccurrencesOfString:@"|" withString:@"\\|"]];
+    }
+    return row;
+}
+
+static NSString *ApolloGQLRTMarkdownTable(NSDictionary *table, NSUInteger depth) {
+    NSArray *header = ApolloGQLRTArray(table[@"h"]);
+    if (header.count == 0) return nil;
+    NSMutableArray<NSString *> *lines = [NSMutableArray arrayWithObject:ApolloGQLRTMarkdownRow(header, depth)];
+    NSMutableString *rule = [NSMutableString stringWithString:@"|"];
+    for (id cell in header) {
+        NSString *align = [cell isKindOfClass:[NSDictionary class]] ? ApolloGQLRTString(cell[@"a"]).uppercaseString : nil;
+        // A column with no alignment is written left-aligned, as the legacy API writes it.
+        [rule appendString:[align isEqualToString:@"R"] ? @"-:|" : [align isEqualToString:@"C"] ? @":-:|" : @":-|"];
+    }
+    [lines addObject:rule];
+    for (id row in ApolloGQLRTArray(table[@"c"])) {
+        NSArray *cells = ApolloGQLRTArray(row);
+        if (cells) [lines addObject:ApolloGQLRTMarkdownRow(cells, depth)];
+    }
+    return [lines componentsJoinedByString:@"\n"];
+}
+
+static NSString *ApolloGQLRTMarkdownBlock(NSDictionary *block, NSUInteger depth) {
+    NSString *kind = ApolloGQLRTString(block[@"e"]);
+    NSArray *children = ApolloGQLRTArray(block[@"c"]);
+    if ([kind isEqualToString:@"par"]) return ApolloGQLRTMarkdownInlines(children, depth + 1);
+    if ([kind isEqualToString:@"h"]) {
+        NSInteger level = [block[@"l"] respondsToSelector:@selector(integerValue)] ? [block[@"l"] integerValue] : 1;
+        level = MAX(1, MIN(6, level));
+        NSString *heading = ApolloGQLRTMarkdownInlines(children, depth + 1);
+        if (heading.length == 0) return nil;
+        return [NSString stringWithFormat:@"%@ %@", [@"" stringByPaddingToLength:(NSUInteger)level withString:@"#" startingAtIndex:0], heading];
+    }
+    if ([kind isEqualToString:@"blockquote"]) {
+        return ApolloGQLRTMarkdownPrefixed(ApolloGQLRTMarkdownBlocks(children, depth + 1), @"> ", @"> ");
+    }
+    if ([kind isEqualToString:@"list"]) {
+        BOOL ordered = [block[@"o"] respondsToSelector:@selector(boolValue)] && [block[@"o"] boolValue];
+        NSMutableArray<NSString *> *items = [NSMutableArray array];
+        for (id item in children) {
+            if (![item isKindOfClass:[NSDictionary class]]) continue;
+            NSString *mark = ordered ? [NSString stringWithFormat:@"%lu. ", (unsigned long)items.count + 1] : @"* ";
+            NSString *body = ApolloGQLRTMarkdownBlocks(ApolloGQLRTArray(item[@"c"]) ?: @[], depth + 1);
+            [items addObject:ApolloGQLRTMarkdownPrefixed(body, mark, @"    ")];
+        }
+        return [items componentsJoinedByString:@"\n"];
+    }
+    if ([kind isEqualToString:@"code"]) {
+        NSMutableArray<NSString *> *lines = [NSMutableArray array];
+        for (id line in children) {
+            if ([line isKindOfClass:[NSDictionary class]]) [lines addObject:[@"    " stringByAppendingString:ApolloGQLRTString(line[@"t"]) ?: @""]];
+        }
+        return [lines componentsJoinedByString:@"\n"];
+    }
+    if ([kind isEqualToString:@"table"]) return ApolloGQLRTMarkdownTable(block, depth);
+    if ([kind isEqualToString:@"hr"]) return @"* * *";
+    if ([kind isEqualToString:@"img"] || [kind isEqualToString:@"gif"] || [kind isEqualToString:@"video"]) {
+        NSString *link = ApolloGQLRTMarkdownInline(block, depth);
+        NSString *caption = ApolloGQLRTString(block[@"c"]);
+        if (link.length == 0) return caption;
+        return caption.length > 0 ? [NSString stringWithFormat:@"%@\n\n%@", link, caption] : link;
+    }
+    // Something newer than this list, read the way the HTML reads it.
+    if (children.count > 0) {
+        NSString *first = [children[0] isKindOfClass:[NSDictionary class]] ? ApolloGQLRTString(children[0][@"e"]) : nil;
+        if (first && [ApolloGQLRTBlockKinds() containsObject:first]) return ApolloGQLRTMarkdownBlocks(children, depth + 1);
+        return ApolloGQLRTMarkdownInlines(children, depth + 1);
+    }
+    return ApolloGQLRTString(block[@"t"]);
+}
+
+static NSString *ApolloGQLRTMarkdownBlocks(NSArray *blocks, NSUInteger depth) {
+    if (depth > 32) return @"";
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    for (id block in blocks) {
+        if (![block isKindOfClass:[NSDictionary class]]) continue;
+        NSString *markdown = ApolloGQLRTMarkdownBlock(block, depth);
+        if (markdown.length > 0) [parts addObject:markdown];
+    }
+    return [parts componentsJoinedByString:@"\n\n"];
+}
+
+NSString *ApolloGQLRichTextMarkdown(id document) {
+    NSArray *blocks = ApolloGQLRTDocumentBlocks(document);
+    if (blocks.count == 0) return nil;
+    NSString *markdown = ApolloGQLRTMarkdownBlocks(blocks, 0);
+    return markdown.length > 0 ? markdown : nil;
 }
 
 NSString *ApolloGQLPlainTextHTML(NSString *markdown, BOOL selfPost) {

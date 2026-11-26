@@ -81,8 +81,15 @@ NSData *ApolloGQLOperationBody(NSString *name, NSDictionary *variables) {
     return [NSJSONSerialization dataWithJSONObject:body options:0 error:NULL];
 }
 
+// A query that returns posts says which of them are interactive posts (the
+// post's `devvit`) only when it is asked to; ApolloGQLLegacy.m needs it to
+// write the body the legacy API sends for one. PostsByIds, SearchPosts and the
+// account's own lists all take the variable (2026-11-26).
+static NSString *const kApolloGQLIncludeInteractivePosts = @"includeDevvitData";
+
 NSDictionary *ApolloGQLPostsByIdsVariables(NSArray<NSString *> *fullnames) {
-    return @{ @"ids": fullnames ?: @[], @"includeExtendedVideoAsset": @YES, @"includePlaybackMp4s": @YES };
+    return @{ @"ids": fullnames ?: @[], @"includeExtendedVideoAsset": @YES, @"includePlaybackMp4s": @YES,
+              kApolloGQLIncludeInteractivePosts: @YES };
 }
 
 NSString *ApolloGQLFeedOperation(ApolloGQLRequest *request) {
@@ -116,6 +123,7 @@ NSDictionary *ApolloGQLSearchPostsVariables(ApolloGQLRequest *request) {
     if (request.searchIncludesNSFW) [filters addObject:@{ @"key": @"nsfw", @"value": @"1" }];
     if (request.searchRange.length > 0) [filters addObject:@{ @"key": @"time_range", @"value": request.searchRange }];
     variables[@"filters"] = filters;
+    variables[kApolloGQLIncludeInteractivePosts] = @YES;
     if (request.searchCursor.length > 0) variables[@"afterCursor"] = request.searchCursor;
     return variables;
 }
@@ -146,7 +154,7 @@ NSString *ApolloGQLOwnPostsOperation(ApolloGQLRequest *request) {
 
 NSDictionary *ApolloGQLOwnPostsVariables(ApolloGQLRequest *request) {
     NSString *cursor = ApolloGQLFeedCursorForFullname(request.after);
-    return cursor.length > 0 ? @{ @"after": cursor } : @{};
+    return cursor.length > 0 ? @{ @"after": cursor, kApolloGQLIncludeInteractivePosts: @YES } : @{ kApolloGQLIncludeInteractivePosts: @YES };
 }
 
 NSDictionary *ApolloGQLSavedVariables(NSString *after) {

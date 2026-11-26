@@ -105,6 +105,14 @@ static void Compare(id ours, id theirs, NSString *path, NSString *kind, NSMutabl
         return;
     }
     id a = Loosened(ours, path), b = Loosened(theirs, path);
+    // An interactive post's text that the app wrote as a rich-text document
+    // reaches the legacy API's HTML by way of Markdown, where every table
+    // column is written left-aligned and a blank header cell is empty; ours is
+    // made from the document, which has no alignment and a space. Same table.
+    if ([kind isEqualToString:@"interactive-richtext"] && [path isEqualToString:@"selftext_html"] && [a isKindOfClass:[NSString class]] && [b isKindOfClass:[NSString class]]) {
+        a = [a stringByReplacingOccurrencesOfString:@"<th> </th>" withString:@"<th></th>"];
+        b = [b stringByReplacingOccurrencesOfString:@" align=\"left\"" withString:@""];
+    }
     BOOL same = [a isKindOfClass:[NSNumber class]] && [b isKindOfClass:[NSNumber class]]
         ? fabs([a doubleValue] - [b doubleValue]) < 0.0001 : [a isEqual:b];
     if (!same) [differences addObject:[NSString stringWithFormat:@"%@: ours %@, legacy %@", path, a, b]];
@@ -127,7 +135,7 @@ static void TestPostsAgainstLegacy(NSString *repoRoot) {
     NSData *data = [NSData dataWithContentsOfFile:[repoRoot stringByAppendingPathComponent:@"tests/fixtures/graphql/posts.json"]];
     NSDictionary *fixture = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
     NSArray *posts = fixture[@"posts"];
-    CHECK(posts.count == 10, @"fixture has its ten posts (%lu)", (unsigned long)posts.count);
+    CHECK(posts.count == 13, @"fixture has its thirteen posts (%lu)", (unsigned long)posts.count);
     NSMutableSet<NSString *> *kinds = [NSMutableSet set];
     for (NSDictionary *post in posts) {
         NSString *kind = post[@"kind"];
@@ -139,7 +147,8 @@ static void TestPostsAgainstLegacy(NSString *repoRoot) {
         ComparePost(ours, legacy, @"", kind, differences);
         CHECK(differences.count == 0, @"%@ post differs from the legacy answer:\n  %@", kind, [differences componentsJoinedByString:@"\n  "]);
     }
-    NSSet *expected = [NSSet setWithArray:@[ @"image", @"gallery", @"video", @"embed", @"link", @"self", @"gif", @"poll", @"poll-open", @"crosspost" ]];
+    NSSet *expected = [NSSet setWithArray:@[ @"image", @"gallery", @"video", @"embed", @"link", @"self", @"gif", @"poll", @"poll-open", @"crosspost",
+                                             @"interactive", @"interactive-markdown", @"interactive-richtext" ]];
     CHECK([kinds isEqualToSet:expected], @"every kind of post is covered (%@)", kinds);
 }
 
@@ -560,6 +569,111 @@ static void CheckHTML(NSString *documentJSON, NSString *expectedInner, NSString 
 // The HTML follows what Reddit's Markdown renderer emits; the paragraph, link
 // and emphasis forms here matched Reddit's own selftext_html byte for byte on
 // the 13 captured self posts (apart from a trailing space Reddit keeps).
+// An interactive post's body is the one the legacy API sends: the app's text,
+// then the line for old Reddit that links the post itself. The three real
+// posts are in posts.json; these are the edges around them.
+static NSDictionary *InteractivePost(NSDictionary *content, id devvit) {
+    return @{ @"__typename": @"SubredditPost", @"id": @"t3_abc12", @"postTitle": @"Match Thread", @"isSelfPost": @YES,
+              @"permalink": @"/r/Some_Sub/comments/abc12/match_thread/", @"url": @"https://www.reddit.com/r/Some_Sub/comments/abc12/match_thread/",
+              @"domain": @"self.Some_Sub", @"subreddit": @{ @"id": @"t5_1", @"name": @"Some_Sub", @"prefixedName": @"r/Some_Sub" },
+              @"authorInfo": @{ @"id": @"t2_app", @"name": @"some-app", @"accountType": @"APP" },
+              @"createdAt": @"2026-11-26T16:12:09.498000+0000", @"content": content ?: [NSNull null], @"devvit": devvit ?: [NSNull null] };
+}
+
+static void TestInteractivePosts(void) {
+    NSString *line = @"This post contains content not supported on old Reddit. [Click here to view the full post](https://sh.reddit.com/r/Some_Sub/comments/abc12)";
+    NSString *lineHTML = @"<p>This post contains content not supported on old Reddit. <a href=\"https://sh.reddit.com/r/Some_Sub/comments/abc12\">Click here to view the full post</a></p>";
+    NSDictionary *devvit = @{ @"__typename": @"DevvitPost", @"richtextFallback": [NSNull null] };
+
+    NSDictionary *bare = ApolloGQLLegacyLinkData(InteractivePost(nil, devvit), YES);
+    CHECK([bare[@"selftext"] isEqualToString:line], @"no text: the line alone (%@)", bare[@"selftext"]);
+    CHECK([bare[@"selftext_html"] isEqualToString:([NSString stringWithFormat:@"<!-- SC_OFF --><div class=\"md\">%@\n</div><!-- SC_ON -->", lineHTML])],
+          @"and its HTML (%@)", bare[@"selftext_html"]);
+    CHECK([bare[@"is_self"] isEqual:@YES], @"a text post, as the legacy API has it");
+
+    // The same post through a query that wasn't asked for `devvit`, or a text
+    // post that only looks like one: left as it came.
+    NSDictionary *content = @{ @"markdown": @"{\"document\":[{\"e\":\"par\",\"c\":[{\"e\":\"text\",\"t\":\"Hello\"}]}]}",
+                               @"richtext": @"{\"document\":[{\"c\":[{\"e\":\"text\",\"t\":\"typed JSON\"}],\"e\":\"par\"}]}" };
+    NSDictionary *typed = ApolloGQLLegacyLinkData(InteractivePost(content, nil), YES);
+    CHECK([typed[@"selftext"] isEqualToString:content[@"markdown"]] && [typed[@"selftext_html"] containsString:@"typed JSON"] &&
+          ![typed[@"selftext"] containsString:@"old Reddit"], @"a text post whose text is JSON isn't one (%@)", typed[@"selftext"]);
+
+    // A rich-text document: Markdown and HTML made from it, never the JSON.
+    NSDictionary *rich = ApolloGQLLegacyLinkData(InteractivePost(content, devvit), YES);
+    CHECK([rich[@"selftext"] isEqualToString:([@"Hello\n\n* * *\n" stringByAppendingString:line])], @"a document's text, a rule, the line (%@)", rich[@"selftext"]);
+    CHECK([rich[@"selftext_html"] isEqualToString:([NSString stringWithFormat:@"<!-- SC_OFF --><div class=\"md\"><p>Hello</p>\n\n<hr/>\n\n%@\n</div><!-- SC_ON -->", lineHTML])],
+          @"and its HTML (%@)", rich[@"selftext_html"]);
+
+    // The text only in `devvit` (the two carried the same text in every answer seen).
+    NSDictionary *onlyFallback = ApolloGQLLegacyLinkData(InteractivePost(nil, @{ @"__typename": @"DevvitPost", @"richtextFallback": @"Scores & **more**" }), YES);
+    CHECK([onlyFallback[@"selftext"] isEqualToString:([@"Scores & **more**\n\n* * *\n" stringByAppendingString:line])], @"the fallback from devvit (%@)", onlyFallback[@"selftext"]);
+    CHECK([onlyFallback[@"selftext_html"] containsString:@"<p>Scores &amp; **more**</p>\n\n<hr/>\n\n<p>This post"], @"readable HTML without a document (%@)", onlyFallback[@"selftext_html"]);
+
+    // Text that starts like JSON and isn't a document stays text.
+    NSDictionary *braces = ApolloGQLLegacyLinkData(InteractivePost(@{ @"markdown": @"{not json} at all" }, devvit), YES);
+    CHECK([braces[@"selftext"] hasPrefix:@"{not json} at all\n\n* * *\nThis post"], @"not a document (%@)", braces[@"selftext"]);
+
+    // Escaped like every other string when the request didn't ask for raw JSON.
+    NSDictionary *escaped = ApolloGQLLegacyLinkData(InteractivePost(@{ @"markdown": @"A & B" }, devvit), NO);
+    CHECK([escaped[@"selftext"] hasPrefix:@"A &amp; B\n\n* * *\nThis post"] && [escaped[@"selftext_html"] containsString:@"&lt;hr/&gt;"],
+          @"escaped (%@ / %@)", escaped[@"selftext"], escaped[@"selftext_html"]);
+
+    // What the route logs: the marked ones, and an app's post that looks like
+    // one Reddit didn't mark.
+    NSMutableDictionary *byUser = [InteractivePost(content, nil) mutableCopy];
+    byUser[@"authorInfo"] = @{ @"id": @"t2_u", @"name": @"someone", @"accountType": @"USER" };
+    NSDictionary *answer = @{ @"data": @{ @"postsInfoByIds": @[ InteractivePost(nil, devvit), InteractivePost(content, devvit), InteractivePost(content, nil),
+                                                                 byUser, InteractivePost(@{ @"markdown": @"plain" }, nil), [NSNull null] ] } };
+    NSUInteger marked = 99, unmarked = 99;
+    ApolloGQLCountInteractivePosts(answer, &marked, &unmarked);
+    CHECK(marked == 2 && unmarked == 1, @"two marked, one that looks like it (%lu, %lu)", (unsigned long)marked, (unsigned long)unmarked);
+    ApolloGQLCountInteractivePosts(@{}, &marked, &unmarked);
+    CHECK(marked == 0 && unmarked == 0, @"no posts, none");
+
+    // A crosspost of one carries the same body in its parent.
+    NSMutableDictionary *crosspost = [InteractivePost(nil, nil) mutableCopy];
+    crosspost[@"id"] = @"t3_xp1";
+    crosspost[@"crosspostRoot"] = @{ @"type": @"CROSSPOST", @"post": InteractivePost(nil, devvit) };
+    NSDictionary *crossposted = ApolloGQLLegacyLinkData(crosspost, YES);
+    NSArray *parents = crossposted[@"crosspost_parent_list"];
+    CHECK([parents isKindOfClass:[NSArray class]] && [[parents.firstObject objectForKey:@"selftext"] isEqualToString:line],
+          @"the shared post's body (%@)", parents);
+}
+
+static void CheckMarkdown(NSString *document, NSString *expected, NSString *what) {
+    NSString *markdown = ApolloGQLRichTextMarkdown(document);
+    CHECK((markdown == nil && expected == nil) || [markdown isEqualToString:expected], @"%@: %@", what, markdown);
+}
+
+static void TestRichTextMarkdown(void) {
+    CheckMarkdown(@"{\"document\":[{\"e\":\"h\",\"l\":2,\"c\":[{\"e\":\"raw\",\"t\":\"Home 4 - 0 Away\"}]},{\"e\":\"par\",\"c\":[{\"e\":\"text\",\"t\":\"One.\"}]},"
+                   "{\"e\":\"hr\"},{\"e\":\"par\",\"c\":[{\"e\":\"text\",\"t\":\"Two.\"}]}]}",
+                  @"## Home 4 - 0 Away\n\nOne.\n\n* * *\n\nTwo.", @"heading, paragraphs, rule");
+    CheckMarkdown(@"{\"document\":[{\"e\":\"par\",\"c\":[{\"e\":\"text\",\"t\":\"a bold italic code x struck up\",\"f\":[[1,2,4],[2,7,6],[64,14,4],[8,21,6],[32,28,2]]}]}]}",
+                  @"a **bold** *italic* `code` x ~~struck~~ ^(up)", @"format ranges");
+    CheckMarkdown(@"{\"document\":[{\"e\":\"par\",\"c\":[{\"e\":\"link\",\"t\":\"a site\",\"u\":\"https://example.com/?a=1&b=2\"},{\"e\":\"text\",\"t\":\" \"},"
+                   "{\"e\":\"link\",\"t\":\"https://example.com\",\"u\":\"https://example.com\"},{\"e\":\"text\",\"t\":\" \"},"
+                   "{\"e\":\"r/\",\"t\":\"apple\",\"l\":false},{\"e\":\"text\",\"t\":\" \"},{\"e\":\"u/\",\"t\":\"someone\",\"l\":true},{\"e\":\"br\"},"
+                   "{\"e\":\"spoilertext\",\"c\":[{\"e\":\"text\",\"t\":\"hidden\"}]}]}]}",
+                  @"[a site](https://example.com/?a=1&b=2) https://example.com r/apple /u/someone  \n>!hidden!<", @"links, subreddits, users, a break, a spoiler");
+    CheckMarkdown(@"{\"document\":[{\"e\":\"table\",\"h\":[{\"c\":[{\"e\":\"text\",\"t\":\" \"}]},{\"a\":\"R\",\"c\":[{\"e\":\"text\",\"t\":\"Home\"}]},{\"a\":\"C\",\"c\":[{\"e\":\"text\",\"t\":\"Away\"}]}],"
+                   "\"c\":[[{\"c\":[{\"e\":\"text\",\"t\":\"Shots\"}]},{\"c\":[{\"e\":\"text\",\"t\":\"8\"}]},{\"c\":[{\"e\":\"text\",\"t\":\"9|10\"}]}]]}]}",
+                  @"| |Home|Away|\n|:-|-:|:-:|\n|Shots|8|9\\|10|", @"a table, as the legacy API writes one");
+    CheckMarkdown(@"{\"document\":[{\"e\":\"list\",\"o\":false,\"c\":[{\"e\":\"li\",\"c\":[{\"e\":\"par\",\"c\":[{\"e\":\"text\",\"t\":\"one\"}]},"
+                   "{\"e\":\"list\",\"o\":true,\"c\":[{\"e\":\"li\",\"c\":[{\"e\":\"par\",\"c\":[{\"e\":\"text\",\"t\":\"inner\"}]}]}]}]},"
+                   "{\"e\":\"li\",\"c\":[{\"e\":\"par\",\"c\":[{\"e\":\"text\",\"t\":\"two\"}]}]}]},"
+                   "{\"e\":\"blockquote\",\"c\":[{\"e\":\"par\",\"c\":[{\"e\":\"text\",\"t\":\"quoted\"}]},{\"e\":\"par\",\"c\":[{\"e\":\"text\",\"t\":\"again\"}]}]},"
+                   "{\"e\":\"code\",\"c\":[{\"e\":\"raw\",\"t\":\"x = 1\"},{\"e\":\"raw\",\"t\":\"y = 2\"}]}]}",
+                  @"* one\n\n    1. inner\n* two\n\n> quoted\n>\n> again\n\n    x = 1\n    y = 2", @"lists, a quote, code");
+    CheckMarkdown(@"{\"document\":[{\"e\":\"future\",\"c\":[{\"e\":\"text\",\"t\":\"kept\"}]},{\"e\":\"par\",\"c\":[{\"e\":\"text\",\"t\":\"clipped\",\"f\":[[1,3,99],[2,0,\"x\"]]}]}]}",
+                  @"kept\n\ncli**pped**", @"an unknown block, malformed ranges");
+    CheckMarkdown(@"{\"document\":[]}", nil, @"an empty document");
+    CheckMarkdown(@"not json", nil, @"not a document");
+    CHECK(ApolloGQLRichTextMarkdown(nil) == nil && ApolloGQLRichTextMarkdown(@{ @"document": @"x" }) == nil, @"nothing to read");
+    CHECK([ApolloGQLRichTextMarkdown(@{ @"document": @[ @{ @"e": @"par", @"c": @[ @{ @"e": @"text", @"t": @"parsed" } ] } ] }) isEqualToString:@"parsed"], @"a parsed document");
+}
+
 static void TestRichText(void) {
     CheckHTML(@"{\"document\":[{\"e\":\"par\",\"c\":[{\"e\":\"text\",\"t\":\"One.\"}]},{\"e\":\"par\",\"c\":[{\"e\":\"text\",\"t\":\"Two.\"}]}]}",
               @"<p>One.</p>\n\n<p>Two.</p>", @"paragraphs");
@@ -701,7 +815,7 @@ static void TestPlan(void) {
     CHECK(search.kind == ApolloGQLRequestKindSearchPosts && [search.searchQuery isEqualToString:@"iphone battery"] && [search.searchSort isEqualToString:@"TOP"],
           @"a search (%@ %@)", search.searchQuery, search.searchSort);
     NSDictionary *searchVariables = ApolloGQLSearchPostsVariables(search);
-    CHECK([searchVariables isEqualToDictionary:(@{ @"query": @"iphone battery", @"productSurface": @"SEARCH", @"sort": @"TOP",
+    CHECK([searchVariables isEqualToDictionary:(@{ @"query": @"iphone battery", @"productSurface": @"SEARCH", @"sort": @"TOP", @"includeDevvitData": @YES,
                                                    @"filters": @[ @{ @"key": @"nsfw", @"value": @"1" }, @{ @"key": @"time_range", @"value": @"week" } ] })],
           @"search variables (%@)", searchVariables);
     ApolloGQLRequest *inSubreddit = ApolloGQLRequestForLegacy(@"GET", @"r/Apple/search.json", @{ @"q": @"battery", @"restrict_sr": @"true", @"t": @"all" });
@@ -800,6 +914,7 @@ static void TestPlan(void) {
     // Operations.
     NSDictionary *body = [NSJSONSerialization JSONObjectWithData:ApolloGQLOperationBody(ApolloGQLOperationPostsByIds, ApolloGQLPostsByIdsVariables(@[ @"t3_a" ])) options:0 error:NULL];
     CHECK([body[@"operationName"] isEqualToString:@"PostsByIds"] && [body[@"variables"][@"ids"] isEqualToArray:@[ @"t3_a" ]], @"body");
+    CHECK([body[@"variables"][@"includeDevvitData"] isEqual:@YES], @"asks which posts are interactive posts");
     NSString *hash = body[@"extensions"][@"persistedQuery"][@"sha256Hash"];
     CHECK(hash.length == 64 && [body[@"extensions"][@"persistedQuery"][@"version"] isEqual:@1] && body[@"query"] == nil, @"a persisted query, no query text");
     CHECK(ApolloGQLOperationBody(@"NotAnOperation", @{}) == nil && ApolloGQLOperationHash(@"NotAnOperation") == nil, @"unknown operation");
@@ -1024,12 +1139,12 @@ static void TestPlanForLists(void) {
     ApolloGQLRequest *upvoted = ApolloGQLRequestForLegacy(@"GET", @"user/Some_One/upvoted.json", (@{ @"limit": @25, @"raw_json": @1 }));
     CHECK(upvoted.kind == ApolloGQLRequestKindOwnPosts && [upvoted.username isEqualToString:@"Some_One"] && [upvoted.ownList isEqualToString:@"upvoted"] &&
           upvoted.rawJSON, @"the account's upvoted posts (%ld %@ %@)", (long)upvoted.kind, upvoted.username, upvoted.ownList);
-    CHECK([ApolloGQLOwnPostsOperation(upvoted) isEqualToString:@"UpvotedPosts"] && [ApolloGQLOwnPostsVariables(upvoted) isEqualToDictionary:@{}], @"first page");
+    CHECK([ApolloGQLOwnPostsOperation(upvoted) isEqualToString:@"UpvotedPosts"] && [ApolloGQLOwnPostsVariables(upvoted) isEqualToDictionary:(@{ @"includeDevvitData": @YES })], @"first page");
     CHECK(ApolloGQLRequestIsForAccount(upvoted, @"some_one") && !ApolloGQLRequestIsForAccount(upvoted, @"another") && !ApolloGQLRequestIsForAccount(upvoted, nil),
           @"only the account's own list");
     ApolloGQLRequest *hidden = ApolloGQLRequestForLegacy(@"GET", @"/user/someone/hidden", (@{ @"after": @"t3_last" }));
     CHECK([ApolloGQLOwnPostsOperation(hidden) isEqualToString:@"HiddenPosts"] &&
-          [ApolloGQLOwnPostsVariables(hidden) isEqualToDictionary:(@{ @"after": @"dDNfbGFzdA==" })], @"a later page (%@)", ApolloGQLOwnPostsVariables(hidden));
+          [ApolloGQLOwnPostsVariables(hidden) isEqualToDictionary:(@{ @"after": @"dDNfbGFzdA==", @"includeDevvitData": @YES })], @"a later page (%@)", ApolloGQLOwnPostsVariables(hidden));
     CHECK([ApolloGQLOwnPostsOperation(ApolloGQLRequestForLegacy(@"GET", @"/user/someone/downvoted", nil)) isEqualToString:@"DownvotedPosts"], @"downvoted");
     CHECK(ApolloGQLRequestForLegacy(@"GET", @"/user/someone/upvoted", (@{ @"sort": @"top" })) == nil, @"GraphQL has these newest first only");
     CHECK(ApolloGQLRequestForLegacy(@"GET", @"/user/someone/upvoted", (@{ @"after": @"t1_x" })) == nil, @"a page after something that isn't a post");
@@ -1089,6 +1204,8 @@ int main(int argc, const char *argv[]) {
         TestVideoFallback();
         TestListingAndFeed();
         TestRichText();
+        TestRichTextMarkdown();
+        TestInteractivePosts();
         TestPlan();
         TestAuthorRecords();
         TestPlanForOwnReads();

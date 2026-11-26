@@ -344,6 +344,59 @@ static NSString *ApolloGQLLegacySort(NSString *sort) {
     return [lower isEqualToString:@"best"] ? @"confidence" : lower;
 }
 
+// `html` (a post's body, or nil when it has none) with `block` as its last
+// element.
+static NSString *ApolloGQLPostHTMLByAppending(NSString *html, NSString *block) {
+    NSString *closing = @"\n</div><!-- SC_ON -->";
+    return [html hasSuffix:closing]
+        ? [NSString stringWithFormat:@"%@\n\n%@%@", [html substringToIndex:html.length - closing.length], block, closing]
+        : [NSString stringWithFormat:@"<!-- SC_OFF --><div class=\"md\">%@%@", block, closing];
+}
+
+// An interactive post (Reddit's Developer Platform: match threads, games,
+// scoreboards). The legacy API has no field for one. It sends whatever text
+// the app wrote for clients that can't run it, and ends the body with a line
+// for old Reddit that links the post on sh.reddit.com:
+//
+//   <the app's text>
+//
+//   * * *
+//   This post contains content not supported on old Reddit. [Click here to view the full post](https://sh.reddit.com/r/<subreddit>/comments/<id>)
+//
+// That line, linking the post's own id, is the only thing Apollo Reborn's
+// interactive posts (ApolloDevvitPosts.xm) and Community Highlights can tell
+// one by. GraphQL marks the post instead (`devvit`, which PostsByIds, the
+// search and the account's lists send with includeDevvitData) and sends the
+// app's text as the app gave it: none (r/wallstreetbets' daily thread,
+// r/Pixelary), Markdown (r/MLS's scoreboard), or a rich-text document as JSON
+// text, in `markdown` (r/benfica's match thread); 2026-11-26, each one read
+// through both routes. Left as it came, the JSON was the body on screen and no
+// interactive post started. This writes the body the legacy API sends, into
+// `markdown` and `html`.
+static void ApolloGQLMakeLegacyInteractiveBody(NSDictionary *devvit, NSString *subredditName, NSString *permalink, NSString *id36,
+                                               NSString **markdown, NSString **html) {
+    NSString *text = (*markdown).length > 0 ? *markdown : ApolloGQLString(devvit, @"richtextFallback") ?: @"";
+    NSString *textHTML = *html;
+    if ([[text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] hasPrefix:@"{"]) {
+        id document = [NSJSONSerialization JSONObjectWithData:[text dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+        if ([document isKindOfClass:[NSDictionary class]] && [((NSDictionary *)document)[@"document"] isKindOfClass:[NSArray class]]) {
+            text = ApolloGQLRichTextMarkdown(document) ?: @"";
+            textHTML = ApolloGQLRichTextHTML(document, nil, YES);
+        }
+    }
+    if (text.length > 0 && textHTML.length == 0) textHTML = ApolloGQLPlainTextHTML(text, YES);
+    // The subreddit as the post's own address has it; a post that isn't in one
+    // (none seen) gets the start of its permalink.
+    NSString *place = subredditName.length > 0 ? [@"/r/" stringByAppendingString:subredditName] : @"";
+    NSRange comments = [permalink rangeOfString:@"/comments/"];
+    if (place.length == 0 && comments.location != NSNotFound) place = [permalink substringToIndex:comments.location];
+    NSString *address = [NSString stringWithFormat:@"https://sh.reddit.com%@/comments/%@", place, id36];
+    NSString *line = [NSString stringWithFormat:@"This post contains content not supported on old Reddit. [Click here to view the full post](%@)", address];
+    NSString *lineHTML = [NSString stringWithFormat:@"<p>This post contains content not supported on old Reddit. <a href=\"%@\">Click here to view the full post</a></p>", address];
+    *markdown = text.length > 0 ? [NSString stringWithFormat:@"%@\n\n* * *\n%@", text, line] : line;
+    *html = ApolloGQLPostHTMLByAppending(textHTML, textHTML.length > 0 ? [@"<hr/>\n\n" stringByAppendingString:lineHTML] : lineHTML);
+}
+
 // The unescaped `data` of a t3 thing. `depth` stops a crosspost of a crosspost
 // of … from recursing without end.
 static NSMutableDictionary<NSString *, id> *ApolloGQLLegacyLinkDataUnescaped(NSDictionary *post, NSUInteger depth) {
@@ -398,15 +451,13 @@ static NSMutableDictionary<NSString *, id> *ApolloGQLLegacyLinkDataUnescaped(NSD
         html = ApolloGQLRichTextHTML(ApolloGQLString(content, @"richtext"), ApolloGQLArray(content, @"richtextMedia"), YES)
             ?: ApolloGQLPlainTextHTML(markdown, YES);
     }
+    NSDictionary *devvit = ApolloGQLDict(post, @"devvit");
+    if (devvit) ApolloGQLMakeLegacyInteractiveBody(devvit, subredditName, data[@"permalink"], id36, &markdown, &html);
     // The legacy API ends a poll post's text with a link to the poll.
     if (ApolloGQLDict(post, @"poll")) {
         NSString *pollURL = [@"https://www.reddit.com/poll/" stringByAppendingString:id36];
         markdown = [markdown stringByAppendingFormat:@"\n\n[View Poll](%@)", pollURL];
-        NSString *link = [NSString stringWithFormat:@"<p><a href=\"%@\">View Poll</a></p>", pollURL];
-        NSString *closing = @"\n</div><!-- SC_ON -->";
-        html = [html hasSuffix:closing]
-            ? [NSString stringWithFormat:@"%@\n\n%@%@", [html substringToIndex:html.length - closing.length], link, closing]
-            : [NSString stringWithFormat:@"<!-- SC_OFF --><div class=\"md\">%@%@", link, closing];
+        html = ApolloGQLPostHTMLByAppending(html, [NSString stringWithFormat:@"<p><a href=\"%@\">View Poll</a></p>", pollURL]);
     }
     data[@"selftext"] = markdown;
     data[@"selftext_html"] = ApolloGQLOrNull(html);
@@ -580,6 +631,18 @@ NSArray<NSDictionary *> *ApolloGQLLegacyLinksFromPostsByIds(NSDictionary *answer
         if (data) [things addObject:ApolloGQLLegacyThing(@"t3", data)];
     }
     return things;
+}
+
+void ApolloGQLCountInteractivePosts(NSDictionary *answer, NSUInteger *marked, NSUInteger *unmarked) {
+    NSUInteger with = 0, without = 0;
+    for (id post in ApolloGQLArray(ApolloGQLDict(answer, @"data"), @"postsInfoByIds")) {
+        if (![post isKindOfClass:[NSDictionary class]]) continue;
+        if (ApolloGQLDict(post, @"devvit")) { with++; continue; }
+        if (![ApolloGQLString(ApolloGQLDict(post, @"authorInfo"), @"accountType") isEqualToString:@"APP"]) continue;
+        if ([ApolloGQLString(ApolloGQLDict(post, @"content"), @"markdown") hasPrefix:@"{\"document\":"]) without++;
+    }
+    if (marked) *marked = with;
+    if (unmarked) *unmarked = without;
 }
 
 #pragma mark - Comments

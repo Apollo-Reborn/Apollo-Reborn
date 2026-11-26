@@ -370,6 +370,13 @@ static NSArray<NSDictionary *> *ApolloGQLRoutePosts(NSString *account, NSArray<N
             *detail = @"PostsByIds answered without its posts";
             return nil;
         }
+        NSUInteger interactive = 0, unmarked = 0;
+        ApolloGQLCountInteractivePosts(answer, &interactive, &unmarked);
+        if (interactive > 0) ApolloLog(@"[GraphQL] PostsByIds: %lu interactive post(s), given the legacy body", (unsigned long)interactive);
+        if (unmarked > 0) {
+            ApolloLog(@"[GraphQL] PostsByIds: %lu post(s) look interactive and Reddit didn't mark them (no devvit in the answer): they show as text",
+                      (unsigned long)unmarked);
+        }
         [things addObjectsFromArray:page];
     }
     return things;
