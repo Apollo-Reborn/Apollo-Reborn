@@ -2,6 +2,7 @@
 
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
+#import "settings/ApolloSettingsForm.h"
 
 NSString *const ApolloTagFiltersChangedNotification = @"ApolloTagFiltersChangedNotification";
 
@@ -13,7 +14,12 @@ typedef NS_ENUM(NSInteger, TagFiltersSection) {
 
 #pragma mark - Per-subreddit detail VC
 
-@interface TagFilterSubredditDetailViewController : ApolloSettingsTableViewController
+static NSString *const TagFilterRowNSFW = @"tag-filter.nsfw";
+static NSString *const TagFilterRowSpoilers = @"tag-filter.spoilers";
+static NSString *const TagFilterRowReset = @"tag-filter.reset";
+static NSString *const TagFilterRowRemove = @"tag-filter.remove";
+
+@interface TagFilterSubredditDetailViewController : ApolloSettingsFormViewController
 @property (nonatomic, copy) NSString *subredditName;   // lowercased
 @property (nonatomic, copy) void (^onChange)(void);
 @end
@@ -23,7 +29,8 @@ typedef NS_ENUM(NSInteger, TagFiltersSection) {
 - (instancetype)initWithSubreddit:(NSString *)subreddit {
     self = [super initWithStyle:UITableViewStyleInsetGrouped];
     if (self) {
-        _subredditName = [[subreddit stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+        _subredditName = [[subreddit stringByTrimmingCharactersInSet:
+            [NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
     }
     return self;
 }
@@ -40,106 +47,168 @@ typedef NS_ENUM(NSInteger, TagFiltersSection) {
 }
 
 - (void)updateOverrideWithBlock:(void (^)(NSMutableDictionary *override))block {
-    NSMutableDictionary *all = [(sTagFilterSubredditOverrides ?: @{}) mutableCopy];
-    NSMutableDictionary *o = [([self currentOverride] ?: @{}) mutableCopy];
+    NSMutableDictionary *all =
+        [(sTagFilterSubredditOverrides ?: @{}) mutableCopy];
+    NSMutableDictionary *o =
+        [([self currentOverride] ?: @{}) mutableCopy];
+
     if (block) block(o);
-    if (o.count > 0) {
-        all[self.subredditName] = [o copy];
-    } else {
-        [all removeObjectForKey:self.subredditName];
-    }
+
+    // Subreddit entries are explicit overrides. Older saved entries may be
+    // empty or partial; missing keys continue to follow the effective global
+    // settings until the override is changed or reset.
+    // Only Remove Override removes the subreddit from this list.
+    all[self.subredditName] = [o copy];
+
     sTagFilterSubredditOverrides = [all copy];
-    [[NSUserDefaults standardUserDefaults] setObject:sTagFilterSubredditOverrides forKey:UDKeyTagFilterSubredditOverrides];
-    [[NSNotificationCenter defaultCenter] postNotificationName:ApolloTagFiltersChangedNotification object:nil];
+    [[NSUserDefaults standardUserDefaults]
+        setObject:sTagFilterSubredditOverrides
+           forKey:UDKeyTagFilterSubredditOverrides];
+
+    [[NSNotificationCenter defaultCenter]
+        postNotificationName:ApolloTagFiltersChangedNotification
+                      object:nil];
+
     if (self.onChange) self.onChange();
 }
 
 - (BOOL)effectiveBoolForKey:(NSString *)key globalDefault:(BOOL)globalDefault {
     NSDictionary *o = [self currentOverride];
-    id v = o[key];
-    if ([v isKindOfClass:[NSNumber class]]) return [(NSNumber *)v boolValue];
+    id value = o[key];
+    if ([value isKindOfClass:[NSNumber class]]) {
+        return [(NSNumber *)value boolValue];
+    }
     return globalDefault;
 }
 
-#pragma mark - Table
+- (void)removeOverride {
+    NSMutableDictionary *all =
+        [(sTagFilterSubredditOverrides ?: @{}) mutableCopy];
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 3; }
+    [all removeObjectForKey:self.subredditName];
 
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == 0) return 2; // NSFW, Spoiler
-    if (section == 1) return 1; // Reset
-    return 1;                   // Delete
+    sTagFilterSubredditOverrides = [all copy];
+    [[NSUserDefaults standardUserDefaults]
+        setObject:sTagFilterSubredditOverrides
+           forKey:UDKeyTagFilterSubredditOverrides];
+
+    [[NSNotificationCenter defaultCenter]
+        postNotificationName:ApolloTagFiltersChangedNotification
+                      object:nil];
+
+    if (self.onChange) self.onChange();
+
+    [self.navigationController popViewControllerAnimated:YES];
 }
 
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    if (section == 0) return @"Filter";
-    return nil;
-}
+- (NSArray<ApolloSettingsSection *> *)buildForm {
+    __weak __typeof(self) weakSelf = self;
 
-- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (section == 0) return @"Per-subreddit settings override the global defaults. Toggles match what you'd set globally.";
-    if (section == 1) return @"Reset clears overrides for this subreddit (it will follow global settings again).";
-    return nil;
-}
+    ApolloSettingsRow *nsfw =
+        [ApolloSettingsRow switchRowWithID:TagFilterRowNSFW
+                                     title:@"NSFW"
+                                      isOn:^BOOL {
+            return [weakSelf effectiveBoolForKey:@"nsfw"
+                                   globalDefault:(sTagFilterEnabled && sTagFilterNSFW)];
+        }
+                                  onToggle:^(UISwitch *sender) {
+            [weakSelf updateOverrideWithBlock:^(NSMutableDictionary *o) {
+                o[@"nsfw"] = @(sender.isOn);
+            }];
+            [weakSelf reloadRowWithID:TagFilterRowReset];
+        }];
 
-- (UITableViewCell *)switchCellLabel:(NSString *)label on:(BOOL)on action:(SEL)action {
-    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
-    cell.selectionStyle = UITableViewCellSelectionStyleNone;
-    cell.textLabel.text = label;
-    UISwitch *sw = [[UISwitch alloc] init];
-    sw.on = on;
-    [sw addTarget:self action:action forControlEvents:UIControlEventValueChanged];
-    cell.accessoryView = sw;
-    [self apollo_applyPrimaryTextColorToCell:cell];
-    return cell;
-}
+    ApolloSettingsRow *spoilers =
+        [ApolloSettingsRow switchRowWithID:TagFilterRowSpoilers
+                                     title:@"Spoilers"
+                                      isOn:^BOOL {
+            return [weakSelf effectiveBoolForKey:@"spoiler"
+                                   globalDefault:(sTagFilterEnabled && sTagFilterSpoiler)];
+        }
+                                  onToggle:^(UISwitch *sender) {
+            [weakSelf updateOverrideWithBlock:^(NSMutableDictionary *o) {
+                o[@"spoiler"] = @(sender.isOn);
+            }];
+            [weakSelf reloadRowWithID:TagFilterRowReset];
+        }];
 
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (indexPath.section == 0) {
-        if (indexPath.row == 0) return [self switchCellLabel:@"NSFW"
-                                                          on:[self effectiveBoolForKey:@"nsfw" globalDefault:sTagFilterNSFW]
-                                                      action:@selector(nsfwChanged:)];
-        return [self switchCellLabel:@"Spoiler"
-                                  on:[self effectiveBoolForKey:@"spoiler" globalDefault:sTagFilterSpoiler]
-                              action:@selector(spoilerChanged:)];
-    }
-    if (indexPath.section == 1) {
-        UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
-        cell.textLabel.text = @"Reset to Global Defaults";
-        [self apollo_applyAccentActionTextColorToCell:cell];
+    ApolloSettingsRow *reset =
+        [ApolloSettingsRow buttonRowWithID:TagFilterRowReset
+                                     title:@"Reset to Global Settings"
+                                    action:^{
+            [weakSelf updateOverrideWithBlock:^(NSMutableDictionary *o) {
+                o[@"nsfw"] = @(sTagFilterEnabled && sTagFilterNSFW);
+                o[@"spoiler"] = @(sTagFilterEnabled && sTagFilterSpoiler);
+            }];
+
+            // Re-read the reset values and the Reset enabled state.
+            [weakSelf reloadRowWithID:TagFilterRowNSFW];
+            [weakSelf reloadRowWithID:TagFilterRowSpoilers];
+            [weakSelf reloadRowWithID:TagFilterRowReset];
+        }];
+
+    reset.enabled = ^BOOL {
+        NSDictionary *o = [weakSelf currentOverride];
+
+        BOOL globalNSFW = sTagFilterEnabled && sTagFilterNSFW;
+        BOOL globalSpoiler = sTagFilterEnabled && sTagFilterSpoiler;
+
+        BOOL nsfw = [o[@"nsfw"] isKindOfClass:[NSNumber class]]
+            ? [o[@"nsfw"] boolValue]
+            : globalNSFW;
+        BOOL spoiler = [o[@"spoiler"] isKindOfClass:[NSNumber class]]
+            ? [o[@"spoiler"] boolValue]
+            : globalSpoiler;
+
+        return nsfw != globalNSFW || spoiler != globalSpoiler;
+    };
+    reset.configure = ^(UITableViewCell *cell) {
         cell.textLabel.textAlignment = NSTextAlignmentCenter;
-        return cell;
-    }
-    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
-    cell.textLabel.text = @"Remove Subreddit Override";
-    cell.textLabel.textColor = [UIColor systemRedColor];
-    cell.textLabel.textAlignment = NSTextAlignmentCenter;
-    return cell;
-}
+    };
 
-- (void)nsfwChanged:(UISwitch *)sw {
-    [self updateOverrideWithBlock:^(NSMutableDictionary *o) { o[@"nsfw"] = @(sw.on); }];
-}
+    ApolloSettingsRow *remove =
+        [ApolloSettingsRow customRowWithID:TagFilterRowRemove
+                                      cell:^UITableViewCell *(
+                                          UITableView *tableView,
+                                          __unused ApolloSettingsRow *row) {
+            static NSString *const reuseID = @"TagFilterRemoveOverride";
+            UITableViewCell *cell =
+                [tableView dequeueReusableCellWithIdentifier:reuseID];
 
-- (void)spoilerChanged:(UISwitch *)sw {
-    [self updateOverrideWithBlock:^(NSMutableDictionary *o) { o[@"spoiler"] = @(sw.on); }];
-}
+            if (!cell) {
+                cell = [[UITableViewCell alloc]
+                    initWithStyle:UITableViewCellStyleDefault
+                  reuseIdentifier:reuseID];
+            }
 
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    if (indexPath.section == 1) {
-        [self updateOverrideWithBlock:^(NSMutableDictionary *o) {
-            [o removeAllObjects];
+            cell.textLabel.text = @"Remove Override";
+            cell.textLabel.textColor = [UIColor systemRedColor];
+            cell.textLabel.textAlignment = NSTextAlignmentCenter;
+            cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+            cell.accessoryType = UITableViewCellAccessoryNone;
+
+            return cell;
+        }
+                                  onSelect:^{
+            [weakSelf removeOverride];
         }];
-        [self.tableView reloadData];
-        return;
-    }
-    if (indexPath.section == 2) {
-        [self updateOverrideWithBlock:^(NSMutableDictionary *o) {
-            [o removeAllObjects];
-        }];
-        [self.navigationController popViewControllerAnimated:YES];
-    }
+
+    return @[
+        [ApolloSettingsSection
+            sectionWithTitle:@"Cover Tagged Posts"
+                       footer:@"These take priority over your global settings for this subreddit."
+                         rows:@[ nsfw, spoilers ]],
+
+        [ApolloSettingsSection
+            sectionWithTitle:nil
+                       footer:nil
+                         rows:@[ reset ]],
+
+        [ApolloSettingsSection
+            sectionWithTitle:nil
+                       footer:nil
+                         rows:@[ remove ]],
+    ];
 }
 
 @end
@@ -153,7 +222,7 @@ typedef NS_ENUM(NSInteger, TagFiltersSection) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = self.overridesOnly ? @"Per-Subreddit Overrides" : @"Tag Filters";
+    self.title = self.overridesOnly ? @"Customize by Subreddit" : @"Tag Filters";
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -161,10 +230,17 @@ typedef NS_ENUM(NSInteger, TagFiltersSection) {
     [self.tableView reloadData];
 }
 
-// overridesOnly maps the visible single section onto TagFiltersSectionOverrides;
-// the full screen passes sections through unchanged.
+
+
+// In overrides-only mode, an introductory section appears when the master
+// switch is disabled; the remaining section contains subreddit overrides.
 - (NSInteger)modelSectionFor:(NSInteger)section {
-    return self.overridesOnly ? TagFiltersSectionOverrides : section;
+    if (self.overridesOnly) {
+        return (!sTagFilterEnabled && section == 0)
+            ? -1
+            : TagFiltersSectionOverrides;
+    }
+    return section;
 }
 
 #pragma mark - Helpers
@@ -181,7 +257,9 @@ typedef NS_ENUM(NSInteger, TagFiltersSection) {
 #pragma mark - Section / row counts
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return self.overridesOnly ? 1 : TagFiltersSectionCount;
+    return self.overridesOnly
+        ? (sTagFilterEnabled ? 1 : 2)
+        : TagFiltersSectionCount;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
@@ -193,7 +271,7 @@ typedef NS_ENUM(NSInteger, TagFiltersSection) {
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     section = [self modelSectionFor:section];
-    if (self.overridesOnly) return nil; // the nav title already says it
+    if (self.overridesOnly) return nil;
     if (section == TagFiltersSectionGeneral) return @"General";
     if (section == TagFiltersSectionOverrides) return @"Per-Subreddit Overrides";
     return nil;
@@ -205,9 +283,88 @@ typedef NS_ENUM(NSInteger, TagFiltersSection) {
         return @"Filtered posts are covered with a frosted blur over the post's title and thumbnail. Tap the blur to confirm and reveal the post. Brand Affiliate is unavailable because Apollo does not store that tag.";
     }
     if (section == TagFiltersSectionOverrides) {
-        return @"Per-subreddit settings override the global defaults. Add a subreddit to customize behavior for it.";
+        return nil; // supplied by viewForFooterInSection:
     }
     return nil;
+}
+
+- (CGFloat)tableView:(UITableView *)tableView
+    heightForFooterInSection:(NSInteger)section {
+    if (self.overridesOnly && !sTagFilterEnabled && section == 0) {
+        NSString *message =
+            @"Enable Cover Tagged Posts to apply customizations.";
+
+        UIFont *font =
+            ApolloSettingsFont(UIFontTextStyleBody, tableView.traitCollection);
+
+        CGFloat width = MAX(1.0, CGRectGetWidth(tableView.bounds) - 40.0);
+
+        CGRect bounds = [message boundingRectWithSize:
+            CGSizeMake(width, CGFLOAT_MAX)
+            options:NSStringDrawingUsesLineFragmentOrigin |
+                    NSStringDrawingUsesFontLeading
+            attributes:@{NSFontAttributeName: font}
+            context:nil];
+
+        return ceil(bounds.size.height);
+    }
+
+    return UITableViewAutomaticDimension;
+}
+
+- (UIView *)tableView:(UITableView *)tableView
+    viewForFooterInSection:(NSInteger)section {
+    NSInteger modelSection = [self modelSectionFor:section];
+    if (self.overridesOnly && !sTagFilterEnabled && section == 0) {
+        UIView *container = [[UIView alloc] init];
+        UILabel *label = [[UILabel alloc] init];
+        label.translatesAutoresizingMaskIntoConstraints = NO;
+        label.text = @"Enable Cover Tagged Posts to apply customizations.";
+        label.font =
+            ApolloSettingsFont(UIFontTextStyleBody, label.traitCollection);
+        label.adjustsFontForContentSizeCategory = NO;
+        label.textColor = [UIColor secondaryLabelColor];
+        label.numberOfLines = 0;
+
+        [container addSubview:label];
+        [NSLayoutConstraint activateConstraints:@[
+            [label.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:20.0],
+            [label.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-20.0],
+            [label.topAnchor constraintEqualToAnchor:container.topAnchor
+                                             constant:0.0],
+            [label.bottomAnchor constraintEqualToAnchor:container.bottomAnchor
+                                                constant:0.0],
+        ]];
+
+        return container;
+    }
+
+    if (modelSection != TagFiltersSectionOverrides) return nil;
+
+    UIView *container = [[UIView alloc] init];
+    UILabel *label = [[UILabel alloc] init];
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    label.text =
+        @"Choose which tagged posts are covered in specific subreddits.";
+    label.font =
+        ApolloSettingsFont(UIFontTextStyleFootnote, label.traitCollection);
+    label.adjustsFontForContentSizeCategory = NO;
+    label.textColor = [UIColor secondaryLabelColor];
+    label.numberOfLines = 0;
+
+    [container addSubview:label];
+    [NSLayoutConstraint activateConstraints:@[
+        [label.leadingAnchor constraintEqualToAnchor:container.leadingAnchor
+                                            constant:20.0],
+        [label.trailingAnchor constraintEqualToAnchor:container.trailingAnchor
+                                             constant:-20.0],
+        [label.topAnchor constraintEqualToAnchor:container.topAnchor
+                                         constant:6.0],
+        [label.bottomAnchor constraintEqualToAnchor:container.bottomAnchor
+                                            constant:-6.0],
+    ]];
+
+    return container;
 }
 
 #pragma mark - Cells
@@ -260,12 +417,28 @@ typedef NS_ENUM(NSInteger, TagFiltersSection) {
 
 - (NSString *)summaryForOverride:(NSString *)sub {
     NSDictionary *o = sTagFilterSubredditOverrides[sub];
-    if (![o isKindOfClass:[NSDictionary class]]) return @"(no overrides)";
-    NSMutableArray<NSString *> *parts = [NSMutableArray array];
-    if ([o[@"nsfw"] isKindOfClass:[NSNumber class]]) [parts addObject:[NSString stringWithFormat:@"NSFW: %@", [o[@"nsfw"] boolValue] ? @"on" : @"off"]];
-    if ([o[@"spoiler"] isKindOfClass:[NSNumber class]]) [parts addObject:[NSString stringWithFormat:@"Spoiler: %@", [o[@"spoiler"] boolValue] ? @"on" : @"off"]];
-    if (parts.count == 0) return @"(uses global)";
-    return [parts componentsJoinedByString:@" · "];
+    if (![o isKindOfClass:[NSDictionary class]]) o = @{};
+
+    BOOL nsfw = [o[@"nsfw"] isKindOfClass:[NSNumber class]]
+        ? [o[@"nsfw"] boolValue]
+        : sTagFilterNSFW;
+
+    BOOL spoiler = [o[@"spoiler"] isKindOfClass:[NSNumber class]]
+        ? [o[@"spoiler"] boolValue]
+        : sTagFilterSpoiler;
+
+    NSString *summary;
+    if (nsfw == spoiler) {
+        summary = nsfw
+            ? @"Cover NSFW and spoilers"
+            : @"Show NSFW and spoilers";
+    } else {
+        summary = [NSString stringWithFormat:@"%@ NSFW · %@ spoilers",
+            nsfw ? @"Cover" : @"Show",
+            spoiler ? @"Cover" : @"Show"];
+    }
+
+    return summary;
 }
 
 #pragma mark - Switch handlers
@@ -298,8 +471,6 @@ typedef NS_ENUM(NSInteger, TagFiltersSection) {
         NSArray<NSString *> *subs = [self overrideSubreddits];
         if ((NSUInteger)indexPath.row < subs.count) {
             TagFilterSubredditDetailViewController *detail = [[TagFilterSubredditDetailViewController alloc] initWithSubreddit:subs[indexPath.row]];
-            __weak typeof(self) wself = self;
-            detail.onChange = ^{ [wself.tableView reloadData]; };
             [self.navigationController pushViewController:detail animated:YES];
         } else {
             [self presentAddSubredditPrompt];
@@ -327,24 +498,31 @@ typedef NS_ENUM(NSInteger, TagFiltersSection) {
 
 - (void)presentAddSubredditPrompt {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Add Subreddit"
-                                                                   message:@"Enter the subreddit name (without r/)."
+                                                                   message:@"Enter the name of the subreddit you want to customize. Then choose which tagged posts are covered."
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *tf) {
-        tf.placeholder = @"funny";
+        tf.placeholder = @"Subreddit name";
         tf.autocapitalizationType = UITextAutocapitalizationTypeNone;
         tf.autocorrectionType = UITextAutocorrectionTypeNo;
     }];
     __weak UIAlertController *weakAlert = alert;
     [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Add" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+
+    UIAlertAction *addAction =
+        [UIAlertAction actionWithTitle:@"Add" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
         UITextField *tf = weakAlert.textFields.firstObject;
         NSString *raw = [tf.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-        if ([raw hasPrefix:@"r/"] || [raw hasPrefix:@"R/"]) raw = [raw substringFromIndex:2];
         if ([raw hasPrefix:@"/"]) raw = [raw substringFromIndex:1];
+        if ([raw hasPrefix:@"r/"] || [raw hasPrefix:@"R/"]) raw = [raw substringFromIndex:2];
         NSString *sub = raw.lowercaseString;
         if (sub.length == 0) return;
         NSMutableDictionary *all = [(sTagFilterSubredditOverrides ?: @{}) mutableCopy];
-        if (!all[sub]) all[sub] = @{}; // empty overrides; opens detail to configure
+        if (!all[sub]) {
+            all[sub] = @{
+                @"nsfw": @YES,
+                @"spoiler": @YES,
+            };
+        }
         sTagFilterSubredditOverrides = [all copy];
         [[NSUserDefaults standardUserDefaults] setObject:all forKey:UDKeyTagFilterSubredditOverrides];
         [self postChange];
@@ -353,7 +531,20 @@ typedef NS_ENUM(NSInteger, TagFiltersSection) {
         __weak typeof(self) wself = self;
         detail.onChange = ^{ [wself.tableView reloadData]; };
         [self.navigationController pushViewController:detail animated:YES];
-    }]];
+    }];
+
+    addAction.enabled = NO;
+    [alert addAction:addAction];
+    alert.preferredAction = addAction;
+
+    UITextField *field = alert.textFields.firstObject;
+    [field addAction:[UIAction actionWithHandler:^(__kindof UIAction *action) {
+        NSString *text = ((UITextField *)action.sender).text ?: @"";
+        addAction.enabled =
+            [text stringByTrimmingCharactersInSet:
+                [NSCharacterSet whitespaceAndNewlineCharacterSet]].length > 0;
+    }] forControlEvents:UIControlEventEditingChanged];
+
     [self presentViewController:alert animated:YES completion:nil];
 }
 
