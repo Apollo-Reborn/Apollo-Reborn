@@ -221,6 +221,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloPostedCommentInsert.xm \
     $(SRC_DIR)/ApolloLoadMoreComments.xm \
     $(SRC_DIR)/ApolloCommentSubmitFailure.xm \
+    $(SRC_DIR)/ApolloPostSubmitFailure.xm \
     $(SRC_DIR)/ApolloLiveCommentsFollow.xm \
     $(SRC_DIR)/ApolloCommentNavigationModel.m \
     $(SRC_DIR)/ApolloCommentNavigator.xm \

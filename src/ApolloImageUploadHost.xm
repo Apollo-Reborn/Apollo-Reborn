@@ -3311,9 +3311,15 @@ static void ApolloCompleteRedditNativeMediaUpload(NSData *mediaData, NSURL *medi
     // multi-image gallery submits pass Reddit's ownership check. The resolve
     // can mint synchronously (bounded network wait), so hop off the calling
     // queue; everything downstream is async callbacks anyway.
+    //
+    // The desktop web client's bearer, which is what token_v2 is: once token_v2
+    // has aged out, a bearer minted for the mobile web client gets Reddit's 403
+    // block page on this lease (checked 2026-11-25 on a new account), and the
+    // cookie lease below returns no asset_id, so Apollo never learns the post's
+    // ID and reports a post Reddit did create as failed.
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         if (ApolloRedditNativeUploadAttemptIsCancelled(attempt, @"keyless-bearer-resolve")) return;
-        NSString *ownBearer = sessionUsername.length > 0 ? ApolloWebJSONKeylessOAuthBearer(sessionUsername) : nil;
+        NSString *ownBearer = sessionUsername.length > 0 ? ApolloWebJSONDesktopWebBearer(sessionUsername) : nil;
         if (ApolloRedditNativeUploadAttemptIsCancelled(attempt, @"keyless-bearer-resolved")) return;
         if (ownBearer.length == 0) {
             ApolloLog(@"[RedditUpload] No web bearer for u/%@ — using the cookie web lease (galleries need the bearer)", sessionUsername ?: @"(unknown)");
@@ -3329,7 +3335,7 @@ static void ApolloCompleteRedditNativeMediaUpload(NSData *mediaData, NSURL *medi
         ApolloRedditMediaUploadCompletion bearerOutcomeCompletion = ^(NSURL *mediaURL, NSString *assetID, NSString *webSocketURL, NSError *error) {
             BOOL authRejected = error && [error.domain isEqualToString:@"ApolloRedditMediaUpload"] && (error.code == 401 || error.code == 403);
             if (authRejected && !ApolloRedditNativeUploadAttemptIsCancelled(attempt, @"keyless-bearer-rejected")) {
-                ApolloWebJSONInvalidateOAuthBearerForAccount(sessionUsername, ownBearer);
+                ApolloWebJSONInvalidateDesktopWebBearer(sessionUsername, ownBearer);
                 ApolloLog(@"[RedditUpload] Web-bearer media lease rejected (HTTP %ld) — retrying via the cookie web lease", (long)error.code);
                 startCookieLeaseUpload();
                 return;

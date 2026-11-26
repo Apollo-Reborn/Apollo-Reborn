@@ -456,7 +456,7 @@ static void ApolloSBFetchWidgets(NSString *subredditName, void (^completion)(NSD
                 dispatch_async(dispatch_get_main_queue(), ^{ completion(nil); });
                 return;
             }
-            NSString *webBearer = username.length > 0 ? ApolloWebJSONKeylessOAuthBearer(username) : nil;
+            NSString *webBearer = username.length > 0 ? ApolloWebJSONDesktopWebBearer(username) : nil;
             if (webBearer.length > 0 && oauthURL) {
                 // Probe-marked so the transport doesn't reroute it or treat this
                 // bearer as Apollo's own.
@@ -466,10 +466,11 @@ static void ApolloSBFetchWidgets(NSString *subredditName, void (^completion)(NSD
                 [request setValue:[@"Bearer " stringByAppendingString:webBearer] forHTTPHeaderField:@"Authorization"];
                 [request setValue:userAgent forHTTPHeaderField:@"User-Agent"];
                 root = ApolloSBPerformWidgetsRequest(request, subredditName, @"keyless token_v2", &status, &definitive);
-                if (status == 401 || status == 403) {
-                    // A failing minted bearer is a dead session's token: drop it so
-                    // the next open re-mints.
-                    ApolloWebJSONInvalidateOAuthBearerForAccount(username, webBearer);
+                if (status == 401) {
+                    // Reddit refused the bearer itself: the next open gets another
+                    // one. A 403 is its answer about this subreddit (private,
+                    // banned…), not about the bearer.
+                    ApolloWebJSONInvalidateDesktopWebBearer(username, webBearer);
                 }
             }
             if (!root && !definitive) {

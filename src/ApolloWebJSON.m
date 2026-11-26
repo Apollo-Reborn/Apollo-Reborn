@@ -2240,11 +2240,12 @@ BOOL ApolloWebJSONShouldStubInvitedModerators(NSURLResponse *response) {
 // 404s on www at its bare path, but www answers the cookie at the ".json" path
 // (checked live 2026-11-16), so the classifier sends it there like a listing.
 // Should www still fail, the serializer tries oauth.reddit.com with a
-// web-session bearer (ApolloWebJSONRescueFlairList below; as of 2026-11-16
-// oauth answers that bearer with its HTML block page) and stubs an empty list
-// when that fails too — no flair choices, but the Submit drawer still loads
-// instead of hanging. user_flair(_v2) gets the same treatment. OAuth accounts
-// untouched (session gate).
+// web-session bearer (ApolloWebJSONRescueFlairList below: the desktop web
+// client's, since oauth answers one minted for the mobile web client with its
+// HTML block page, seen 2026-11-16 and again 2026-11-25) and stubs an empty
+// list when that fails too — no flair choices, but the Submit drawer still
+// loads instead of hanging. user_flair(_v2) gets the same treatment. OAuth
+// accounts untouched (session gate).
 BOOL ApolloWebJSONShouldStubFlairList(NSURLResponse *response) {
     if (!ApolloWebJSONHasUsableSession()) return NO;
     if (![response isKindOfClass:[NSHTTPURLResponse class]]) return NO;
@@ -2402,17 +2403,26 @@ static void ApolloWebJSONDropMintedBearerForUser(NSString *username) {
 // Serialized behind a lock; losers of a concurrent race reuse the winner's
 // cached bearer. Synchronous (bounded by the request timeout) — background
 // queues only; the rescue's main-thread bail guarantees that.
-static NSString *ApolloWebJSONMintWebBearerForAccount(NSString *username) {
+//
+// `desktopClient` mints for the desktop web client instead (cid
+// "0R-WAMhuoo-MyQ", the one token_v2 belongs to): the same request with that
+// id. gql-fed.reddit.com takes the desktop client's token and refuses the
+// mobile one's, the reverse of oauth.reddit.com's post search
+// (ApolloWebJSONRoutes.m), so the two are minted and cached apart.
+static NSString *ApolloWebJSONMintWebBearerForAccount(NSString *account, BOOL desktopClient) {
+    // The cache and failure records below key on this.
+    NSString *username = desktopClient ? [account stringByAppendingString:@"|desktop"] : account;
+    NSString *kind = desktopClient ? @"Desktop web-bearer" : @"Web-bearer";
     static NSObject *mintLock;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{ mintLock = [NSObject new]; });
     @synchronized (mintLock) {
-        ApolloWebSessionEntry *session = ApolloWebSessionFor(username);
+        ApolloWebSessionEntry *session = ApolloWebSessionFor(account);
         if (session.cookieHeader.length == 0) return nil;
         NSString *cached = ApolloWebJSONCachedMintedBearerForUser(username);
         if (cached) return cached; // a concurrent rescuer already minted
         if (ApolloWebJSONMintFailedRecentlyForUser(username)) {
-            ApolloLog(@"[WebJSON] Skipping web-bearer mint for u/%@ — a recent attempt failed, backing off", username);
+            ApolloLog(@"[WebJSON] Skipping %@ mint for u/%@ — a recent attempt failed, backing off", kind.lowercaseString, account);
             return nil;
         }
 
@@ -2422,7 +2432,8 @@ static NSString *ApolloWebJSONMintWebBearerForAccount(NSString *username) {
         NSURL *mintURL = ApolloWebJSONProbeURL([NSURL URLWithString:@"https://accounts.reddit.com/api/access_token"]);
         NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:mintURL];
         req.HTTPMethod = @"POST";
-        NSString *basic = [[@"ohXpoqrZYub1kg:" dataUsingEncoding:NSUTF8StringEncoding] base64EncodedStringWithOptions:0];
+        NSString *clientID = desktopClient ? @"0R-WAMhuoo-MyQ:" : @"ohXpoqrZYub1kg:";
+        NSString *basic = [[clientID dataUsingEncoding:NSUTF8StringEncoding] base64EncodedStringWithOptions:0];
         [req setValue:[@"Basic " stringByAppendingString:basic] forHTTPHeaderField:@"Authorization"];
         [req setValue:session.cookieHeader forHTTPHeaderField:@"Cookie"];
         [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
@@ -2445,12 +2456,12 @@ static NSString *ApolloWebJSONMintWebBearerForAccount(NSString *username) {
         }] resume];
         if (dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, 4 * NSEC_PER_SEC)) != 0) {
             ApolloWebJSONRecordMintFailureForUser(username);
-            ApolloLog(@"[WebJSON] Web-bearer mint timed out for u/%@", username);
+            ApolloLog(@"[WebJSON] %@ mint timed out for u/%@", kind, account);
             return nil;
         }
         if (status < 200 || status >= 300 || body.length == 0) {
             ApolloWebJSONRecordMintFailureForUser(username);
-            ApolloLog(@"[WebJSON] Web-bearer mint failed for u/%@ (HTTP %ld)", username, (long)status);
+            ApolloLog(@"[WebJSON] %@ mint failed for u/%@ (HTTP %ld)", kind, account, (long)status);
             return nil;
         }
         NSDictionary *json = [NSJSONSerialization JSONObjectWithData:body options:0 error:NULL];
@@ -2458,7 +2469,7 @@ static NSString *ApolloWebJSONMintWebBearerForAccount(NSString *username) {
         if (![token isKindOfClass:[NSString class]] || token.length == 0 ||
             ApolloWebJSONJWTExpiry(token) <= [[NSDate date] timeIntervalSince1970] + 300) {
             ApolloWebJSONRecordMintFailureForUser(username);
-            ApolloLog(@"[WebJSON] Web-bearer mint for u/%@ produced no usable token", username);
+            ApolloLog(@"[WebJSON] %@ mint for u/%@ produced no usable token", kind, account);
             return nil;
         }
         // A signed-out cookie still gets HTTP 200 here, carrying an anonymous
@@ -2469,11 +2480,11 @@ static NSString *ApolloWebJSONMintWebBearerForAccount(NSString *username) {
         NSString *subject = ApolloWebJSONJWTClaims(token)[@"sub"];
         if ([subject isKindOfClass:[NSString class]] && [subject hasPrefix:@"loid"]) {
             ApolloWebJSONRecordMintFailureForUser(username);
-            ApolloLog(@"[WebJSON] Web-bearer mint for u/%@ returned a signed-out token — not using it", username);
+            ApolloLog(@"[WebJSON] %@ mint for u/%@ returned a signed-out token — not using it", kind, account);
             return nil;
         }
         ApolloWebJSONStoreMintedBearerForUser(username, token);
-        ApolloLog(@"[WebJSON] Web-bearer mint for u/%@ succeeded (validated by the fetch that follows)", username);
+        ApolloLog(@"[WebJSON] %@ mint for u/%@ succeeded (validated by the fetch that follows)", kind, account);
         return token;
     }
 }
@@ -2486,7 +2497,7 @@ NSString *ApolloWebJSONKeylessOAuthBearer(NSString *username) {
     // token_v2 while it's still fresh, else a bearer minted from the accounts
     // token service (ApolloWebJSONMintWebBearerForAccount) — the HTML-page-load
     // rotation this used to rely on is dead upstream (see the mint's note).
-    return ApolloWebJSONUsableTokenV2ForSession(session) ?: ApolloWebJSONMintWebBearerForAccount(user);
+    return ApolloWebJSONUsableTokenV2ForSession(session) ?: ApolloWebJSONMintWebBearerForAccount(user, NO);
 }
 
 // Fetch-outcome feedback for ApolloWebJSONKeylessOAuthBearer callers: a 401/403
@@ -2507,6 +2518,45 @@ void ApolloWebJSONInvalidateOAuthBearerForAccount(NSString *username, NSString *
     ApolloLog(@"[WebJSON] Dropped rejected web bearer for u/%@ (fetch outcome 401/403)", user);
 }
 
+#pragma mark - Desktop web bearer for the GraphQL route
+
+// token_v2 values gql-fed.reddit.com refused, so the next request mints instead
+// of offering the same one again (it stays in the stored cookie until it ages
+// out). Mint state lock.
+static NSMutableSet<NSString *> *sRefusedTokenV2;
+
+NSString *ApolloWebJSONDesktopWebBearer(NSString *username) {
+    NSString *user = username.lowercaseString;
+    if (user.length == 0) return nil;
+    ApolloWebSessionEntry *session = ApolloWebSessionFor(user);
+    if (session.cookieHeader.length == 0) return nil;
+    NSString *tokenV2 = ApolloWebJSONUsableTokenV2ForSession(session);
+    if (tokenV2.length > 0) {
+        @synchronized (ApolloWebJSONMintStateLock()) {
+            if ([sRefusedTokenV2 containsObject:tokenV2]) tokenV2 = nil;
+        }
+    }
+    return tokenV2 ?: ApolloWebJSONMintWebBearerForAccount(user, YES);
+}
+
+void ApolloWebJSONInvalidateDesktopWebBearer(NSString *username, NSString *bearer) {
+    NSString *user = username.lowercaseString;
+    if (user.length == 0 || bearer.length == 0) return;
+    NSString *key = [user stringByAppendingString:@"|desktop"];
+    if ([ApolloWebJSONCachedMintedBearerForUser(key) isEqualToString:bearer]) {
+        ApolloWebJSONDropMintedBearerForUser(key);
+        ApolloWebJSONRecordMintFailureForUser(key);
+        ApolloLog(@"[WebJSON] Dropped u/%@'s minted desktop web bearer (refused)", user);
+        return;
+    }
+    @synchronized (ApolloWebJSONMintStateLock()) {
+        if (!sRefusedTokenV2) sRefusedTokenV2 = [NSMutableSet set];
+        if (sRefusedTokenV2.count > 16) [sRefusedTokenV2 removeAllObjects];
+        [sRefusedTokenV2 addObject:bearer];
+    }
+    ApolloLog(@"[WebJSON] u/%@'s token_v2 was refused; minting a desktop web bearer from now on", user);
+}
+
 #pragma mark - Web bearer for OAuth-only moderator endpoints
 
 // Once oauth.reddit.com refuses an account's web bearer with a 401, its
@@ -2524,18 +2574,33 @@ static BOOL ApolloWebJSONWebBearerHeldForUser(NSString *key) {
     }
 }
 
+// What ApolloWebJSONDesktopWebBearer would return, without its mint: the
+// desktop web client's token, which is what token_v2 is. A bearer minted for
+// the mobile web client is no stand-in once token_v2 has aged out:
+// oauth.reddit.com answered one with its 403 block page on every endpoint
+// tried (modmail, the moderator lists, flair lists, the flair selector,
+// widgets, submit, the media lease) while taking the desktop client's on each
+// (checked 2026-11-25 on a two-day-old account).
 NSString *ApolloWebJSONReadyWebBearer(NSString *username) {
     NSString *key = username.lowercaseString;
     if (key.length == 0 || ApolloWebJSONWebBearerHeldForUser(key)) return nil;
     ApolloWebSessionEntry *session = ApolloWebSessionFor(key);
     if (session.cookieHeader.length == 0) return nil;
-    return ApolloWebJSONUsableTokenV2ForSession(session) ?: ApolloWebJSONCachedMintedBearerForUser(key);
+    NSString *tokenV2 = ApolloWebJSONUsableTokenV2ForSession(session);
+    if (tokenV2.length > 0) {
+        @synchronized (ApolloWebJSONMintStateLock()) {
+            if ([sRefusedTokenV2 containsObject:tokenV2]) tokenV2 = nil;
+        }
+    }
+    // The desktop mint's cache key (ApolloWebJSONMintWebBearerForAccount).
+    return tokenV2 ?: ApolloWebJSONCachedMintedBearerForUser([key stringByAppendingString:@"|desktop"]);
 }
 
 BOOL ApolloWebJSONWebBearerNeedsMint(NSString *username) {
     NSString *key = username.lowercaseString;
     if (key.length == 0 || ApolloWebSessionFor(key) == nil) return NO;
-    if (ApolloWebJSONWebBearerHeldForUser(key) || ApolloWebJSONMintFailedRecentlyForUser(key)) return NO;
+    if (ApolloWebJSONWebBearerHeldForUser(key) ||
+        ApolloWebJSONMintFailedRecentlyForUser([key stringByAppendingString:@"|desktop"])) return NO;
     return ApolloWebJSONReadyWebBearer(key).length == 0;
 }
 
@@ -2568,7 +2633,7 @@ void ApolloWebJSONPrepareRouteBearer(NSString *username) {
         [sRouteBearerMintsInFlight addObject:key];
     }
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        BOOL minted = ApolloWebJSONMintWebBearerForAccount(key).length > 0;
+        BOOL minted = ApolloWebJSONMintWebBearerForAccount(key, NO).length > 0;
         @synchronized (ApolloWebJSONMintStateLock()) {
             [sRouteBearerMintsInFlight removeObject:key];
         }
@@ -2599,9 +2664,9 @@ static void ApolloWebJSONNoteWebBearerResponse(NSURLRequest *request, NSHTTPURLR
     NSString *authorization = [request valueForHTTPHeaderField:@"Authorization"];
     NSRange bearerRange = [authorization rangeOfString:@"Bearer " options:NSCaseInsensitiveSearch | NSAnchoredSearch];
     NSString *bearer = bearerRange.location != NSNotFound ? [authorization substringFromIndex:NSMaxRange(bearerRange)] : nil;
-    // Drops (and backs off) a minted bearer; token_v2 can't be dropped, which
-    // is what the hold is for.
-    ApolloWebJSONInvalidateOAuthBearerForAccount(key, bearer);
+    // Drops (and backs off) a minted bearer, and stops offering a token_v2
+    // Reddit refused; the hold covers the requests in between.
+    ApolloWebJSONInvalidateDesktopWebBearer(key, bearer);
     @synchronized (ApolloWebJSONMintStateLock()) {
         if (!sWebBearerHeldUntilByUser) sWebBearerHeldUntilByUser = [NSMutableDictionary dictionary];
         sWebBearerHeldUntilByUser[key] = @([[NSDate date] timeIntervalSince1970] + kWebBearerHoldAfterRejection);
@@ -2626,15 +2691,17 @@ NSArray *ApolloWebJSONRescueFlairList(NSHTTPURLResponse *response) {
     NSString *username = ApolloWebJSONAccountFromURL(failedURL) ?: ApolloActiveWebSessionUsername();
     if (username.length == 0) return nil;
 
-    // Resolve the account's own OAuth bearer (fresh token_v2, else a minted
-    // accounts-service bearer). A minted bearer is unproven until the fetch
-    // below succeeds — a dead session can yield an anonymous token, so the
-    // 401/403 outcome is what decides whether it "worked". `minted` (a bearer
-    // that came from the mint, not the token_v2 cookie) drives that outcome
-    // handling; the mint cache is the source of truth for it.
-    NSString *token = ApolloWebJSONKeylessOAuthBearer(username);
+    // Resolve the account's own OAuth bearer (fresh token_v2, else one minted
+    // for the same desktop web client: ApolloWebJSONDesktopWebBearer). A minted
+    // bearer is unproven until the fetch below succeeds — a dead session can
+    // yield an anonymous token, so the outcome is what decides whether it
+    // "worked". `minted` (a bearer that came from the mint, not the token_v2
+    // cookie) drives that outcome handling; the mint cache is the source of
+    // truth for it.
+    NSString *token = ApolloWebJSONDesktopWebBearer(username);
     if (token.length == 0) return nil;
-    BOOL minted = [token isEqualToString:ApolloWebJSONCachedMintedBearerForUser(username)];
+    NSString *mintKey = [username.lowercaseString stringByAppendingString:@"|desktop"];
+    BOOL minted = [token isEqualToString:ApolloWebJSONCachedMintedBearerForUser(mintKey)];
 
     // Same path + query as the failed www request, back on the oauth host.
     NSURLComponents *components = [NSURLComponents componentsWithURL:failedURL resolvingAgainstBaseURL:NO];
@@ -2653,10 +2720,14 @@ NSArray *ApolloWebJSONRescueFlairList(NSHTTPURLResponse *response) {
     dispatch_semaphore_t sema = dispatch_semaphore_create(0);
     __block NSData *body = nil;
     __block NSInteger status = 0;
+    __block NSHTTPURLResponse *http = nil;
     [[[NSURLSession sharedSession] dataTaskWithRequest:req
                                      completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
         body = data;
-        if ([resp isKindOfClass:[NSHTTPURLResponse class]]) status = ((NSHTTPURLResponse *)resp).statusCode;
+        if ([resp isKindOfClass:[NSHTTPURLResponse class]]) {
+            http = (NSHTTPURLResponse *)resp;
+            status = http.statusCode;
+        }
         dispatch_semaphore_signal(sema);
     }] resume];
     // A timed-out fetch is a network verdict, not a session one — no failure
@@ -2666,13 +2737,16 @@ NSArray *ApolloWebJSONRescueFlairList(NSHTTPURLResponse *response) {
         return nil;
     }
     if (status == 401 || status == 403) {
-        // A minted bearer that doesn't authenticate is the signature of a dead
-        // session handed an anonymous token — drop it and remember the failure
-        // so the next opens don't repay the mint cost immediately. No-op for a
-        // token_v2 bearer (it isn't the cached mint). Nothing was persisted.
-        ApolloWebJSONInvalidateOAuthBearerForAccount(username, token);
+        // A 401, or Reddit's 403 block page, refuses the bearer itself: a
+        // minted one is dropped with the failure remembered, so the next opens
+        // don't repay the mint cost immediately, and a token_v2 isn't offered
+        // again. A 403 with a JSON body is Reddit's answer about this
+        // subreddit's flair and says nothing about the bearer, which the
+        // sidebar, the media lease and a refused post's resend share.
+        BOOL bearerRefused = status == 401 || ApolloWebJSONRouteResponseIsBlockPage(http);
+        if (bearerRefused) ApolloWebJSONInvalidateDesktopWebBearer(username, token);
         ApolloLog(@"[WebJSON] Flair rescue got HTTP %ld for %@%@", (long)status, failedURL.path,
-                  minted ? @" with a freshly minted bearer — treating the web session as signed out" : @"");
+                  !bearerRefused ? @"" : minted ? @" — the minted bearer was refused" : @" — token_v2 was refused");
         return nil;
     }
     if (status != 200 || body.length == 0) {
@@ -2682,7 +2756,7 @@ NSArray *ApolloWebJSONRescueFlairList(NSHTTPURLResponse *response) {
     if (minted) {
         // 200 from oauth proves the minted bearer really is signed in — safe
         // to forget any remembered failure for this account.
-        ApolloWebJSONClearMintFailureForUser(username);
+        ApolloWebJSONClearMintFailureForUser(mintKey);
     }
     id json = [NSJSONSerialization JSONObjectWithData:body options:0 error:NULL];
     if (![json isKindOfClass:[NSArray class]]) {

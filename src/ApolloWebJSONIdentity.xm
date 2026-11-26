@@ -1125,7 +1125,7 @@ static void ApolloSubscriptionWalkDeliver(NSString *walkUsername, NSHTTPURLRespo
         if (ApolloWebJSONWebBearerNeedsMint(sessionUsername)) {
             RDKClient *client = self;
             dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-                BOOL minted = ApolloWebJSONKeylessOAuthBearer(sessionUsername).length > 0;
+                BOOL minted = ApolloWebJSONDesktopWebBearer(sessionUsername).length > 0;
                 dispatch_async(dispatch_get_main_queue(), ^{
                     ApolloLog(@"[WebJSON] %@ a web bearer for u/%@ before %@ %@",
                               minted ? @"Minted" : @"Could not mint", sessionUsername, method, path);
