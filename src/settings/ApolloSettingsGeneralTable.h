@@ -10,6 +10,16 @@
 // The registry is consulted lazily when the screen loads, so registration order —
 // and Makefile link order — is irrelevant.
 //
+// The same owner also serves General > Mark Read / Hiding Posts
+// (_TtC6Apollo41SettingsMarkReadHidingPostsViewController). Unlike General, that
+// form changes at runtime: "Disable Marking Posts Read" hides every other row and
+// the whole Auto Hide section through Eureka hidden conditions, which update the
+// table with native index paths. So nothing is spliced or hidden there; the one
+// supported change is a row APPENDED after the last native row of a section
+// (ApolloNativeSettingsAppendRow). Native index paths stay identical, so
+// Eureka's own inserts/deletes stay valid, and the appended row comes and goes in
+// its own table update (ApolloNativeSettingsRefreshAppendedRow).
+//
 // See ApolloSettingsGeneralTable.xm for the display<->native row map and the
 // delegate/dataSource proxy, and docs/settings-general-table-refactor-plan.md for
 // the full design and its verified assumptions.
@@ -21,6 +31,12 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// The native Eureka screens this owner serves.
+typedef NS_ENUM(NSInteger, ApolloNativeSettingsScreen) {
+    ApolloNativeSettingsScreenGeneral = 0,
+    ApolloNativeSettingsScreenMarkReadHidingPosts = 1,
+};
 
 // Register a matcher that hides every native row whose built cell it matches.
 // Hidden rows are OMITTED from display space (not zero-heighted): no separator
@@ -58,6 +74,31 @@ void ApolloGeneralTableInjectSelectableRow(NSString *anchorTitle,
 void ApolloGeneralTableConfigureNativeRow(NSString *title,
                                           void (^configure)(UIViewController *vc,
                                                             UITableViewCell *cell));
+
+// ApolloGeneralTableConfigureNativeRow for any screen this owner serves (the
+// General form calls this with ApolloNativeSettingsScreenGeneral).
+void ApolloNativeSettingsConfigureNativeRow(ApolloNativeSettingsScreen screen,
+                                            NSString *title,
+                                            void (^configure)(UIViewController *vc,
+                                                              UITableViewCell *cell));
+
+// Append one tweak-owned, inert (switch) row after the last native row of the
+// section that contains a row titled sectionTitle. One appended row per screen;
+// Mark Read / Hiding Posts only (General keeps its splice map). visible is asked
+// when the screen loads and on every ApolloNativeSettingsRefreshAppendedRow; the
+// factory gets the section's first native cell as the theming donor. Fail-soft:
+// no section with that title (or no hooks) leaves the screen native.
+void ApolloNativeSettingsAppendRow(ApolloNativeSettingsScreen screen,
+                                   NSString *sectionTitle,
+                                   BOOL (^visible)(void),
+                                   UITableViewCell *(^factory)(UIViewController *vc,
+                                                               UITableViewCell *donor));
+
+// Re-ask the appended row's visible block for this screen instance and insert or
+// delete the row in its own table update when the answer changed. Call it AFTER
+// the native change it depends on has finished updating the table (e.g. from a
+// valueChanged target added after Eureka's own).
+void ApolloNativeSettingsRefreshAppendedRow(UIViewController *vc);
 
 // Re-run all registered native-row configurators for the currently visible
 // General cells. Off-screen rows are configured the next time Eureka supplies

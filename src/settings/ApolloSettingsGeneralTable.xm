@@ -60,6 +60,27 @@
 @interface SettingsGeneralViewController : UIViewController
 @end
 
+// General > Mark Read / Hiding Posts (a direct Eureka FormViewController
+// subclass; viewDidLoad = FUN_100178a60 in Ghidra). Its hidden conditions make
+// the form dynamic, so it only ever gets an APPENDED row — see the header.
+@interface SettingsMarkReadHidingPostsViewController : UIViewController
+@end
+
+static Class ApolloGTMarkReadScreenClass(void) {
+    static Class cls;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cls = objc_getClass("_TtC6Apollo41SettingsMarkReadHidingPostsViewController");
+    });
+    return cls;
+}
+
+static ApolloNativeSettingsScreen ApolloGTScreenForVC(UIViewController *vc) {
+    Class markRead = ApolloGTMarkReadScreenClass();
+    return (markRead && [vc isKindOfClass:markRead]) ? ApolloNativeSettingsScreenMarkReadHidingPosts
+                                                     : ApolloNativeSettingsScreenGeneral;
+}
+
 // MARK: - registry (filled from feature %ctors, read at screen load)
 
 typedef UITableViewCell *(^ApolloGTRowFactory)(UIViewController *vc, UITableViewCell *donor);
@@ -77,6 +98,7 @@ static NSMutableArray<BOOL (^)(UITableViewCell *)> *sGTHideMatchers;
 static NSMutableArray<ApolloGTInjection *> *sGTInjections;
 
 @interface ApolloGTNativeRowConfiguration : NSObject
+@property (nonatomic) ApolloNativeSettingsScreen screen;
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic, copy) void (^configure)(UIViewController *vc, UITableViewCell *cell);
 @end
@@ -84,6 +106,22 @@ static NSMutableArray<ApolloGTInjection *> *sGTInjections;
 @end
 
 static NSMutableArray<ApolloGTNativeRowConfiguration *> *sGTNativeRowConfigurations;
+
+// A row appended after the last native row of a section (dynamic screens only).
+@interface ApolloGTAppendedRow : NSObject
+@property (nonatomic) ApolloNativeSettingsScreen screen;
+@property (nonatomic, copy) NSString *sectionTitle;
+@property (nonatomic, copy) BOOL (^visible)(void);
+@property (nonatomic, copy) ApolloGTRowFactory factory;
+@end
+@implementation ApolloGTAppendedRow
+@end
+
+static NSMutableArray<ApolloGTAppendedRow *> *sGTAppendedRows;
+
+static BOOL ApolloGTAppendedRowWantsVisible(ApolloGTAppendedRow *row) {
+    return row.visible ? row.visible() : YES;
+}
 
 void ApolloGeneralTableHideRows(BOOL (^cellMatcher)(UITableViewCell *cell)) {
     if (!cellMatcher) return;
@@ -114,8 +152,31 @@ void ApolloGeneralTableInjectSelectableRow(NSString *anchorTitle,
 void ApolloGeneralTableConfigureNativeRow(NSString *title,
                                           void (^configure)(UIViewController *vc,
                                                             UITableViewCell *cell)) {
+    ApolloNativeSettingsConfigureNativeRow(ApolloNativeSettingsScreenGeneral, title, configure);
+}
+
+void ApolloNativeSettingsAppendRow(ApolloNativeSettingsScreen screen,
+                                   NSString *sectionTitle,
+                                   BOOL (^visible)(void),
+                                   ApolloGTRowFactory factory) {
+    // General keeps its static splice map; appending is for the dynamic screens.
+    if (screen == ApolloNativeSettingsScreenGeneral || !sectionTitle || !factory) return;
+    ApolloGTAppendedRow *row = [ApolloGTAppendedRow new];
+    row.screen = screen;
+    row.sectionTitle = sectionTitle;
+    row.visible = visible;
+    row.factory = factory;
+    if (!sGTAppendedRows) sGTAppendedRows = [NSMutableArray array];
+    [sGTAppendedRows addObject:row];
+}
+
+void ApolloNativeSettingsConfigureNativeRow(ApolloNativeSettingsScreen screen,
+                                            NSString *title,
+                                            void (^configure)(UIViewController *vc,
+                                                              UITableViewCell *cell)) {
     if (!title || !configure) return;
     ApolloGTNativeRowConfiguration *configuration = [ApolloGTNativeRowConfiguration new];
+    configuration.screen = screen;
     configuration.title = title;
     configuration.configure = configure;
     if (!sGTNativeRowConfigurations) sGTNativeRowConfigurations = [NSMutableArray array];
@@ -151,8 +212,10 @@ BOOL ApolloGeneralTableCellHasTitle(UITableViewCell *cell, NSString *title) {
 }
 
 static void ApolloGTApplyNativeRowConfigurations(UIViewController *vc, UITableViewCell *cell) {
-    if (!vc || !cell) return;
+    if (!vc || !cell || sGTNativeRowConfigurations.count == 0) return;
+    ApolloNativeSettingsScreen screen = ApolloGTScreenForVC(vc);
     for (ApolloGTNativeRowConfiguration *configuration in sGTNativeRowConfigurations) {
+        if (configuration.screen != screen) continue;
         if (ApolloGeneralTableCellHasTitle(cell, configuration.title)) {
             configuration.configure(vc, cell);
         }
@@ -165,6 +228,13 @@ static void ApolloGTApplyNativeRowConfigurations(UIViewController *vc, UITableVi
 @interface ApolloGTMapState : NSObject
 @property (nonatomic, strong) NSDictionary<NSNumber *, NSArray<NSNumber *> *> *displayRowsBySection;
 @property (nonatomic, strong) NSDictionary<NSNumber *, NSIndexPath *> *anchorsByInjection;
+// Append mode (dynamic screens): no display map at all; native index paths pass
+// through unchanged and the one extra slot is row == the section's CURRENT native
+// row count, asked from the VC at call time, so Eureka's own hides/shows never
+// leave it stale. appendedVisible only changes inside our own table update.
+@property (nonatomic, strong) ApolloGTAppendedRow *appended;
+@property (nonatomic) NSInteger appendedSection;
+@property (nonatomic) BOOL appendedVisible;
 @end
 @implementation ApolloGTMapState
 @end
@@ -220,6 +290,8 @@ static void ApolloGTZeroReturn(NSInvocation *inv) {
 + (instancetype)proxyForVC:(UIViewController *)vc tableView:(UITableView *)tv map:(ApolloGTMapState *)map;
 - (void)reassertOnTable;
 - (ApolloGTMapState *)gtMap;
+- (UITableView *)gtTableView;
+- (NSInteger)nativeRowCountInSection:(NSInteger)section vc:(UIViewController *)vc;
 @end
 
 @implementation ApolloGTProxy
@@ -234,6 +306,97 @@ static void ApolloGTZeroReturn(NSInvocation *inv) {
 
 - (ApolloGTMapState *)gtMap {
     return _map;
+}
+
+- (UITableView *)gtTableView {
+    return _tableView;
+}
+
+// MARK: append mode
+
+- (NSInteger)nativeRowCountInSection:(NSInteger)section vc:(UIViewController *)vc {
+    UITableView *tv = _tableView;
+    if (!tv) return 0;
+    return ((NSInteger (*)(id, SEL, UITableView *, NSInteger))objc_msgSend)(
+        vc, @selector(tableView:numberOfRowsInSection:), tv, section);
+}
+
+// The appended slot never reaches Eureka (same policy as handleInjectedSlot:):
+// the factory builds the cell with the section's first native cell as donor,
+// height borrows that row's answer, selection is swallowed, anything else is a
+// zeroed return. A path at or past the native count is only ever ours — UIKit
+// can still name a just-deleted row's old path mid-update, and Eureka indexes
+// with no bounds guard, so such a path must not be forwarded either.
+- (void)handleAppendedSlot:(NSInvocation *)inv vc:(UIViewController *)vc displayPath:(NSIndexPath *)displayPath {
+    SEL sel = inv.selector;
+    NSInteger section = _map.appendedSection;
+    BOOL hasDonor = [self nativeRowCountInSection:section vc:vc] > 0;
+    NSIndexPath *donorPath = [NSIndexPath indexPathForRow:0 inSection:section];
+
+    if (sel == @selector(tableView:cellForRowAtIndexPath:)) {
+        UITableView *tv = _tableView;
+        UITableViewCell *donor = nil;
+        if (hasDonor && tv) {
+            donor = ((UITableViewCell *(*)(id, SEL, UITableView *, NSIndexPath *))objc_msgSend)(
+                vc, @selector(tableView:cellForRowAtIndexPath:), tv, donorPath);
+        }
+        UITableViewCell *cell = _map.appended.factory ? _map.appended.factory(vc, donor) : nil;
+        if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+        CFAutorelease(CFBridgingRetain(cell));   // setReturnValue: does not retain
+        [inv setReturnValue:&cell];
+        return;
+    }
+    if (hasDonor && (sel == @selector(tableView:heightForRowAtIndexPath:) ||
+                     sel == @selector(tableView:estimatedHeightForRowAtIndexPath:))) {
+        [inv setArgument:&donorPath atIndex:3];
+        [inv invokeWithTarget:vc];
+        return;
+    }
+    if (sel == @selector(tableView:didSelectRowAtIndexPath:)) {
+        [_tableView deselectRowAtIndexPath:displayPath animated:YES];
+        return;
+    }
+    ApolloGTZeroReturn(inv);   // willSelect -> nil (the switch is the control), etc.
+}
+
+- (void)forwardAppendMode:(NSInvocation *)inv vc:(UIViewController *)vc {
+    SEL sel = inv.selector;
+    NSInteger section = _map.appendedSection;
+
+    if (sel == @selector(tableView:numberOfRowsInSection:)) {
+        [inv invokeWithTarget:vc];
+        NSInteger asked = 0;
+        [inv getArgument:&asked atIndex:3];
+        if (_map.appendedVisible && asked == section) {
+            NSInteger n = 0;
+            [inv getReturnValue:&n];
+            n += 1;
+            [inv setReturnValue:&n];
+        }
+        return;
+    }
+
+    if (_map.appendedVisible) {
+        NSMethodSignature *sig = inv.methodSignature;
+        for (NSUInteger i = 2; i < sig.numberOfArguments; i++) {
+            if ([sig getArgumentTypeAtIndex:i][0] != '@') continue;
+            __unsafe_unretained id arg = nil;
+            [inv getArgument:&arg atIndex:i];
+            if (![arg isKindOfClass:[NSIndexPath class]]) continue;
+            NSIndexPath *path = (NSIndexPath *)arg;
+            if (path.section == section && path.row >= [self nativeRowCountInSection:section vc:vc]) {
+                [self handleAppendedSlot:inv vc:vc displayPath:path];
+                return;
+            }
+        }
+    }
+
+    [inv invokeWithTarget:vc];
+    if (sel == @selector(tableView:cellForRowAtIndexPath:)) {
+        __unsafe_unretained UITableViewCell *cell = nil;
+        [inv getReturnValue:&cell];
+        ApolloGTApplyNativeRowConfigurations(vc, cell);
+    }
 }
 
 - (void)reassertOnTable {
@@ -338,6 +501,11 @@ static void ApolloGTZeroReturn(NSInvocation *inv) {
         __unsafe_unretained UIView *header = nil;
         [inv getArgument:&header atIndex:3];
         ApolloSettingsApplySectionHeaderTypography(header);
+        return;
+    }
+
+    if (_map.appended) {   // dynamic screen: identity paths + one appended slot
+        [self forwardAppendMode:inv vc:vc];
         return;
     }
 
@@ -593,6 +761,99 @@ static void ApolloGTScanAndInstall(UIViewController *vc) {
     [tv reloadData];
 }
 
+// MARK: - append mode: scan + install, refresh
+
+// Builds every native cell once (Eureka caches them per row anyway) to run the
+// screen's configurators and find the section holding the appended row's
+// section title, then installs the proxy in append mode. Rows Eureka has hidden
+// at load (e.g. Disable Marking Posts Read on) aren't in the table, so the title
+// should be one that is never hidden.
+static void ApolloGTScanAndInstallAppended(UIViewController *vc, ApolloNativeSettingsScreen screen,
+                                           const char *screenTag) {
+    if (objc_getAssociatedObject(vc, kApolloGTProxyKey)) return;
+    ApolloGTAppendedRow *appended = nil;
+    for (ApolloGTAppendedRow *row in sGTAppendedRows) {
+        if (row.screen == screen) { appended = row; break; }
+    }
+    BOOL hasConfigurations = NO;
+    for (ApolloGTNativeRowConfiguration *configuration in sGTNativeRowConfigurations) {
+        if (configuration.screen == screen) { hasConfigurations = YES; break; }
+    }
+    if (!appended && !hasConfigurations) return;
+    UITableView *tv = ApolloGTFindTable(vc);
+    if (!tv) {
+        ApolloLog(@"[GeneralTable] %s: no table view found; leaving the screen native", screenTag);
+        return;
+    }
+
+    NSInteger appendedSection = -1;
+    id<UITableViewDataSource> ds = (id<UITableViewDataSource>)vc;
+    @try {
+        @autoreleasepool {
+            NSInteger sections = [ds numberOfSectionsInTableView:tv];
+            for (NSInteger s = 0; s < sections; s++) {
+                NSInteger rowCount = [ds tableView:tv numberOfRowsInSection:s];
+                for (NSInteger r = 0; r < rowCount; r++) {
+                    UITableViewCell *cell = [ds tableView:tv
+                                    cellForRowAtIndexPath:[NSIndexPath indexPathForRow:r inSection:s]];
+                    ApolloGTApplyNativeRowConfigurations(vc, cell);
+                    if (appendedSection < 0 && appended &&
+                        ApolloGeneralTableCellHasTitle(cell, appended.sectionTitle)) {
+                        appendedSection = s;
+                    }
+                }
+            }
+        }
+    } @catch (NSException *e) {
+        ApolloLog(@"[GeneralTable] %s: scan threw (%@); leaving the screen native", screenTag, e);
+        return;
+    }
+
+    if (appended && appendedSection < 0) {
+        ApolloLog(@"[GeneralTable] %s: no row titled '%@'; nothing appended", screenTag, appended.sectionTitle);
+        appended = nil;
+        if (!hasConfigurations) return;
+    }
+
+    ApolloGTMapState *map = [ApolloGTMapState new];
+    map.displayRowsBySection = @{};
+    map.anchorsByInjection = @{};
+    map.appended = appended;
+    map.appendedSection = appendedSection;
+    map.appendedVisible = appended ? ApolloGTAppendedRowWantsVisible(appended) : NO;
+    ApolloGTProxy *proxy = [ApolloGTProxy proxyForVC:vc tableView:tv map:map];
+    objc_setAssociatedObject(vc, kApolloGTProxyKey, proxy, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    tv.delegate = (id<UITableViewDelegate>)proxy;
+    tv.dataSource = (id<UITableViewDataSource>)proxy;
+    [tv reloadData];
+    ApolloLog(@"[GeneralTable] %s: proxy installed (appended row %@ in section %ld)", screenTag,
+              appended ? (map.appendedVisible ? @"shown" : @"hidden") : @"none", (long)appendedSection);
+}
+
+void ApolloNativeSettingsRefreshAppendedRow(UIViewController *vc) {
+    if (!vc) return;
+    ApolloGTProxy *proxy = objc_getAssociatedObject(vc, kApolloGTProxyKey);
+    ApolloGTMapState *map = [proxy gtMap];
+    if (!map.appended) return;
+    BOOL want = ApolloGTAppendedRowWantsVisible(map.appended);
+    if (want == map.appendedVisible) return;
+    UITableView *tv = [proxy gtTableView];
+    if (!tv || tv.dataSource != (id)proxy) {
+        map.appendedVisible = want;   // no live table to animate; the next load reads it
+        return;
+    }
+    // Our own update, after the native one has finished: the slot sits at the
+    // section's current native count either way.
+    NSIndexPath *slot = [NSIndexPath indexPathForRow:[proxy nativeRowCountInSection:map.appendedSection vc:vc]
+                                           inSection:map.appendedSection];
+    [tv beginUpdates];
+    map.appendedVisible = want;
+    if (want) [tv insertRowsAtIndexPaths:@[ slot ] withRowAnimation:UITableViewRowAnimationFade];
+    else [tv deleteRowsAtIndexPaths:@[ slot ] withRowAnimation:UITableViewRowAnimationFade];
+    [tv endUpdates];
+    ApolloLog(@"[GeneralTable] appended row %@ at row %ld", want ? @"inserted" : @"deleted", (long)slot.row);
+}
+
 // MARK: - hooks
 
 %hook SettingsGeneralViewController
@@ -615,6 +876,32 @@ static void ApolloGTScanAndInstall(UIViewController *vc) {
 
 %end
 
+%group ApolloGTMarkReadScreen
+%hook SettingsMarkReadHidingPostsViewController
+
+- (void)viewDidLoad {
+    %orig;   // Eureka builds the form (hidden conditions applied) and claims the table here
+    ApolloGTScanAndInstallAppended(self, ApolloNativeSettingsScreenMarkReadHidingPosts, "MarkReadHidingPosts");
+}
+
+// Not implemented by this subclass, so this is added as an override whose %orig
+// is the inherited implementation. Same defensive re-assert as General's.
+- (void)viewDidLayoutSubviews {
+    %orig;
+    ApolloGTProxy *proxy = objc_getAssociatedObject(self, kApolloGTProxyKey);
+    [proxy reassertOnTable];
+}
+
+%end
+%end
+
 %ctor {
     %init(SettingsGeneralViewController = objc_getClass("_TtC6Apollo29SettingsGeneralViewController"));
+    Class markRead = ApolloGTMarkReadScreenClass();
+    if (markRead) {
+        %init(ApolloGTMarkReadScreen, SettingsMarkReadHidingPostsViewController = markRead);
+    } else {
+        // Tripwire: a renamed class leaves Mark Read / Hiding Posts native (fail-soft).
+        ApolloLog(@"[GeneralTable] Mark Read / Hiding Posts hooks NOT installed (class missing)");
+    }
 }

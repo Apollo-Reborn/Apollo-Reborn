@@ -228,6 +228,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/settings/ApolloSettingsGeneralTable.xm \
     $(SRC_DIR)/settings/ApolloSettingsNativeInjections.xm \
     $(SRC_DIR)/ApolloPerPostCommentSort.xm \
+    $(SRC_DIR)/ApolloStickiedMarkRead.xm \
     $(SRC_DIR)/ApolloURLOpenCommentSort.xm \
     $(SRC_DIR)/ApolloLiquidGlass.xm \
     $(SRC_DIR)/ApolloFrameRate.m \
