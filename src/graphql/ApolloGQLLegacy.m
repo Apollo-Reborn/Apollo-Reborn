@@ -1079,6 +1079,15 @@ NSDictionary *ApolloGQLLegacyOwnPostsListing(NSDictionary *answer, NSString *lis
     return ApolloGQLLegacyListing(things, after);
 }
 
+// The link to a comment's thread, as the legacy API's link_permalink has it:
+// the comment's own permalink without its id.
+static NSString *ApolloGQLCommentThreadLink(NSDictionary *commentData) {
+    NSString *permalink = commentData[@"permalink"];
+    NSString *tail = [NSString stringWithFormat:@"%@/", commentData[@"id"]];
+    NSString *thread = [permalink hasSuffix:tail] ? [permalink substringToIndex:permalink.length - tail.length] : permalink;
+    return thread.length > 0 ? [@"https://www.reddit.com" stringByAppendingString:thread] : @"";
+}
+
 static NSDictionary *ApolloGQLUserCommentsConnection(NSDictionary *answer) {
     return ApolloGQLDict(ApolloGQLDict(ApolloGQLDict(answer, @"data"), @"redditorInfoByName"), @"comments");
 }
@@ -1129,12 +1138,109 @@ NSDictionary *ApolloGQLLegacyUserCommentsListing(NSDictionary *list, NSDictionar
         NSDictionary *post = @{ @"id": postFullname, @"subreddit": @{ @"name": subreddit, @"prefixedName": prefixed } };
         NSMutableDictionary<NSString *, id> *data = ApolloGQLLegacyCommentData(node, fullname, postFullname, 0, post, @"public", nil);
         if (!data) continue;
-        NSString *permalink = data[@"permalink"];
-        NSString *tail = [NSString stringWithFormat:@"%@/", data[@"id"]];
-        NSString *thread = [permalink hasSuffix:tail] ? [permalink substringToIndex:permalink.length - tail.length] : permalink;
         data[@"link_title"] = ApolloGQLString(listed, @"title") ?: @"";
-        data[@"link_permalink"] = thread.length > 0 ? [@"https://www.reddit.com" stringByAppendingString:thread] : @"";
+        data[@"link_permalink"] = ApolloGQLCommentThreadLink(data);
         data[@"quarantine"] = @NO;
+        data[@"replies"] = @"";
+        [things addObject:ApolloGQLLegacyThing(@"t1", data)];
+    }
+    NSDictionary *listing = ApolloGQLLegacyListing(things, after);
+    return rawJSON ? listing : ApolloGQLEscapeLegacyValue(listing);
+}
+
+#pragma mark - Saved
+
+NSArray<NSString *> *ApolloGQLSavedFullnames(NSDictionary *answer, BOOL *hasMore) {
+    if (hasMore) *hasMore = NO;
+    NSDictionary *found = ApolloGQLDict(ApolloGQLDict(ApolloGQLDict(answer, @"data"), @"savedV3"), @"elements");
+    NSArray *edges = ApolloGQLArray(found, @"edges");
+    if (!edges) return nil;
+    NSMutableArray<NSString *> *fullnames = [NSMutableArray array];
+    for (id edge in edges) {
+        NSString *fullname = ApolloGQLString(ApolloGQLDict(edge, @"node"), @"id");
+        BOOL known = ([fullname hasPrefix:@"t3_"] || [fullname hasPrefix:@"t1_"]) && fullname.length > 3;
+        if (known && ![fullnames containsObject:fullname]) [fullnames addObject:fullname];
+    }
+    // Rows, and not one of them a post or a comment by its id: a shape this
+    // doesn't know, not an empty list.
+    if (fullnames.count == 0 && edges.count > 0) return nil;
+    // The last page's cursor is "".
+    if (hasMore) *hasMore = ApolloGQLString(ApolloGQLDict(found, @"pageInfo"), @"endCursor").length > 0;
+    return fullnames;
+}
+
+// The post a comment is on, from its permalink, and that post's subreddit as
+// the legacy API names it ("u_<name>" for a post on a profile).
+static NSString *ApolloGQLCommentPostFullname(NSDictionary *node, NSString **subreddit) {
+    if (subreddit) *subreddit = nil;
+    NSArray<NSString *> *parts = [ApolloGQLString(node, @"permalink") componentsSeparatedByString:@"/"];
+    NSUInteger at = [parts indexOfObject:@"comments"];
+    if (at == NSNotFound || at + 1 >= parts.count || parts[at + 1].length == 0) return nil;
+    if (subreddit && at >= 2 && parts[at - 1].length > 0) {
+        if ([parts[at - 2] isEqualToString:@"r"]) *subreddit = parts[at - 1];
+        else if ([parts[at - 2] isEqualToString:@"user"] || [parts[at - 2] isEqualToString:@"u"]) *subreddit = [@"u_" stringByAppendingString:parts[at - 1]];
+    }
+    return [@"t3_" stringByAppendingString:parts[at + 1]];
+}
+
+NSArray<NSString *> *ApolloGQLCommentPostFullnames(NSArray<NSDictionary *> *commentAnswers) {
+    NSMutableArray<NSString *> *fullnames = [NSMutableArray array];
+    for (NSDictionary *answer in commentAnswers) {
+        for (id node in ApolloGQLArray(ApolloGQLDict(answer, @"data"), @"commentsByIds")) {
+            NSString *fullname = ApolloGQLCommentPostFullname(node, NULL);
+            if (fullname && ![fullnames containsObject:fullname]) [fullnames addObject:fullname];
+        }
+    }
+    return fullnames;
+}
+
+NSDictionary *ApolloGQLLegacySavedListing(NSArray<NSString *> *fullnames, NSArray<NSDictionary *> *postAnswers,
+                                          NSArray<NSDictionary *> *commentAnswers, NSString *after, BOOL rawJSON) {
+    NSMutableDictionary<NSString *, NSDictionary *> *postOf = [NSMutableDictionary dictionary];
+    for (NSDictionary *answer in postAnswers) {
+        for (id post in ApolloGQLArray(ApolloGQLDict(answer, @"data"), @"postsInfoByIds")) {
+            NSString *fullname = ApolloGQLString(post, @"id");
+            if (fullname) postOf[fullname] = post;
+        }
+    }
+    NSMutableDictionary<NSString *, NSDictionary *> *commentOf = [NSMutableDictionary dictionary];
+    for (NSDictionary *answer in commentAnswers) {
+        for (id node in ApolloGQLArray(ApolloGQLDict(answer, @"data"), @"commentsByIds")) {
+            NSString *fullname = ApolloGQLString(node, @"id");
+            if (fullname) commentOf[fullname] = node;
+        }
+    }
+    NSMutableArray<NSDictionary *> *things = [NSMutableArray array];
+    for (NSString *fullname in fullnames) {
+        if ([fullname hasPrefix:@"t3_"]) {
+            NSMutableDictionary<NSString *, id> *data = postOf[fullname] ? ApolloGQLLegacyLinkDataUnescaped(postOf[fullname], 0) : nil;
+            if (!data) return nil;
+            // It's in the list, whatever a lookup a moment later says.
+            data[@"saved"] = @YES;
+            [things addObject:ApolloGQLLegacyThing(@"t3", data)];
+            continue;
+        }
+        NSDictionary *node = commentOf[fullname];
+        if (!node) return nil;
+        NSString *subredditName = nil;
+        NSString *postFullname = ApolloGQLCommentPostFullname(node, &subredditName) ?: @"";
+        // The post, or (a post Reddit no longer has) what the comment's
+        // permalink says of it.
+        NSDictionary *post = postOf[postFullname];
+        NSDictionary *thread = post ?: @{ @"id": postFullname, @"subreddit": @{ @"name": subredditName ?: @"" } };
+        NSMutableDictionary<NSString *, id> *data = ApolloGQLLegacyCommentData(node, fullname, postFullname, 0, thread, @"public", nil);
+        if (!data) return nil;
+        data[@"saved"] = @YES;
+        data[@"link_title"] = ApolloGQLString(post, @"postTitle") ?: @"";
+        data[@"link_permalink"] = ApolloGQLCommentThreadLink(data);
+        NSString *postAuthor = ApolloGQLString(ApolloGQLDict(post, @"authorInfo"), @"name");
+        if (post) data[@"link_author"] = postAuthor.length > 0 ? postAuthor : @"[deleted]";
+        NSString *postURL = ApolloGQLString(post, @"url");
+        if (postURL.length > 0) data[@"link_url"] = postURL;
+        NSNumber *commentCount = ApolloGQLNumber(post, @"commentCount");
+        if (commentCount) data[@"num_comments"] = commentCount;
+        data[@"over_18"] = @(ApolloGQLBool(post, @"isNsfw"));
+        data[@"quarantine"] = @(ApolloGQLBool(ApolloGQLDict(post, @"subreddit"), @"isQuarantined"));
         data[@"replies"] = @"";
         [things addObject:ApolloGQLLegacyThing(@"t1", data)];
     }

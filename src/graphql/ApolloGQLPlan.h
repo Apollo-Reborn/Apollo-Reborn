@@ -63,6 +63,14 @@ typedef NS_ENUM(NSInteger, ApolloGQLRequestKind) {
     // (25, the legacy list's in the same order for New and for Top of all
     // time, 2026-11-25), LiveCommentsByIds the comments themselves.
     ApolloGQLRequestKindUserComments,
+    // GET /user/<name>/saved: the posts and comments the account saved, in one
+    // list. SavedPostsFeedSdui gives the page's ids, newest saved first as the
+    // legacy list has them (2026-11-25); LiveCommentsByIds the comments and
+    // PostsByIds the posts, the ones each comment is on included. Apollo asks
+    // for the list once at launch and, on its Saved screen, at
+    // /user/<name>/saved/(null), a sort it never filled in. GraphQL only has
+    // the list for the account that asks.
+    ApolloGQLRequestKindOwnSaved,
 };
 
 @interface ApolloGQLRequest : NSObject
@@ -96,7 +104,8 @@ typedef NS_ENUM(NSInteger, ApolloGQLRequestKind) {
 // OwnPosts: which of the account's lists, "upvoted", "downvoted" or "hidden"
 // (`username` is whose the request asked for). UserComments uses `username`,
 // `sort`, `timeRange`, `after` (a comment's fullname) and `limit` as the feeds
-// do.
+// do. OwnSaved uses `username`, `after` (a post's or a comment's fullname) and
+// `limit`.
 @property (nonatomic, copy, readonly, nullable) NSString *ownList;
 // MoreComments: the row's cursor and its depth in the thread.
 @property (nonatomic, copy, readonly, nullable) NSString *moreCursor;
@@ -119,9 +128,9 @@ BOOL ApolloGQLCanAnswerPath(NSString *method, NSString *path);
 ApolloGQLRequest *_Nullable ApolloGQLRequestForLegacy(NSString *method, NSString *path, id _Nullable parameters);
 
 // NO when `request` is one GraphQL only answers for the account it's about and
-// `account` isn't that account: the upvoted, downvoted and hidden lists exist
-// for whoever asks, and Apollo asks for the upvoted list of every profile it
-// opens. Such a request keeps its other routes.
+// `account` isn't that account: the upvoted, downvoted, hidden and saved lists
+// exist for whoever asks, and Apollo asks for the upvoted list of every profile
+// it opens. Such a request keeps its other routes.
 BOOL ApolloGQLRequestIsForAccount(ApolloGQLRequest *request, NSString *_Nullable account);
 
 #pragma mark - Operations
@@ -136,9 +145,12 @@ extern NSString *const ApolloGQLOperationSubredditInfo;
 extern NSString *const ApolloGQLOperationPostComments;
 extern NSString *const ApolloGQLOperationUserComments;
 extern NSString *const ApolloGQLOperationCommentsByIds;
+extern NSString *const ApolloGQLOperationSaved;
 
-// The most post ids one PostsByIds call is given.
+// The most post ids one PostsByIds call is given, and the most comment ids
+// one LiveCommentsByIds call is.
 extern const NSUInteger ApolloGQLPostsByIdsBatch;
+extern const NSUInteger ApolloGQLCommentsByIdsBatch;
 
 // The registered hash of an operation, or nil for a name that isn't in the list.
 NSString *_Nullable ApolloGQLOperationHash(NSString *name);
@@ -173,6 +185,11 @@ NSDictionary *ApolloGQLOwnPostsVariables(ApolloGQLRequest *request);
 // A profile's comments (UserComments): the page of ids, then those comments.
 NSDictionary *ApolloGQLUserCommentsVariables(ApolloGQLRequest *request);
 NSDictionary *ApolloGQLCommentsByIdsVariables(NSArray<NSString *> *fullnames);
+
+// A page of the account's saved list (OwnSaved). `after` is the fullname of
+// the post or comment the page starts after (the request's own, or the one a
+// previous page of the same request ended on), or nil for the first page.
+NSDictionary *ApolloGQLSavedVariables(NSString *_Nullable after);
 
 #ifdef __cplusplus
 }

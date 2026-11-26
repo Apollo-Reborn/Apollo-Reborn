@@ -322,6 +322,78 @@ static id ApolloGQLRouteMoreComments(NSString *account, ApolloGQLRequest *reques
     return body;
 }
 
+// The body of /user/<name>/saved.json: the list's ids from SavedPostsFeedSdui
+// (posts and comments together), the comments from LiveCommentsByIds, then
+// every post involved from PostsByIds: the saved ones, and the ones the saved
+// comments are on, which is where a comment's post title comes from.
+static id ApolloGQLRouteSavedPage(NSString *account, ApolloGQLRequest *request, NSUInteger *calls,
+                                  ApolloGQLCallOutcome *outcome, NSString **detail, NSString **summary) {
+    NSMutableArray<NSString *> *fullnames = [NSMutableArray array];
+    NSString *after = request.after;
+    BOOL more = NO;
+    for (NSUInteger page = 0; page < kApolloGQLFeedCallsPerPage; page++) {
+        (*calls)++;
+        NSDictionary *answer = ApolloGQLRouteCall(account, ApolloGQLOperationSaved, ApolloGQLSavedVariables(after), outcome, detail);
+        if (!answer) return nil;
+        NSArray<NSString *> *ids = ApolloGQLSavedFullnames(answer, &more);
+        if (!ids) {
+            // No list (GraphQL's own error for it), or rows that aren't posts
+            // or comments by their ids: the legacy route has the list.
+            *outcome = ApolloGQLCallFailed;
+            *detail = @"SavedPostsFeedSdui answered without a list this route reads";
+            return nil;
+        }
+        NSUInteger had = fullnames.count;
+        for (NSString *fullname in ids) {
+            if (![fullnames containsObject:fullname]) [fullnames addObject:fullname];
+        }
+        // A page that brought nothing new has nothing to page on from.
+        if (fullnames.count == had) more = NO;
+        if (!more || (NSInteger)fullnames.count >= request.limit) break;
+        after = fullnames.lastObject;
+    }
+    // The page Apollo asked for, no longer: the next one starts after its last
+    // row, whichever page of GraphQL's that row came on.
+    if ((NSInteger)fullnames.count > request.limit) {
+        [fullnames removeObjectsInRange:NSMakeRange(request.limit, fullnames.count - request.limit)];
+        more = YES;
+    }
+
+    NSMutableArray<NSString *> *postIDs = [NSMutableArray array], *commentIDs = [NSMutableArray array];
+    for (NSString *fullname in fullnames) [[fullname hasPrefix:@"t1_"] ? commentIDs : postIDs addObject:fullname];
+    NSMutableArray<NSDictionary *> *commentAnswers = [NSMutableArray array], *postAnswers = [NSMutableArray array];
+    for (NSUInteger start = 0; start < commentIDs.count; start += ApolloGQLCommentsByIdsBatch) {
+        NSArray<NSString *> *batch = [commentIDs subarrayWithRange:NSMakeRange(start, MIN(ApolloGQLCommentsByIdsBatch, commentIDs.count - start))];
+        (*calls)++;
+        NSDictionary *answer = ApolloGQLRouteCall(account, ApolloGQLOperationCommentsByIds, ApolloGQLCommentsByIdsVariables(batch), outcome, detail);
+        if (!answer) return nil;
+        [commentAnswers addObject:answer];
+    }
+    for (NSString *fullname in ApolloGQLCommentPostFullnames(commentAnswers)) {
+        if (![postIDs containsObject:fullname]) [postIDs addObject:fullname];
+    }
+    for (NSUInteger start = 0; start < postIDs.count; start += ApolloGQLPostsByIdsBatch) {
+        NSArray<NSString *> *batch = [postIDs subarrayWithRange:NSMakeRange(start, MIN(ApolloGQLPostsByIdsBatch, postIDs.count - start))];
+        (*calls)++;
+        NSDictionary *answer = ApolloGQLRouteCall(account, ApolloGQLOperationPostsByIds, ApolloGQLPostsByIdsVariables(batch), outcome, detail);
+        if (!answer) return nil;
+        [postAnswers addObject:answer];
+    }
+    NSDictionary *listing = ApolloGQLLegacySavedListing(fullnames, postAnswers, commentAnswers, more ? fullnames.lastObject : nil,
+                                                        request.rawJSON);
+    // A saved post or comment the lookups came back without (Reddit's legacy
+    // list still shows one that was deleted since): the legacy route has the
+    // whole page, where this one would have a row missing.
+    if (!listing) {
+        *outcome = ApolloGQLCallFailed;
+        *detail = @"the lookups didn't have every saved post and comment";
+        return nil;
+    }
+    NSUInteger shown = [listing[@"data"][@"children"] count];
+    *summary = [NSString stringWithFormat:@"%lu saved posts and comments%@", (unsigned long)shown, more ? @", more after them" : @""];
+    return listing;
+}
+
 void ApolloGQLRouteAnswer(NSString *account, ApolloGQLRequest *request, ApolloGQLRouteCompletion completion) {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         ApolloGQLCallOutcome outcome = ApolloGQLCallFailed;
@@ -363,6 +435,13 @@ void ApolloGQLRouteAnswer(NSString *account, ApolloGQLRequest *request, ApolloGQ
                 body = answer ? ApolloGQLLegacyOwnPostsListing(answer, request.ownList, request.rawJSON) : nil;
                 if (answer && !body) { outcome = ApolloGQLCallFailed; detail = [operation stringByAppendingString:@" answered without a list"]; }
                 summary = [NSString stringWithFormat:@"%lu %@ posts", (unsigned long)[body[@"data"][@"children"] count], request.ownList];
+            }
+        } else if (request.kind == ApolloGQLRequestKindOwnSaved) {
+            // As above: the list is the asking account's and nobody else's.
+            if (!ApolloGQLRequestIsForAccount(request, account)) {
+                detail = @"the saved list isn't the account's own";
+            } else {
+                body = ApolloGQLRouteSavedPage(account, request, &calls, &outcome, &detail, &summary);
             }
         } else if (request.kind == ApolloGQLRequestKindUserComments) {
             calls++;

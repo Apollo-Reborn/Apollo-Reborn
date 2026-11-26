@@ -26,6 +26,12 @@ static NSString *ApolloWebJSONSyntheticBearerTokenForUsername(NSString *username
     return username.length ? [@"test-bearer-" stringByAppendingString:username] : nil;
 }
 static BOOL ApolloShouldBlurNSFWMediaInSubreddit(NSString *subreddit) { return YES; }
+// The feed's pages go out through the GraphQL route's helper, which sends a
+// request GraphQL doesn't answer as it is. That is all of them here.
+static void ApolloGQLRouteSendRead(NSURLRequest *request, NSURLSession *session,
+                                   void (^completion)(NSData *, NSURLResponse *, NSError *)) {
+    [[session dataTaskWithRequest:request completionHandler:completion] resume];
+}
 static void ApolloLog(NSString *format, ...) {}
 #define ApolloLogError ApolloLog
 ApolloHostedVideoKind ApolloHostedVideoKindForURL(NSURL *url) { return ApolloHostedVideoNone; }

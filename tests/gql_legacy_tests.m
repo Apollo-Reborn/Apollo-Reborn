@@ -732,7 +732,7 @@ static void TestPlan(void) {
           @"top of all time, next page (%@)", ApolloGQLFeedVariables(userTop, userTop.after));
     CHECK(ApolloGQLRequestForLegacy(@"GET", @"user/someone/submitted", @{ @"sort": @"rising" }) == nil &&
           ApolloGQLRequestForLegacy(@"GET", @"user/someone/submitted", @{ @"before": @"t3_x" }) == nil, @"no such sort, no backwards paging");
-    for (NSString *path in @[ @"user/someone/overview", @"user/someone/about", @"user/someone/saved", @"user/ab/submitted",
+    for (NSString *path in @[ @"user/someone/overview", @"user/someone/about", @"user/someone/saved/top", @"user/ab/submitted",
                               @"user/some.one/submitted", @"user/someone/submitted/extra", @"u/someone/submitted" ]) {
         CHECK(!ApolloGQLCanAnswerPath(@"GET", path), @"%@ isn't a profile's posts", path);
     }
@@ -938,6 +938,71 @@ static void TestOwnPostsAndUserComments(void) {
     CHECK(ApolloGQLUserCommentFullnames(ParseJSON(@"{\"data\":{\"redditorInfoByName\":null}}"), NULL) == nil, @"no such account, no list");
 }
 
+static void TestSavedList(void) {
+    // The list names posts and comments together, by id, in its own order.
+    NSDictionary *page = ParseJSON(@"{\"data\":{\"savedV3\":{\"elements\":{\"dist\":4,\"edges\":["
+        "{\"__typename\":\"FeedElementEdge\",\"node\":{\"__typename\":\"SubredditPost\",\"id\":\"t3_one\"}},"
+        "{\"__typename\":\"FeedElementEdge\",\"node\":{\"__typename\":\"Comment\",\"id\":\"t1_aaa\"}},"
+        "{\"__typename\":\"FeedElementEdge\",\"node\":{\"__typename\":\"Comment\",\"id\":\"t1_orphan\"}},"
+        "{\"__typename\":\"FeedElementEdge\",\"node\":{\"__typename\":\"SubredditPost\",\"id\":\"t3_gone\"}}],"
+        "\"pageInfo\":{\"endCursor\":\"dDNfZ29uZQ==\"}}}}}");
+    BOOL more = NO;
+    NSArray *fullnames = ApolloGQLSavedFullnames(page, &more);
+    CHECK([fullnames isEqualToArray:(@[ @"t3_one", @"t1_aaa", @"t1_orphan", @"t3_gone" ])] && more, @"saved ids in order, with a page after (%@ %d)", fullnames, more);
+    NSDictionary *last = ParseJSON(@"{\"data\":{\"savedV3\":{\"elements\":{\"dist\":0,\"edges\":[],\"pageInfo\":{\"endCursor\":\"\"}}}}}");
+    more = YES;
+    CHECK([ApolloGQLSavedFullnames(last, &more) isEqualToArray:@[]] && !more, @"an empty list is a real answer, and the last page");
+    CHECK(ApolloGQLSavedFullnames(ParseJSON(@"{\"errors\":[{\"message\":\"internal error\"}],\"data\":{\"savedV3\":{\"elements\":null}}}"), NULL) == nil,
+          @"GraphQL's own error isn't an empty list");
+    CHECK(ApolloGQLSavedFullnames(ParseJSON(@"{\"data\":{\"savedV3\":{\"elements\":{\"edges\":[{\"node\":{\"__typename\":\"CellGroup\",\"id\":\"c29ydA==\"}}],"
+                                             "\"pageInfo\":{\"endCursor\":\"\"}}}}}"), NULL) == nil, @"rows of another shape aren't an empty list either");
+
+    // The comments, and from their permalinks the posts they're on.
+    NSDictionary *comments = ParseJSON(@"{\"data\":{\"commentsByIds\":["
+        "{\"__typename\":\"Comment\",\"id\":\"t1_orphan\",\"permalink\":\"/user/Some_One/comments/lost/a_title/orphan/\",\"score\":2,\"voteState\":\"NONE\","
+        "\"createdAt\":\"2026-11-25T16:30:30.145000+0000\",\"content\":{\"markdown\":\"Kept\",\"richtext\":null,\"richtextMedia\":[]},"
+        "\"authorInfo\":{\"__typename\":\"Redditor\",\"id\":\"t2_u\",\"name\":\"Someone\"}},"
+        "{\"__typename\":\"Comment\",\"id\":\"t1_aaa\",\"permalink\":\"/r/test/comments/two/second_post/aaa/\",\"score\":9,\"voteState\":\"UP\",\"isSaved\":false,"
+        "\"createdAt\":\"2026-11-25T16:30:30.145000+0000\",\"content\":{\"markdown\":\"Saved words\",\"richtext\":null,\"richtextMedia\":[]},"
+        "\"authorInfo\":{\"__typename\":\"Redditor\",\"id\":\"t2_u\",\"name\":\"Someone\"}}]}}");
+    NSArray *threads = ApolloGQLCommentPostFullnames(@[ comments ]);
+    CHECK([threads isEqualToArray:(@[ @"t3_lost", @"t3_two" ])], @"the posts the comments are on (%@)", threads);
+    NSDictionary *posts = ParseJSON(@"{\"data\":{\"postsInfoByIds\":["
+        "{\"__typename\":\"SubredditPost\",\"id\":\"t3_two\",\"postTitle\":\"Fish & <chips>\",\"permalink\":\"/r/test/comments/two/second_post/\","
+        "\"url\":\"https://example.com/two\",\"commentCount\":385,\"isNsfw\":true,\"authorInfo\":{\"__typename\":\"Redditor\",\"id\":\"t2_p\",\"name\":\"Poster\"},"
+        "\"subreddit\":{\"id\":\"t5_x\",\"name\":\"test\",\"prefixedName\":\"r/test\",\"isQuarantined\":false},\"createdAt\":\"2026-11-25T16:30:30.145000+0000\"},"
+        "{\"__typename\":\"SubredditPost\",\"id\":\"t3_one\",\"postTitle\":\"First\",\"permalink\":\"/r/test/comments/one/first/\",\"isSaved\":false,"
+        "\"subreddit\":{\"id\":\"t5_x\",\"name\":\"test\",\"prefixedName\":\"r/test\"},\"voteState\":\"UP\",\"score\":5,\"createdAt\":\"2026-11-25T16:30:30.145000+0000\"}]}}");
+    CHECK(ApolloGQLLegacySavedListing(fullnames, @[ posts ], @[ comments ], nil, YES) == nil, @"no page with a saved post missing from the lookups");
+    CHECK(ApolloGQLLegacySavedListing((@[ @"t3_one", @"t1_aaa", @"t1_never" ]), @[ posts ], @[ comments ], nil, YES) == nil,
+          @"no page with a saved comment missing from the lookups");
+    fullnames = @[ @"t3_one", @"t1_aaa", @"t1_orphan" ];
+    NSDictionary *listing = ApolloGQLLegacySavedListing(fullnames, @[ posts ], @[ comments ], @"t1_orphan", YES);
+    NSArray *things = listing[@"data"][@"children"];
+    CHECK(things.count == 3 && [[things valueForKey:@"kind"] isEqualToArray:(@[ @"t3", @"t1", @"t1" ])] &&
+          [[things valueForKeyPath:@"data.name"] isEqualToArray:(@[ @"t3_one", @"t1_aaa", @"t1_orphan" ])],
+          @"posts and comments in the list's order (%@)", [things valueForKeyPath:@"data.name"]);
+    CHECK([listing[@"data"][@"after"] isEqualToString:@"t1_orphan"], @"the next page's start is the caller's to say (%@)", listing[@"data"][@"after"]);
+    NSDictionary *post = things[0][@"data"], *comment = things[1][@"data"], *orphan = things[2][@"data"];
+    CHECK([post[@"title"] isEqualToString:@"First"] && [post[@"saved"] isEqual:@YES] && [post[@"likes"] isEqual:@YES], @"a whole post, marked saved");
+    CHECK([comment[@"body"] isEqualToString:@"Saved words"] && [comment[@"saved"] isEqual:@YES] && [comment[@"likes"] isEqual:@YES] &&
+          [comment[@"replies"] isEqual:@""], @"the comment itself, marked saved");
+    CHECK([comment[@"link_id"] isEqualToString:@"t3_two"] && [comment[@"parent_id"] isEqualToString:@"t3_two"] &&
+          [comment[@"link_title"] isEqualToString:@"Fish & <chips>"] && [comment[@"link_author"] isEqualToString:@"Poster"] &&
+          [comment[@"link_url"] isEqualToString:@"https://example.com/two"] && [comment[@"num_comments"] isEqual:@385] && [comment[@"over_18"] isEqual:@YES] &&
+          [comment[@"quarantine"] isEqual:@NO], @"its post's details (%@ %@ %@)", comment[@"link_title"], comment[@"link_author"], comment[@"num_comments"]);
+    CHECK([comment[@"subreddit"] isEqualToString:@"test"] && [comment[@"subreddit_id"] isEqualToString:@"t5_x"] &&
+          [comment[@"subreddit_name_prefixed"] isEqualToString:@"r/test"] &&
+          [comment[@"link_permalink"] isEqualToString:@"https://www.reddit.com/r/test/comments/two/second_post/"], @"its subreddit and thread (%@)", comment[@"link_permalink"]);
+    CHECK([orphan[@"link_id"] isEqualToString:@"t3_lost"] && [orphan[@"subreddit"] isEqualToString:@"u_Some_One"] && [orphan[@"link_title"] isEqualToString:@""] &&
+          orphan[@"link_author"] == nil && [orphan[@"body"] isEqualToString:@"Kept"],
+          @"a comment whose post is gone keeps what its permalink says (%@ %@)", orphan[@"link_id"], orphan[@"subreddit"]);
+    NSDictionary *escaped = ApolloGQLLegacySavedListing(fullnames, @[ posts ], @[ comments ], nil, NO);
+    CHECK([escaped[@"data"][@"children"][1][@"data"][@"link_title"] isEqualToString:@"Fish &amp; &lt;chips&gt;"] && escaped[@"data"][@"after"] == [NSNull null],
+          @"escaped without raw_json, and a last page");
+    CHECK([ApolloGQLLegacySavedListing(@[], @[], @[], nil, YES)[@"data"][@"children"] count] == 0, @"nothing saved");
+}
+
 static void TestPlanForLists(void) {
     ApolloGQLRequest *upvoted = ApolloGQLRequestForLegacy(@"GET", @"user/Some_One/upvoted.json", (@{ @"limit": @25, @"raw_json": @1 }));
     CHECK(upvoted.kind == ApolloGQLRequestKindOwnPosts && [upvoted.username isEqualToString:@"Some_One"] && [upvoted.ownList isEqualToString:@"upvoted"] &&
@@ -951,8 +1016,28 @@ static void TestPlanForLists(void) {
     CHECK([ApolloGQLOwnPostsOperation(ApolloGQLRequestForLegacy(@"GET", @"/user/someone/downvoted", nil)) isEqualToString:@"DownvotedPosts"], @"downvoted");
     CHECK(ApolloGQLRequestForLegacy(@"GET", @"/user/someone/upvoted", (@{ @"sort": @"top" })) == nil, @"GraphQL has these newest first only");
     CHECK(ApolloGQLRequestForLegacy(@"GET", @"/user/someone/upvoted", (@{ @"after": @"t1_x" })) == nil, @"a page after something that isn't a post");
-    CHECK(ApolloGQLRequestForLegacy(@"GET", @"/user/someone/saved", nil) == nil && ApolloGQLRequestForLegacy(@"GET", @"/user/someone/overview", nil) == nil,
+    CHECK(ApolloGQLRequestForLegacy(@"GET", @"/user/someone/overview", nil) == nil && ApolloGQLRequestForLegacy(@"GET", @"/user/someone/gilded", nil) == nil,
           @"lists GraphQL isn't asked for");
+
+    // The saved list, as Apollo asks for it at launch and from its Saved screen.
+    ApolloGQLRequest *saved = ApolloGQLRequestForLegacy(@"GET", @"user/Some_One/saved.json", (@{ @"api_type": @"json", @"limit": @100, @"raw_json": @1 }));
+    CHECK(saved.kind == ApolloGQLRequestKindOwnSaved && [saved.username isEqualToString:@"Some_One"] && saved.limit == 100 && saved.after == nil && saved.rawJSON,
+          @"the account's saved list (%ld %@ %ld)", (long)saved.kind, saved.username, (long)saved.limit);
+    CHECK([ApolloGQLSavedVariables(saved.after) isEqualToDictionary:@{}], @"first page");
+    ApolloGQLRequest *screen = ApolloGQLRequestForLegacy(@"GET", @"user/Some_One/saved/(null).json", (@{ @"limit": @12, @"after": @"t1_last" }));
+    CHECK(screen.kind == ApolloGQLRequestKindOwnSaved && screen.limit == 12 && [ApolloGQLSavedVariables(screen.after) isEqualToDictionary:(@{ @"after": @"dDFfbGFzdA==" })],
+          @"the Saved screen's path, a page after a comment (%ld %@)", (long)screen.kind, ApolloGQLSavedVariables(screen.after));
+    CHECK([ApolloGQLSavedVariables(ApolloGQLRequestForLegacy(@"GET", @"/user/someone/saved", (@{ @"after": @"t3_last" })).after)
+           isEqualToDictionary:(@{ @"after": @"dDNfbGFzdA==" })], @"a page after a post");
+    CHECK(ApolloGQLRequestIsForAccount(saved, @"some_one") && !ApolloGQLRequestIsForAccount(saved, @"another") && !ApolloGQLRequestIsForAccount(saved, nil),
+          @"only the account's own saved list");
+    CHECK(ApolloGQLRequestForLegacy(@"GET", @"/user/someone/saved", (@{ @"type": @"comments" })) == nil &&
+          ApolloGQLRequestForLegacy(@"GET", @"/user/someone/saved", (@{ @"sr": @"apple" })) == nil &&
+          ApolloGQLRequestForLegacy(@"GET", @"/user/someone/saved", (@{ @"sort": @"top" })) == nil &&
+          ApolloGQLRequestForLegacy(@"GET", @"/user/someone/saved", (@{ @"before": @"t3_x" })) == nil &&
+          ApolloGQLRequestForLegacy(@"GET", @"/user/someone/saved", (@{ @"after": @"t5_x" })) == nil, @"a saved list cut down, re-sorted or paged another way");
+    CHECK(ApolloGQLRequestForLegacy(@"GET", @"/user/someone/saved/top", nil) == nil && ApolloGQLRequestForLegacy(@"GET", @"/user/someone/upvoted/(null)", nil) == nil &&
+          ApolloGQLRequestForLegacy(@"POST", @"/user/someone/saved", nil) == nil, @"only the two paths Apollo reads it by");
 
     ApolloGQLRequest *comments = ApolloGQLRequestForLegacy(@"GET", @"user/Some_One/comments.json", (@{ @"sort": @"top", @"t": @"week", @"after": @"t1_last", @"limit": @25 }));
     NSDictionary *expected = @{ @"name": @"Some_One", @"sort": @"TOP", @"range": @"WEEK", @"after": @"dDFfbGFzdA==" };
@@ -968,6 +1053,8 @@ static void TestPlanForLists(void) {
     NSDictionary *byIds = ApolloGQLCommentsByIdsVariables(@[ @"t1_a" ]);
     CHECK([byIds[@"ids"] isEqualToArray:(@[ @"t1_a" ])] && [byIds[@"includePremiumAvatarTreatment"] isEqual:@NO], @"comments by id (%@)", byIds);
 
+    CHECK(ApolloGQLCanAnswerPath(@"GET", @"/user/*/saved") && ApolloGQLCanAnswerPath(@"GET", @"/user/*/saved/(null)") &&
+          !ApolloGQLCanAnswerPath(@"GET", @"/user/*/m/*/hot") && !ApolloGQLCanAnswerPath(@"GET", @"/api/multi/mine"), @"saved, and not multireddits");
     CHECK(ApolloGQLCanAnswerPath(@"GET", @"/user/*/comments") && ApolloGQLCanAnswerPath(@"GET", @"/user/*/upvoted") &&
           !ApolloGQLCanAnswerPath(@"GET", @"/subreddits/search") && !ApolloGQLCanAnswerPath(@"GET", @"/subreddits/mine/subscriber"), @"endpoint patterns");
 }
@@ -989,6 +1076,7 @@ int main(int argc, const char *argv[]) {
         TestAuthorRecords();
         TestPlanForOwnReads();
         TestOwnPostsAndUserComments();
+        TestSavedList();
         TestPlanForLists();
     }
     if (sFailures) {

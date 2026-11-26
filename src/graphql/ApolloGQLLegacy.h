@@ -98,6 +98,32 @@ NSArray<NSString *> *_Nullable ApolloGQLUserCommentFullnames(NSDictionary *answe
 // permalink. nil when `list` has no comment list.
 NSDictionary *_Nullable ApolloGQLLegacyUserCommentsListing(NSDictionary *list, NSDictionary *comments, BOOL rawJSON);
 
+// The fullnames of a SavedPostsFeedSdui answer (the account's saved list):
+// posts and comments together, in the list's order. `hasMore` gets whether a
+// further page follows. nil when the answer has no saved list, or has rows
+// this doesn't know how to read.
+NSArray<NSString *> *_Nullable ApolloGQLSavedFullnames(NSDictionary *answer, BOOL *_Nullable hasMore);
+
+// The posts the comments of LiveCommentsByIds answers are on, each once, in
+// order: a comment says so only in its permalink
+// ("/r/<sub>/comments/<post id>/<slug>/<comment id>/").
+NSArray<NSString *> *ApolloGQLCommentPostFullnames(NSArray<NSDictionary *> *commentAnswers);
+
+// The Listing /user/<name>/saved.json sends: t3 and t1 things together, in the
+// order of `fullnames` (ApolloGQLSavedFullnames, over as many pages as were
+// read). `postAnswers` are the PostsByIds answers that have the saved posts and
+// the posts the saved comments are on (ApolloGQLCommentPostFullnames);
+// `commentAnswers` the LiveCommentsByIds answers that have the comments. Each
+// comment carries its post's title, link, author and subreddit, which Apollo's
+// list shows under it (a comment whose post the answers don't have keeps what
+// its permalink says of it); as on a profile, parent_id is the post's fullname
+// (GraphQL doesn't say what a comment replies to). `after` is the fullname the
+// next page starts after, or nil for the last page. nil when the answers don't
+// have one of the list's own posts or comments: every row of this list is one
+// the account chose to keep, so a page isn't made with one missing.
+NSDictionary *_Nullable ApolloGQLLegacySavedListing(NSArray<NSString *> *fullnames, NSArray<NSDictionary *> *postAnswers,
+                                          NSArray<NSDictionary *> *commentAnswers, NSString *_Nullable after, BOOL rawJSON);
+
 // The post fullnames of a feed answer (SubredditFeedSdui, HomeFeedSdui), in
 // order, without the cells that aren't posts (sort bar, community suggestions,
 // ads). `joinedOnly` also leaves out the posts Reddit suggests from subreddits

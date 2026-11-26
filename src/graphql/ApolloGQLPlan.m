@@ -11,6 +11,7 @@ NSString *const ApolloGQLOperationSubredditInfo = @"SubredditInfoByName";
 NSString *const ApolloGQLOperationPostComments = @"PostComments";
 NSString *const ApolloGQLOperationUserComments = @"SubmittedComments";
 NSString *const ApolloGQLOperationCommentsByIds = @"LiveCommentsByIds";
+NSString *const ApolloGQLOperationSaved = @"SavedPostsFeedSdui";
 static NSString *const ApolloGQLOperationUpvotedPosts = @"UpvotedPosts";
 static NSString *const ApolloGQLOperationDownvotedPosts = @"DownvotedPosts";
 static NSString *const ApolloGQLOperationHiddenPosts = @"HiddenPosts";
@@ -18,6 +19,9 @@ static NSString *const ApolloGQLOperationHiddenPosts = @"HiddenPosts";
 // 60 in one call were answered in full (2026-11-24). 50 covers a feed's first
 // page (7 + 25 posts) and two later ones in a single call.
 const NSUInteger ApolloGQLPostsByIdsBatch = 50;
+// 25 in one call were answered in full (a page of a profile's comments,
+// 2026-11-25).
+const NSUInteger ApolloGQLCommentsByIdsBatch = 25;
 
 // PostComments gives at most this many comments when told how many (a `count`
 // of 500 answered the same 200), and its own, larger page when not told (265 on
@@ -47,6 +51,7 @@ static NSDictionary<NSString *, NSString *> *ApolloGQLOperationHashes(void) {
             ApolloGQLOperationHiddenPosts: @"7548e75ad724b6888e7901b3a757d5111008c02624af20b0141b40fdca6276d2",
             ApolloGQLOperationUserComments: @"e1b37f521fb40af2120946b70e7fbf6a3d924db2abaf28ff2164d4cfacca28db",
             ApolloGQLOperationCommentsByIds: @"f6ea957fbe5df4386492b6f153c90e8f0f3d2d3556e908e4e4eb9c5afdb1ffa1",
+            ApolloGQLOperationSaved: @"929e762251408c04a8734d2ba51128c733dbabad9b8bbb313f919e2fd3ae54ce",
         };
     });
     return hashes;
@@ -131,7 +136,7 @@ NSDictionary *ApolloGQLPostCommentsVariables(ApolloGQLRequest *request) {
 }
 
 BOOL ApolloGQLRequestIsForAccount(ApolloGQLRequest *request, NSString *account) {
-    if (request.kind != ApolloGQLRequestKindOwnPosts) return YES;
+    if (request.kind != ApolloGQLRequestKindOwnPosts && request.kind != ApolloGQLRequestKindOwnSaved) return YES;
     return request.username.length > 0 && account.length > 0 && [request.username caseInsensitiveCompare:account] == NSOrderedSame;
 }
 
@@ -141,6 +146,11 @@ NSString *ApolloGQLOwnPostsOperation(ApolloGQLRequest *request) {
 
 NSDictionary *ApolloGQLOwnPostsVariables(ApolloGQLRequest *request) {
     NSString *cursor = ApolloGQLFeedCursorForFullname(request.after);
+    return cursor.length > 0 ? @{ @"after": cursor } : @{};
+}
+
+NSDictionary *ApolloGQLSavedVariables(NSString *after) {
+    NSString *cursor = ApolloGQLFeedCursorForFullname(after);
     return cursor.length > 0 ? @{ @"after": cursor } : @{};
 }
 
@@ -332,14 +342,22 @@ static ApolloGQLRequestKind ApolloGQLKindForPath(NSString *method, NSString *pat
     }
     // The lists of a profile. A username is 3 to 20 letters, digits, "_" or
     // "-"; the sort is a parameter here, not part of the path.
-    if (segments.count == 3 && [segments[0] isEqualToString:@"user"]) {
+    // The saved list also comes as "user/<name>/saved/(null)": Apollo's Saved
+    // screen puts a sort it doesn't have after it.
+    BOOL savedWithNoSort = segments.count == 4 && [segments[2] isEqualToString:@"saved"] && [segments[3] isEqualToString:@"(null)"];
+    if ((segments.count == 3 || savedWithNoSort) && [segments[0] isEqualToString:@"user"]) {
         NSCharacterSet *other = [[NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyz0123456789_-"] invertedSet];
         if (segments[1].length >= 3 && segments[1].length <= 20 && [segments[1] rangeOfCharacterFromSet:other].location == NSNotFound) {
+            if ([segments[2] isEqualToString:@"saved"]) return ApolloGQLRequestKindOwnSaved;
             if ([segments[2] isEqualToString:@"submitted"]) return ApolloGQLRequestKindUserPosts;
             if ([segments[2] isEqualToString:@"comments"]) return ApolloGQLRequestKindUserComments;
             if (ApolloGQLOwnLists()[segments[2]]) return ApolloGQLRequestKindOwnPosts;
         }
     }
+    // (A multireddit's feed, "user/<name>/m/<multi>/<sort>", keeps its routes.
+    // CustomFeedSdui answers for the multireddit's path in lower case, but it
+    // leaves out every crosspost the legacy feed has, 8 of the 64 posts
+    // compared over four sorts on 2026-11-25, and has no Rising.)
     // Home is a sort on its own ("hot.json"); Apollo names one every time.
     if (segments.count == 1 && ApolloGQLHomeSortIsAnswered(segments[0])) return ApolloGQLRequestKindHomeFeed;
     return 0;
@@ -422,6 +440,22 @@ ApolloGQLRequest *ApolloGQLRequestForLegacy(NSString *method, NSString *path, id
         if (after.length > 0 && ![after hasPrefix:@"t3_"]) return nil;
         request.username = original.count > 1 ? original[1] : segments[1];
         request.ownList = segments[2];
+        request.after = after.length > 0 ? after : nil;
+        NSInteger limit = query[@"limit"].integerValue;
+        request.limit = limit > 0 ? MIN(limit, 100) : 25;
+        return request;
+    }
+
+    if (kind == ApolloGQLRequestKindOwnSaved) {
+        // Everything saved, newest first: the legacy list can also be cut down
+        // to posts or comments (type), to one subreddit (sr) or re-sorted,
+        // which this query can't do. Apollo asks for none of those.
+        NSString *sort = query[@"sort"].lowercaseString;
+        NSString *after = query[@"after"];
+        if (query[@"before"].length > 0 || query[@"type"].length > 0 || query[@"sr"].length > 0) return nil;
+        if (sort.length > 0 && ![sort isEqualToString:@"new"]) return nil;
+        if (after.length > 0 && ![after hasPrefix:@"t3_"] && ![after hasPrefix:@"t1_"]) return nil;
+        request.username = original.count > 1 ? original[1] : segments[1];
         request.after = after.length > 0 ? after : nil;
         NSInteger limit = query[@"limit"].integerValue;
         request.limit = limit > 0 ? MIN(limit, 100) : 25;
