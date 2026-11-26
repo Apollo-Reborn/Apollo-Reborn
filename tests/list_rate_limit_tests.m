@@ -165,6 +165,39 @@ int main(void) {
         CHECK(Fire(605) && sPasses == 2 && sListRateLimitRetryAt == 610,
               "the stale 605 pass still runs (finding nothing new) and leaves the 610 one pending");
         CHECK(Fire(610) && sPasses == 3 && sListRateLimitRetryAt == 0, "the 610 pass runs");
+
+        // A subreddit behind Reddit's content warning (a "gated" one).
+        sHolds[@"a"] = @60;
+        ApolloListLoadState *gated = State(@"a");
+        ApolloListRecordOutcome(gated, ApolloListOutcomeFailed, YES);
+        CHECK(gated.waitingForRateLimit, "a failed first page during a hold waits, until it turns out to be gated");
+        ApolloListRecordGate(gated, @"Content Advisory", @"Drugs", nil);
+        CHECK([gated.gateWarning isEqualToString:@"Content Advisory"] && [gated.gateSubreddit isEqualToString:@"Drugs"] &&
+              !gated.gateStillShown && !gated.waitingForRateLimit, "a gated first page shows the warning and doesn't wait on the rate limit");
+        CHECK([ApolloListGateText(gated) isEqualToString:@"Reddit shows a content warning before this community."], "the gated line");
+        gated.gateAccepting = YES;
+        gated.gateFailure = @"Couldn't reach Reddit.";
+        ApolloListRecordGate(gated, @"Content Advisory", @"Drugs", @"drugs");
+        CHECK(gated.gateStillShown && !gated.gateAccepting && gated.gateFailure == nil,
+              "the same warning right after accepting it says Reddit still shows it, and a new page clears the last attempt");
+        CHECK([ApolloListGateText(gated) isEqualToString:@"Reddit still shows its content warning for this community."], "the line after that");
+        ApolloListRecordGate(gated, @"Content Advisory", @"Drugs", @"apple");
+        CHECK(!gated.gateStillShown, "accepting another subreddit's warning says nothing about this one");
+        gated.gateFailure = @"Couldn't reach Reddit.";
+        CHECK([ApolloListGateText(gated) isEqualToString:@"Couldn't reach Reddit."], "a failed attempt is what the line says");
+        ApolloListRecordGate(gated, nil, nil, nil);
+        CHECK(gated.gateWarning == nil && gated.gateSubreddit == nil, "any other failure isn't gated");
+        ApolloListRecordGate(gated, @"Content Advisory", nil, nil);
+        CHECK(gated.gateWarning == nil, "a warning with no one subreddit to accept it for isn't shown as one");
+        ApolloListRecordOutcome(gated, ApolloListOutcomeNone, NO);
+        ApolloListRecordGate(gated, @"Content Advisory", @"Drugs", nil);
+        CHECK(gated.gateWarning == nil, "only a failed first page is gated");
+        ApolloListLoadState *comments = State(@"a");
+        comments.kind = ApolloListKindUserComments;
+        ApolloListRecordOutcome(comments, ApolloListOutcomeFailed, YES);
+        ApolloListRecordGate(comments, @"Content Advisory", @"Drugs", nil);
+        CHECK(comments.gateWarning == nil && comments.waitingForRateLimit, "only a list of posts is gated; the others keep their rate-limit wait");
+        ApolloListRecordGate(nil, @"Content Advisory", @"Drugs", nil);
     }
     if (failures) {
         NSLog(@"%d list rate-limit check(s) failed", failures);

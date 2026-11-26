@@ -49,6 +49,17 @@
 // in the foreground after that. Each list waits on its own request's account,
 // and switching to another account ends the wait. Like the outcome, the wait
 // follows whichever first page Apollo shows: the one that arrives last.
+//
+// Content warning (a "gated" subreddit, see ApolloGatedSubreddit.h): Reddit
+// answers every read of some communities (r/Drugs) with HTTP 403 and a warning
+// until the account has accepted it once. RedditKit has no error for that
+// reason, so the feed was a failed load like any other, and pulling down
+// failed again for as long as the account hadn't accepted the warning
+// somewhere else. A subreddit's first page that fails this way says so
+// instead, with a button that shows Reddit's warning. "Continue" there sends
+// what Reddit's own warning page sends, with the web session of the account
+// that asked, and reloads the list; an account with no web session stored is
+// sent to Reddit to accept it there. Nothing is sent before that tap.
 
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
@@ -60,6 +71,8 @@
 #import "ApolloAccountCredentials.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloClasses.h"
+#import "ApolloGatedSubreddit.h"
+#import "ApolloState.h"
 
 extern "C" void ApolloSwiftAssignOptionalString(void *storage, const char *utf8Value);
 extern "C" void ApolloSwiftAssignString(void *storage, const char *utf8Value);
@@ -112,6 +125,18 @@ typedef struct {
 // The first page failed while Reddit was rate-limiting `account`; the list
 // reloads itself once that account's limit resets (see the header).
 @property (nonatomic) BOOL waitingForRateLimit;
+// The account that sent this first page, of either kind, lowercased.
+@property (nonatomic, copy) NSString *requestUsername;
+// The first page failed because Reddit holds `gateSubreddit` behind a warning
+// this account hasn't accepted: the warning's text. nil for any other outcome.
+@property (nonatomic, copy) NSString *gateWarning;
+@property (nonatomic, copy) NSString *gateSubreddit;
+// The warning came back right after this account accepted it from here.
+@property (nonatomic) BOOL gateStillShown;
+// The accepting request is on its way; the list shows its spinner meanwhile.
+@property (nonatomic) BOOL gateAccepting;
+// It couldn't be sent: what to say in place of the usual line.
+@property (nonatomic, copy) NSString *gateFailure;
 @property (nonatomic, weak) id adapter;
 @property (nonatomic, weak) id controller;
 @property (nonatomic) SEL refreshSelector;
@@ -148,6 +173,32 @@ static void ApolloListRecordOutcome(ApolloListLoadState *state, ApolloListOutcom
     if (!state) return;
     state.outcome = outcome;
     state.waitingForRateLimit = outcome == ApolloListOutcomeFailed && listEmpty && ApolloListStateHold(state) > 0;
+}
+
+// Records whether the first page whose outcome was just recorded on `state`
+// failed on Reddit's warning for one subreddit. `warning` is the text from the
+// failure (nil for any other failure), `subreddit` the one subreddit the page
+// was for (nil for Home, a "+" list, a profile). `acceptedSubreddit` is the
+// subreddit this account accepted the warning for from this list just before
+// the page was asked for, if it did: the same warning again means Reddit
+// didn't take it. A gated page doesn't wait on a rate limit: only accepting
+// the warning changes its answer.
+static void ApolloListRecordGate(ApolloListLoadState *state, NSString *warning, NSString *subreddit, NSString *acceptedSubreddit) {
+    if (!state) return;
+    BOOL gated = state.outcome == ApolloListOutcomeFailed && state.kind == ApolloListKindPosts && warning.length > 0 && subreddit.length > 0;
+    state.gateWarning = gated ? warning : nil;
+    state.gateSubreddit = gated ? subreddit : nil;
+    state.gateStillShown = gated && acceptedSubreddit.length > 0 && [acceptedSubreddit caseInsensitiveCompare:subreddit] == NSOrderedSame;
+    state.gateAccepting = NO;
+    state.gateFailure = nil;
+    if (gated) state.waitingForRateLimit = NO;
+}
+
+// The line a gated list shows above its button.
+static NSString *ApolloListGateText(ApolloListLoadState *state) {
+    if (state.gateFailure.length > 0) return state.gateFailure;
+    if (state.gateStillShown) return @"Reddit still shows its content warning for this community.";
+    return @"Reddit shows a content warning before this community.";
 }
 
 typedef NS_ENUM(NSInteger, ApolloListRetryAction) {
@@ -233,6 +284,11 @@ static NSHashTable<UIViewController *> *sListControllers;
 static char kApolloListStateKey;
 static char kApolloListMessageKey;
 static char kApolloListHidSpinnerKey;
+// On the spinner: the gated list's line and button (a UIView).
+static char kApolloListGateViewKey;
+// On the controller: the subreddit this list just accepted Reddit's warning
+// for (NSString), until its next first page ends.
+static char kApolloListGateAcceptedKey;
 
 // State lives on the ListAdapter, so a screen with two lists (Friends) keeps
 // one per list.
@@ -242,6 +298,8 @@ static ApolloListLoadState *ApolloListStateFor(id adapter) {
 
 // Posts with no posts get Apollo's own label instead (see the header).
 static BOOL ApolloListStateShowsMessage(ApolloListLoadState *state) {
+    // While Reddit's warning is being accepted the spinner is the right thing.
+    if (state.gateAccepting) return NO;
     if (state.outcome == ApolloListOutcomeFailed) return YES;
     return state.outcome == ApolloListOutcomeEmpty && state.kind != ApolloListKindPosts;
 }
@@ -319,10 +377,18 @@ static NSString *ApolloListMessageText(ApolloListLoadState *state) {
     return [NSString stringWithFormat:@"No comments to show.\nu/\u2060%@ may keep their comments hidden.", state.username];
 }
 
+static void ApolloListRemoveGateView(UIView *spinner) {
+    UIView *gate = objc_getAssociatedObject(spinner, &kApolloListGateViewKey);
+    if (!gate) return;
+    [gate removeFromSuperview];
+    objc_setAssociatedObject(spinner, &kApolloListGateViewKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 static void ApolloListRemoveMessage(UIView *spinner) {
     UILabel *message = objc_getAssociatedObject(spinner, &kApolloListMessageKey);
     [message removeFromSuperview];
     objc_setAssociatedObject(spinner, &kApolloListMessageKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloListRemoveGateView(spinner);
 }
 
 static void ApolloListRestoreSpinner(UIView *spinner) {
@@ -333,9 +399,101 @@ static void ApolloListRestoreSpinner(UIView *spinner) {
     [(UIActivityIndicatorView *)spinner startAnimating];
 }
 
+static void ApolloListPresentGateWarning(id adapter);
+
+// Holds a gated list's line and button in the table. It takes touches for the
+// button and nothing else: the frame it is given is the spinner's, which can be
+// shorter than the two together (the button then hangs below it) and can lie
+// over the subreddit's header, whose own button has to stay tappable, and a
+// pull on the line has to reach the table.
+@interface ApolloListGateView : UIView
+@end
+
+@implementation ApolloListGateView
+
+- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
+    for (UIView *subview in self.subviews) {
+        if ([subview isKindOfClass:UIControl.class] && !subview.hidden && CGRectContainsPoint(subview.frame, point)) return YES;
+    }
+    return NO;
+}
+
+@end
+
+// A gated list: the line that says so and a button that shows Reddit's
+// warning, in the frame ListAdapter gave the spinner.
+static void ApolloListShowGate(UIView *spinner, ApolloListLoadState *state) {
+    UIView *host = spinner.superview;
+    UILabel *plain = objc_getAssociatedObject(spinner, &kApolloListMessageKey);
+    [plain removeFromSuperview];
+    objc_setAssociatedObject(spinner, &kApolloListMessageKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    UIView *gate = objc_getAssociatedObject(spinner, &kApolloListGateViewKey);
+    UILabel *label = nil;
+    if (!gate) {
+        gate = [ApolloListGateView new];
+        label = [UILabel new];
+        label.tag = 1;
+        label.numberOfLines = 0;
+        label.textAlignment = NSTextAlignmentCenter;
+        label.font = ApolloThemeRuntimeFont([UIFont systemFontOfSize:15.0]);
+        label.textColor = ApolloThemeSubredditListSecondaryTextColor() ?: UIColor.secondaryLabelColor;
+        UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+        [button setTitle:@"View Warning" forState:UIControlStateNormal];
+        button.titleLabel.font = ApolloThemeRuntimeFont([UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold]);
+        // A title alone is an 18-point-high target. The insets make it 44
+        // (UIButtonConfiguration, their replacement, needs iOS 15).
+        button.contentEdgeInsets = UIEdgeInsetsMake(13.0, 24.0, 13.0, 24.0);
+        // The accent resolves against the table the button sits in (a
+        // dynamic provider color; see AGENTS.md).
+        button.tintColor = ApolloThemeAccentColor() ?: host.tintColor;
+        // The state is looked up at the tap: the list may have a newer one.
+        id adapter = state.adapter;
+        __weak id weakAdapter = adapter;
+        [button addAction:[UIAction actionWithHandler:^(__unused UIAction *action) {
+            ApolloListPresentGateWarning(weakAdapter);
+        }] forControlEvents:UIControlEventTouchUpInside];
+        // The line sits where the plain message does, centered in the frame,
+        // and the button hangs under it. Centering the two together would
+        // lift the line, and under a tall subreddit header on a short screen
+        // (the Duo's cover) the frame's upper part is the header's.
+        label.translatesAutoresizingMaskIntoConstraints = NO;
+        button.translatesAutoresizingMaskIntoConstraints = NO;
+        [gate addSubview:label];
+        [gate addSubview:button];
+        [NSLayoutConstraint activateConstraints:@[
+            [label.centerXAnchor constraintEqualToAnchor:gate.centerXAnchor],
+            [label.centerYAnchor constraintEqualToAnchor:gate.centerYAnchor],
+            [label.widthAnchor constraintLessThanOrEqualToAnchor:gate.widthAnchor],
+            [button.centerXAnchor constraintEqualToAnchor:gate.centerXAnchor],
+            // The title sits 6 points under the line; the button's top inset
+            // reaches up over the gap.
+            [button.topAnchor constraintEqualToAnchor:label.bottomAnchor constant:-7.0],
+        ]];
+        objc_setAssociatedObject(spinner, &kApolloListGateViewKey, gate, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    } else {
+        label = [gate viewWithTag:1];
+    }
+    label.text = ApolloListGateText(state);
+    gate.frame = spinner.frame;
+    gate.autoresizingMask = spinner.autoresizingMask;
+    if (gate.superview != host) [host insertSubview:gate aboveSubview:spinner];
+
+    if (!spinner.hidden) {
+        objc_setAssociatedObject(spinner, &kApolloListHidSpinnerKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        spinner.hidden = YES;
+    }
+    [(UIActivityIndicatorView *)spinner stopAnimating];
+}
+
 static void ApolloListShowMessage(UIView *spinner, ApolloListLoadState *state) {
     UIView *host = spinner.superview;
     if (!host) return;
+    if (state.gateWarning.length > 0) {
+        ApolloListShowGate(spinner, state);
+        return;
+    }
+    ApolloListRemoveGateView(spinner);
     UILabel *message = objc_getAssociatedObject(spinner, &kApolloListMessageKey);
     if (!message) {
         // Apollo's EmptyStateLabel ("No submitted posts"): 15pt regular, its
@@ -368,6 +526,190 @@ static void ApolloListApply(id adapter) {
         ApolloListShowMessage(spinner, state);
     } else {
         ApolloListRestoreSpinner(spinner);
+    }
+}
+
+#pragma mark - Reddit's content warning
+
+// Reddit answers the warning form with a redirect to the subreddit's own web
+// page. That page is of no use here (the list asks for the subreddit itself
+// next), so the redirect stops at its answer.
+@interface ApolloGatedNoRedirectDelegate : NSObject <NSURLSessionTaskDelegate>
+@end
+
+@implementation ApolloGatedNoRedirectDelegate
+- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task
+        willPerformHTTPRedirection:(NSHTTPURLResponse *)response newRequest:(NSURLRequest *)request
+        completionHandler:(void (^)(NSURLRequest *))completionHandler {
+    completionHandler(nil);
+}
+@end
+
+// `base` as one of the account's own web requests. The probe mark keeps the
+// transport hooks off a request that carries its own cookie; it never reaches
+// the wire.
+static NSMutableURLRequest *ApolloGatedSessionRequest(NSURLRequest *base, ApolloWebSessionEntry *session) {
+    NSMutableURLRequest *request = [base mutableCopy];
+    request.URL = ApolloWebJSONProbeURL(base.URL);
+    request.HTTPShouldHandleCookies = NO;
+    request.timeoutInterval = 20.0;
+    request.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+    [request setValue:session.cookieHeader forHTTPHeaderField:@"Cookie"];
+    [request setValue:(sUserAgent.length > 0 ? sUserAgent : @"Apollo iOS") forHTTPHeaderField:@"User-Agent"];
+    return request;
+}
+
+// Sends what "continue" on Reddit's warning page for `subreddit` sends, as
+// `username`: the page first, for the form it carries, then that form
+// (ApolloGatedAcceptRequest). `completion` runs on main with whether the list
+// should reload: Reddit answered the form with anything but an error, or its
+// page had no warning form to send (the account has accepted it since, from
+// another list or another device; nothing is posted then). Whether the
+// subreddit is open to the account now is for that reload to find out. NO when
+// Reddit couldn't be reached or refused the form. Only ever called from the
+// warning's "Continue".
+static void ApolloGatedSendAccept(NSString *username, NSString *subreddit, void (^completion)(BOOL reload)) {
+    ApolloWebSessionEntry *session = ApolloWebSessionPollFor(username);
+    NSURL *pageURL = ApolloGatedPageURL(subreddit);
+    if (session.cookieHeader.length == 0 || !pageURL) {
+        ApolloLog(@"[GatedSubreddit] Nothing sent for r/%@: u/%@ has no web session stored", subreddit, username);
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(NO); });
+        return;
+    }
+    NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+    configuration.HTTPShouldSetCookies = NO;
+    configuration.HTTPCookieStorage = nil;
+    NSURLSession *urlSession = [NSURLSession sessionWithConfiguration:configuration
+                                                             delegate:[ApolloGatedNoRedirectDelegate new] delegateQueue:nil];
+    void (^finish)(BOOL, NSString *) = ^(BOOL reload, NSString *detail) {
+        // The session holds its delegate until it is invalidated.
+        [urlSession finishTasksAndInvalidate];
+        ApolloLog(@"[GatedSubreddit] Accepting Reddit's warning for r/%@ as u/%@: %@", subreddit, username, detail);
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(reload); });
+    };
+    NSURLRequest *page = ApolloGatedSessionRequest([NSURLRequest requestWithURL:pageURL], session);
+    [[urlSession dataTaskWithRequest:page completionHandler:^(NSData *pageData, NSURLResponse *pageResponse, NSError *pageError) {
+        NSInteger pageStatus = [pageResponse isKindOfClass:NSHTTPURLResponse.class] ? ((NSHTTPURLResponse *)pageResponse).statusCode : -1;
+        if (pageError || pageStatus < 0) {
+            finish(NO, [NSString stringWithFormat:@"Reddit's warning page didn't load (%@ %ld)", pageError.domain ?: @"no response", (long)pageError.code]);
+            return;
+        }
+        NSURLRequest *form = ApolloGatedAcceptRequest(pageData, pageURL, subreddit);
+        if (!form) {
+            finish(YES, [NSString stringWithFormat:@"Reddit's page had no warning form to send (HTTP %ld, %lu bytes); reloading the list",
+                         (long)pageStatus, (unsigned long)pageData.length]);
+            return;
+        }
+        NSMutableURLRequest *accept = ApolloGatedSessionRequest(form, session);
+        [accept setValue:@"https://old.reddit.com" forHTTPHeaderField:@"Origin"];
+        [accept setValue:pageURL.absoluteString forHTTPHeaderField:@"Referer"];
+        [[urlSession dataTaskWithRequest:accept completionHandler:^(__unused NSData *data, NSURLResponse *response, NSError *error) {
+            NSInteger status = [response isKindOfClass:NSHTTPURLResponse.class] ? ((NSHTTPURLResponse *)response).statusCode : -1;
+            BOOL taken = !error && status >= 200 && status < 400;
+            finish(taken, [NSString stringWithFormat:@"the form answered HTTP %ld%@", (long)status,
+                           error ? [NSString stringWithFormat:@" (%@ %ld)", error.domain, (long)error.code] : @""]);
+        }] resume];
+    }] resume];
+}
+
+// "Continue" on the warning: the list shows its spinner while the form goes
+// out, then reloads through its own pull to refresh action.
+static void ApolloListAcceptGate(id adapter, ApolloListLoadState *state) {
+    NSString *username = state.requestUsername, *subreddit = state.gateSubreddit;
+    if (!adapter || username.length == 0 || subreddit.length == 0 || state.gateAccepting) return;
+    state.gateAccepting = YES;
+    state.gateFailure = nil;
+    ApolloListApply(adapter);
+    __weak id weakAdapter = adapter;
+    ApolloGatedSendAccept(username, subreddit, ^(BOOL reload) {
+        id strongAdapter = weakAdapter;
+        // A first page asked for since (a pull to refresh, an account switch)
+        // has a state of its own, and this answer isn't about it.
+        if (!strongAdapter || ApolloListStateFor(strongAdapter) != state) return;
+        state.gateAccepting = NO;
+        UIViewController *controller = state.controller;
+        SEL refresh = state.refreshSelector;
+        if (!reload) {
+            state.gateFailure = @"Couldn't reach Reddit to accept its content warning.";
+            ApolloListApply(strongAdapter);
+            return;
+        }
+        if (!controller || !refresh || ![controller respondsToSelector:refresh]) {
+            state.gateFailure = @"Pull down to load this community.";
+            ApolloListApply(strongAdapter);
+            return;
+        }
+        // If the next first page is gated all the same, it says so.
+        objc_setAssociatedObject(controller, &kApolloListGateAcceptedKey, subreddit, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        ((void (*)(id, SEL, id))objc_msgSend)(controller, refresh, nil);
+    });
+}
+
+#if APOLLO_SIM_BUILD
+// Sim debug bridge ("gatedsession off|on"): show the warning as an account
+// with no web session stored gets it, without removing anyone's session.
+static BOOL sApolloGatedSimNoSession;
+extern "C" void ApolloGatedSubredditSimSetNoSession(BOOL noSession) {
+    sApolloGatedSimNoSession = noSession;
+    ApolloLog(@"[GatedSubreddit] Sim: warnings are shown %@", noSession ? @"as for an account with no web session" : @"normally");
+}
+#endif
+
+// The gated list's button: Reddit's own words for the subreddit, and the
+// choice. Accepting takes the web session of the account that asked for the
+// list, which an API-Key-Free account always has and an API-key account
+// usually does (the one kept for polls and chat). Without one there's nothing
+// to send the form with, so the warning points at Reddit instead.
+static void ApolloListPresentGateWarning(id adapter) {
+    ApolloListLoadState *state = ApolloListStateFor(adapter);
+    if (state.gateWarning.length == 0 || state.gateSubreddit.length == 0 || state.gateAccepting) return;
+    UIViewController *controller = state.controller;
+    if (!controller.viewIfLoaded.window || controller.presentedViewController) return;
+    NSString *subreddit = state.gateSubreddit;
+    BOOL canAccept = state.requestUsername.length > 0 && ApolloWebSessionPollFor(state.requestUsername).cookieHeader.length > 0;
+#if APOLLO_SIM_BUILD
+    if (sApolloGatedSimNoSession) canAccept = NO;
+#endif
+    NSString *message = canAccept ? state.gateWarning
+                                  : [state.gateWarning stringByAppendingString:@"\n\nAccept this on Reddit, then pull down here to reload."];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:[@"r/" stringByAppendingString:subreddit]
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Not Now" style:UIAlertActionStyleCancel handler:nil]];
+    __weak id weakAdapter = adapter;
+    UIAlertAction *proceed = nil;
+    if (canAccept) {
+        proceed = [UIAlertAction actionWithTitle:@"Continue" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            id strongAdapter = weakAdapter;
+            // Still the first page the warning was shown for.
+            if (strongAdapter && ApolloListStateFor(strongAdapter) == state) ApolloListAcceptGate(strongAdapter, state);
+        }];
+    } else {
+        proceed = [UIAlertAction actionWithTitle:@"Open Reddit" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"https://www.reddit.com/r/%@/", subreddit]];
+            if (url) [UIApplication.sharedApplication openURL:url options:@{} completionHandler:nil];
+        }];
+    }
+    [alert addAction:proceed];
+    alert.preferredAction = proceed;
+    ApolloLog(@"[GatedSubreddit] Showing Reddit's warning for r/%@ (%@)", subreddit,
+              canAccept ? @"Continue accepts it here" : @"no web session for the account, Open Reddit");
+    [controller presentViewController:alert animated:YES completion:nil];
+}
+
+// After the outcome of a first page is on the list's state: whether it failed
+// on Reddit's warning (the failure's NSError carries it, see the RDKClient
+// class-method hook below).
+static void ApolloListNoteGate(id adapter, UIViewController *controller, NSString *path, NSError *error) {
+    ApolloListLoadState *state = ApolloListStateFor(adapter);
+    id carried = error.userInfo[ApolloGatedSubredditWarningKey];
+    NSString *warning = [carried isKindOfClass:NSString.class] ? carried : nil;
+    NSString *accepted = controller ? objc_getAssociatedObject(controller, &kApolloListGateAcceptedKey) : nil;
+    if (accepted) objc_setAssociatedObject(controller, &kApolloListGateAcceptedKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    ApolloListRecordGate(state, warning, warning ? ApolloGatedSubredditFromListingPath(path) : nil, accepted);
+    if (state.gateWarning.length > 0) {
+        ApolloLog(@"[GatedSubreddit] r/%@ is behind Reddit's content warning for u/%@%@", state.gateSubreddit,
+                  state.requestUsername ?: @"-", state.gateStillShown ? @" (again, right after accepting it)" : @"");
     }
 }
 
@@ -474,6 +816,15 @@ static NSString *ApolloListRequestAccount(id client) {
     NSString *username = [user respondsToSelector:@selector(username)] ? ((id (*)(id, SEL))objc_msgSend)(user, @selector(username)) : nil;
     if (![username isKindOfClass:NSString.class] || username.length == 0) username = ApolloListActiveAccount();
     return username.length > 0 && ApolloWebSessionFor(username) ? username.lowercaseString : nil;
+}
+
+// The account sending a first page, of either kind, lowercased; nil when
+// nobody is signed in. Found the way ApolloListRequestAccount finds it.
+static NSString *ApolloListRequestUsername(id client) {
+    id user = [client respondsToSelector:@selector(currentUser)] ? ((id (*)(id, SEL))objc_msgSend)(client, @selector(currentUser)) : nil;
+    NSString *username = [user respondsToSelector:@selector(username)] ? ((id (*)(id, SEL))objc_msgSend)(user, @selector(username)) : nil;
+    if (![username isKindOfClass:NSString.class] || username.length == 0) username = ApolloListActiveAccount();
+    return username.length > 0 ? username.lowercaseString : nil;
 }
 
 // "user/<name>/comments.json" -> "<name>".
@@ -607,6 +958,7 @@ static void ApolloListRegisterController(UIViewController *controller) {
     ApolloListLoadState *state = [ApolloListLoadState new];
     state.kind = kind;
     state.account = ApolloListRequestAccount(self);
+    state.requestUsername = ApolloListRequestUsername(self);
     state.adapter = adapter;
     state.controller = controller;
     state.refreshSelector = slot.refreshSelector;
@@ -656,6 +1008,7 @@ static void ApolloListRegisterController(UIViewController *controller) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 id strongAdapter = weakAdapter;
                 ApolloListRecordOutcome(ApolloListStateFor(strongAdapter), outcome, ApolloListInstalledSpinner(strongAdapter) != nil);
+                ApolloListNoteGate(strongAdapter, weakController, path, error);
                 ApolloListFinishFirstPage(strongAdapter, path, outcome, error);
             });
             return;
@@ -665,6 +1018,7 @@ static void ApolloListRegisterController(UIViewController *controller) {
         id strongAdapter = weakAdapter;
         ApolloListRecordOutcome(ApolloListStateFor(strongAdapter), outcome, ApolloListInstalledSpinner(strongAdapter) != nil);
         UIViewController *strongController = weakController;
+        ApolloListNoteGate(strongAdapter, strongController, path, error);
         NSString *failedPick = items.count == 0 ? randomPick : nil;
         if (failedPick.length > 0) ApolloListNameFailedRandomPick(strongController, failedPick);
         completion(items, nextPagination, error);
@@ -700,6 +1054,29 @@ static void ApolloListRegisterController(UIViewController *controller) {
         if (ApolloListInstalledSpinner(strongAdapter) != strongSpinner) return;
         ApolloListApply(strongAdapter);
     });
+}
+
+%end
+
+%end
+
+%group ApolloGatedSubredditHooks
+
+%hook RDKClient
+
+// RedditKit turns an error answer into an NSError here (called by
+// -[RDKResponseSerializer responseObjectForResponse:data:error:] for every
+// JSON answer). It knows the reasons "private", "banned" and "quarantined"; a
+// gated subreddit's answer comes out as a plain HTTP 403. Reddit's warning
+// rides on that error so the list that asked can show it. Runs on the
+// serializer's queue; nothing here touches shared state.
++ (id)errorFromResponseObject:(id)responseObject {
+    NSError *error = %orig;
+    // Only an answer RedditKit made an error for (a gated one has "error":
+    // 403). Anything it let through stays as it was.
+    if (![error isKindOfClass:NSError.class]) return error;
+    NSString *warning = ApolloGatedWarningFromResponseObject(responseObject);
+    return warning ? ApolloGatedErrorWithWarning(error, warning) : error;
 }
 
 %end
@@ -771,4 +1148,12 @@ static BOOL ApolloListAddSlot(Class controllerClass, const char *adapterName, co
         }];
     }
     ApolloLog(@"[ListEmptyState] Comments, Posts and Friends empty state hooks installed (reload after a rate limit)");
+    // Without RedditKit's error method a gated subreddit's failure carries no
+    // warning, and its list stays the plain failed load it was.
+    if (class_getClassMethod(clientClass, @selector(errorFromResponseObject:))) {
+        %init(ApolloGatedSubredditHooks);
+        ApolloLog(@"[GatedSubreddit] Content warning hook installed (+[RDKClient errorFromResponseObject:])");
+    } else {
+        ApolloLog(@"[GatedSubreddit] +[RDKClient errorFromResponseObject:] not found; content warning hook NOT installed");
+    }
 }
