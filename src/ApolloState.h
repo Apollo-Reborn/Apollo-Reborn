@@ -408,6 +408,10 @@ extern BOOL sPerAccountFavoritesEnabled;
 extern BOOL sSortFavoritesAlphabetically;
 // Opt-in confirm sheet before the Subreddits-list star mutates favorites.
 extern BOOL sConfirmFavoriteToggle;
+// Hidden posts stay in single-subreddit feeds (UDKeyShowHiddenPostsInSubreddits).
+extern BOOL sShowHiddenPostsInSubreddits;
+// ••• choices are saved per subreddit (UDKeyShowHiddenPostsRememberPerSubreddit).
+extern BOOL sShowHiddenPostsRememberPerSubreddit;
 // Hide the description subtitles under the subreddit list's built-in feed rows
 // (see UDKeyHideSubredditListDescriptions). Independent of the enhancements master.
 extern BOOL sHideSubredditListDescriptions;
