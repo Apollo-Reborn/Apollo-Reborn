@@ -174,17 +174,26 @@ int main(void) {
         ApolloListRecordGate(gated, @"Content Advisory", @"Drugs", nil);
         CHECK([gated.gateWarning isEqualToString:@"Content Advisory"] && [gated.gateSubreddit isEqualToString:@"Drugs"] &&
               !gated.gateStillShown && !gated.waitingForRateLimit, "a gated first page shows the warning and doesn't wait on the rate limit");
-        CHECK([ApolloListGateText(gated) isEqualToString:@"Reddit shows a content warning before this community."], "the gated line");
+        CHECK([ApolloListGateText(gated) isEqualToString:@"Reddit has flagged this subreddit with a content warning."], "the gated line");
+        gated.requestUsername = @"a";
+        CHECK([ApolloListGateShownKey(gated) isEqualToString:@"a/drugs"], "the warning's key is the account and subreddit");
+        CHECK(ApolloListGateOpensOnItsOwn(gated, nil), "a gated first page opens its warning on its own");
+        CHECK(!ApolloListGateOpensOnItsOwn(gated, @"a/drugs"), "but only once per screen (Not Now, then a pull to refresh)");
+        CHECK(ApolloListGateOpensOnItsOwn(gated, @"b/drugs"), "another account's first page on the same screen opens it again");
+        CHECK(ApolloListGateOpensOnItsOwn(gated, @"a/morbidreality"), "and so does another subreddit's");
         gated.gateAccepting = YES;
+        CHECK(!ApolloListGateOpensOnItsOwn(gated, nil), "not while the warning is being accepted");
         gated.gateFailure = @"Couldn't reach Reddit.";
         ApolloListRecordGate(gated, @"Content Advisory", @"Drugs", @"drugs");
         CHECK(gated.gateStillShown && !gated.gateAccepting && gated.gateFailure == nil,
               "the same warning right after accepting it says Reddit still shows it, and a new page clears the last attempt");
-        CHECK([ApolloListGateText(gated) isEqualToString:@"Reddit still shows its content warning for this community."], "the line after that");
+        CHECK([ApolloListGateText(gated) isEqualToString:@"Reddit still shows this subreddit's content warning."], "the line after that");
+        CHECK(!ApolloListGateOpensOnItsOwn(gated, nil), "the same warning right after Continue doesn't open again on its own");
         ApolloListRecordGate(gated, @"Content Advisory", @"Drugs", @"apple");
         CHECK(!gated.gateStillShown, "accepting another subreddit's warning says nothing about this one");
         gated.gateFailure = @"Couldn't reach Reddit.";
         CHECK([ApolloListGateText(gated) isEqualToString:@"Couldn't reach Reddit."], "a failed attempt is what the line says");
+        CHECK(!ApolloListGateOpensOnItsOwn(gated, nil), "nor after a failed attempt to send it");
         ApolloListRecordGate(gated, nil, nil, nil);
         CHECK(gated.gateWarning == nil && gated.gateSubreddit == nil, "any other failure isn't gated");
         ApolloListRecordGate(gated, @"Content Advisory", nil, nil);

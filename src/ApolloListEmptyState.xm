@@ -55,8 +55,9 @@
 // until the account has accepted it once. RedditKit has no error for that
 // reason, so the feed was a failed load like any other, and pulling down
 // failed again for as long as the account hadn't accepted the warning
-// somewhere else. A subreddit's first page that fails this way says so
-// instead, with a button that shows Reddit's warning. "Continue" there sends
+// somewhere else. A subreddit's first page that fails this way opens Reddit's
+// warning right away, once per screen; after "Not Now" the list says why it's
+// empty, with a button that opens the warning again. "Continue" there sends
 // what Reddit's own warning page sends, with the web session of the account
 // that asked, and reloads the list; an account with no web session stored is
 // sent to Reddit to accept it there. Nothing is sent before that tap.
@@ -194,11 +195,30 @@ static void ApolloListRecordGate(ApolloListLoadState *state, NSString *warning, 
     if (gated) state.waitingForRateLimit = NO;
 }
 
-// The line a gated list shows above its button.
+// The line a gated list shows above its button, once the warning is closed.
 static NSString *ApolloListGateText(ApolloListLoadState *state) {
     if (state.gateFailure.length > 0) return state.gateFailure;
-    if (state.gateStillShown) return @"Reddit still shows its content warning for this community.";
-    return @"Reddit shows a content warning before this community.";
+    if (state.gateStillShown) return @"Reddit still shows this subreddit's content warning.";
+    return @"Reddit has flagged this subreddit with a content warning.";
+}
+
+// Which account's warning for which subreddit a gated first page is ("a/drugs"),
+// for opening the warning on its own once per screen.
+static NSString *ApolloListGateShownKey(ApolloListLoadState *state) {
+    if (state.gateWarning.length == 0 || state.gateSubreddit.length == 0) return nil;
+    return [NSString stringWithFormat:@"%@/%@", state.requestUsername ?: @"-", state.gateSubreddit.lowercaseString];
+}
+
+// Whether the warning opens by itself when this first page lands, rather than
+// waiting on "View Warning". It does once per screen, account and subreddit
+// (`shownKey` is the last one this screen opened): "Not Now" keeps it closed
+// through pulls to refresh, and so does a reload right after "Continue" that
+// Reddit answers with the same warning, or a failed attempt to send it. The
+// button stays for all of those.
+static BOOL ApolloListGateOpensOnItsOwn(ApolloListLoadState *state, NSString *shownKey) {
+    NSString *key = ApolloListGateShownKey(state);
+    if (!key || state.gateStillShown || state.gateAccepting || state.gateFailure.length > 0) return NO;
+    return ![key isEqualToString:shownKey];
 }
 
 typedef NS_ENUM(NSInteger, ApolloListRetryAction) {
@@ -289,6 +309,9 @@ static char kApolloListGateViewKey;
 // On the controller: the subreddit this list just accepted Reddit's warning
 // for (NSString), until its next first page ends.
 static char kApolloListGateAcceptedKey;
+// On the controller: the last warning it opened on its own
+// (ApolloListGateShownKey).
+static char kApolloListGateShownKey;
 
 // State lives on the ListAdapter, so a screen with two lists (Friends) keeps
 // one per list.
@@ -399,7 +422,7 @@ static void ApolloListRestoreSpinner(UIView *spinner) {
     [(UIActivityIndicatorView *)spinner startAnimating];
 }
 
-static void ApolloListPresentGateWarning(id adapter);
+static BOOL ApolloListPresentGateWarning(id adapter);
 
 // Holds a gated list's line and button in the table. It takes touches for the
 // button and nothing else: the frame it is given is the spinner's, which can be
@@ -655,16 +678,40 @@ extern "C" void ApolloGatedSubredditSimSetNoSession(BOOL noSession) {
 }
 #endif
 
-// The gated list's button: Reddit's own words for the subreddit, and the
-// choice. Accepting takes the web session of the account that asked for the
+// Whether `controller` is the screen in front, free to show an alert: in a
+// window, not covered by anything presented, not on its way out, and the top of
+// its navigation stack (a post opened over it before its first page came back
+// isn't).
+static BOOL ApolloListGateCanPresent(UIViewController *controller) {
+    if (!controller.viewIfLoaded.window || controller.presentedViewController) return NO;
+    if (controller.isBeingDismissed || controller.isMovingFromParentViewController) return NO;
+    // Mid swipe back, the screen being left is already out of its navigation
+    // controller: no parent, no navigationController, no transitionCoordinator,
+    // isMovingFromParentViewController NO, while its view is still on screen
+    // (seen in lldb under Apollo's edge swipe). An alert from it would outlive
+    // the screen if the swipe finishes; if it's cancelled, viewDidAppear: runs.
+    if (!controller.parentViewController && !controller.presentingViewController) return NO;
+    UINavigationController *navigation = controller.navigationController;
+    if (!navigation) return YES;
+    for (UIViewController *walk = controller; walk; walk = walk.parentViewController) {
+        if (walk == navigation.topViewController) return YES;
+    }
+    return NO;
+}
+
+// The gated list's warning: Reddit's own words for the subreddit, and the
+// choice. It opens on its own when the first page lands on it
+// (ApolloListOpenGateOnItsOwn) and from the list's "View Warning" button after
+// that. Accepting takes the web session of the account that asked for the
 // list, which an API-Key-Free account always has and an API-key account
 // usually does (the one kept for polls and chat). Without one there's nothing
-// to send the form with, so the warning points at Reddit instead.
-static void ApolloListPresentGateWarning(id adapter) {
+// to send the form with, so the warning points at Reddit instead. YES when it
+// was presented.
+static BOOL ApolloListPresentGateWarning(id adapter) {
     ApolloListLoadState *state = ApolloListStateFor(adapter);
-    if (state.gateWarning.length == 0 || state.gateSubreddit.length == 0 || state.gateAccepting) return;
+    if (state.gateWarning.length == 0 || state.gateSubreddit.length == 0 || state.gateAccepting) return NO;
     UIViewController *controller = state.controller;
-    if (!controller.viewIfLoaded.window || controller.presentedViewController) return;
+    if (!ApolloListGateCanPresent(controller)) return NO;
     NSString *subreddit = state.gateSubreddit;
     BOOL canAccept = state.requestUsername.length > 0 && ApolloWebSessionPollFor(state.requestUsername).cookieHeader.length > 0;
 #if APOLLO_SIM_BUILD
@@ -695,6 +742,27 @@ static void ApolloListPresentGateWarning(id adapter) {
     ApolloLog(@"[GatedSubreddit] Showing Reddit's warning for r/%@ (%@)", subreddit,
               canAccept ? @"Continue accepts it here" : @"no web session for the account, Open Reddit");
     [controller presentViewController:alert animated:YES completion:nil];
+    return YES;
+}
+
+// A gated first page opens its warning right away (AcornElf's review on #1796:
+// a line and a button to tap first was a step too many), once per screen,
+// account and subreddit (ApolloListGateOpensOnItsOwn). The page usually lands
+// while the screen is still being pushed, and an alert presented mid push can
+// land on the wrong screen or be refused, so a screen that is moving, or isn't
+// in front (another tab, a post opened over it), leaves it to its own
+// viewDidAppear: (the hook below), which also covers a cancelled swipe back.
+static void ApolloListOpenGateOnItsOwn(id adapter) {
+    ApolloListLoadState *state = ApolloListStateFor(adapter);
+    UIViewController *controller = state.controller;
+    if (!controller) return;
+    NSString *shown = objc_getAssociatedObject(controller, &kApolloListGateShownKey);
+    if (!ApolloListGateOpensOnItsOwn(state, shown)) return;
+    if (controller.transitionCoordinator || !ApolloListPresentGateWarning(adapter)) {
+        ApolloLog(@"[GatedSubreddit] r/%@'s warning opens once its screen is in front", state.gateSubreddit);
+        return;
+    }
+    objc_setAssociatedObject(controller, &kApolloListGateShownKey, ApolloListGateShownKey(state), OBJC_ASSOCIATION_COPY_NONATOMIC);
 }
 
 // After the outcome of a first page is on the list's state: whether it failed
@@ -802,6 +870,11 @@ static void ApolloListFinishFirstPage(id adapter, NSString *path, ApolloListOutc
     if (state.waitingForRateLimit) ApolloListScheduleRateLimitRetry(hold + kApolloListRateLimitRetryMargin);
     if (outcome == ApolloListOutcomeFailed) ApolloListEndRefreshing(adapter);
     ApolloListApply(adapter);
+    // After this pass: Apollo is still handling the page.
+    if (state.gateWarning.length > 0) {
+        __weak id weakAdapter = adapter;
+        dispatch_async(dispatch_get_main_queue(), ^{ ApolloListOpenGateOnItsOwn(weakAdapter); });
+    }
     // Posts: let Apollo pick its own empty state ("No submitted posts", a
     // subreddit's issue). A failure it has nothing for comes back as a
     // spinner, which the spinner hook replaces again.
@@ -933,6 +1006,21 @@ static void ApolloListRegisterController(UIViewController *controller) {
 - (void)viewDidLoad {
     ApolloListRegisterController(self);
     %orig;
+}
+
+// A gated first page that landed while this screen was being pushed, or
+// wasn't in front, opens its warning now (ApolloListOpenGateOnItsOwn). On the
+// next turn of the run loop: the push that ends here is still finishing.
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    for (NSUInteger i = 0; i < sListSlotCount; i++) {
+        ApolloListSlot slot = sListSlots[i];
+        if (slot.kind != ApolloListKindPosts || ![self isKindOfClass:slot.controllerClass]) continue;
+        id adapter = object_getIvar(self, slot.adapterIvar);
+        if (ApolloListStateFor(adapter).gateWarning.length == 0) continue;
+        __weak id weakAdapter = adapter;
+        dispatch_async(dispatch_get_main_queue(), ^{ ApolloListOpenGateOnItsOwn(weakAdapter); });
+    }
 }
 %end
 
