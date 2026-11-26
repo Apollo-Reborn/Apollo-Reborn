@@ -74,6 +74,59 @@ static NSTimeInterval ApolloGQLAccountHoldRemaining(NSString *account) {
     }
 }
 
+#pragma mark - Subreddits known to be open
+
+// Reddit puts a warning in front of some communities and serves them to an
+// account only once it has accepted it (r/Drugs, r/MorbidReality: "gated").
+// The legacy API answers HTTP 403 for such a subreddit until then. GraphQL's
+// feed doesn't apply the warning: it answers the subreddit's posts as if the
+// account had accepted it (r/Drugs gave the same posts before the test account
+// accepted as the legacy route gave after, 2026-11-26), and only the
+// subreddit's details say it's unavailable ("GATED"; the same goes for
+// quarantined, private and banned). So the first page of a subreddit's feed
+// asks for the details as well, and a subreddit that isn't open to the account
+// goes by its legacy route, which has Reddit's answer for it.
+//
+// That is one more call per subreddit, not per page: a subreddit whose details
+// said it's open is remembered for a while, per account, whether the feed or
+// Apollo's own details request asked. "Not open" is never remembered, since
+// accepting the warning is what changes it. Lowercased "account|subreddit" ->
+// reference-date seconds it's remembered until.
+static NSMutableDictionary<NSString *, NSNumber *> *sApolloGQLOpenSubreddits;
+static const NSTimeInterval kApolloGQLOpenSubredditMemory = 15.0 * 60.0;
+static const NSUInteger kApolloGQLOpenSubredditsMax = 256;
+
+static NSString *ApolloGQLOpenSubredditKey(NSString *account, NSString *subreddit) {
+    if (account.length == 0 || subreddit.length == 0) return nil;
+    return [NSString stringWithFormat:@"%@|%@", account.lowercaseString, subreddit.lowercaseString];
+}
+
+static BOOL ApolloGQLSubredditKnownOpen(NSString *account, NSString *subreddit) {
+    NSString *key = ApolloGQLOpenSubredditKey(account, subreddit);
+    if (!key) return NO;
+    @synchronized (ApolloGQLHoldLock()) {
+        return [sApolloGQLOpenSubreddits[key] doubleValue] > [NSDate timeIntervalSinceReferenceDate];
+    }
+}
+
+static void ApolloGQLNoteSubredditOpen(NSString *account, NSString *subreddit) {
+    NSString *key = ApolloGQLOpenSubredditKey(account, subreddit);
+    if (!key) return;
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    @synchronized (ApolloGQLHoldLock()) {
+        if (!sApolloGQLOpenSubreddits) sApolloGQLOpenSubreddits = [NSMutableDictionary dictionary];
+        if (sApolloGQLOpenSubreddits.count >= kApolloGQLOpenSubredditsMax) {
+            // Drop what has lapsed; if that isn't enough, start over. The
+            // cost of forgetting is one call.
+            for (NSString *known in sApolloGQLOpenSubreddits.allKeys) {
+                if ([sApolloGQLOpenSubreddits[known] doubleValue] <= now) [sApolloGQLOpenSubreddits removeObjectForKey:known];
+            }
+            if (sApolloGQLOpenSubreddits.count >= kApolloGQLOpenSubredditsMax) [sApolloGQLOpenSubreddits removeAllObjects];
+        }
+        sApolloGQLOpenSubreddits[key] = @(now + kApolloGQLOpenSubredditMemory);
+    }
+}
+
 void ApolloGQLRouteSetEnabled(BOOL enabled) {
     sWebJSONGraphQLEnabled = enabled;
     [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:UDKeyWebJSONGraphQLEnabled];
@@ -232,6 +285,72 @@ static NSDictionary *ApolloGQLRouteCall(NSString *account, NSString *operation, 
         return answer;
     }
     return nil;
+}
+
+#pragma mark - A subreddit's details
+
+// Opening a subreddit asks for its details from several places at once: its
+// feed's first page (is it open to the account?), Community Highlights' read
+// of the same feed, the subreddit header, and Apollo's own /about. They are
+// one and the same SubredditInfoByName call, so while one is on its way for a
+// subreddit and an account, everyone else asking waits for its answer instead
+// of sending another. Nothing outlives the call: an answer of "not open" a
+// moment old would be wrong the moment the account accepts Reddit's warning.
+@interface ApolloGQLDetailsCall : NSObject
+@property (nonatomic, strong) dispatch_group_t done;
+@property (nonatomic, strong) NSDictionary *answer;
+@property (nonatomic) ApolloGQLCallOutcome outcome;
+@property (nonatomic, copy) NSString *detail;
+@end
+
+@implementation ApolloGQLDetailsCall
+@end
+
+// Lowercased "account|subreddit" -> the call in flight. Guarded by
+// ApolloGQLHoldLock.
+static NSMutableDictionary<NSString *, ApolloGQLDetailsCall *> *sApolloGQLDetailsInFlight;
+
+// The SubredditInfoByName answer for `request`'s subreddit, from a call of its
+// own or from the one already in flight; `sent` says which (it's the caller's
+// count of calls). A subreddit the answer has is remembered as open.
+// Background queues only.
+static NSDictionary *ApolloGQLRouteSubredditDetails(NSString *account, ApolloGQLRequest *request, BOOL *sent,
+                                                    ApolloGQLCallOutcome *outcome, NSString **detail) {
+    NSString *key = ApolloGQLOpenSubredditKey(account, request.subreddit);
+    ApolloGQLDetailsCall *call = nil;
+    BOOL mine = NO;
+    @synchronized (ApolloGQLHoldLock()) {
+        if (!sApolloGQLDetailsInFlight) sApolloGQLDetailsInFlight = [NSMutableDictionary dictionary];
+        call = key ? sApolloGQLDetailsInFlight[key] : nil;
+        if (!call) {
+            call = [ApolloGQLDetailsCall new];
+            call.done = dispatch_group_create();
+            dispatch_group_enter(call.done);
+            call.outcome = ApolloGQLCallFailed;
+            if (key) sApolloGQLDetailsInFlight[key] = call;
+            mine = YES;
+        }
+    }
+    if (mine) {
+        ApolloGQLCallOutcome callOutcome = ApolloGQLCallFailed;
+        NSString *callDetail = nil;
+        call.answer = ApolloGQLRouteCall(account, ApolloGQLOperationSubredditInfo, ApolloGQLSubredditInfoVariables(request),
+                                         &callOutcome, &callDetail);
+        call.outcome = callOutcome;
+        call.detail = callDetail;
+        @synchronized (ApolloGQLHoldLock()) {
+            if (key && sApolloGQLDetailsInFlight[key] == call) [sApolloGQLDetailsInFlight removeObjectForKey:key];
+        }
+        dispatch_group_leave(call.done);
+    } else {
+        dispatch_group_wait(call.done, DISPATCH_TIME_FOREVER);  // the call it waits on has its own timeout
+    }
+    if (sent) *sent = mine;
+    *outcome = call.outcome;
+    *detail = call.detail;
+    NSDictionary *answer = call.answer;
+    if (answer && !ApolloGQLSubredditUnavailableReason(answer)) ApolloGQLNoteSubredditOpen(account, request.subreddit);
+    return answer;
 }
 
 #pragma mark - Requests
@@ -413,9 +532,9 @@ void ApolloGQLRouteAnswer(NSString *account, ApolloGQLRequest *request, ApolloGQ
             if (answer && !body) { outcome = ApolloGQLCallFailed; detail = @"SearchPosts answered without results"; }
             summary = [NSString stringWithFormat:@"%lu search results", (unsigned long)[body[@"data"][@"children"] count]];
         } else if (request.kind == ApolloGQLRequestKindSubredditAbout) {
-            calls++;
-            NSDictionary *answer = ApolloGQLRouteCall(account, ApolloGQLOperationSubredditInfo, ApolloGQLSubredditInfoVariables(request),
-                                                      &outcome, &detail);
+            BOOL sent = NO;
+            NSDictionary *answer = ApolloGQLRouteSubredditDetails(account, request, &sent, &outcome, &detail);
+            if (sent) calls++;
             body = answer ? ApolloGQLLegacySubredditAbout(answer, request.rawJSON) : nil;
             // No subreddit in the answer is how GraphQL reports one it won't
             // show (missing, banned, private). The legacy route has the error
@@ -484,6 +603,22 @@ void ApolloGQLRouteAnswer(NSString *account, ApolloGQLRequest *request, ApolloGQ
             NSMutableArray<NSString *> *fullnames = [NSMutableArray array];
             NSString *after = request.after;
             BOOL failed = NO;
+            // A subreddit's first page: is the subreddit open to the account
+            // ("Subreddits known to be open", above)? Asked alongside the
+            // feed's own calls unless it's remembered, and settled before any
+            // post is looked up.
+            BOOL asksDetails = request.kind == ApolloGQLRequestKindSubredditFeed && request.after.length == 0 &&
+                               !ApolloGQLSubredditKnownOpen(account, request.subreddit);
+            __block NSDictionary *details = nil;
+            __block ApolloGQLCallOutcome detailsOutcome = ApolloGQLCallFailed;
+            __block NSString *detailsDetail = nil;
+            __block BOOL detailsSent = NO;
+            dispatch_group_t detailsCall = dispatch_group_create();
+            if (asksDetails) {
+                dispatch_group_async(detailsCall, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                    details = ApolloGQLRouteSubredditDetails(account, request, &detailsSent, &detailsOutcome, &detailsDetail);
+                });
+            }
             for (NSUInteger page = 0; page < kApolloGQLFeedCallsPerPage; page++) {
                 calls++;
                 NSDictionary *answer = ApolloGQLRouteCall(account, operation, ApolloGQLFeedVariables(request, after), &outcome, &detail);
@@ -504,28 +639,19 @@ void ApolloGQLRouteAnswer(NSString *account, ApolloGQLRequest *request, ApolloGQ
                 if (!next || (NSInteger)fullnames.count * 4 >= request.limit * 3) break;
                 after = next;
             }
-            // A subreddit's feed that ends within its first page is also what
-            // a subreddit Reddit holds back from the account looks like here.
-            // One behind a content warning the account hasn't accepted
-            // answers the few posts Reddit lets through and nothing after
-            // them (r/Drugs 2, r/MorbidReality 6, 2026-11-26), where the
-            // legacy route answers Reddit's warning (HTTP 403, "gated"), and
-            // that is Apollo's to present. The subreddit's details say which
-            // it is, for one more call on a feed that short. No answer to
-            // that call leaves it unknown, and the legacy route has the feed
-            // either way.
-            if (!failed && request.kind == ApolloGQLRequestKindSubredditFeed && request.after.length == 0 && !nextAfter) {
-                calls++;
-                NSDictionary *info = ApolloGQLRouteCall(account, ApolloGQLOperationSubredditInfo, ApolloGQLSubredditInfoVariables(request),
-                                                        &outcome, &detail);
-                NSString *reason = info ? ApolloGQLSubredditUnavailableReason(info) : nil;
-                if (!info) {
+            if (asksDetails) {
+                dispatch_group_wait(detailsCall, DISPATCH_TIME_FOREVER);  // the call has its own timeout
+                if (detailsSent) calls++;
+                NSString *reason = details ? ApolloGQLSubredditUnavailableReason(details) : nil;
+                if ((!details || reason) && !failed) {
+                    // Not open to the account, or no answer, which leaves it
+                    // unknown: the legacy route has Reddit's answer either
+                    // way. (A feed that failed already keeps its own reason.)
                     failed = YES;
-                } else if (reason) {
-                    failed = YES;
-                    outcome = ApolloGQLCallFailed;
-                    detail = [NSString stringWithFormat:@"r/%@ isn't open to the account (%@); its feed here is only what Reddit lets through",
-                              request.subreddit, reason];
+                    outcome = details ? ApolloGQLCallFailed : detailsOutcome;
+                    detail = details ? [NSString stringWithFormat:@"r/%@ isn't open to the account (%@); GraphQL's feed doesn't apply Reddit's warning, the legacy route does",
+                                        request.subreddit, reason]
+                                     : detailsDetail;
                 }
             }
             // Pages of nothing but suggested posts, with more behind them: the

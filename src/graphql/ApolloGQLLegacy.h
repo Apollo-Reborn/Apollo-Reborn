@@ -67,9 +67,9 @@ NSDictionary *_Nullable ApolloGQLLegacySubredditAbout(NSDictionary *answer, BOOL
 // Why a SubredditInfoByName answer has no subreddit for the account, or nil
 // when it has one: GraphQL's own word for it ("GATED" for a subreddit behind a
 // content warning the account hasn't accepted, "QUARANTINED", "PRIVATE",
-// "BANNED", …), or "missing" when the answer names no reason. A subreddit
-// held back this way still has a feed in GraphQL, of the few posts Reddit lets
-// through, so its details are what tells it from a small subreddit.
+// "BANNED", …), or "missing" when the answer names no reason. GraphQL's feed
+// for such a subreddit doesn't say so (it answers the posts as if the account
+// had accepted the warning), so the details are where the route learns it.
 NSString *_Nullable ApolloGQLSubredditUnavailableReason(NSDictionary *answer);
 
 // The Listing of posts /search.json sends, for a SearchPosts answer (its whole
