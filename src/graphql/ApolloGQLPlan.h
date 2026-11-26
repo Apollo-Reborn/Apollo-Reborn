@@ -36,7 +36,10 @@ typedef NS_ENUM(NSInteger, ApolloGQLRequestKind) {
     // and comment karma, and it has no list of posts and comments together.)
     ApolloGQLRequestKindUserPosts,
     // GET /search and /r/<subreddit>/search, for posts: one SearchPosts call a
-    // page, whole posts in the answer. The same 25 posts in the same order as
+    // page, whole posts in the answer. (A search for subreddits keeps its
+    // routes: CommunityPickerSearchPaginated gives the legacy search's 25
+    // results in the same order, but without the day each subreddit was
+    // created, which Apollo's results show as its age.) The same 25 posts in the same order as
     // the legacy search for relevance, top of the week and one subreddit's
     // newest (2026-11-24).
     ApolloGQLRequestKindSearchPosts,
@@ -49,6 +52,17 @@ typedef NS_ENUM(NSInteger, ApolloGQLRequestKind) {
     // POST /api/morechildren: the replies behind a "load more" row of a thread
     // that came from PostComments (ApolloGQLMoreToken). One PostComments call.
     ApolloGQLRequestKindMoreComments,
+    // GET /user/<name>/upvoted, /downvoted and /hidden: the account's own lists.
+    // One call a page (UpvotedPosts, DownvotedPosts, HiddenPosts), whole posts
+    // in the answer, in the legacy list's order (2026-11-25). GraphQL only has
+    // them for the account that asks, so ApolloGQLRoute passes on a request
+    // for anyone else's.
+    ApolloGQLRequestKindOwnPosts,
+    // GET /user/<name>/comments: the comments on someone's profile.
+    // SubmittedComments gives the page's comment ids and the post each is on
+    // (25, the legacy list's in the same order for New and for Top of all
+    // time, 2026-11-25), LiveCommentsByIds the comments themselves.
+    ApolloGQLRequestKindUserComments,
 };
 
 @interface ApolloGQLRequest : NSObject
@@ -79,6 +93,11 @@ typedef NS_ENUM(NSInteger, ApolloGQLRequestKind) {
 // Reddit's own page size.
 @property (nonatomic, copy, readonly, nullable) NSString *linkFullname;
 @property (nonatomic, copy, readonly, nullable) NSString *commentSort;
+// OwnPosts: which of the account's lists, "upvoted", "downvoted" or "hidden"
+// (`username` is whose the request asked for). UserComments uses `username`,
+// `sort`, `timeRange`, `after` (a comment's fullname) and `limit` as the feeds
+// do.
+@property (nonatomic, copy, readonly, nullable) NSString *ownList;
 // MoreComments: the row's cursor and its depth in the thread.
 @property (nonatomic, copy, readonly, nullable) NSString *moreCursor;
 @property (nonatomic, readonly) NSInteger moreDepth;
@@ -99,6 +118,12 @@ BOOL ApolloGQLCanAnswerPath(NSString *method, NSString *path);
 // RedditKit's parameter dictionary.
 ApolloGQLRequest *_Nullable ApolloGQLRequestForLegacy(NSString *method, NSString *path, id _Nullable parameters);
 
+// NO when `request` is one GraphQL only answers for the account it's about and
+// `account` isn't that account: the upvoted, downvoted and hidden lists exist
+// for whoever asks, and Apollo asks for the upvoted list of every profile it
+// opens. Such a request keeps its other routes.
+BOOL ApolloGQLRequestIsForAccount(ApolloGQLRequest *request, NSString *_Nullable account);
+
 #pragma mark - Operations
 
 extern NSString *const ApolloGQLOperationPostsByIds;
@@ -109,6 +134,8 @@ extern NSString *const ApolloGQLOperationUserPosts;
 extern NSString *const ApolloGQLOperationSearchPosts;
 extern NSString *const ApolloGQLOperationSubredditInfo;
 extern NSString *const ApolloGQLOperationPostComments;
+extern NSString *const ApolloGQLOperationUserComments;
+extern NSString *const ApolloGQLOperationCommentsByIds;
 
 // The most post ids one PostsByIds call is given.
 extern const NSUInteger ApolloGQLPostsByIdsBatch;
@@ -138,6 +165,14 @@ NSDictionary *ApolloGQLSearchPostsVariables(ApolloGQLRequest *request);
 // A thread's first page (Comments) or the replies behind one of its "load
 // more" rows (MoreComments).
 NSDictionary *ApolloGQLPostCommentsVariables(ApolloGQLRequest *request);
+
+// The operation and variables for one of the account's own lists (OwnPosts).
+NSString *ApolloGQLOwnPostsOperation(ApolloGQLRequest *request);
+NSDictionary *ApolloGQLOwnPostsVariables(ApolloGQLRequest *request);
+
+// A profile's comments (UserComments): the page of ids, then those comments.
+NSDictionary *ApolloGQLUserCommentsVariables(ApolloGQLRequest *request);
+NSDictionary *ApolloGQLCommentsByIdsVariables(NSArray<NSString *> *fullnames);
 
 #ifdef __cplusplus
 }

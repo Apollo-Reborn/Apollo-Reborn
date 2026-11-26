@@ -1284,6 +1284,9 @@ static NSURLSessionDataTask *ApolloWebJSONAnswerByGraphQL(RDKClient *client, NSS
             ? [parameters mutableCopy] : [NSMutableDictionary dictionary];
         sentAs[@"raw_json"] = @1;
         graphQLRequest = ApolloGQLRequestForLegacy(requestMethod, requestPath, sentAs);
+        // Another account's upvoted list (Apollo asks for one with every
+        // profile it opens) isn't GraphQL's to answer.
+        if (graphQLRequest && !ApolloGQLRequestIsForAccount(graphQLRequest, username)) graphQLRequest = nil;
         if (!graphQLRequest) {
             routesTried |= graphQLBit;
             os_log_debug(ApolloFixLog(), "[ApolloFix] [GraphQL] %{public}@ %{public}@ isn't one GraphQL answers (parameters: %{public}@)",

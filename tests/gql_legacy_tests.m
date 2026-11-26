@@ -732,7 +732,7 @@ static void TestPlan(void) {
           @"top of all time, next page (%@)", ApolloGQLFeedVariables(userTop, userTop.after));
     CHECK(ApolloGQLRequestForLegacy(@"GET", @"user/someone/submitted", @{ @"sort": @"rising" }) == nil &&
           ApolloGQLRequestForLegacy(@"GET", @"user/someone/submitted", @{ @"before": @"t3_x" }) == nil, @"no such sort, no backwards paging");
-    for (NSString *path in @[ @"user/someone/overview", @"user/someone/comments", @"user/someone/about", @"user/someone/saved", @"user/ab/submitted",
+    for (NSString *path in @[ @"user/someone/overview", @"user/someone/about", @"user/someone/saved", @"user/ab/submitted",
                               @"user/some.one/submitted", @"user/someone/submitted/extra", @"u/someone/submitted" ]) {
         CHECK(!ApolloGQLCanAnswerPath(@"GET", path), @"%@ isn't a profile's posts", path);
     }
@@ -876,6 +876,102 @@ static void TestPlanForOwnReads(void) {
     CHECK(ApolloGQLRequestForLegacy(@"GET", @"/api/user_data_by_account_ids.json?ids=t2_a&raw_json=1", nil) == nil, @"account lookups");
 }
 
+#pragma mark - The account's lists and a profile's comments
+
+static void TestOwnPostsAndUserComments(void) {
+    // Upvoted, downvoted and hidden posts: whole posts under identity.<list>Posts.
+    NSDictionary *upvoted = ParseJSON(@"{\"data\":{\"identity\":{\"upvotedPosts\":{\"edges\":["
+        "{\"node\":{\"__typename\":\"SubredditPost\",\"id\":\"t3_one\",\"postTitle\":\"First\",\"permalink\":\"/r/test/comments/one/first/\","
+        "\"subreddit\":{\"id\":\"t5_x\",\"name\":\"test\",\"prefixedName\":\"r/test\"},\"voteState\":\"UP\",\"score\":5,\"createdAt\":\"2026-11-25T16:30:30.145000+0000\"}},"
+        "{\"node\":{\"__typename\":\"SubredditPost\",\"id\":\"t3_two\",\"postTitle\":\"Second\",\"permalink\":\"/r/test/comments/two/second/\","
+        "\"subreddit\":{\"id\":\"t5_x\",\"name\":\"test\",\"prefixedName\":\"r/test\"},\"voteState\":\"UP\",\"score\":7,\"createdAt\":\"2026-11-25T16:30:30.145000+0000\"}}],"
+        "\"pageInfo\":{\"endCursor\":\"dDNfdHdv\",\"hasNextPage\":true}}}}}");
+    NSDictionary *listing = ApolloGQLLegacyOwnPostsListing(upvoted, @"upvoted", YES);
+    NSArray *children = listing[@"data"][@"children"];
+    CHECK(children.count == 2 && [children[0][@"kind"] isEqualToString:@"t3"] && [children[1][@"data"][@"name"] isEqualToString:@"t3_two"],
+          @"upvoted posts in order (%@)", [children valueForKeyPath:@"data.name"]);
+    CHECK([children[0][@"data"][@"likes"] isEqual:@YES] && [children[0][@"data"][@"title"] isEqualToString:@"First"], @"each one a whole post");
+    CHECK([listing[@"data"][@"after"] isEqualToString:@"t3_two"], @"the next page starts after the last post (%@)", listing[@"data"][@"after"]);
+    CHECK(ApolloGQLLegacyOwnPostsListing(upvoted, @"hidden", YES) == nil, @"another list isn't in this answer");
+    NSDictionary *none = ParseJSON(@"{\"data\":{\"identity\":{\"hiddenPosts\":{\"edges\":[],\"pageInfo\":{\"endCursor\":null,\"hasNextPage\":false}}}}}");
+    NSDictionary *empty = ApolloGQLLegacyOwnPostsListing(none, @"hidden", YES);
+    CHECK(empty && [empty[@"data"][@"children"] count] == 0 && empty[@"data"][@"after"] == [NSNull null], @"an empty list is a real answer");
+    CHECK(ApolloGQLLegacyOwnPostsListing(ParseJSON(@"{\"data\":{\"identity\":null}}"), @"upvoted", YES) == nil, @"no identity, no list");
+
+    // A profile's comments: the page of ids names each comment's post, and
+    // LiveCommentsByIds has the comments, in whatever order it likes.
+    NSDictionary *page = ParseJSON(@"{\"data\":{\"redditorInfoByName\":{\"__typename\":\"Redditor\",\"comments\":{\"edges\":["
+        "{\"node\":{\"id\":\"t1_aaa\",\"postInfo\":{\"id\":\"t3_one\",\"title\":\"Fish & <chips>\",\"subreddit\":{\"prefixedName\":\"r/test\"}}}},"
+        "{\"node\":{\"id\":\"t1_bbb\",\"postInfo\":{\"id\":\"t3_two\",\"title\":\"Second\",\"subreddit\":{\"prefixedName\":\"r/other\"}}}},"
+        "{\"node\":{\"id\":\"t1_gone\",\"postInfo\":{\"id\":\"t3_two\",\"title\":\"Second\",\"subreddit\":{\"prefixedName\":\"r/other\"}}}}],"
+        "\"pageInfo\":{\"endCursor\":\"dDFfYmJi\",\"hasNextPage\":true}}}}}");
+    NSDictionary *comments = ParseJSON(@"{\"data\":{\"commentsByIds\":["
+        "{\"__typename\":\"Comment\",\"id\":\"t1_bbb\",\"permalink\":\"/r/other/comments/two/second/bbb/\",\"score\":3,\"voteState\":\"NONE\","
+        "\"createdAt\":\"2026-11-25T16:30:30.145000+0000\",\"content\":{\"markdown\":\"Later\",\"richtext\":null,\"richtextMedia\":[]},"
+        "\"authorInfo\":{\"__typename\":\"Redditor\",\"id\":\"t2_u\",\"name\":\"Someone\"}},"
+        "{\"__typename\":\"Comment\",\"id\":\"t1_aaa\",\"permalink\":\"/r/test/comments/one/first/aaa/\",\"score\":9,\"voteState\":\"UP\",\"isOP\":true,"
+        "\"createdAt\":\"2026-11-25T16:30:30.145000+0000\",\"content\":{\"markdown\":\"Earlier\",\"richtext\":null,\"richtextMedia\":[]},"
+        "\"authorInfo\":{\"__typename\":\"Redditor\",\"id\":\"t2_u\",\"name\":\"Someone\"}}]}}");
+    NSString *next = @"unset";
+    NSArray *fullnames = ApolloGQLUserCommentFullnames(page, &next);
+    CHECK([fullnames isEqualToArray:(@[ @"t1_aaa", @"t1_bbb", @"t1_gone" ])] && [next isEqualToString:@"t1_bbb"], @"comment ids and the next page (%@ %@)", fullnames, next);
+    NSDictionary *profile = ApolloGQLLegacyUserCommentsListing(page, comments, YES);
+    NSArray *things = profile[@"data"][@"children"];
+    CHECK(things.count == 2 && [things[0][@"kind"] isEqualToString:@"t1"], @"the comments LiveCommentsByIds had (%lu)", (unsigned long)things.count);
+    NSDictionary *first = things.firstObject[@"data"];
+    CHECK([first[@"name"] isEqualToString:@"t1_aaa"] && [things[1][@"data"][@"name"] isEqualToString:@"t1_bbb"], @"in the profile's order, not the answer's");
+    CHECK([first[@"link_id"] isEqualToString:@"t3_one"] && [first[@"link_title"] isEqualToString:@"Fish & <chips>"] &&
+          [first[@"subreddit"] isEqualToString:@"test"] && [first[@"subreddit_name_prefixed"] isEqualToString:@"r/test"],
+          @"each comment's post and subreddit (%@ %@ %@)", first[@"link_id"], first[@"link_title"], first[@"subreddit"]);
+    CHECK([first[@"link_permalink"] isEqualToString:@"https://www.reddit.com/r/test/comments/one/first/"] &&
+          [first[@"permalink"] isEqualToString:@"/r/test/comments/one/first/aaa/"], @"the thread's address (%@)", first[@"link_permalink"]);
+    CHECK([first[@"body"] isEqualToString:@"Earlier"] && [first[@"likes"] isEqual:@YES] && [first[@"is_submitter"] isEqual:@YES] &&
+          [first[@"author"] isEqualToString:@"Someone"] && [first[@"replies"] isEqual:@""] && [first[@"parent_id"] isEqualToString:@"t3_one"],
+          @"the comment itself");
+    CHECK(first[@"link_author"] == nil, @"what GraphQL doesn't say is absent");
+    CHECK([profile[@"data"][@"after"] isEqualToString:@"t1_bbb"], @"the next page starts after the page's last comment");
+    NSDictionary *escaped = ApolloGQLLegacyUserCommentsListing(page, comments, NO);
+    CHECK([escaped[@"data"][@"children"][0][@"data"][@"link_title"] isEqualToString:@"Fish &amp; &lt;chips&gt;"], @"escaped without raw_json");
+    NSDictionary *hidden = ParseJSON(@"{\"data\":{\"redditorInfoByName\":{\"comments\":{\"edges\":[],\"pageInfo\":{\"endCursor\":null,\"hasNextPage\":false}}}}}");
+    CHECK([ApolloGQLUserCommentFullnames(hidden, NULL) count] == 0 && [ApolloGQLLegacyUserCommentsListing(hidden, @{}, YES)[@"data"][@"children"] count] == 0,
+          @"a profile that hides its comments is an empty page");
+    CHECK(ApolloGQLUserCommentFullnames(ParseJSON(@"{\"data\":{\"redditorInfoByName\":null}}"), NULL) == nil, @"no such account, no list");
+}
+
+static void TestPlanForLists(void) {
+    ApolloGQLRequest *upvoted = ApolloGQLRequestForLegacy(@"GET", @"user/Some_One/upvoted.json", (@{ @"limit": @25, @"raw_json": @1 }));
+    CHECK(upvoted.kind == ApolloGQLRequestKindOwnPosts && [upvoted.username isEqualToString:@"Some_One"] && [upvoted.ownList isEqualToString:@"upvoted"] &&
+          upvoted.rawJSON, @"the account's upvoted posts (%ld %@ %@)", (long)upvoted.kind, upvoted.username, upvoted.ownList);
+    CHECK([ApolloGQLOwnPostsOperation(upvoted) isEqualToString:@"UpvotedPosts"] && [ApolloGQLOwnPostsVariables(upvoted) isEqualToDictionary:@{}], @"first page");
+    CHECK(ApolloGQLRequestIsForAccount(upvoted, @"some_one") && !ApolloGQLRequestIsForAccount(upvoted, @"another") && !ApolloGQLRequestIsForAccount(upvoted, nil),
+          @"only the account's own list");
+    ApolloGQLRequest *hidden = ApolloGQLRequestForLegacy(@"GET", @"/user/someone/hidden", (@{ @"after": @"t3_last" }));
+    CHECK([ApolloGQLOwnPostsOperation(hidden) isEqualToString:@"HiddenPosts"] &&
+          [ApolloGQLOwnPostsVariables(hidden) isEqualToDictionary:(@{ @"after": @"dDNfbGFzdA==" })], @"a later page (%@)", ApolloGQLOwnPostsVariables(hidden));
+    CHECK([ApolloGQLOwnPostsOperation(ApolloGQLRequestForLegacy(@"GET", @"/user/someone/downvoted", nil)) isEqualToString:@"DownvotedPosts"], @"downvoted");
+    CHECK(ApolloGQLRequestForLegacy(@"GET", @"/user/someone/upvoted", (@{ @"sort": @"top" })) == nil, @"GraphQL has these newest first only");
+    CHECK(ApolloGQLRequestForLegacy(@"GET", @"/user/someone/upvoted", (@{ @"after": @"t1_x" })) == nil, @"a page after something that isn't a post");
+    CHECK(ApolloGQLRequestForLegacy(@"GET", @"/user/someone/saved", nil) == nil && ApolloGQLRequestForLegacy(@"GET", @"/user/someone/overview", nil) == nil,
+          @"lists GraphQL isn't asked for");
+
+    ApolloGQLRequest *comments = ApolloGQLRequestForLegacy(@"GET", @"user/Some_One/comments.json", (@{ @"sort": @"top", @"t": @"week", @"after": @"t1_last", @"limit": @25 }));
+    NSDictionary *expected = @{ @"name": @"Some_One", @"sort": @"TOP", @"range": @"WEEK", @"after": @"dDFfbGFzdA==" };
+    CHECK(ApolloGQLRequestIsForAccount(comments, @"another"), @"anyone's comments");
+    CHECK(comments.kind == ApolloGQLRequestKindUserComments && [ApolloGQLUserCommentsVariables(comments) isEqualToDictionary:expected],
+          @"a profile's comments (%@)", ApolloGQLUserCommentsVariables(comments));
+    CHECK([ApolloGQLUserCommentsVariables(ApolloGQLRequestForLegacy(@"GET", @"/user/someone/comments", nil)) isEqualToDictionary:(@{ @"name": @"someone", @"sort": @"NEW" })],
+          @"newest first by default");
+    CHECK([ApolloGQLUserCommentsVariables(ApolloGQLRequestForLegacy(@"GET", @"/user/someone/comments", (@{ @"sort": @"top" })))[@"range"] isEqualToString:@"ALL"],
+          @"top of all time by default");
+    CHECK(ApolloGQLRequestForLegacy(@"GET", @"/user/someone/comments", (@{ @"before": @"t1_x" })) == nil, @"a page asked for by before");
+    CHECK(ApolloGQLRequestForLegacy(@"GET", @"/user/someone/comments", (@{ @"after": @"t3_x" })) == nil, @"a page after something that isn't a comment");
+    NSDictionary *byIds = ApolloGQLCommentsByIdsVariables(@[ @"t1_a" ]);
+    CHECK([byIds[@"ids"] isEqualToArray:(@[ @"t1_a" ])] && [byIds[@"includePremiumAvatarTreatment"] isEqual:@NO], @"comments by id (%@)", byIds);
+
+    CHECK(ApolloGQLCanAnswerPath(@"GET", @"/user/*/comments") && ApolloGQLCanAnswerPath(@"GET", @"/user/*/upvoted") &&
+          !ApolloGQLCanAnswerPath(@"GET", @"/subreddits/search") && !ApolloGQLCanAnswerPath(@"GET", @"/subreddits/mine/subscriber"), @"endpoint patterns");
+}
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         if (argc < 2) { fprintf(stderr, "usage: gql_legacy_tests <repo root>\n"); return 2; }
@@ -892,6 +988,8 @@ int main(int argc, const char *argv[]) {
         TestPlan();
         TestAuthorRecords();
         TestPlanForOwnReads();
+        TestOwnPostsAndUserComments();
+        TestPlanForLists();
     }
     if (sFailures) {
         fprintf(stderr, "%d failure(s)\n", sFailures);

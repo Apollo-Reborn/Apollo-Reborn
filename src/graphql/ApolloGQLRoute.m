@@ -350,6 +350,48 @@ void ApolloGQLRouteAnswer(NSString *account, ApolloGQLRequest *request, ApolloGQ
             // Apollo knows how to present.
             if (answer && !body) { outcome = ApolloGQLCallFailed; detail = @"SubredditInfoByName answered without a subreddit"; }
             summary = [NSString stringWithFormat:@"r/%@'s details", request.subreddit];
+        } else if (request.kind == ApolloGQLRequestKindOwnPosts) {
+            // GraphQL has these lists for the account that asks and nobody
+            // else's; the legacy route answers for another account (usually
+            // that the list is private).
+            if (!ApolloGQLRequestIsForAccount(request, account)) {
+                detail = [NSString stringWithFormat:@"the %@ list isn't the account's own", request.ownList];
+            } else {
+                calls++;
+                NSString *operation = ApolloGQLOwnPostsOperation(request);
+                NSDictionary *answer = ApolloGQLRouteCall(account, operation, ApolloGQLOwnPostsVariables(request), &outcome, &detail);
+                body = answer ? ApolloGQLLegacyOwnPostsListing(answer, request.ownList, request.rawJSON) : nil;
+                if (answer && !body) { outcome = ApolloGQLCallFailed; detail = [operation stringByAppendingString:@" answered without a list"]; }
+                summary = [NSString stringWithFormat:@"%lu %@ posts", (unsigned long)[body[@"data"][@"children"] count], request.ownList];
+            }
+        } else if (request.kind == ApolloGQLRequestKindUserComments) {
+            calls++;
+            NSDictionary *list = ApolloGQLRouteCall(account, ApolloGQLOperationUserComments, ApolloGQLUserCommentsVariables(request),
+                                                    &outcome, &detail);
+            NSArray<NSString *> *fullnames = list ? ApolloGQLUserCommentFullnames(list, NULL) : nil;
+            if (list && !fullnames) {
+                // No comment list is how GraphQL reports an account it won't
+                // show (missing, suspended). The legacy route has the error
+                // Apollo knows how to present.
+                outcome = ApolloGQLCallFailed;
+                detail = @"SubmittedComments answered without a comment list";
+            } else if (fullnames.count == 0) {
+                // Nothing on the page (the account hides its history, or the
+                // list has ended): there's nothing to ask LiveCommentsByIds for.
+                if (list) body = ApolloGQLLegacyUserCommentsListing(list, @{}, request.rawJSON);
+            } else {
+                calls++;
+                NSDictionary *comments = ApolloGQLRouteCall(account, ApolloGQLOperationCommentsByIds,
+                                                            ApolloGQLCommentsByIdsVariables(fullnames), &outcome, &detail);
+                body = comments ? ApolloGQLLegacyUserCommentsListing(list, comments, request.rawJSON) : nil;
+                // Ids without a single comment behind them isn't a page to show.
+                if (comments && [body[@"data"][@"children"] count] == 0) {
+                    body = nil;
+                    outcome = ApolloGQLCallFailed;
+                    detail = @"LiveCommentsByIds had none of the profile's comments";
+                }
+            }
+            summary = [NSString stringWithFormat:@"%lu comments", (unsigned long)[body[@"data"][@"children"] count]];
         } else if (request.kind == ApolloGQLRequestKindComments) {
             body = ApolloGQLRouteCommentsPage(account, request, &calls, &outcome, &detail, &summary);
         } else if (request.kind == ApolloGQLRequestKindMoreComments) {
@@ -450,6 +492,7 @@ static ApolloGQLRequest *ApolloGQLRoutePlanForRequest(NSURLRequest *request, NSS
     if (ApolloWebJSONRouteChoose(account, @"GET", path, 0, [NSDate timeIntervalSinceReferenceDate]) != ApolloWebJSONRouteGraphQL) return nil;
     NSString *query = url.query;
     ApolloGQLRequest *planned = ApolloGQLRequestForLegacy(@"GET", query.length > 0 ? [NSString stringWithFormat:@"%@?%@", path, query] : path, nil);
+    if (planned && !ApolloGQLRequestIsForAccount(planned, account)) planned = nil;
     if (planned && accountOut) *accountOut = account;
     return planned;
 }

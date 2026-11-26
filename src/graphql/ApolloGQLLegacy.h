@@ -75,6 +75,29 @@ NSDictionary *_Nullable ApolloGQLLegacySearchListing(NSDictionary *answer, BOOL 
 NSString *ApolloGQLSearchAfterToken(NSString *cursor);
 NSString *_Nullable ApolloGQLSearchAfterCursor(NSString *_Nullable token);
 
+// The Listing of posts /user/<name>/upvoted.json (…/downvoted, …/hidden) sends,
+// for an UpvotedPosts (DownvotedPosts, HiddenPosts) answer; `list` is that last
+// path component. The posts are whole, as PostsByIds' are. The Listing's
+// `after` is the last post's fullname, or null on the last page. nil when the
+// answer has no such list.
+NSDictionary *_Nullable ApolloGQLLegacyOwnPostsListing(NSDictionary *answer, NSString *list, BOOL rawJSON);
+
+// The comment fullnames of a SubmittedComments answer (a profile's comments),
+// in order. `nextAfter` gets the fullname the next page starts after, or nil
+// when there's no further page. nil when the answer has no comment list (a
+// missing or suspended account).
+NSArray<NSString *> *_Nullable ApolloGQLUserCommentFullnames(NSDictionary *answer, NSString *_Nullable *_Nullable nextAfter);
+
+// The Listing of comments /user/<name>/comments.json sends. `list` is the
+// SubmittedComments answer, which names each comment and the post it is on;
+// `comments` the LiveCommentsByIds answer for those ids, which has the comments
+// themselves. A comment LiveCommentsByIds didn't return is left out. GraphQL
+// doesn't say what a comment replies to or who wrote the post, so parent_id is
+// the post's fullname and link_author is absent; Apollo's list shows the post's
+// title and subreddit under each comment and opens the thread from its
+// permalink. nil when `list` has no comment list.
+NSDictionary *_Nullable ApolloGQLLegacyUserCommentsListing(NSDictionary *list, NSDictionary *comments, BOOL rawJSON);
+
 // The post fullnames of a feed answer (SubredditFeedSdui, HomeFeedSdui), in
 // order, without the cells that aren't posts (sort bar, community suggestions,
 // ads). `joinedOnly` also leaves out the posts Reddit suggests from subreddits

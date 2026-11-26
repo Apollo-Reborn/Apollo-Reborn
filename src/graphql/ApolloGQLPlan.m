@@ -9,6 +9,11 @@ NSString *const ApolloGQLOperationUserPosts = @"SubmittedPostsFeedSdui";
 NSString *const ApolloGQLOperationSearchPosts = @"SearchPosts";
 NSString *const ApolloGQLOperationSubredditInfo = @"SubredditInfoByName";
 NSString *const ApolloGQLOperationPostComments = @"PostComments";
+NSString *const ApolloGQLOperationUserComments = @"SubmittedComments";
+NSString *const ApolloGQLOperationCommentsByIds = @"LiveCommentsByIds";
+static NSString *const ApolloGQLOperationUpvotedPosts = @"UpvotedPosts";
+static NSString *const ApolloGQLOperationDownvotedPosts = @"DownvotedPosts";
+static NSString *const ApolloGQLOperationHiddenPosts = @"HiddenPosts";
 
 // 60 in one call were answered in full (2026-11-24). 50 covers a feed's first
 // page (7 + 25 posts) and two later ones in a single call.
@@ -36,9 +41,27 @@ static NSDictionary<NSString *, NSString *> *ApolloGQLOperationHashes(void) {
             ApolloGQLOperationUserPosts: @"8bcd9296341ba003625abe814251e57437c42f0272d88b166c499f8bebc4cadb",
             ApolloGQLOperationSearchPosts: @"08c50e2f9868ea1b8c4411cca57cd58353c729b4fa714cef66448600f76b0922",
             ApolloGQLOperationSubredditInfo: @"8c1815b07b762aee3c086cc84306f14b3907018e9ee152046c8e4d08ad4c7b88",
+            // Run for the desktop web client's token on 2026-11-25.
+            ApolloGQLOperationUpvotedPosts: @"4997de5649516763ab57f3f70eeba4c7638978c8613fc81c3212b1b5dbd0497e",
+            ApolloGQLOperationDownvotedPosts: @"8e0d27e0f698b8718928bc8ebb0c5b5690b51bceb862db7ce4c7da6c4deef0f5",
+            ApolloGQLOperationHiddenPosts: @"7548e75ad724b6888e7901b3a757d5111008c02624af20b0141b40fdca6276d2",
+            ApolloGQLOperationUserComments: @"e1b37f521fb40af2120946b70e7fbf6a3d924db2abaf28ff2164d4cfacca28db",
+            ApolloGQLOperationCommentsByIds: @"f6ea957fbe5df4386492b6f153c90e8f0f3d2d3556e908e4e4eb9c5afdb1ffa1",
         };
     });
     return hashes;
+}
+
+// The account's own lists by the last part of their path, and the operation
+// that answers each.
+static NSDictionary<NSString *, NSString *> *ApolloGQLOwnLists(void) {
+    static NSDictionary<NSString *, NSString *> *lists;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        lists = @{ @"upvoted": ApolloGQLOperationUpvotedPosts, @"downvoted": ApolloGQLOperationDownvotedPosts,
+                   @"hidden": ApolloGQLOperationHiddenPosts };
+    });
+    return lists;
 }
 
 NSString *ApolloGQLOperationHash(NSString *name) {
@@ -107,6 +130,34 @@ NSDictionary *ApolloGQLPostCommentsVariables(ApolloGQLRequest *request) {
     return variables;
 }
 
+BOOL ApolloGQLRequestIsForAccount(ApolloGQLRequest *request, NSString *account) {
+    if (request.kind != ApolloGQLRequestKindOwnPosts) return YES;
+    return request.username.length > 0 && account.length > 0 && [request.username caseInsensitiveCompare:account] == NSOrderedSame;
+}
+
+NSString *ApolloGQLOwnPostsOperation(ApolloGQLRequest *request) {
+    return ApolloGQLOwnLists()[request.ownList ?: @""] ?: ApolloGQLOperationUpvotedPosts;
+}
+
+NSDictionary *ApolloGQLOwnPostsVariables(ApolloGQLRequest *request) {
+    NSString *cursor = ApolloGQLFeedCursorForFullname(request.after);
+    return cursor.length > 0 ? @{ @"after": cursor } : @{};
+}
+
+NSDictionary *ApolloGQLUserCommentsVariables(ApolloGQLRequest *request) {
+    NSMutableDictionary *variables = [NSMutableDictionary dictionary];
+    variables[@"name"] = request.username ?: @"";
+    variables[@"sort"] = request.sort ?: @"NEW";
+    if (request.timeRange.length > 0) variables[@"range"] = request.timeRange;
+    NSString *cursor = ApolloGQLFeedCursorForFullname(request.after);
+    if (cursor.length > 0) variables[@"after"] = cursor;
+    return variables;
+}
+
+NSDictionary *ApolloGQLCommentsByIdsVariables(NSArray<NSString *> *fullnames) {
+    return @{ @"ids": fullnames ?: @[], @"includePremiumAvatarTreatment": @NO, @"includeCommentsHtmlField": @YES };
+}
+
 #pragma mark - Requests
 
 @interface ApolloGQLRequest ()
@@ -128,6 +179,7 @@ NSDictionary *ApolloGQLPostCommentsVariables(ApolloGQLRequest *request) {
 @property (nonatomic, copy, readwrite, nullable) NSString *moreCursor;
 @property (nonatomic, readwrite) NSInteger moreDepth;
 @property (nonatomic, readwrite) BOOL rawJSON;
+@property (nonatomic, copy, readwrite, nullable) NSString *ownList;
 @end
 
 @implementation ApolloGQLRequest
@@ -278,12 +330,14 @@ static ApolloGQLRequestKind ApolloGQLKindForPath(NSString *method, NSString *pat
     if (segments.count == 3 && [segments[0] isEqualToString:@"r"] && [segments[2] isEqualToString:@"search"] && ApolloGQLSubredditIsPlain(segments[1])) {
         return ApolloGQLRequestKindSearchPosts;
     }
-    // The Posts list of a profile. A username is 3 to 20 letters, digits, "_"
-    // or "-"; the sort is a parameter here, not part of the path.
-    if (segments.count == 3 && [segments[0] isEqualToString:@"user"] && [segments[2] isEqualToString:@"submitted"]) {
+    // The lists of a profile. A username is 3 to 20 letters, digits, "_" or
+    // "-"; the sort is a parameter here, not part of the path.
+    if (segments.count == 3 && [segments[0] isEqualToString:@"user"]) {
         NSCharacterSet *other = [[NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyz0123456789_-"] invertedSet];
         if (segments[1].length >= 3 && segments[1].length <= 20 && [segments[1] rangeOfCharacterFromSet:other].location == NSNotFound) {
-            return ApolloGQLRequestKindUserPosts;
+            if ([segments[2] isEqualToString:@"submitted"]) return ApolloGQLRequestKindUserPosts;
+            if ([segments[2] isEqualToString:@"comments"]) return ApolloGQLRequestKindUserComments;
+            if (ApolloGQLOwnLists()[segments[2]]) return ApolloGQLRequestKindOwnPosts;
         }
     }
     // Home is a sort on its own ("hot.json"); Apollo names one every time.
@@ -357,6 +411,45 @@ ApolloGQLRequest *ApolloGQLRequestForLegacy(NSString *method, NSString *path, id
 
     if (kind == ApolloGQLRequestKindSubredditAbout) {
         request.subreddit = original.count > 1 ? original[1] : segments[1];
+        return request;
+    }
+
+    if (kind == ApolloGQLRequestKindOwnPosts) {
+        // Newest first, the only order GraphQL has for these.
+        NSString *sort = query[@"sort"].lowercaseString;
+        NSString *after = query[@"after"];
+        if (query[@"before"].length > 0 || (sort.length > 0 && ![sort isEqualToString:@"new"])) return nil;
+        if (after.length > 0 && ![after hasPrefix:@"t3_"]) return nil;
+        request.username = original.count > 1 ? original[1] : segments[1];
+        request.ownList = segments[2];
+        request.after = after.length > 0 ? after : nil;
+        NSInteger limit = query[@"limit"].integerValue;
+        request.limit = limit > 0 ? MIN(limit, 100) : 25;
+        return request;
+    }
+
+    if (kind == ApolloGQLRequestKindUserComments) {
+        static NSDictionary<NSString *, NSString *> *sorts;
+        static NSSet<NSString *> *ranges;
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{
+            sorts = @{ @"new": @"NEW", @"hot": @"HOT", @"top": @"TOP", @"controversial": @"CONTROVERSIAL" };
+            ranges = [NSSet setWithArray:@[ @"hour", @"day", @"week", @"month", @"year", @"all" ]];
+        });
+        NSString *sort = query[@"sort"].length > 0 ? sorts[query[@"sort"].lowercaseString] : @"NEW";
+        NSString *after = query[@"after"];
+        if (!sort || query[@"before"].length > 0) return nil;
+        if (after.length > 0 && ![after hasPrefix:@"t1_"]) return nil;
+        request.username = original.count > 1 ? original[1] : segments[1];
+        request.sort = sort;
+        if ([sort isEqualToString:@"TOP"] || [sort isEqualToString:@"CONTROVERSIAL"]) {
+            // All time is Reddit's own default on a profile.
+            NSString *range = query[@"t"].lowercaseString;
+            request.timeRange = [ranges containsObject:range] ? range.uppercaseString : @"ALL";
+        }
+        request.after = after.length > 0 ? after : nil;
+        NSInteger limit = query[@"limit"].integerValue;
+        request.limit = limit > 0 ? MIN(limit, 100) : 25;
         return request;
     }
 

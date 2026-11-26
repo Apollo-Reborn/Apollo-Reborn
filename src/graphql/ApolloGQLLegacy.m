@@ -1056,6 +1056,92 @@ NSArray<NSString *> *ApolloGQLFeedPostFullnames(NSDictionary *answer, BOOL joine
     return fullnames;
 }
 
+// A list cursor is the base64 of the fullname the next page starts after.
+static NSString *ApolloGQLFullnameFromCursor(NSString *cursor, NSString *prefix) {
+    if (cursor.length == 0) return nil;
+    NSData *decoded = [[NSData alloc] initWithBase64EncodedString:cursor options:0];
+    NSString *fullname = decoded ? [[NSString alloc] initWithData:decoded encoding:NSUTF8StringEncoding] : nil;
+    return [fullname hasPrefix:prefix] ? fullname : nil;
+}
+
+NSDictionary *ApolloGQLLegacyOwnPostsListing(NSDictionary *answer, NSString *list, BOOL rawJSON) {
+    if (list.length == 0) return nil;
+    NSDictionary *posts = ApolloGQLDict(ApolloGQLDict(ApolloGQLDict(answer, @"data"), @"identity"), [list stringByAppendingString:@"Posts"]);
+    NSArray *edges = ApolloGQLArray(posts, @"edges");
+    if (!edges) return nil;
+    NSMutableArray<NSDictionary *> *things = [NSMutableArray array];
+    for (id edge in edges) {
+        NSDictionary *data = ApolloGQLLegacyLinkData(ApolloGQLDict(edge, @"node") ?: @{}, rawJSON);
+        if (data) [things addObject:ApolloGQLLegacyThing(@"t3", data)];
+    }
+    NSDictionary *pageInfo = ApolloGQLDict(posts, @"pageInfo");
+    NSString *after = ApolloGQLBool(pageInfo, @"hasNextPage") ? ApolloGQLFullnameFromCursor(ApolloGQLString(pageInfo, @"endCursor"), @"t3_") : nil;
+    return ApolloGQLLegacyListing(things, after);
+}
+
+static NSDictionary *ApolloGQLUserCommentsConnection(NSDictionary *answer) {
+    return ApolloGQLDict(ApolloGQLDict(ApolloGQLDict(answer, @"data"), @"redditorInfoByName"), @"comments");
+}
+
+NSArray<NSString *> *ApolloGQLUserCommentFullnames(NSDictionary *answer, NSString **nextAfter) {
+    if (nextAfter) *nextAfter = nil;
+    NSDictionary *found = ApolloGQLUserCommentsConnection(answer);
+    NSArray *edges = ApolloGQLArray(found, @"edges");
+    if (!edges) return nil;
+    NSMutableArray<NSString *> *fullnames = [NSMutableArray array];
+    for (id edge in edges) {
+        NSString *fullname = ApolloGQLString(ApolloGQLDict(edge, @"node"), @"id");
+        if ([fullname hasPrefix:@"t1_"] && ![fullnames containsObject:fullname]) [fullnames addObject:fullname];
+    }
+    NSDictionary *pageInfo = ApolloGQLDict(found, @"pageInfo");
+    if (nextAfter && ApolloGQLBool(pageInfo, @"hasNextPage")) {
+        *nextAfter = ApolloGQLFullnameFromCursor(ApolloGQLString(pageInfo, @"endCursor"), @"t1_");
+    }
+    return fullnames;
+}
+
+NSDictionary *ApolloGQLLegacyUserCommentsListing(NSDictionary *list, NSDictionary *comments, BOOL rawJSON) {
+    NSString *after = nil;
+    NSArray<NSString *> *fullnames = ApolloGQLUserCommentFullnames(list, &after);
+    if (!fullnames) return nil;
+    NSMutableDictionary<NSString *, NSDictionary *> *postOf = [NSMutableDictionary dictionary];
+    for (id edge in ApolloGQLArray(ApolloGQLUserCommentsConnection(list), @"edges")) {
+        NSDictionary *node = ApolloGQLDict(edge, @"node");
+        NSString *fullname = ApolloGQLString(node, @"id");
+        NSDictionary *post = ApolloGQLDict(node, @"postInfo");
+        if (fullname && post) postOf[fullname] = post;
+    }
+    NSMutableDictionary<NSString *, NSDictionary *> *nodeOf = [NSMutableDictionary dictionary];
+    for (id node in ApolloGQLArray(ApolloGQLDict(comments, @"data"), @"commentsByIds")) {
+        NSString *fullname = ApolloGQLString(node, @"id");
+        if (fullname) nodeOf[fullname] = node;
+    }
+    NSMutableArray<NSDictionary *> *things = [NSMutableArray array];
+    for (NSString *fullname in fullnames) {
+        NSDictionary *node = nodeOf[fullname];
+        if (!node) continue;
+        NSDictionary *listed = postOf[fullname];
+        NSString *postFullname = ApolloGQLString(listed, @"id") ?: @"";
+        // The list names the subreddit as "r/<name>"; the comment's permalink
+        // is "/r/<name>/comments/<post id>/<slug>/<comment id>/".
+        NSString *prefixed = ApolloGQLString(ApolloGQLDict(listed, @"subreddit"), @"prefixedName") ?: @"";
+        NSString *subreddit = [prefixed hasPrefix:@"r/"] ? [prefixed substringFromIndex:2] : prefixed;
+        NSDictionary *post = @{ @"id": postFullname, @"subreddit": @{ @"name": subreddit, @"prefixedName": prefixed } };
+        NSMutableDictionary<NSString *, id> *data = ApolloGQLLegacyCommentData(node, fullname, postFullname, 0, post, @"public", nil);
+        if (!data) continue;
+        NSString *permalink = data[@"permalink"];
+        NSString *tail = [NSString stringWithFormat:@"%@/", data[@"id"]];
+        NSString *thread = [permalink hasSuffix:tail] ? [permalink substringToIndex:permalink.length - tail.length] : permalink;
+        data[@"link_title"] = ApolloGQLString(listed, @"title") ?: @"";
+        data[@"link_permalink"] = thread.length > 0 ? [@"https://www.reddit.com" stringByAppendingString:thread] : @"";
+        data[@"quarantine"] = @NO;
+        data[@"replies"] = @"";
+        [things addObject:ApolloGQLLegacyThing(@"t1", data)];
+    }
+    NSDictionary *listing = ApolloGQLLegacyListing(things, after);
+    return rawJSON ? listing : ApolloGQLEscapeLegacyValue(listing);
+}
+
 NSString *ApolloGQLFeedCursorForFullname(NSString *fullname) {
     if (![fullname isKindOfClass:[NSString class]] || fullname.length == 0) return nil;
     return [[fullname dataUsingEncoding:NSUTF8StringEncoding] base64EncodedStringWithOptions:0];
