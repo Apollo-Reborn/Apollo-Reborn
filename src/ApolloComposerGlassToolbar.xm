@@ -12,6 +12,9 @@
 // Apollo's subreddit/user suggestions and add-link-title rows still slide in,
 // but inside the capsule: they lose their fills and are centered on it, and
 // the bar is masked to the capsule.
+// A sideways drag that starts on the strip or on the suggestions always
+// scrolls them: Apollo's Back and Forward swipes sit that touch out (see
+// "Navigation swipes").
 
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
@@ -45,6 +48,7 @@ static const CGFloat kApolloComposerGlassMaskMargin = 8.0;
 static char kApolloComposerGlassStripKey;
 static char kApolloComposerGlassBarMaskKey;
 static char kApolloComposerGlassItemKey;
+static char kApolloComposerGlassBarNoteKey;
 
 // QuickBarKeyboardView.ViewType: mainActionButtons, subreddits, users, addLinkTitle.
 static const uint8_t kApolloComposerGlassMainActionButtons = 0;
@@ -195,6 +199,16 @@ static void ApolloComposerGlassCollectMenuItems(NSArray<UIMenuElement *> *elemen
 }
 @end
 
+// What a navigation controller knows about the glass bar shown under it, so
+// its Back and Forward swipes can leave the bar's drags alone (see "Navigation
+// swipes" below). Weak: the note never keeps a bar alive or outlives it.
+@interface ApolloComposerGlassBarNote : NSObject
+@property (nonatomic, weak) UIView *bar;
+@end
+
+@implementation ApolloComposerGlassBarNote
+@end
+
 static UICollectionView *ApolloComposerGlassSuggestionsView(UIView *bar);
 static void ApolloComposerGlassStyleSuggestionCell(UICollectionViewCell *cell);
 
@@ -267,6 +281,28 @@ API_AVAILABLE(ios(26.0))
 
 - (void)dealloc {
     [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+
+// Leave a note on every ApolloNavigationController this bar is shown under.
+// The comment composer adds the bar to its own view, inside the navigation
+// controller it is presented in. A bar used as a keyboard accessory lives in
+// the keyboard's window instead, reaches no navigation controller and needs
+// none of this.
+- (void)didMoveToWindow {
+    [super didMoveToWindow];
+    UIView *bar = self.quickBar;
+    if (!self.window || !bar || !ApolloClassApolloNavigationController) return;
+    for (UIResponder *responder = bar.nextResponder; responder; responder = responder.nextResponder) {
+        if (![responder isKindOfClass:ApolloClassApolloNavigationController]) continue;
+        ApolloComposerGlassBarNote *note = objc_getAssociatedObject(responder, &kApolloComposerGlassBarNoteKey);
+        if (!note) {
+            note = [ApolloComposerGlassBarNote new];
+            objc_setAssociatedObject(responder, &kApolloComposerGlassBarNoteKey, note, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        note.bar = bar;
+        ApolloLog(@"[ComposerGlassToolbar] bar noted on %@ (its Back/Forward swipes leave the bar's drags alone)",
+                  NSStringFromClass([responder class]));
+    }
 }
 
 - (void)apolloThemeChanged:(__unused NSNotification *)notification {
@@ -717,6 +753,86 @@ void ApolloComposerGlassToolbarSetNeedsSync(UIView *view) {
         return [strip pointInside:[strip convertPoint:point fromView:(UIView *)self] withEvent:event];
     }
     return NO;
+}
+
+%end
+
+#pragma mark - Navigation swipes
+
+// Apollo's Back and Forward swipes are two pans on the navigation controller's
+// own view (leftScreenEdgePanGestureRecognizer and
+// rightScreenEdgePanGestureRecognizer), so wherever a composer adds the bar to
+// its own view (replies, a text post's body) they sit above it. The controller
+// is their delegate, and from the binary:
+//  - gestureRecognizer:shouldBeRequiredToFailByGestureRecognizer: (sub_10015d474)
+//    makes every other pan under it, the bar's scrolling rows included, wait
+//    for them to fail;
+//  - gestureRecognizerShouldBegin: (sub_10015d644) lets Back begin within 70pt
+//    of the left edge and Forward within 40pt of the right one, and anywhere
+//    on screen with Gestures > Disable Left/Right Swipes on
+//    (DisableLeftSwipeGestureActions / DisableRightSwipeGestureActions).
+// So with those settings the strip and the suggestions never scrolled: in a
+// reply the swipe did nothing (that stack has nowhere to go), and in a text
+// post's body a rightward one left the editor. With the defaults the rows
+// didn't scroll from the capsule's ends.
+//
+// A drag that goes down on one of those rows is that row's. Refusing both pans
+// for that touch is the answer Apollo's own delegate gives a touch outside its
+// edge bands, and the scroll that was waiting on them begins. That holds at a
+// row's ends too: flicking back to the first button must not carry on into
+// Back. Everywhere else on the page the swipes work as before.
+
+// Is `gesture` (a recognizer above the bar) following the touch this row's own
+// scroll pan is following? The row's pan only ever gets a touch that went down
+// inside the row, and stays in the running (Possible, waiting on Apollo's
+// pans) until they fail. Locations can't be compared: UIKit hands each move to
+// one recognizer at a time, so when Apollo's pan asks to begin the row's pan
+// may still be reading the touch-down point, a whole move behind.
+static BOOL ApolloComposerGlassRowHoldsTouchOfGesture(UIScrollView *row, UIGestureRecognizer *gesture) {
+    if (!row.window) return NO;
+    UIPanGestureRecognizer *rowPan = row.panGestureRecognizer;
+    NSUInteger touches = rowPan.numberOfTouches;
+    if (touches == 0 || gesture.numberOfTouches != touches) return NO;
+    UIGestureRecognizerState state = rowPan.state;
+    if (state != UIGestureRecognizerStatePossible && state != UIGestureRecognizerStateBegan &&
+        state != UIGestureRecognizerStateChanged) return NO;
+    // A bar that has since moved (to the keyboard's window, say) is no longer
+    // under this controller's recognizers.
+    UIView *gestureView = gesture.view;
+    return gestureView && [row isDescendantOfView:gestureView];
+}
+
+// The bar's two sideways scrollers: the strip, and Apollo's suggestions while
+// they show inside the capsule (parked, they are faded out and get no touch).
+static BOOL ApolloComposerGlassBarHoldsTouchOfGesture(UINavigationController *navigationController,
+                                                      UIGestureRecognizer *gesture) {
+    ApolloComposerGlassBarNote *note = objc_getAssociatedObject(navigationController, &kApolloComposerGlassBarNoteKey);
+    UIView *bar = note.bar;
+    if (!bar.window) return NO;
+    if (@available(iOS 26.0, *)) {
+        ApolloComposerGlassToolbarView *strip = ApolloComposerGlassStrip(bar);
+        if (!strip) return NO;
+        return ApolloComposerGlassRowHoldsTouchOfGesture(strip.scrollView, gesture) ||
+               ApolloComposerGlassRowHoldsTouchOfGesture(ApolloComposerGlassSuggestionsView(bar), gesture);
+    }
+    return NO;
+}
+
+%hook _TtC6Apollo26ApolloNavigationController
+
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gesture {
+    // Nearly every call ends at the first check inside: no glass bar is noted
+    // on this controller, or none of its rows is following a touch.
+    if (ApolloComposerGlassBarHoldsTouchOfGesture((UINavigationController *)self, gesture)) {
+        // The navigation bar's pan and long press ask this delegate too.
+        BOOL back = gesture == ApolloObjectIvar(self, "leftScreenEdgePanGestureRecognizer");
+        if (back || gesture == ApolloObjectIvar(self, "rightScreenEdgePanGestureRecognizer")) {
+            ApolloLog(@"[ComposerGlassToolbar] drag began on the bar; Apollo's %@ swipe sits this touch out",
+                      back ? @"Back" : @"Forward");
+            return NO;
+        }
+    }
+    return %orig;
 }
 
 %end
