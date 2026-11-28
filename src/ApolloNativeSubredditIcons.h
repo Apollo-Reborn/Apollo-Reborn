@@ -3,10 +3,38 @@
 NS_ASSUME_NONNULL_BEGIN
 
 // Apollo's SubredditIconTracker saves icons in standard defaults under
-// "SubredditIconData" (keyed archive of [name, iconURL, keyColor]) and never
-// expires them. Clearing it leaves placeholders until the next subscription
-// sync, so instead a weekly lookup stores current URLs as a pending update that
-// %ctor writes into the blob before the tracker loads it. Foundation-only.
+// "SubredditIconData" (keyed archive of [name, iconURL, keyColor]) and has no
+// expiry. Clearing it leaves placeholders until the next subscription sync, so
+// instead a weekly lookup stores current URLs as a pending update that %ctor
+// writes into the blob before the tracker loads it. Foundation-only.
+//
+// The tracker's save (0x1004f8af0, on entering the background and on
+// terminate) only merges with what's stored when the stored value is an array
+// (`arrayForKey:`), the format before the keyed archive. For the archive it
+// gets nil and writes just the icons set during this launch, dropping every
+// other saved icon, so the saved set alternates between launches and each
+// dropped icon is fetched again. ApolloNativeSubredditIconValueForSave puts
+// the dropped entries back.
+
+// Apollo's own cap (SubredditIconTracker.maximumTotal).
+FOUNDATION_EXPORT NSUInteger const ApolloNativeSubredditIconMaxEntries;
+
+// The archive Apollo is saving (`incoming`) with every entry of the stored one
+// (`saved`) whose name isn't in it, compared case-insensitively. Saved entries
+// come first and the incoming ones after them, so they win; past `maxEntries`
+// the oldest saved entries are dropped. Returns nil when nothing would be
+// added or either archive can't be decoded.
+FOUNDATION_EXPORT NSData *_Nullable ApolloNativeSubredditIconDataMergingSaved(NSData *_Nullable incoming,
+                                                                              NSData *_Nullable saved,
+                                                                              NSUInteger maxEntries,
+                                                                              NSUInteger *_Nullable keptCount);
+
+// For -[NSUserDefaults setObject:forKey:]: the value to write instead of
+// `value`. For a "SubredditIconData" archive that would drop saved icons, the
+// merged archive; anything else is returned unchanged.
+FOUNDATION_EXPORT id _Nullable ApolloNativeSubredditIconValueForSave(NSUserDefaults *defaults,
+                                                                     id _Nullable value,
+                                                                     NSString *_Nullable key);
 
 // Subreddit names stored in the tracker blob, in blob order. Empty for a
 // missing or unreadable blob.

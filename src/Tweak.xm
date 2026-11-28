@@ -55,6 +55,7 @@
 #import "ApolloPerAccountFavorites.h"
 #import "ApolloFavoritesSorting.h"
 #import "ApolloSubredditInfoCache.h"
+#import "ApolloNativeSubredditIcons.h"
 #import "ApolloAICloudBridge.h"
 #import "crash/ApolloCrashManager.h"
 #import "crash/ApolloCrashContext.h"
@@ -4115,7 +4116,15 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
 %hook NSUserDefaults
 
 - (void)setObject:(id)value forKey:(NSString *)key {
-    %orig;
+    // Apollo's subreddit icon tracker saves only this launch's icons over the
+    // stored ones; keep the rest (see ApolloNativeSubredditIcons.h).
+    id saveValue = ApolloNativeSubredditIconValueForSave(self, value, key);
+    if (saveValue != value) {
+        ApolloLog(@"[SubredditIcons] tracker saved %lu icons; kept the saved ones it dropped (%lu in all)",
+                  (unsigned long)ApolloNativeSubredditIconNames(value).count,
+                  (unsigned long)ApolloNativeSubredditIconNames(saveValue).count);
+    }
+    %orig(saveValue, key);
     if (ApolloDefaultsKeyChangesActiveAccount(key)) {
         ApolloInvalidateActiveAccountUsernameCache();
     }
