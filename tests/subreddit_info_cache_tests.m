@@ -195,6 +195,63 @@ static void CheckNativeIconTracker(void) {
     [defaults removePersistentDomainForName:suite];
 }
 
+// Apollo's save writes only the icons set this launch; the saved ones it left
+// out are put back in front of them.
+static void CheckTrackerSaveMerge(void) {
+    NSURL *nullURL = [NSURL URLWithString:@"https://null.org"];
+    NSURL *oldPics = [NSURL URLWithString:@"https://b.thumbs.redditmedia.com/old.png"];
+    NSURL *newPics = [NSURL URLWithString:@"https://b.thumbs.redditmedia.com/new.png"];
+    NSURL *apollo = [NSURL URLWithString:@"https://styles.redditmedia.com/t5_1/styles/communityIcon_a.png"];
+    NSURL *avatar = [NSURL URLWithString:@"https://styles.redditmedia.com/t5_2/styles/profileIcon_b.png"];
+    NSData *saved = TrackerBlob(@[
+        @[@"apolloreborn", apollo, @"8400ff"],
+        @[@"Pics", oldPics, @"24a0ed"],
+        @[@"u_someone", avatar],
+        @[@"noicon", nullURL],
+        @"unknown entry shape",
+    ]);
+    NSData *incoming = TrackerBlob(@[@[@"pics", newPics, @"24a0ed"], @[@"newsub", nullURL]]);
+
+    NSUInteger kept = 0;
+    NSArray *merged = TrackerEntries(ApolloNativeSubredditIconDataMergingSaved(incoming, saved, 5000, &kept));
+    Check(kept == 3, @"saved icons missing from the save are kept");
+    Check([merged isEqual:(@[
+              @[@"apolloreborn", apollo, @"8400ff"],
+              @[@"u_someone", avatar],
+              @[@"noicon", nullURL],
+              @[@"pics", newPics, @"24a0ed"],
+              @[@"newsub", nullURL],
+          ])],
+          @"saved entries come first, the save's own entries win case-insensitively, unknown shapes are dropped");
+
+    Check(ApolloNativeSubredditIconDataMergingSaved(saved, saved, 5000, &kept) == nil && kept == 0,
+          @"no rewrite when the save already holds every saved icon");
+    Check(ApolloNativeSubredditIconDataMergingSaved(incoming, nil, 5000, &kept) == nil &&
+          ApolloNativeSubredditIconDataMergingSaved(incoming, [@"junk" dataUsingEncoding:NSUTF8StringEncoding], 5000, &kept) == nil &&
+          ApolloNativeSubredditIconDataMergingSaved([@"junk" dataUsingEncoding:NSUTF8StringEncoding], saved, 5000, &kept) == nil,
+          @"nothing to merge with missing or unreadable data");
+
+    NSArray *capped = TrackerEntries(ApolloNativeSubredditIconDataMergingSaved(incoming, saved, 4, &kept));
+    Check(kept == 2 && [capped[0][0] isEqual:@"u_someone"] && capped.count == 4,
+          @"past the cap the oldest saved entries go first");
+    Check(ApolloNativeSubredditIconDataMergingSaved(incoming, saved, 2, &kept) == nil && kept == 0,
+          @"a save already at the cap is written as it is");
+
+    NSString *suite = [@"com.apollofix.tests.iconsave." stringByAppendingString:NSUUID.UUID.UUIDString];
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:suite];
+    Check(ApolloNativeSubredditIconValueForSave(defaults, incoming, @"SubredditIconData") == incoming,
+          @"the first save, with nothing stored, is written as it is");
+    [defaults setObject:saved forKey:@"SubredditIconData"];
+    id value = ApolloNativeSubredditIconValueForSave(defaults, incoming, @"SubredditIconData");
+    Check(value != incoming && TrackerEntries(value).count == 5, @"a save over stored icons gets the merged data");
+    Check(ApolloNativeSubredditIconValueForSave(defaults, incoming, @"OtherKey") == incoming &&
+          ApolloNativeSubredditIconValueForSave(defaults, @[@"array"], @"SubredditIconData") != nil &&
+          [ApolloNativeSubredditIconValueForSave(defaults, @[@"array"], @"SubredditIconData") isEqual:@[@"array"]] &&
+          ApolloNativeSubredditIconValueForSave(defaults, nil, @"SubredditIconData") == nil,
+          @"other keys and non-data values pass through");
+    [defaults removePersistentDomainForName:suite];
+}
+
 // Uploaded images ("static") and uploaded GIFs ("animated") are separate mod
 // toggles; a camera-roll GIF keeps Apollo's still only where images are allowed
 // and GIFs aren't (#1663).
@@ -243,6 +300,7 @@ int main(void) {
         ApolloSubredditInfo *fresh = CheckArtworkPriority(cache);
         CheckMetadataMigration(cache, fresh);
         CheckNativeIconTracker();
+        CheckTrackerSaveMerge();
         CheckCommentMediaKinds(cache);
         CheckRequests(cache);
         printf("PASS: %lu subreddit info cache checks\n", (unsigned long)checks);

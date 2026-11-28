@@ -87,6 +87,49 @@ NSData *ApolloNativeSubredditIconDataApplyingURLs(NSData *blob, NSDictionary<NSS
     return data;
 }
 
+NSUInteger const ApolloNativeSubredditIconMaxEntries = 5000;
+
+NSData *ApolloNativeSubredditIconDataMergingSaved(NSData *incoming, NSData *saved, NSUInteger maxEntries, NSUInteger *keptCount) {
+    if (keptCount) *keptCount = 0;
+    NSArray *incomingEntries = ApolloNativeSubredditIconEntries(incoming);
+    NSArray *savedEntries = ApolloNativeSubredditIconEntries(saved);
+    if (!incomingEntries || savedEntries.count == 0) return nil;
+
+    NSMutableSet<NSString *> *incomingNames = [NSMutableSet set];
+    for (id entry in incomingEntries) {
+        NSString *name = ApolloNativeSubredditIconEntryName(entry);
+        if (name) [incomingNames addObject:name.lowercaseString];
+    }
+    // Only recognizable entries are carried over: anything else in the stored
+    // archive can't be matched against Apollo's names.
+    NSMutableArray *kept = [NSMutableArray array];
+    for (id entry in savedEntries) {
+        NSString *name = ApolloNativeSubredditIconEntryName(entry);
+        if (!name || [incomingNames containsObject:name.lowercaseString]) continue;
+        [incomingNames addObject:name.lowercaseString];
+        [kept addObject:entry];
+    }
+    if (incomingEntries.count + kept.count > maxEntries) {
+        NSUInteger room = incomingEntries.count < maxEntries ? maxEntries - incomingEntries.count : 0;
+        [kept removeObjectsInRange:NSMakeRange(0, kept.count - room)];
+    }
+    if (kept.count == 0) return nil;
+
+    NSData *data = [NSKeyedArchiver archivedDataWithRootObject:[kept arrayByAddingObjectsFromArray:incomingEntries]
+                                         requiringSecureCoding:YES
+                                                         error:NULL];
+    if (data && keptCount) *keptCount = kept.count;
+    return data;
+}
+
+id ApolloNativeSubredditIconValueForSave(NSUserDefaults *defaults, id value, NSString *key) {
+    if (![value isKindOfClass:NSData.class] || ![key isEqualToString:ApolloNativeSubredditIconDataKey]) return value;
+    id saved = [defaults objectForKey:ApolloNativeSubredditIconDataKey];
+    if (![saved isKindOfClass:NSData.class]) return value;
+    NSData *merged = ApolloNativeSubredditIconDataMergingSaved(value, saved, ApolloNativeSubredditIconMaxEntries, NULL);
+    return merged ?: value;
+}
+
 BOOL ApolloNativeSubredditIconRefreshIsDue(NSUserDefaults *defaults, NSDate *now) {
     id last = [defaults objectForKey:ApolloNativeSubredditIconRefreshedAtKey];
     if (![last isKindOfClass:NSDate.class]) return YES;
